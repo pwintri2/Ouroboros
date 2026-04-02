@@ -1,0 +1,3 @@
+Dit is een testbestand voor de WintripAI File Parser.
+Het staat veilig in de data-map en kan door de AI-agent worden ingelezen voor analyse.
+Local-first AI is veilig en snel.

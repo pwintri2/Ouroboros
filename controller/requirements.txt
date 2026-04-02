@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-dotenv
+requests
+ollama
+chromadb
+PyPDF2
+python-docx
+beautifulsoup4
+sqlalchemy
+duckduckgo-search

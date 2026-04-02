@@ -1,0 +1,184 @@
+import SwiftUI
+
+struct ChatMessage: Identifiable {
+    let id: UUID
+    let text: String
+    let isUser: Bool
+    
+    init(id: UUID = UUID(), text: String, isUser: Bool) {
+        self.id = id
+        self.text = text
+        self.isUser = isUser
+    }
+}
+
+struct ContentView: View {
+    @EnvironmentObject var backend: BackendManager
+    @StateObject var network = NetworkManager()
+    
+    @State private var inputPrompt: String = ""
+    @State private var messages: [ChatMessage] = [
+        ChatMessage(text: "Systeem gereed. Hoe kan ik je vandaag helpen?", isUser: false)
+    ]
+    @State private var selectedModel: String = "gemma2"
+    @FocusState private var isInputFocused: Bool
+    
+    var body: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                // Header
+                HStack {
+                    Circle()
+                        .fill(network.isOnline ? Color.green : Color.red)
+                        .frame(width: 10, height: 10)
+                    Text("WINTRIP COCKPIT")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    
+                    Spacer()
+                    
+                    Picker("Model:", selection: $selectedModel) {
+                        ForEach(network.models, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                }
+                .padding()
+                .background(Color.black.opacity(0.05))
+                
+                // Chat Output (iMessage stijl)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(messages) { message in
+                                HStack {
+                                    if message.isUser { Spacer() }
+                                    
+                                    Text(message.text)
+                                        .font(.system(size: 14, design: .sansSerif))
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(message.isUser ? Color.blue : Color.gray.opacity(0.2))
+                                        .foregroundColor(message.isUser ? .white : .primary)
+                                        .cornerRadius(16)
+                                        .textSelection(.enabled)
+                                        .id(message.id)
+                                    
+                                    if !message.isUser { Spacer() }
+                                }
+                                .padding(.horizontal, 10)
+                            }
+                        }
+                        .padding(.vertical)
+                    }
+                    .background(Color(NSColor.textBackgroundColor))
+                    .onChange(of: messages.count) { _ in
+                        if let lastId = messages.last?.id {
+                            withAnimation {
+                                proxy.scrollTo(lastId, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
+                
+                Divider()
+                
+                // Input balk
+                HStack {
+                    TextField("Typ je opdracht of vraag...", text: $inputPrompt)
+                        .textFieldStyle(.plain)
+                        .font(.title3)
+                        .focused($isInputFocused)
+                        .onSubmit { sendMessage() }
+                        .disabled(network.diffFileContent != nil)
+                    
+                    Button(action: sendMessage) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.title2)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(inputPrompt.isEmpty || network.diffFileContent != nil)
+                }
+                .padding()
+            }
+            
+            // DE POP-UP (DiffView Overlay)
+            if let planContent = network.diffFileContent {
+                Color.black.opacity(0.4).edgesIgnoringSafeArea(.all)
+                
+                VStack(spacing: 0) {
+                    HStack {
+                        Label("WINTRIP ACTIEPLAN", systemImage: "doc.text.magnifyingglass")
+                            .font(.headline)
+                        Spacer()
+                        Button(action: { network.diffFileContent = nil }) {
+                            Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+                        }.buttonStyle(.plain)
+                    }
+                    .padding()
+                    .background(Color.black.opacity(0.1))
+                    
+                    Divider()
+                    
+                    ScrollView {
+                        Text(planContent)
+                            .font(.system(size: 12, design: .monospaced))
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .background(Color(NSColor.textBackgroundColor))
+                    
+                    Divider()
+                    
+                    HStack {
+                        Button("Annuleren") { network.diffFileContent = nil }
+                        Spacer()
+                        Button("Toepassen & Uitvoeren") {
+                            let statusMsg = ChatMessage(text: "Bezig met uitvoeren van actieplan in mail...", isUser: false)
+                            messages.append(statusMsg)
+                            network.executePlan(planText: planContent) { report in
+                                messages.append(ChatMessage(text: report, isUser: false))
+                                isInputFocused = true
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.blue)
+                    }
+                    .padding()
+                }
+                .frame(width: 500, height: 400)
+                .background(Color(NSColor.windowBackgroundColor))
+                .cornerRadius(12)
+                .shadow(radius: 20)
+            }
+        }
+        .frame(minWidth: 700, minHeight: 500)
+        .onAppear {
+            isInputFocused = true
+            network.fetchModels()
+        }
+    }
+    
+    func sendMessage() {
+        let currentPrompt = inputPrompt
+        guard !currentPrompt.isEmpty else { return }
+        
+        inputPrompt = ""
+        messages.append(ChatMessage(text: currentPrompt, isUser: true))
+        
+        // Voeg tijdelijke 'denken' status toe
+        let thinkingId = UUID()
+        messages.append(ChatMessage(id: thinkingId, text: "Wintrip (\(selectedModel)) denkt na...", isUser: false))
+        
+        network.sendPrompt(prompt: currentPrompt, model: selectedModel) { response in
+            // Zoek het 'denken' bericht en vervang het met het echte antwoord
+            if let index = messages.firstIndex(where: { $0.id == thinkingId }) {
+                messages[index] = ChatMessage(text: response, isUser: false)
+            } else {
+                messages.append(ChatMessage(text: response, isUser: false))
+            }
+            self.isInputFocused = true
+        }
+    }
+}

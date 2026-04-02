@@ -1,0 +1,132 @@
+import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject var backend: BackendManager
+    @StateObject var network = NetworkManager()
+    
+    @State private var inputPrompt: String = ""
+    @State private var responseText: String = "Systeem gereed. Hoe kan ik je vandaag helpen?"
+    @State private var selectedModel: String = "gemma2"
+    @FocusState private var isInputFocused: Bool
+    
+    var body: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                // Header
+                HStack {
+                    Circle()
+                        .fill(network.isOnline ? Color.green : Color.red)
+                        .frame(width: 10, height: 10)
+                    Text("WINTRIP COCKPIT")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    
+                    Spacer()
+                    
+                    Picker("Model:", selection: $selectedModel) {
+                        ForEach(network.models, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                }
+                .padding()
+                .background(Color.black.opacity(0.05))
+                
+                // Output scherm
+                ScrollView {
+                    Text(responseText)
+                        .font(.system(size: 14, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+                .background(Color(NSColor.textBackgroundColor))
+                
+                Divider()
+                
+                // Input balk
+                HStack {
+                    TextField("Typ je opdracht of vraag...", text: $inputPrompt)
+                        .textFieldStyle(.plain)
+                        .font(.title3)
+                        .focused($isInputFocused)
+                        .onSubmit { sendMessage() }
+                        .disabled(network.diffFileContent != nil) // Blokkeer typen als pop-up open is
+                    
+                    Button(action: sendMessage) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.title2)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(inputPrompt.isEmpty || network.diffFileContent != nil)
+                }
+                .padding()
+            }
+            
+            // DE POP-UP (DiffView Overlay)
+            if let planContent = network.diffFileContent {
+                Color.black.opacity(0.4).edgesIgnoringSafeArea(.all) // Maakt de achtergrond donkerder
+                
+                VStack(spacing: 0) {
+                    HStack {
+                        Label("WINTRIP ACTIEPLAN", systemImage: "doc.text.magnifyingglass")
+                            .font(.headline)
+                        Spacer()
+                        Button(action: { network.diffFileContent = nil }) {
+                            Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+                        }.buttonStyle(.plain)
+                    }
+                    .padding()
+                    .background(Color.black.opacity(0.1))
+                    
+                    Divider()
+                    
+                    ScrollView {
+                        Text(planContent)
+                            .font(.system(size: 12, design: .monospaced))
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .background(Color(NSColor.textBackgroundColor))
+                    
+                    Divider()
+                    
+                    HStack {
+                        Button("Annuleren") { network.diffFileContent = nil }
+                        Spacer()
+                        Button("Toepassen & Uitvoeren") {
+                            responseText = "Bezig met uitvoeren van actieplan in mail..."
+                            network.executePlan(planText: planContent) { report in
+                                responseText = report
+                                isInputFocused = true
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.blue)
+                    }
+                    .padding()
+                }
+                .frame(width: 500, height: 400)
+                .background(Color(NSColor.windowBackgroundColor))
+                .cornerRadius(12)
+                .shadow(radius: 20)
+            }
+        }
+        .frame(minWidth: 700, minHeight: 500)
+        .onAppear {
+            isInputFocused = true
+            network.fetchModels()
+        }
+    }
+    
+    func sendMessage() {
+        let currentPrompt = inputPrompt
+        inputPrompt = ""
+        responseText = "Wintrip (\(selectedModel)) denkt na..."
+        
+        network.sendPrompt(prompt: currentPrompt, model: selectedModel) { response in
+            self.responseText = response
+            self.isInputFocused = true
+        }
+    }
+}

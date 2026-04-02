@@ -1,0 +1,24 @@
+# Systeem
+.DS_Store
+
+# Python & Omgeving
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Xcode / Swift
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Wintrip Specifieke mappen (Negeer de inhoud, behalve eventuele readme's)
+wintrip_brain/*
+!wintrip_brain/.gitkeep
+sandbox/*
+!sandbox/.gitkeep
+data/tijdelijke_mail_dumps/*
+data/log_exports/*
+
