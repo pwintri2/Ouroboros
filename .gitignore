@@ -22,3 +22,4 @@ sandbox/*
 data/tijdelijke_mail_dumps/*
 data/log_exports/*
 
+.aider*

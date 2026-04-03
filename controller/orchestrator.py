@@ -133,6 +133,15 @@ class WintripOrchestrator:
                 full_context += "[/GEHEUGEN CONTEXT]\n\nGebruik deze kennis strikt bij het schrijven van je oplossing als het relevant is.\n"
 
         # Initial Fast-Fail Developer prompt
+        SANDBOX_CODE_RULES = """
+KRITIEKE REGELS VOOR CODE GENERATIE:
+1. Schrijf UITSLUITEND zelfstandige Python scripts. Importeer alleen modules uit de Python standaardbibliotheek (os, sys, json, csv, math, datetime, re, etc.) tenzij je eerst controleert met pip install.
+2. Lees NOOIT externe bestanden zoals 'config.json', 'settings.yaml', of enig ander bestand dat je zelf niet in het script aanmaakt. De sandbox container is leeg op jouw script na.
+3. Als je data nodig hebt, genereer die dan direct in het script (hardcode het, of genereer het met code).
+4. Bestanden die je wilt bewaren, sla op in /app/data/ (dat is de enige gemounte map).
+5. Gebruik GEEN relatieve paden. Gebruik /app/data/ voor alle file I/O.
+"""
+        
         system_prompt = (
             "Je bent een expert Python Developer. Geef UITSLUITEND werkende Python code in een ```python blok. "
             "Geen uitleg voor of na de code. Importeer sys/os if needed. Zorg dat de logica print statements heeft zodat output gelezen kan worden.\n\n"
@@ -140,7 +149,8 @@ class WintripOrchestrator:
             "If a task inherently leads to an exception (like dividing by zero), you MUST write the exact code requested, but wrap it in a proper try/except block and print a graceful error message. Do NOT cheat the logic.\n\n"
             "CRITICAL AUTONOMY: You are executing code autonomously inside an ephemeral Docker container. You CANNOT ask the user to install packages or fix environments. "
             "If your code requires an external package (like pandas) that might cause a ModuleNotFoundError, you MUST either rewrite the code using standard built-in Python modules (like 'csv'), "
-            "or write code that installs the package itself during runtime via subprocess.check_call([sys.executable, '-m', 'pip', 'install', '<package>']) before executing the main logic."
+            "or write code that installs the package itself during runtime via subprocess.check_call([sys.executable, '-m', 'pip', 'install', '<package>']) before executing the main logic.\n\n"
+            f"{SANDBOX_CODE_RULES}"
         )
         current_prompt = f"Schrijf een concreet Python script dat exact het volgende oplost:\n\n{prompt}\n{full_context}"
         
@@ -150,13 +160,23 @@ class WintripOrchestrator:
             # Observe/Orient is already done by the state machine receiving the contextual input.
             
             # 1. Decide: Genereer Code
+            
+            # RAG enrichment — inject memory context before LLM call
+            rag_results = self.kb.search(current_prompt, n_results=5)
+            if rag_results:
+                memory_block = "\n\n[GEHEUGEN CONTEXT - relevante kennis uit ChromaDB]\n"
+                memory_block += "\n---\n".join([r["text"] for r in rag_results])
+                enriched_message = current_prompt + memory_block
+            else:
+                enriched_message = current_prompt
+
             if task.iteration_count >= 2 and self.escalator:
                 print("🔥 [ESCALATIE]: Local LLM bleef hangen. Overschakelen naar Cloud 70B Model (Groq) ...")
                 escalation_system_prompt = system_prompt + "\n\n[ESCALATION INSTRUCTION]\nYour local junior model failed to generate working code for this problem. You are the senior escalation model. Look at the traceback and fix it flawlessly."
-                ai_response = self.escalator.chat(current_prompt, system_prompt=escalation_system_prompt, model="llama-3.3-70b-versatile")
+                ai_response = self.escalator.chat(enriched_message, system_prompt=escalation_system_prompt, model="llama-3.3-70b-versatile")
             else:
                 print("🧠 [Decide]: 1-on-1 LLM genereert code (fail-fast strategy)...")
-                ai_response = self.ollama.chat(current_prompt, system_prompt=system_prompt, model="llama3.1:latest")
+                ai_response = self.ollama.chat(enriched_message, system_prompt=system_prompt, model="llama3.1:latest")
 
             python_code = self._extract_code(ai_response)
             
