@@ -19,6 +19,7 @@ try:
     from controller.tools import extract_readable_text
     from controller.digestion import digest_text
     from controller.virtual_team import VirtualMeeting
+    from controller.orchestrator import WintripOrchestrator
 except ImportError:
     from ollama_client import OllamaClient
     from router import AIRouter
@@ -26,6 +27,7 @@ except ImportError:
     from tools import extract_readable_text
     from digestion import digest_text
     from virtual_team import VirtualMeeting
+    from orchestrator import WintripOrchestrator
 
 load_dotenv()
 app = FastAPI()
@@ -41,6 +43,9 @@ app.add_middleware(
 ollama = OllamaClient()
 router = AIRouter(ollama_client=ollama)
 mail_executor = MailExecutor()
+
+# Regiekamer / Orchestrator Instantie (Hergebruikt sandbox en reflector uit de router array)
+orchestrator = WintripOrchestrator(ollama_client=ollama, sandbox=router.sandbox, reflector=router.reflector)
 
 # HIER ZIT DE MAGIE: FastAPI accepteert nu FILES in de rugzak!
 class URLRequest(BaseModel):
@@ -58,6 +63,10 @@ class Query(BaseModel):
 
 class PlanExecution(BaseModel):
     plan_text: str
+
+class OrchestrateRequest(BaseModel):
+    task: str
+    max_iterations: Optional[int] = 3
 
 @app.get("/status")
 @app.get("/health")
@@ -91,6 +100,19 @@ async def ask(query: Query):
     )
     return {"response": response, "tier": 3, "status": "Success"}
 
+@app.post("/api/orchestrate")
+@app.post("/orchestrate")
+async def orchestrate_task(request: OrchestrateRequest):
+    print(f"\n--- 🧠 REGIEKAMER API ---")
+    print(f"Taak: {request.task}")
+    print(f"--------------------------\n")
+    
+    # Voert autonoom een OODA loop uit tot hij op GREEN staat
+    result = orchestrator.execute_task(request.task, max_iterations=request.max_iterations)
+    
+    # We returnen direct de status (Success/Failed) plus eventueel final code.
+    return result
+
 @app.post("/team/discuss")
 async def discuss_task(request: TeamTask):
     meeting = VirtualMeeting(ollama_client=ollama)
@@ -111,7 +133,6 @@ async def learn_url(request: URLRequest):
             raise HTTPException(status_code=400, detail=f"Invalid URL or error fetching text: {text}")
 
         metadata = {"url": url}
-        # In digestion.py, the argument is named source_metadata
         result = digest_text(text, source_metadata=metadata, collection_name="wintrip_knowledge")
         if not result:
             raise HTTPException(status_code=500, detail="Error processing text")
