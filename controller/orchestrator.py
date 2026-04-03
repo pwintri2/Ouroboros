@@ -7,6 +7,7 @@ try:
     from controller.reflector import Reflector
     from controller.sandbox import SandboxExecutor
     from controller.ollama_client import OllamaClient
+    from controller.groq_client import GroqClient
     from controller.knowledge_base import KnowledgeBase
     from controller.web_ingest import ingest_url, fetch_url_text
 except ImportError:
@@ -14,10 +15,11 @@ except ImportError:
         from reflector import Reflector
         from sandbox import SandboxExecutor
         from ollama_client import OllamaClient
+        from groq_client import GroqClient
         from knowledge_base import KnowledgeBase
         from web_ingest import ingest_url, fetch_url_text
-    except ImportError:
-        pass # Handle testing gracefully
+    except ImportError as e:
+        print("--- [DEBUG] IMPORTERROR IN ORCHESTRATOR ---:", e)
 
 class TaskModel:
     def __init__(self, task_name, max_iterations=3):
@@ -76,8 +78,9 @@ class ResultClassifier:
             return "YELLOW", eval_result.get("insight", "")
 
 class WintripOrchestrator:
-    def __init__(self, ollama_client=None, sandbox=None, reflector=None, kb=None):
-        self.ollama = ollama_client or OllamaClient()
+    def __init__(self, ollama_client=None, sandbox=None, reflector=None, kb=None, escalator=None):
+        self.ollama = ollama_client or (OllamaClient() if 'OllamaClient' in globals() else None)
+        self.escalator = escalator or (GroqClient() if 'GroqClient' in globals() else None)
         self.sandbox = sandbox or SandboxExecutor()
         self.reflector = reflector or Reflector()
         self.kb = kb or KnowledgeBase()
@@ -140,9 +143,22 @@ class WintripOrchestrator:
             # Observe/Orient is already done by the state machine receiving the contextual input.
             
             # 1. Decide: Genereer Code
-            print("🧠 [Decide]: 1-on-1 LLM genereert code (fail-fast strategy)...")
-            ai_response = self.ollama.chat(current_prompt, system_prompt=system_prompt, model="llama3.1:latest")
+            if task.iteration_count >= 2 and self.escalator:
+                print("🔥 [ESCALATIE]: Local LLM bleef hangen. Overschakelen naar Cloud 70B Model (Groq) ...")
+                escalation_system_prompt = system_prompt + "\n\n[ESCALATION INSTRUCTION]\nYour local junior model failed to generate working code for this problem. You are the senior escalation model. Look at the traceback and fix it flawlessly."
+                ai_response = self.escalator.chat(current_prompt, system_prompt=escalation_system_prompt, model="llama-3.3-70b-versatile")
+            else:
+                print("🧠 [Decide]: 1-on-1 LLM genereert code (fail-fast strategy)...")
+                ai_response = self.ollama.chat(current_prompt, system_prompt=system_prompt, model="llama3.1:latest")
+
             python_code = self._extract_code(ai_response)
+            
+            # API failure protection
+            if python_code.startswith("LOKALE OLLAMA ERROR") or python_code.startswith("CLOUD GROQ ERROR"):
+                print(f"⚠️ [API FOUT]: {python_code}")
+                # We simuleren direct een mislukking zonder crashende Sandbox executie
+                task.record_iteration("YELLOW", f"LLM API verbinding gefaald: {python_code}")
+                continue
             
             # 2. Act: Sandbox Excecutie
             print("⚙️  [Act]: Uitvoeren in Sandbox...")
