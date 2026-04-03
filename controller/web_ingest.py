@@ -189,8 +189,7 @@ def sha256_text(value: str) -> str:
 
 def ingest_url(url: str, persona: str = "developer", source_group: str = "web_ingest") -> dict:
     """Verwerkt een URL en slaat chunks op in ChromaDB met deterministische IDs."""
-    brain_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wintrip_brain")
-    brain = KnowledgeBase(db_path=brain_path)
+    brain = KnowledgeBase()
 
     try:
         text = fetch_url_text(url)

@@ -10,14 +10,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+CHROMA_PERSIST_DIR = "/Users/philip/wintripai/wintrip_brain"
+CHROMA_COLLECTION_NAME = "wintrip_knowledge"
+
 class KnowledgeBase:
-    def __init__(self, db_path=None):
-        if not db_path:
-            db_path = os.getenv("WINTRIP_DB_PATH", "./wintrip_brain")
-        print(f"🧠 [Hippocampus]: Vector Database wordt opgestart ({db_path})...")
-        
-        # We maken een lokale map aan voor de database
-        self.client = chromadb.PersistentClient(path=db_path)
+    def __init__(self, persist_dir: str = CHROMA_PERSIST_DIR):
+        os.makedirs(persist_dir, exist_ok=True)
+        self.client = chromadb.PersistentClient(path=persist_dir)
         
         # We vertellen ChromaDB dat we Ollama gebruiken voor de wiskundige vectoren
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -30,10 +29,12 @@ class KnowledgeBase:
         
         # Maak of open de collectie (het vakje in het brein)
         self.collection = self.client.get_or_create_collection(
-            name="wintrip_knowledge", 
+            name=CHROMA_COLLECTION_NAME, 
             embedding_function=self.embedding_function
         )
-        print(f"🧠 [Hippocampus]: Online. Aantal herinneringen in database: {self.collection.count()}")
+        print(f"🧠 [Hippocampus]: Vector Database wordt opgestart ({persist_dir})...")
+        count = self.collection.count()
+        print(f"🧠 [Hippocampus]: Online. Aantal herinneringen in database: {count}")
 
     def _extract_text(self, file_path):
         """Hulpfunctie om tekst uit een bestand te trekken"""
@@ -197,11 +198,36 @@ class KnowledgeBase:
         print(f"✅ [Hippocampus]: Reflectie Opgeslagen! ({len(chunks)} chunks)")
         return True
 
-    def search(self, query, n_results=3):
-        results = self.search_detailed(query, n_results=n_results)
+    def search(self, query: str, n_results: int = 5) -> list[dict]:
+        results = []
+        # Tier 1: personal memories first (type='user_memory', importance=5)
+        try:
+            r = self.collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                where={"type": "user_memory"}
+            )
+            if r and r["documents"] and r["documents"][0]:
+                for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
+                    results.append({"text": doc, "metadata": meta, "tier": "user_memory"})
+        except Exception:
+            pass
+
+        # Tier 2: if no personal memories, search everything
         if not results:
-            return ""
-        return "\n\n...".join([r['content'] for r in results])
+            try:
+                r = self.collection.query(query_texts=[query], n_results=n_results)
+                if r and r["documents"] and r["documents"][0]:
+                    for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
+                        results.append({"text": doc, "metadata": meta, "tier": "general"})
+            except Exception:
+                pass
+
+        if results:
+            print(f"🧠 [Hippocampus]: {len(results)} herinneringen gevonden (tier: {results[0]['tier']})")
+        else:
+            print("🧠 [Hippocampus]: Geen relevante herinneringen gevonden.")
+        return results
 
     def search_reflections(self, query, n_results=3, max_distance=1.5):
         """Specifieke zoekopdracht gereserveerd voor evaluatie-inzichten."""

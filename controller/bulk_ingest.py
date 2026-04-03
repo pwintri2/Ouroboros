@@ -488,7 +488,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--persona", default="general", help="Persona label voor metadata")
     parser.add_argument("--source-group", default="manual_ingest", help="Bronlabel voor metadata")
     parser.add_argument("--collection", default="wintrip_knowledge", help="Naam van de Chroma collectie")
-    parser.add_argument("--db-path", default="./wintrip_brain", help="Pad naar lokale ChromaDB")
+    from knowledge_base import CHROMA_PERSIST_DIR
+    parser.add_argument("--db-path", default=CHROMA_PERSIST_DIR, help="Pad naar lokale ChromaDB")
     parser.add_argument("--ollama-url", default="http://localhost:11434/api/embeddings", help="Ollama embeddings endpoint")
     parser.add_argument("--embed-model", default="nomic-embed-text:latest", help="Ollama embedding model")
     parser.add_argument("--batch-size", type=int, default=32, help="Aantal chunks per Chroma add")

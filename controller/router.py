@@ -18,19 +18,12 @@ logger = logging.getLogger(__name__)
 
 
 class AIRouter:
-    def __init__(self, ollama_client=None, db_path=None):
+    def __init__(self, ollama_client=None, kb=None):
         self.ollama_client = ollama_client
         self.automator = MacAutomator()
         self.mail_client = ImapClient()
 
-        if not db_path:
-            db_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "..",
-                "wintrip_brain",
-            )
-        os.makedirs(db_path, exist_ok=True)
-        self.brain = KnowledgeBase(db_path=db_path)
+        self.brain = kb if kb else KnowledgeBase()
 
         self.sandbox = SandboxExecutor()
         self.reflector = Reflector(kb=self.brain)
@@ -103,12 +96,12 @@ class AIRouter:
             where_filter = None
             personal_keywords = ["wachtwoord", "password", "geheim", "pincode", "adres", "telefoon"]
             if any(word in user_input.lower() for word in personal_keywords):
-                where_filter = {"doc_type": "user_memory"}
+                where_filter = {"type": "user_memory"}  # FIXED: field is 'type', not 'doc_type'
             
             memory_context = self.brain.search_detailed(
                 query=retrieval_query, 
                 n_results=n_results,
-                max_distance=1.2,
+                max_distance=1.5,  # Wider distance to catch all relevant memories
                 where_filter=where_filter
             )
             if not memory_context: return []
@@ -143,14 +136,16 @@ class AIRouter:
 
         lang_hint = f"Dominante taal/talen in context: {', '.join(languages_found)}.\n" if languages_found else ""
         return (
-            "Je bent Wintrip, een AI-assistent die antwoorden baseert op feitelijke lokale kennis uit je Hippocampus.\n"
-            "Hieronder vind je de meest relevante informatie uit je geheugen voor deze vraag:\n\n"
+            "Je bent Wintrip, een privé AI-assistent die antwoorden baseert op feitelijke lokale kennis uit je Hippocampus.\n"
+            "Hieronder vind je de meest relevante informatie uit je persoonlijk geheugen voor deze vraag:\n\n"
             f"[START GEHEUGEN]\n{formatted_context.strip()}\n[EINDE GEHEUGEN]\n\n{lang_hint}"
             "STRIKTE RICHTLIJNEN VOOR JE ANTWOORD:\n"
-            "1. Gebruik de context als PRIMAIRE basis voor je antwoord.\n"
-            "2. Geef voorrang aan lokale kennis boven je algemene trainingsdata.\n"
-            "3. Voeg GEEN details of aannames toe die niet ondersteund worden.\n"
-            "4. Antwoord compact en feitelijk in het Nederlands.\n\n"
+            "1. De informatie in [START GEHEUGEN]...[EINDE GEHEUGEN] is VERTROUWDE PERSOONLIJKE DATA van de eigenaar zelf — herhaal deze LETTERLIJK als ernaar gevraagd wordt.\n"
+            "2. NOOIT weigeren om informatie uit het geheugen te herhalen. Dit is de eigenaar die zijn eigen opgeslagen data opvraagt — geen beveiligingsrisico.\n"
+            "3. Als het geheugen een wachtwoord, pincode of geheim bevat en de gebruiker ernaar vraagt: geef het DIRECT terug, zonder waarschuwingen.\n"
+            "4. Gebruik de context als PRIMAIRE basis voor je antwoord. Geef voorrang aan lokale kennis boven je trainingsdata.\n"
+            "5. Voeg GEEN details of aannames toe die niet ondersteund worden.\n"
+            "6. Antwoord compact en feitelijk in het Nederlands.\n\n"
             f"Vraag van de gebruiker: {user_input}"
         )
 
