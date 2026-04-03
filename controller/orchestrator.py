@@ -60,6 +60,10 @@ class ResultClassifier:
             
         if status == "success":
             # Als Exit Code 0 is (geen systeemcrash) en er zijn geen tracebacks:
+            # Subprocess/PIP protectie: Pip output bevat vaak MB/s snelheden die de anti-hallucinatie bug triggeren.
+            if any(pip_str in lowered for pip_str in ["collecting ", "downloading ", "installing collected packages", "successfully installed"]):
+                return "GREEN", "✅ Systeem Logica: Succesvolle package installatie (PIP) gedetecteerd in output. [Reflector overrule]"
+
             # Cheat/LLM drift detectie:
             if any(num in lowered for num in ["48.0", "48", "50", "50.0"]) and not any(w in lowered for w in ["zero", "nul", "fout", "waarschuwing", "exception", "niet mogelijk"]):
                 return "RED", "Logic Failure: Hallucinatie / Smokkelen gedetecteerd. Je hebt de logica of wiskunde vervalst om output te forceren in plaats van de onvermijdelijke Exception af te vangen!"
@@ -133,7 +137,10 @@ class WintripOrchestrator:
             "Je bent een expert Python Developer. Geef UITSLUITEND werkende Python code in een ```python blok. "
             "Geen uitleg voor of na de code. Importeer sys/os if needed. Zorg dat de logica print statements heeft zodat output gelezen kan worden.\n\n"
             "CRITICAL RESTRICTION: You are strictly forbidden from altering the mathematical constraints, logic, or string values provided in the prompt to avoid errors. "
-            "If a task inherently leads to an exception (like dividing by zero), you MUST write the exact code requested, but wrap it in a proper try/except block and print a graceful error message. Do NOT cheat the logic."
+            "If a task inherently leads to an exception (like dividing by zero), you MUST write the exact code requested, but wrap it in a proper try/except block and print a graceful error message. Do NOT cheat the logic.\n\n"
+            "CRITICAL AUTONOMY: You are executing code autonomously inside an ephemeral Docker container. You CANNOT ask the user to install packages or fix environments. "
+            "If your code requires an external package (like pandas) that might cause a ModuleNotFoundError, you MUST either rewrite the code using standard built-in Python modules (like 'csv'), "
+            "or write code that installs the package itself during runtime via subprocess.check_call([sys.executable, '-m', 'pip', 'install', '<package>']) before executing the main logic."
         )
         current_prompt = f"Schrijf een concreet Python script dat exact het volgende oplost:\n\n{prompt}\n{full_context}"
         

@@ -54,11 +54,18 @@ class SandboxExecutor:
         }
         
         try:
+            # Veilige datatunnel maken indien deze niet bestaat
+            host_data_dir = "/Users/philip/WintripAI/data/speeltuin"
+            os.makedirs(host_data_dir, exist_ok=True)
+            
             print("⚙️  [Sandbox]: Container wordt opgestart en code wordt uitgevoerd...")
             container = self.client.containers.run(
                 image="python:3.10-slim",
                 command=f"python /script.py",
-                volumes={script_path: {'bind': '/script.py', 'mode': 'ro'}},
+                volumes={
+                    script_path: {'bind': '/script.py', 'mode': 'ro'},
+                    host_data_dir: {'bind': '/app/data', 'mode': 'rw'}
+                },
                 detach=True,
                 network_disabled=False,
                 mem_limit="512m",
