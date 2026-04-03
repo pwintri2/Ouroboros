@@ -7,11 +7,15 @@ try:
     from controller.reflector import Reflector
     from controller.sandbox import SandboxExecutor
     from controller.ollama_client import OllamaClient
+    from controller.knowledge_base import KnowledgeBase
+    from controller.web_ingest import ingest_url, fetch_url_text
 except ImportError:
     try:
         from reflector import Reflector
         from sandbox import SandboxExecutor
         from ollama_client import OllamaClient
+        from knowledge_base import KnowledgeBase
+        from web_ingest import ingest_url, fetch_url_text
     except ImportError:
         pass # Handle testing gracefully
 
@@ -72,10 +76,11 @@ class ResultClassifier:
             return "YELLOW", eval_result.get("insight", "")
 
 class WintripOrchestrator:
-    def __init__(self, ollama_client=None, sandbox=None, reflector=None):
+    def __init__(self, ollama_client=None, sandbox=None, reflector=None, kb=None):
         self.ollama = ollama_client or OllamaClient()
         self.sandbox = sandbox or SandboxExecutor()
         self.reflector = reflector or Reflector()
+        self.kb = kb or KnowledgeBase()
         self.classifier = ResultClassifier(reflector=self.reflector)
         
     def _extract_code(self, response_text):
@@ -89,6 +94,37 @@ class WintripOrchestrator:
         print(f"\n🚀 [Regiekamer]: Start Autonome OODA Loop voor taak: '{prompt}'")
         task = TaskModel(task_name=prompt, max_iterations=max_iterations)
         
+        # --- OBSERVE & ORIENT ---
+        print("👀 [Observe & Orient]: Scannen op web links en ophalen van geheugen...")
+        
+        # 1. URL Snipe-Scraping & The Echo Chamber Break
+        urls = re.findall(r'(https?://[^\s]+)', prompt)
+        full_context = ""
+        
+        if urls:
+            # We skip generic RAG entirely if a URL is provided, preventing echo chamber pollution!
+            full_context += "\n[GEHEUGEN CONTEXT]\nSpecifieke letterlijke web-inhoud direct gescraapt uit je taak:\n"
+            for url in urls:
+                print(f"🌍 [Orient]: URL gedetecteerd, sniper-scrape wordt uitgevoerd: {url}")
+                try:
+                    ingest_url(url)
+                    raw_text = fetch_url_text(url)
+                    if raw_text:
+                        print(f"🌍 [Orient]: Hard Pinning succesvol. {len(raw_text)} characters toegevoegd aan de LLM Prompt.")
+                        snippet = raw_text[:3000] + "\n...\n" if len(raw_text) > 3000 else raw_text
+                        full_context += f"-> Ruwe tekst van {url}:\n{snippet}\n\n"
+                except Exception as e:
+                    print(f"⚠️ [Orient]: Scrapen mislukt, fallback: we negeren deze URL tijdelijk. ({e})")
+            full_context += "[/GEHEUGEN CONTEXT]\n\nBaseer je oplossing uitsluitend op deze bovenstaande web-documentatie.\n"
+        else:
+            # 2. Geen URLs? Fallback op normale RAG Context
+            memories = self.kb.search_detailed(prompt, n_results=3)
+            if memories:
+                full_context = "\n[GEHEUGEN CONTEXT]\nEr is krachtige relevante programmeerkennis gevonden in de Hippocampus:\n"
+                for m in memories:
+                    full_context += f"- Bron ({m['metadata'].get('source_type', 'unknown')}): {m['content']}\n\n"
+                full_context += "[/GEHEUGEN CONTEXT]\n\nGebruik deze kennis strikt bij het schrijven van je oplossing als het relevant is.\n"
+
         # Initial Fast-Fail Developer prompt
         system_prompt = (
             "Je bent een expert Python Developer. Geef UITSLUITEND werkende Python code in een ```python blok. "
@@ -96,7 +132,7 @@ class WintripOrchestrator:
             "CRITICAL RESTRICTION: You are strictly forbidden from altering the mathematical constraints, logic, or string values provided in the prompt to avoid errors. "
             "If a task inherently leads to an exception (like dividing by zero), you MUST write the exact code requested, but wrap it in a proper try/except block and print a graceful error message. Do NOT cheat the logic."
         )
-        current_prompt = f"Schrijf een concreet Python script dat exact het volgende oplost: {prompt}"
+        current_prompt = f"Schrijf een concreet Python script dat exact het volgende oplost:\n\n{prompt}\n{full_context}"
         
         while task.status in ["PENDING", "RETRYING", "INVESTIGATING"]:
             print(f"\n--- 🔄 OODA Iteratie {task.iteration_count + 1}/{task.max_iterations} ---")

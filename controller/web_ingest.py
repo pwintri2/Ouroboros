@@ -164,7 +164,11 @@ def fetch_url_text(url: str, timeout: int = 15) -> str:
         raise ValueError(f"Ongeldig URL schema: {parsed_url.scheme}")
 
     headers = {"User-Agent": "WintripBot/1.0 (Local AI Agent)"}
-    response = requests.get(url, headers=headers, timeout=timeout)
+    
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    response = requests.get(url, headers=headers, timeout=timeout, verify=False)
     response.raise_for_status()
     
     soup = BeautifulSoup(response.text, "html.parser")
