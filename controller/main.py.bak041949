@@ -35,8 +35,6 @@ except ImportError:
     from orchestrator import WintripOrchestrator
 
 load_dotenv()
-
-from provider_router import route_gemini, route_claude, check_providers
 app = FastAPI()
 
 app.add_middleware(
@@ -219,33 +217,6 @@ async def commit_save(req: CommitSaveRequest):
         return {"status": "Success", "message": result}
     else:
         return {"status": "Error", "detail": result}
-
-
-@app.post("/vergadertafel/chat")
-async def vergadertafel_chat(query: QueryRequest):
-    """Vergadertafel chat met provider-routing (Gemini/Claude/Ollama)."""
-    provider = (getattr(query, "provider", None) or "ollama").lower()
-    model    = getattr(query, "model", None) or ""
-    sys_p    = getattr(query, "system_prompt", None)
-    if provider == "gemini":
-        resp = route_gemini(query.prompt, model=model or "gemini-2.5-pro", system_prompt=sys_p)
-    elif provider == "claude":
-        resp = route_claude(query.prompt, model=model or "claude-opus-4-6", system_prompt=sys_p)
-    else:
-        resp = router.route_request(query.prompt, model=model or "llama3.1:latest", history=getattr(query, "history", []) or [])
-    return {"response": resp, "provider": provider}
-
-@app.get("/providers")
-async def get_providers():
-    from provider_router import check_providers
-    result = check_providers()
-    try:
-        import requests as _r
-        r2 = _r.get("http://localhost:11434/api/tags", timeout=3)
-        result["ollama"] = {"available": True, "models": [m["name"] for m in r2.json().get("models", [])]}
-    except Exception:
-        result["ollama"] = {"available": False, "models": []}
-    return result
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

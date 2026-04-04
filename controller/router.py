@@ -94,9 +94,7 @@ class AIRouter:
         try:
             retrieval_query = self._expand_query(user_input)
             where_filter = None
-            personal_keywords = ["wachtwoord", "password", "geheim", "pincode", "adres", "telefoon"]
-            if any(word in user_input.lower() for word in personal_keywords):
-                where_filter = {"type": "user_memory"}  # FIXED: field is 'type', not 'doc_type'
+            where_filter = {"type": "user_memory"}  # user_memory priority
             
             memory_context = self.brain.search_detailed(
                 query=retrieval_query, 
@@ -105,7 +103,7 @@ class AIRouter:
                 where_filter=where_filter
             )
             if not memory_context: return []
-                
+
             ranked_context = []
             lowered_input = user_input.lower()
             for item in memory_context:
@@ -218,7 +216,7 @@ class AIRouter:
             if result and self._is_error_output(result) and action not in ["web_ingest"]:
                 # Alleen structurele actions worden gereflect (zoals crashes in OS automator of Research Sandbox)
                 self.reflector.evaluate_action(f"Sub-domain Action ({action})", result, "Succesvolle uitvoering")
-                
+
             return result
         except Exception as e:
             logger.exception(f"Action gecrasht in domein: {action}")
