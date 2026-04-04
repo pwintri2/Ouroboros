@@ -1,5 +1,18 @@
 import SwiftUI
 
+struct ChatMessage: Identifiable, Codable {
+    var id = UUID()
+    let text: String
+    let isUser: Bool
+    let timestamp: Date
+
+    init(text: String, isUser: Bool) {
+        self.text = text
+        self.isUser = isUser
+        self.timestamp = Date()
+    }
+}
+
 struct AgentResponse: Codable {
     let response: String
     let tier: Int
@@ -7,131 +20,253 @@ struct AgentResponse: Codable {
 }
 
 struct ContentView: View {
+    @StateObject private var network = NetworkManager()
+
     @State private var inputPrompt: String = ""
-    @State private var responseText: String = "Systeem gereed. Hoe kan ik je vandaag helpen?"
-    @State private var selectedTier: Int = 3
+    @State private var messages: [ChatMessage] = [
+        ChatMessage(text: "Systeem gereed. Hoe kan ik je vandaag helpen?", isUser: false)
+    ]
+    @State private var selectedModel: String = "gemma2"
     @State private var isLoading: Bool = false
-    @State private var serverOnline: Bool = false
+
+    // Provider Toggles
+    @State private var useChatGPT: Bool = false
+    @State private var useGemini: Bool = false
+    @State private var useClaude: Bool = false
     
     // --- Document Generator States ---
     @State private var showDiffView: Bool = false
     @State private var pendingFilename: String = ""
     @State private var pendingContent: String = ""
 
+    // JULES FIX: Persona data moved here
+    let allPersonas = [
+        Persona(id: "talle", name: "Talle Wintrip", icon: "crown.fill", description: "De visionair"),
+        Persona(id: "developer", name: "Developer", icon: "hammer.fill", description: "De bouwer"),
+        Persona(id: "critic", name: "Critic", icon: "eye.trianglebadge.exclamationmark.fill", description: "De scherprechter"),
+        Persona(id: "tester", name: "Tester", icon: "checkmark.seal.fill", description: "De kwaliteitscontrole")
+    ]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Header met Status
-            HStack {
-                Label("Wintrip Agent", systemImage: "bolt.shield.fill")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                Spacer()
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(serverOnline ? Color.green : Color.red)
-                        .frame(width: 8, height: 8)
-                    Text(serverOnline ? (isLoading ? "Bezig..." : "Online") : "Offline")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            Divider()
+        NavigationView {
+            // Sidebar (Vergadertafel)
+            VStack(alignment: .leading) {
+                Text("VERGADERTAFEL")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                    .padding(.top)
 
-            // AI Tier Picker
-            Picker("Selecteer Tier", selection: $selectedTier) {
-                Text("Tier 3 (Lokaal)").tag(3)
-                Text("Tier 2 (Cloud)").tag(2)
-                Text("Tier 1 (High)").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .disabled(isLoading)
+                List {
+                    ForEach(allPersonas) { persona in
+                        HStack {
+                            Image(systemName: persona.icon)
+                                .foregroundColor(network.seatedPersonas.contains(persona.id) ? .blue : .secondary)
+                                .frame(width: 25)
 
-            // Response Display
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(responseText)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                }
-            }
-            .background(Color.secondary.opacity(0.1))
-            .cornerRadius(10)
-            .frame(height: 250)
+                            VStack(alignment: .leading) {
+                                Text(persona.name)
+                                    .font(.body)
+                                    .fontWeight(network.seatedPersonas.contains(persona.id) ? .bold : .regular)
+                                Text(persona.description)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
 
-            // Input Section
-            VStack(spacing: 10) {
-                TextField("Typ je opdracht of vraag...", text: $inputPrompt)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        if !inputPrompt.isEmpty && !isLoading {
-                            sendPrompt()
+                            Spacer()
+
+                            // JULES FIX: Functional Invite Toggles
+                            Toggle("", isOn: Binding(
+                                get: { network.seatedPersonas.contains(persona.id) },
+                                set: { newValue in
+                                    if newValue {
+                                        network.invitePersona(personaId: persona.id)
+                                    } else {
+                                        network.removePersona(personaId: persona.id)
+                                    }
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            .controlSize(.mini)
                         }
+                        .padding(.vertical, 4)
                     }
-                    .disabled(isLoading)
+                }
+                .listStyle(.sidebar)
 
+                Spacer()
+
+                // Status indicator
                 HStack {
-                    Button(action: checkStatus) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 14, weight: .bold))
+                    Circle()
+                        .fill(network.isOnline ? Color.green : Color.red)
+                        .frame(width: 8, height: 8)
+                    Text(network.isOnline ? "Online" : "Offline")
+                        .font(.caption2)
+                    Spacer()
+                }
+                .padding()
+            }
+            .frame(minWidth: 250)
+            
+            // Main Chat View
+            VStack(spacing: 0) {
+                // Header with Provider Toggles & Model Picker
+                HStack {
+                    HStack(spacing: 15) {
+                        providerToggle(name: "ChatGPT", isOn: $useChatGPT)
+                        providerToggle(name: "Gemini", isOn: $useGemini)
+                        providerToggle(name: "Claude", isOn: $useClaude)
                     }
-                    .buttonStyle(.plain)
-                    .help("Herstel verbinding")
 
                     Spacer()
 
-                    Button(action: sendPrompt) {
-                        if isLoading {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("Verstuur")
-                                .fontWeight(.semibold)
-                                .frame(width: 80)
+                    Picker("Model", selection: $selectedModel) {
+                        ForEach(network.models, id: \.self) { model in
+                            Text(model).tag(model)
                         }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                    .onChange(of: selectedModel) { newValue in
+                        network.switchModel(model: newValue)
+                    }
+                }
+                .padding()
+                .background(Color.black.opacity(0.05))
+
+                // Messages List
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(messages) { message in
+                                ChatBubble(message: message)
+                                    .id(message.id)
+                            }
+                            if isLoading {
+                                HStack {
+                                    ProgressView().controlSize(.small)
+                                    Text("Wintrip denkt na...")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                }
+                                .padding(.horizontal)
+                                .id("loading_indicator")
+                            }
+                        }
+                        .padding()
+                    }
+                    .onChange(of: messages.count) { _ in
+                        withAnimation {
+                            proxy.scrollTo(messages.last?.id, anchor: .bottom)
+                        }
+                    }
+                    .onChange(of: isLoading) { newValue in
+                        if newValue {
+                            withAnimation {
+                                proxy.scrollTo("loading_indicator", anchor: .bottom)
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                // Input Area
+                HStack(spacing: 12) {
+                    TextField("Typ je opdracht of vraag...", text: $inputPrompt)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            if !inputPrompt.isEmpty && !isLoading {
+                                sendPrompt()
+                            }
+                        }
+                        .disabled(isLoading)
+
+                    Button(action: sendPrompt) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.headline)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isLoading || inputPrompt.isEmpty)
                 }
+                .padding()
             }
         }
-        .padding()
-        .frame(width: 400, height: 500)
-        .onAppear(perform: checkStatus)
+        .frame(minWidth: 900, minHeight: 700)
+        .onAppear {
+            network.checkStatus()
+            network.fetchModels()
+            network.fetchTableState()
+        }
         .sheet(isPresented: $showDiffView) {
-            DiffView(filename: $pendingFilename, content: $pendingContent, isPresented: $showDiffView, mainResponse: $responseText)
+            DiffView(filename: $pendingFilename, content: $pendingContent, isPresented: $showDiffView, mainResponse: Binding(
+                get: { messages.last?.text ?? "" },
+                set: { messages.append(ChatMessage(text: $0, isUser: false)) }
+            ))
+        }
+    }
+
+    @ViewBuilder
+    func providerToggle(name: String, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 4) {
+            Text(name)
+                .font(.caption)
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.mini)
+                .onChange(of: isOn.wrappedValue) { newValue in
+                    // JULES FIX: Wire provider toggles to model state
+                    if newValue {
+                        // Ensure exclusive selection if desired, or just set model
+                        if name == "ChatGPT" { selectedModel = "chatgpt" }
+                        if name == "Gemini" { selectedModel = "gemini" }
+                        if name == "Claude" { selectedModel = "claude" }
+                        network.switchModel(model: selectedModel)
+                    }
+                }
         }
     }
 
     // --- Backend Logica ---
 
-    func checkStatus() {
-        guard let url = URL(string: "http://127.0.0.1:8000/status") else { return }
-        URLSession.shared.dataTask(with: url) { data, response, error in
-            DispatchQueue.main.async {
-                self.serverOnline = (error == nil)
-            }
-        }.resume()
-    }
-
     func sendPrompt() {
         guard let url = URL(string: "http://127.0.0.1:8000/process") else { return }
         isLoading = true
-        responseText = "Wintrip analyseert je verzoek..."
+        let userMsg = inputPrompt
+        messages.append(ChatMessage(text: userMsg, isUser: true))
+        inputPrompt = ""
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["prompt": inputPrompt, "tier": selectedTier]
+
+        // JULES FIX: Ensure correct provider/model parameter is sent to backend
+        var activeModel = selectedModel
+        if useChatGPT { activeModel = "chatgpt" }
+        else if useGemini { activeModel = "gemini" }
+        else if useClaude { activeModel = "claude" }
+
+        // JULES FIX: Enriched system prompt with persona data for "Vergadertafel"
+        let seatedInfo = network.seatedPersonas.isEmpty ? "" : " Deelnemers aan tafel: \(network.seatedPersonas.joined(separator: ", "))."
+
+        let body: [String: Any] = [
+            "prompt": userMsg,
+            "model": activeModel,
+            "system_prompt": "Je bent Wintrip.\(seatedInfo)"
+        ]
+
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 self.isLoading = false
                 if let error = error {
-                    self.responseText = "FOUT: \(error.localizedDescription)"
+                    self.messages.append(ChatMessage(text: "FOUT: \(error.localizedDescription)", isUser: false))
                     return
                 }
                 guard let data = data else { return }
@@ -139,6 +274,7 @@ struct ContentView: View {
                     let decoded = try JSONDecoder().decode(AgentResponse.self, from: data)
                     let resp = decoded.response
                     
+                    // JULES FIX: Handle protocol parsing for file generator
                     // --- Protocol Parsing: [[WINTRIP_FILE]] ---
                     if resp.contains("[[WINTRIP_FILE]]") {
                         let lines = resp.components(separatedBy: "\n")
@@ -151,16 +287,41 @@ struct ContentView: View {
                             self.pendingContent = String(resp[contentRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
                         }
                         self.showDiffView = true
-                        self.responseText = "Bestand '\(pendingFilename)' staat klaar voor controle."
                     } else {
-                        self.responseText = resp
+                        self.messages.append(ChatMessage(text: resp, isUser: false))
                     }
-                    self.inputPrompt = ""
                 } catch {
-                    self.responseText = "FOUT bij decoderen: \(error.localizedDescription)"
+                    self.messages.append(ChatMessage(text: "FOUT bij decoderen: \(error.localizedDescription)", isUser: false))
                 }
             }
         }.resume()
+    }
+}
+
+struct ChatBubble: View {
+    let message: ChatMessage
+
+    var body: some View {
+        HStack {
+            if message.isUser { Spacer() }
+
+            VStack(alignment: message.isUser ? .trailing : .leading) {
+                Text(message.text)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(message.isUser ? Color.blue : Color.gray.opacity(0.2))
+                    .foregroundColor(message.isUser ? .white : .primary)
+                    .cornerRadius(16)
+                    .textSelection(.enabled)
+
+                Text(message.timestamp, style: .time)
+                    .font(.system(size: 8))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 4)
+            }
+
+            if !message.isUser { Spacer() }
+        }
     }
 }
 
@@ -169,7 +330,7 @@ struct DiffView: View {
     @Binding var filename: String
     @Binding var content: String
     @Binding var isPresented: Bool
-    @Binding var mainResponse: String
+    @Binding var mainResponse: Binding<String>
     
     @State private var isSaving: Bool = false
 
@@ -255,17 +416,17 @@ struct DiffView: View {
             
             DispatchQueue.main.async {
                 if isSuccess && result?["status"] as? String == "Success" {
-                    self.mainResponse = "✅ Bestand '\(filename)' succesvol opgeslagen."
+                    self.mainResponse.wrappedValue = "✅ Bestand '\(filename)' succesvol opgeslagen."
                 } else {
                     let serverError = (result?["detail"] as? String) ?? "Server weigerde opslag."
-                    self.mainResponse = "❌ FOUT: \(serverError)"
+                    self.mainResponse.wrappedValue = "❌ FOUT: \(serverError)"
                 }
                 self.isSaving = false
                 self.isPresented = false // Altijd sluiten
             }
         } catch {
             DispatchQueue.main.async {
-                self.mainResponse = "❌ FOUT: \(error.localizedDescription)"
+                self.mainResponse.wrappedValue = "❌ FOUT: \(error.localizedDescription)"
                 self.isSaving = false
                 self.isPresented = false // Altijd sluiten
             }

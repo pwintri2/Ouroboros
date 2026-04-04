@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
 # Forceer het juiste pad
-project_root = "/Users/philip/wintripai"
+project_root = "/app"
 if project_root not in sys.path:
     sys.path.append(project_root)
 
@@ -79,6 +79,10 @@ class InviteRequest(BaseModel):
 
 class ModelSwitchRequest(BaseModel):
     model: str
+
+class CommitSaveRequest(BaseModel):
+    filename: str
+    content: str
 
 @app.get("/status")
 @app.get("/health")
@@ -189,6 +193,15 @@ async def learn_url(request: URLRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/commit_save")
+async def commit_save(req: CommitSaveRequest):
+    from controller.output_manager import save_approved_file
+    result = save_approved_file(req.filename, req.content)
+    if "✅ SUCCESS" in result:
+        return {"status": "Success", "message": result}
+    else:
+        return {"status": "Error", "detail": result}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

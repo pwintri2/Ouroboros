@@ -55,7 +55,7 @@ class SandboxExecutor:
         
         try:
             # Veilige datatunnel maken indien deze niet bestaat
-            host_data_dir = "/Users/philip/WintripAI/data/speeltuin"
+            host_data_dir = "/app/data/speeltuin"
             os.makedirs(host_data_dir, exist_ok=True)
             
             print("⚙️  [Sandbox]: Container wordt opgestart en code wordt uitgevoerd...")
