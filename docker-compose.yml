@@ -1,0 +1,22 @@
+version: "3.8"
+services:
+  wintrip:
+    image: python:3.11-slim
+    container_name: wintrip_ai
+    working_dir: /app
+    volumes:
+      - ./:/app:rw
+      - ./regiekamer:/app/regiekamer:ro
+      - ./wintrip_brain:/app/wintrip_brain:rw
+      - ./data:/app/data:rw
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: sh -c "pip install --no-cache-dir -r controller/requirements.txt && uvicorn controller.main:app --host 0.0.0.0 --port 8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

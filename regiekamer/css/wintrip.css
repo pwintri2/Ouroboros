@@ -1,0 +1,4 @@
+/* Minimal custom styles for Regiekamer UI */
+html,body,#app{height:100%;}
+.msg-user{background:linear-gradient(90deg,#022;#044);}
+.msg-assistant{background:#111827}

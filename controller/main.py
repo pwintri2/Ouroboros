@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # Forceer het juiste pad
 project_root = "/app"
@@ -55,6 +57,11 @@ mail_executor = MailExecutor()
 # Regiekamer / Orchestrator Instantie (Hergebruikt sandbox en reflector uit de router array)
 orchestrator = WintripOrchestrator(ollama_client=ollama, sandbox=router.sandbox, reflector=router.reflector, kb=kb)
 orchestrator.active_model = "ollama"
+
+# Expose important objects on app.state for API route modules
+app.state.orchestrator = orchestrator
+app.state.ollama = ollama
+app.state.kb = kb
 
 vergadertafel_state: dict = {}
 
@@ -246,6 +253,40 @@ async def get_providers():
     except Exception:
         result["ollama"] = {"available": False, "models": []}
     return result
+
+
+# Mount the Regiekamer frontend (if present) at /static and serve SPA root
+try:
+    static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "regiekamer"))
+    if os.path.isdir(static_dir):
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+        @app.get("/")
+        async def serve_ui():
+            index = os.path.join(static_dir, "index.html")
+            if os.path.exists(index):
+                return FileResponse(index)
+            return {"status": "no-ui", "message": "Regiekamer UI not found"}
+except Exception as _e:
+    print("[Regiekamer] mounting failed:", _e)
+
+
+@app.get("/api/health")
+async def api_health():
+    return {"status": "ok", "service": "wintrip-ai", "phase": "7.X"}
+
+# Try to auto-register optional API route modules (chat/models/persona)
+try:
+    from controller.api import chat_routes, model_routes, persona_routes
+    if hasattr(chat_routes, "init_chat"):
+        chat_routes.init_chat(app)
+    if hasattr(model_routes, "init_models"):
+        model_routes.init_models(app)
+    if hasattr(persona_routes, "init_personas"):
+        persona_routes.init_personas(app)
+except Exception:
+    # not fatal — these modules may not exist yet while developing
+    pass
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

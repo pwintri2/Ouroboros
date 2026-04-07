@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wintrip AI — Stream of Consciousness Demo</title>
+<style>
+  :root {
+    --bg:       #07080f;
+    --panel:    #0d1117;
+    --border:   #1e2740;
+    --cyan:     #00d4ff;
+    --cyan2:    #0090b3;
+    --amber:    #f0a500;
+    --green:    #00e07a;
+    --red:      #ff4d6a;
+    --purple:   #a855f7;
+    --text:     #c9d1d9;
+    --muted:    #5a6478;
+    --white:    #f0f6ff;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── STARFIELD ── */
+  #starfield {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  }
+
+  /* ── LAYOUT ── */
+  #app {
+    position: relative; z-index: 1;
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 24px 60px;
+  }
+
+  /* ── HEADER ── */
+  header {
+    text-align: center;
+    padding: 40px 0 32px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 32px;
+  }
+  .logo-row {
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+    margin-bottom: 10px;
+  }
+  .logo-orb {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, var(--cyan), #003d52);
+    box-shadow: 0 0 24px var(--cyan2);
+    animation: pulse-orb 3s ease-in-out infinite;
+  }
+  @keyframes pulse-orb {
+    0%,100% { box-shadow: 0 0 24px var(--cyan2); }
+    50%      { box-shadow: 0 0 48px var(--cyan); }
+  }
+  h1 { font-size: 2.1rem; font-weight: 700; color: var(--white); letter-spacing: -0.5px; }
+  .subtitle {
+    font-size: 0.9rem; color: var(--muted); margin-top: 6px;
+    letter-spacing: 2px; text-transform: uppercase;
+  }
+  .phase-badge {
+    display: inline-block; margin-top: 12px;
+    padding: 3px 14px; border-radius: 20px;
+    background: rgba(0,212,255,0.1); border: 1px solid var(--cyan2);
+    color: var(--cyan); font-size: 0.78rem; letter-spacing: 1px;
+  }
+
+  /* ── PROGRESS BAR ── */
+  #progress-bar-wrap {
+    height: 3px; background: var(--border); border-radius: 2px;
+    margin-bottom: 28px; overflow: hidden;
+  }
+  #progress-bar {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--cyan2), var(--cyan));
+    border-radius: 2px;
+    transition: width 0.5s linear;
+    box-shadow: 0 0 8px var(--cyan);
+  }
+
+  /* ── SCENE CAPTION ── */
+  #scene-caption {
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--cyan);
+    letter-spacing: 1px;
+    margin-bottom: 24px;
+    min-height: 20px;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+  #scene-caption.visible { opacity: 1; }
+
+  /* ── GRID ── */
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+
+  /* ── PANEL ── */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    transition: border-color 0.4s;
+  }
+  .panel.active { border-color: var(--cyan); box-shadow: 0 0 20px rgba(0,212,255,0.08); }
+  .panel.active-green { border-color: var(--green); box-shadow: 0 0 20px rgba(0,224,122,0.08); }
+  .panel.active-amber { border-color: var(--amber); box-shadow: 0 0 20px rgba(240,165,0,0.08); }
+
+  .panel-title {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--muted); margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel-title .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+    transition: background 0.3s;
+  }
+  .panel.active      .dot { background: var(--cyan);  box-shadow: 0 0 6px var(--cyan); }
+  .panel.active-green .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .panel.active-amber .dot { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+
+  /* ── DAEMON STATUS ── */
+  .stat-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 7px 0; border-bottom: 1px solid var(--border);
+    font-size: 0.82rem;
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--muted); }
+  .stat-value { color: var(--white); font-weight: 600; }
+  .stat-value.cyan   { color: var(--cyan); }
+  .stat-value.green  { color: var(--green); }
+  .stat-value.amber  { color: var(--amber); }
+
+  /* ── FEED ITEMS ── */
+  #feed-list { list-style: none; max-height: 280px; overflow: hidden; }
+  .feed-item {
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background: rgba(255,255,255,0.03);
+    border-left: 3px solid var(--border);
+    font-size: 0.8rem;
+    opacity: 0;
+    transform: translateX(-12px);
+    transition: opacity 0.4s, transform 0.4s, border-color 0.3s;
+  }
+  .feed-item.visible { opacity: 1; transform: translateX(0); }
+  .feed-item.rss   { border-left-color: var(--cyan); }
+  .feed-item.url   { border-left-color: var(--purple); }
+  .feed-item-title { color: var(--white); margin-bottom: 4px; line-height: 1.4; }
+  .feed-item-meta  { color: var(--muted); font-size: 0.72rem; }
+  .feed-item-tag {
+    display: inline-block; margin-right: 4px; margin-top: 3px;
+    padding: 1px 7px; border-radius: 10px; font-size: 0.68rem;
+    background: rgba(0,212,255,0.1); color: var(--cyan);
+    border: 1px solid rgba(0,212,255,0.2);
+  }
+
+  /* ── RESONANCE SCORES ── */
+  #score-list { list-style: none; }
+  .score-item {
+    margin-bottom: 12px;
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.4s, transform 0.4s;
+  }
+  .score-item.visible { opacity: 1; transform: translateY(0); }
+  .score-header {
+    display: flex; justify-content: space-between;
+    font-size: 0.78rem; margin-bottom: 5px;
+  }
+  .score-title { color: var(--white); max-width: 70%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .score-val { font-weight: 700; }
+  .score-val.high  { color: var(--green); }
+  .score-val.mid   { color: var(--amber); }
+  .score-val.low   { color: var(--muted); }
+  .score-bar-bg {
+    height: 5px; background: var(--border); border-radius: 3px; overflow: hidden;
+  }
+  .score-bar-fill {
+    height: 100%; border-radius: 3px; width: 0%;
+    transition: width 1s ease-out;
+  }
+  .score-bar-fill.high  { background: linear-gradient(90deg, #00a856, var(--green)); }
+  .score-bar-fill.mid   { background: linear-gradient(90deg, #b07800, var(--amber)); }
+  .score-bar-fill.low   { background: var(--muted); }
+  .score-tags { margin-top: 4px; }
+  .score-tag {
+    display: inline-block; margin-right: 4px;
+    padding: 1px 6px; border-radius: 8px; font-size: 0.65rem;
+    background: rgba(168,85,247,0.12); color: #c084fc;
+    border: 1px solid rgba(168,85,247,0.2);
+  }
+  .score-tag.domain {
+    background: rgba(0,212,255,0.08); color: var(--cyan);
+    border-color: rgba(0,212,255,0.2);
+  }
+  .score-badge {
+    display: inline-block; margin-left: 6px;
+    padding: 1px 7px; border-radius: 8px; font-size: 0.62rem; font-weight: 700;
+  }
+  .score-badge.store  { background: rgba(240,165,0,0.15);  color: var(--amber);  border: 1px solid rgba(240,165,0,0.3); }
+  .score-badge.queue  { background: rgba(0,224,122,0.15);  color: var(--green);  border: 1px solid rgba(0,224,122,0.3); }
+  .score-badge.filter { background: rgba(255,77,106,0.12); color: var(--red);    border: 1px solid rgba(255,77,106,0.2); }
+
+  /* ── QUEUE ── */
+  #queue-list { list-style: none; }
+  .queue-item {
+    padding: 12px 14px;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    background: rgba(0,224,122,0.04);
+    border: 1px solid rgba(0,224,122,0.15);
+    font-size: 0.8rem;
+    opacity: 0; transform: translateY(10px);
+    transition: opacity 0.5s, transform 0.5s;
+  }
+  .queue-item.visible { opacity: 1; transform: translateY(0); }
+  .queue-item.approved {
+    background: rgba(0,224,122,0.1);
+    border-color: var(--green);
+    box-shadow: 0 0 12px rgba(0,224,122,0.15);
+  }
+  .queue-title { color: var(--white); margin-bottom: 6px; font-weight: 600; line-height: 1.4; }
+  .queue-meta  { display: flex; gap: 10px; align-items: center; }
+  .queue-score {
+    font-weight: 700; font-size: 0.9rem; color: var(--green);
+  }
+  .queue-source { color: var(--muted); font-size: 0.72rem; }
+  .approved-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 10px; border-radius: 10px;
+    background: rgba(0,224,122,0.2); color: var(--green);
+    font-size: 0.72rem; font-weight: 700;
+    opacity: 0; transition: opacity 0.5s;
+  }
+  .approved-badge.visible { opacity: 1; }
+
+  /* ── API PANEL ── */
+  .api-call {
+    font-size: 0.78rem; margin-bottom: 14px;
+    opacity: 0; transition: opacity 0.5s;
+  }
+  .api-call.visible { opacity: 1; }
+  .api-method {
+    display: inline-block; padding: 2px 8px; border-radius: 5px;
+    font-weight: 700; font-size: 0.72rem; margin-right: 8px;
+  }
+  .api-method.get  { background: rgba(0,212,255,0.15); color: var(--cyan); }
+  .api-method.post { background: rgba(0,224,122,0.15); color: var(--green); }
+  .api-path { color: var(--white); }
+  .api-response {
+    margin-top: 6px; margin-left: 14px;
+    padding: 8px 12px;
+    background: rgba(0,0,0,0.3); border-radius: 6px;
+    border-left: 2px solid var(--border);
+    color: var(--muted); font-size: 0.72rem; line-height: 1.6;
+    max-height: 0; overflow: hidden;
+    transition: max-height 0.6s ease, opacity 0.4s;
+    opacity: 0;
+  }
+  .api-response.visible { max-height: 200px; opacity: 1; border-left-color: var(--cyan2); }
+  .api-response .key   { color: var(--cyan2); }
+  .api-response .val   { color: var(--amber); }
+  .api-response .str   { color: #79c0ff; }
+
+  /* ── CI BADGE ── */
+  #ci-panel {
+    text-align: center; padding: 30px;
+    opacity: 0; transition: opacity 0.8s;
+  }
+  #ci-panel.visible { opacity: 1; }
+  .ci-badge-row { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .ci-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 16px; border-radius: 20px;
+    font-size: 0.8rem; font-weight: 700;
+    border: 1px solid;
+    transform: scale(0.8); opacity: 0;
+    transition: transform 0.4s, opacity 0.4s;
+  }
+  .ci-badge.visible { transform: scale(1); opacity: 1; }
+  .ci-badge.pass { background: rgba(0,224,122,0.1); color: var(--green); border-color: var(--green); }
+  .ci-badge.warn { background: rgba(240,165,0,0.1); color: var(--amber); border-color: var(--amber); }
+  .ci-big {
+    font-size: 3.5rem; font-weight: 900; color: var(--green);
+    text-shadow: 0 0 40px rgba(0,224,122,0.5);
+    margin-bottom: 8px; opacity: 0;
+    transition: opacity 0.8s;
+  }
+  .ci-big.visible { opacity: 1; }
+  .ci-sub { color: var(--muted); font-size: 0.85rem; }
+
+  /* ── TICKER ── */
+  #ticker {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(7,8,15,0.92);
+    border-top: 1px solid var(--border);
+    padding: 8px 24px;
+    font-size: 0.72rem; color: var(--muted);
+    display: flex; gap: 24px;
+    backdrop-filter: blur(10px);
+    z-index: 100;
+  }
+  .ticker-item { white-space: nowrap; }
+  .ticker-item .lbl { color: var(--muted); }
+  .ticker-item .val { color: var(--cyan); margin-left: 6px; }
+
+  /* ── ARCHITECT DIAGRAM ── */
+  #arch-diagram {
+    display: flex; align-items: center; justify-content: center;
+    gap: 0; margin-bottom: 20px; padding: 20px;
+    opacity: 0; transition: opacity 0.8s;
+  }
+  #arch-diagram.visible { opacity: 1; }
+  .arch-node {
+    text-align: center; width: 130px;
+    opacity: 0; transform: translateY(15px);
+    transition: opacity 0.5s, transform 0.5s;
+  }
+  .arch-node.visible { opacity: 1; transform: translateY(0); }
+  .arch-node-icon {
+    font-size: 2rem; margin-bottom: 6px;
+    filter: drop-shadow(0 0 8px var(--cyan));
+  }
+  .arch-node-label { font-size: 0.78rem; color: var(--white); font-weight: 600; }
+  .arch-node-sub   { font-size: 0.65rem; color: var(--muted); margin-top: 3px; }
+  .arch-arrow {
+    width: 60px; text-align: center; position: relative;
+    opacity: 0; transition: opacity 0.5s;
+  }
+  .arch-arrow.visible { opacity: 1; }
+  .arch-arrow-line {
+    height: 2px; background: linear-gradient(90deg, var(--cyan2), var(--cyan));
+    position: relative; overflow: visible;
+    box-shadow: 0 0 6px var(--cyan2);
+  }
+  .arch-arrow-dot {
+    position: absolute; top: -4px; left: 0;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--cyan);
+    animation: flow-dot 1.5s linear infinite;
+  }
+  @keyframes flow-dot {
+    0%   { left: 0%; opacity: 1; }
+    100% { left: 100%; opacity: 0.3; }
+  }
+  .arch-arrow-head {
+    width: 0; height: 0; margin: -4px auto 0;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-left: 8px solid var(--cyan);
+  }
+
+  /* ── OODA ── */
+  .ooda-row {
+    display: flex; gap: 10px; justify-content: center; margin-bottom: 20px;
+  }
+  .ooda-step {
+    flex: 1; text-align: center; padding: 12px 8px;
+    border-radius: 8px; border: 1px solid var(--border);
+    font-size: 0.78rem;
+    opacity: 0; transition: opacity 0.5s, border-color 0.5s, box-shadow 0.5s;
+  }
+  .ooda-step.active {
+    border-color: var(--cyan);
+    box-shadow: 0 0 14px rgba(0,212,255,0.15);
+    animation: ooda-pulse 2s ease-in-out infinite;
+  }
+  @keyframes ooda-pulse {
+    0%,100% { box-shadow: 0 0 14px rgba(0,212,255,0.15); }
+    50%      { box-shadow: 0 0 28px rgba(0,212,255,0.3); }
+  }
+  .ooda-letter { font-size: 1.4rem; font-weight: 900; color: var(--cyan); display: block; }
+  .ooda-name   { color: var(--white); font-weight: 600; margin: 3px 0 2px; }
+  .ooda-desc   { color: var(--muted); font-size: 0.68rem; }
+
+  /* ── SPINNER ── */
+  .spinner {
+    display: inline-block; width: 10px; height: 10px;
+    border: 2px solid var(--border);
+    border-top-color: var(--cyan);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 6px; vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── FLASH ── */
+  .flash-overlay {
+    position: fixed; inset: 0; background: rgba(0,224,122,0.04);
+    pointer-events: none; z-index: 50;
+    opacity: 0; transition: opacity 0.15s;
+  }
+  .flash-overlay.visible { opacity: 1; }
+</style>
+</head>
+<body>
+
+<canvas id="starfield"></canvas>
+<div class="flash-overlay" id="flash"></div>
+
+<div id="app">
+  <header>
+    <div class="logo-row">
+      <div class="logo-orb"></div>
+      <h1>Wintrip AI</h1>
+    </div>
+    <div class="subtitle">Stream of Consciousness — Phase 7.X</div>
+    <div class="phase-badge">Background Daemon · Resonance Filter · Regiekamer Queue</div>
+  </header>
+
+  <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+  <div id="scene-caption"></div>
+
+  <!-- OODA LOOP -->
+  <div class="ooda-row" id="ooda-row">
+    <div class="ooda-step" id="ooda-o1"><span class="ooda-letter">O</span><div class="ooda-name">Observe</div><div class="ooda-desc">RSS · URL · Feeds</div></div>
+    <div class="ooda-step" id="ooda-o2"><span class="ooda-letter">O</span><div class="ooda-name">Orient</div><div class="ooda-desc">Normalize · Dedup</div></div>
+    <div class="ooda-step" id="ooda-d"><span class="ooda-letter">D</span><div class="ooda-name">Decide</div><div class="ooda-desc">Resonance Score</div></div>
+    <div class="ooda-step" id="ooda-a"><span class="ooda-letter">A</span><div class="ooda-name">Act</div><div class="ooda-desc">Queue · Approve</div></div>
+  </div>
+
+  <!-- ARCH DIAGRAM -->
+  <div id="arch-diagram">
+    <div class="arch-node" id="arch-1">
+      <div class="arch-node-icon">📡</div>
+      <div class="arch-node-label">RSS Sources</div>
+      <div class="arch-node-sub">3 feeds · poll 5 min</div>
+    </div>
+    <div class="arch-arrow" id="arch-a1">
+      <div class="arch-arrow-line"><div class="arch-arrow-dot"></div></div>
+      <div class="arch-arrow-head"></div>
+    </div>
+    <div class="arch-node" id="arch-2">
+      <div class="arch-node-icon">🧠</div>
+      <div class="arch-node-label">Resonance Filter</div>
+      <div class="arch-node-sub">keyword · tag · score</div>
+    </div>
+    <div class="arch-arrow" id="arch-a2">
+      <div class="arch-arrow-line"><div class="arch-arrow-dot"></div></div>
+      <div class="arch-arrow-head"></div>
+    </div>
+    <div class="arch-node" id="arch-3">
+      <div class="arch-node-icon">🎛️</div>
+      <div class="arch-node-label">Regiekamer</div>
+      <div class="arch-node-sub">Philip's queue · approve</div>
+    </div>
+    <div class="arch-arrow" id="arch-a3">
+      <div class="arch-arrow-line"><div class="arch-arrow-dot"></div></div>
+      <div class="arch-arrow-head"></div>
+    </div>
+    <div class="arch-node" id="arch-4">
+      <div class="arch-node-icon">⚡</div>
+      <div class="arch-node-label">ChromaDB</div>
+      <div class="arch-node-sub">Hippocampus · RAG</div>
+    </div>
+  </div>
+
+  <!-- ROW 1: daemon + feed -->
+  <div class="grid-2">
+    <div class="panel" id="panel-daemon">
+      <div class="panel-title"><div class="dot"></div>Stream Daemon</div>
+      <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value cyan" id="d-state">● IDLE</span></div>
+      <div class="stat-row"><span class="stat-label">Ticks uitgevoerd</span><span class="stat-value" id="d-ticks">0</span></div>
+      <div class="stat-row"><span class="stat-label">Items opgehaald</span><span class="stat-value" id="d-fetched">0</span></div>
+      <div class="stat-row"><span class="stat-label">Opgeslagen</span><span class="stat-value green" id="d-stored">0</span></div>
+      <div class="stat-row"><span class="stat-label">In queue (Philip)</span><span class="stat-value amber" id="d-queued">0</span></div>
+      <div class="stat-row"><span class="stat-label">Duplicaten</span><span class="stat-value" id="d-dup">0</span></div>
+      <div class="stat-row"><span class="stat-label">Gefilterd (lage score)</span><span class="stat-value" id="d-filtered">0</span></div>
+      <div class="stat-row"><span class="stat-label">Poll interval</span><span class="stat-value">300s</span></div>
+      <div class="stat-row"><span class="stat-label">Laatste tick</span><span class="stat-value cyan" id="d-lasttick">—</span></div>
+    </div>
+    <div class="panel" id="panel-feed">
+      <div class="panel-title"><div class="dot"></div>Inkomende Items</div>
+      <ul id="feed-list"></ul>
+    </div>
+  </div>
+
+  <!-- ROW 2: resonance + queue -->
+  <div class="grid-2">
+    <div class="panel" id="panel-resonance">
+      <div class="panel-title"><div class="dot"></div>Resonantie Scores</div>
+      <ul id="score-list"></ul>
+    </div>
+    <div class="panel" id="panel-queue">
+      <div class="panel-title"><div class="dot"></div>Philip's Queue (Regiekamer)</div>
+      <ul id="queue-list"></ul>
+    </div>
+  </div>
+
+  <!-- ROW 3: API endpoints + CI -->
+  <div class="grid-2">
+    <div class="panel" id="panel-api">
+      <div class="panel-title"><div class="dot"></div>API Endpoints</div>
+      <div class="api-call" id="api-status">
+        <span class="api-method get">GET</span><span class="api-path">/stream/status</span>
+        <div class="api-response" id="resp-status">
+          <span class="key">"state"</span>: <span class="str">"running"</span>,<br>
+          <span class="key">"ticks"</span>: <span class="val">1</span>,<br>
+          <span class="key">"items_fetched"</span>: <span class="val">8</span>,<br>
+          <span class="key">"items_stored"</span>: <span class="val">5</span>,<br>
+          <span class="key">"items_queued"</span>: <span class="val">3</span>
+        </div>
+      </div>
+      <div class="api-call" id="api-queue">
+        <span class="api-method get">GET</span><span class="api-path">/stream/queue?limit=10</span>
+        <div class="api-response" id="resp-queue">
+          <span class="key">"count"</span>: <span class="val">3</span>,<br>
+          <span class="key">"items"</span>: [<br>
+          &nbsp;&nbsp;{ <span class="key">"title"</span>: <span class="str">"OODA loop..."</span>, <span class="key">"score"</span>: <span class="val">0.82</span> },<br>
+          &nbsp;&nbsp;{ <span class="key">"title"</span>: <span class="str">"Autonomous AI..."</span>, <span class="key">"score"</span>: <span class="val">0.74</span> },<br>
+          &nbsp;&nbsp;{ <span class="key">"title"</span>: <span class="str">"OpenAI Agents..."</span>, <span class="key">"score"</span>: <span class="val">0.68</span> }<br>
+          ]
+        </div>
+      </div>
+      <div class="api-call" id="api-approve">
+        <span class="api-method post">POST</span><span class="api-path">/stream/approve</span>
+        <div class="api-response" id="resp-approve">
+          <span class="key">"approved"</span>: <span class="val">true</span>,<br>
+          <span class="key">"item_id"</span>: <span class="str">"3f2a1b9c-..."</span>,<br>
+          <span class="key">"message"</span>: <span class="str">"Item goedgekeurd"</span>
+        </div>
+      </div>
+    </div>
+    <div class="panel" id="panel-ci">
+      <div class="panel-title"><div class="dot"></div>CI / CD — GitHub Actions</div>
+      <div id="ci-panel">
+        <div class="ci-badge-row">
+          <div class="ci-badge pass" id="ci-b1">✓ Lint (flake8)</div>
+          <div class="ci-badge pass" id="ci-b2">✓ 288 Tests</div>
+          <div class="ci-badge warn" id="ci-b3">⚠ pip-audit</div>
+          <div class="ci-badge pass" id="ci-b4">✓ webbeest branch</div>
+        </div>
+        <div class="ci-big" id="ci-big">288 / 288</div>
+        <div class="ci-sub">unit tests geslaagd · lint schoon · branch: webbeest</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TICKER -->
+<div id="ticker">
+  <div class="ticker-item"><span class="lbl">daemon</span><span class="val" id="t-state">idle</span></div>
+  <div class="ticker-item"><span class="lbl">ticks</span><span class="val" id="t-ticks">0</span></div>
+  <div class="ticker-item"><span class="lbl">fetched</span><span class="val" id="t-fetched">0</span></div>
+  <div class="ticker-item"><span class="lbl">stored</span><span class="val" id="t-stored">0</span></div>
+  <div class="ticker-item"><span class="lbl">queued</span><span class="val" id="t-queued">0</span></div>
+  <div class="ticker-item"><span class="lbl">branch</span><span class="val">webbeest</span></div>
+  <div class="ticker-item"><span class="lbl">tests</span><span class="val">288 ✓</span></div>
+  <div class="ticker-item"><span class="lbl">phase</span><span class="val">7.X</span></div>
+</div>
+
+<script>
+// ── STARFIELD ──────────────────────────────────────────────
+(function(){
+  const c = document.getElementById('starfield');
+  const ctx = c.getContext('2d');
+  function resize(){ c.width = window.innerWidth; c.height = window.innerHeight; }
+  resize(); window.addEventListener('resize', resize);
+  const stars = Array.from({length: 140}, () => ({
+    x: Math.random(), y: Math.random(),
+    r: Math.random()*1.2+0.2, o: Math.random()*0.5+0.1,
+    s: Math.random()*0.3+0.05
+  }));
+  let t = 0;
+  function draw(){
+    ctx.clearRect(0,0,c.width,c.height);
+    stars.forEach(s => {
+      ctx.beginPath();
+      ctx.arc(s.x*c.width, s.y*c.height, s.r, 0, 2*Math.PI);
+      ctx.fillStyle = `rgba(180,200,255,${s.o*(0.6+0.4*Math.sin(t*s.s))})`;
+      ctx.fill();
+    });
+    t += 0.03;
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+
+// ── DATA ──────────────────────────────────────────────────
+const FEED_ITEMS = [
+  { title: "OODA loop architectuur update voor autonome agents", source: "AI Wetenschap RSS", type: "rss", tags: ["ai","ooda","autonomy"] },
+  { title: "Nieuwe Anthropic benchmark: Claude scoort record op reasoning", source: "TechCrunch RSS", type: "rss", tags: ["ai","llm","benchmark"] },
+  { title: "Autonome multi-agent systemen: praktijkcase studie 2026", source: "ArXiv RSS", type: "rss", tags: ["agents","research"] },
+  { title: "OpenAI lanceert enterprise API voor real-time data ingestion", source: "OpenAI Blog RSS", type: "rss", tags: ["openai","api","enterprise"] },
+  { title: "Filosofie van bewustzijn en AI: stream metaphor", source: "Philosophy Now RSS", type: "rss", tags: ["philosophy","consciousness"] },
+  { title: "ChromaDB v0.5: verbeterde vector search performance", source: "Dev Tools RSS", type: "url", tags: ["chromadb","vector","performance"] },
+  { title: "Muziekcompositie met AI: nieuwe algoritmen voor harmonie", source: "Music Tech RSS", type: "rss", tags: ["music","composition","ai"] },
+  { title: "FastAPI async background tasks: best practices 2026", source: "Python Weekly RSS", type: "url", tags: ["fastapi","python","async"] },
+];
+
+const SCORES = [
+  { title: "OODA loop architectuur update", score: 0.82, level:"high", domains:["wintrip_ai","autonomy"], verdict:"queue" },
+  { title: "Autonome multi-agent systemen", score: 0.74, level:"high", domains:["wintrip_ai","ai_ecosystem"], verdict:"queue" },
+  { title: "OpenAI enterprise API ingestion", score: 0.68, level:"high", domains:["ai_ecosystem"], verdict:"queue" },
+  { title: "Filosofie van bewustzijn en AI", score: 0.47, level:"mid",  domains:["philosophy_spirit"], verdict:"store" },
+  { title: "ChromaDB v0.5 performance",      score: 0.38, level:"mid",  domains:["software_engineering"], verdict:"store" },
+  { title: "Muziekcompositie met AI",         score: 0.31, level:"mid",  domains:["music_composition"], verdict:"store" },
+  { title: "FastAPI async background tasks",  score: 0.22, level:"mid",  domains:["software_engineering"], verdict:"store" },
+  { title: "Nieuwe Anthropic benchmark",      score: 0.14, level:"low",  domains:[], verdict:"filter" },
+];
+
+const QUEUE_ITEMS = [
+  { title: "OODA loop architectuur update voor autonome agents", score: 0.82, source: "AI Wetenschap RSS" },
+  { title: "Autonome multi-agent systemen: praktijkcase studie 2026", score: 0.74, source: "ArXiv RSS" },
+  { title: "OpenAI lanceert enterprise API voor real-time data ingestion", score: 0.68, source: "OpenAI Blog RSS" },
+];
+
+// ── STATE ──────────────────────────────────────────────────
+let stats = { state:"idle", ticks:0, fetched:0, stored:0, queued:0, dup:0, filtered:0 };
+
+function updateStats(patch){
+  Object.assign(stats, patch);
+  const fmt = (k) => stats[k];
+  document.getElementById('d-state').textContent  = stats.state==="running" ? "● RUNNING" : stats.state==="idle" ? "● IDLE" : "● STOPPED";
+  document.getElementById('d-state').className    = "stat-value " + (stats.state==="running"?"cyan":stats.state==="idle"?"":"green");
+  document.getElementById('d-ticks').textContent  = fmt('ticks');
+  document.getElementById('d-fetched').textContent= fmt('fetched');
+  document.getElementById('d-stored').textContent = fmt('stored');
+  document.getElementById('d-queued').textContent = fmt('queued');
+  document.getElementById('d-dup').textContent    = fmt('dup');
+  document.getElementById('d-filtered').textContent = fmt('filtered');
+  document.getElementById('t-state').textContent  = stats.state;
+  document.getElementById('t-ticks').textContent  = fmt('ticks');
+  document.getElementById('t-fetched').textContent= fmt('fetched');
+  document.getElementById('t-stored').textContent = fmt('stored');
+  document.getElementById('t-queued').textContent = fmt('queued');
+  if(stats.state==="running") {
+    const now = new Date();
+    document.getElementById('d-lasttick').textContent = now.toTimeString().slice(0,8);
+  }
+}
+
+function setCaption(txt){
+  const el = document.getElementById('scene-caption');
+  el.classList.remove('visible');
+  setTimeout(()=>{ el.textContent = txt; el.classList.add('visible'); }, 300);
+}
+
+function setProgress(pct){
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+function panelActive(id, cls='active'){
+  ['panel-daemon','panel-feed','panel-resonance','panel-queue','panel-api','panel-ci'].forEach(p => {
+    document.getElementById(p).classList.remove('active','active-green','active-amber');
+  });
+  if(id) document.getElementById(id).classList.add(cls);
+}
+
+function flash(){
+  const el = document.getElementById('flash');
+  el.classList.add('visible');
+  setTimeout(()=>el.classList.remove('visible'), 150);
+}
+
+function delay(ms){ return new Promise(r => setTimeout(r, ms)); }
+function show(id){ document.getElementById(id).classList.add('visible'); }
+
+// ── ADD FEED ITEM ──────────────────────────────────────────
+function addFeedItem(item){
+  const li = document.createElement('li');
+  li.className = `feed-item ${item.type}`;
+  li.innerHTML = `
+    <div class="feed-item-title">${item.title}</div>
+    <div class="feed-item-meta">
+      <span class="spinner"></span>${item.source}
+      ${item.tags.map(t=>`<span class="feed-item-tag">${t}</span>`).join('')}
+    </div>`;
+  document.getElementById('feed-list').appendChild(li);
+  requestAnimationFrame(()=>{ requestAnimationFrame(()=>li.classList.add('visible')); });
+}
+
+// ── ADD SCORE ITEM ─────────────────────────────────────────
+function addScoreItem(item){
+  const li = document.createElement('li');
+  li.className = 'score-item';
+  const verdict = item.verdict === 'queue' ? '<span class="score-badge queue">→ QUEUE</span>'
+                : item.verdict === 'store' ? '<span class="score-badge store">→ STORE</span>'
+                : '<span class="score-badge filter">✗ FILTER</span>';
+  li.innerHTML = `
+    <div class="score-header">
+      <span class="score-title">${item.title}</span>
+      <span class="score-val ${item.level}">${item.score.toFixed(2)} ${verdict}</span>
+    </div>
+    <div class="score-bar-bg"><div class="score-bar-fill ${item.level}" style="width:0%"></div></div>
+    <div class="score-tags">${item.domains.map(d=>`<span class="score-tag domain">${d}</span>`).join('')}</div>`;
+  document.getElementById('score-list').appendChild(li);
+  requestAnimationFrame(()=>{
+    requestAnimationFrame(()=>{
+      li.classList.add('visible');
+      setTimeout(()=>{
+        li.querySelector('.score-bar-fill').style.width = (item.score*100) + '%';
+      }, 100);
+    });
+  });
+}
+
+// ── ADD QUEUE ITEM ─────────────────────────────────────────
+function addQueueItem(item){
+  const li = document.createElement('li');
+  li.className = 'queue-item';
+  li.innerHTML = `
+    <div class="queue-title">${item.title}</div>
+    <div class="queue-meta">
+      <span class="queue-score">${item.score.toFixed(2)}</span>
+      <span class="queue-source">${item.source}</span>
+      <span class="approved-badge" id="appr-${item.score.toFixed(0).replace('.','')}">✓ Goedgekeurd</span>
+    </div>`;
+  document.getElementById('queue-list').appendChild(li);
+  requestAnimationFrame(()=>{ requestAnimationFrame(()=>li.classList.add('visible')); });
+  return li;
+}
+
+// ── MAIN DEMO SEQUENCE ─────────────────────────────────────
+async function runDemo(){
+
+  // Scene 0: Intro
+  setCaption("● WINTRIP AI — STREAM OF CONSCIOUSNESS INITIALISATIE");
+  setProgress(2);
+  await delay(1200);
+
+  // Scene 1: OODA loop verschijnt
+  setCaption("OODA LOOP — OBSERVE · ORIENT · DECIDE · ACT");
+  setProgress(8);
+  for(const id of ['ooda-o1','ooda-o2','ooda-d','ooda-a']){
+    document.getElementById(id).style.opacity = '1';
+    await delay(300);
+  }
+  await delay(600);
+
+  // Scene 2: Architectuurdiagram
+  setCaption("ARCHITECTUUR — VAN RSS TOT REGIEKAMER");
+  setProgress(14);
+  show('arch-diagram');
+  await delay(400);
+  for(const id of ['arch-1','arch-a1','arch-2','arch-a2','arch-3','arch-a3','arch-4']){
+    show(id); await delay(250);
+  }
+  await delay(800);
+
+  // Scene 3: Daemon start
+  setCaption("DAEMON START — ACHTERGROND POLLING ACTIEF");
+  setProgress(22);
+  panelActive('panel-daemon');
+  updateStats({state:'running'});
+  document.getElementById('ooda-o1').classList.add('active');
+  await delay(700);
+
+  // Scene 4: Items binnenkomen
+  setCaption("OBSERVE — 8 ITEMS OPGEHAALD VAN 3 RSS BRONNEN");
+  setProgress(30);
+  panelActive('panel-feed');
+  document.getElementById('ooda-o1').classList.add('active');
+  for(let i=0; i<FEED_ITEMS.length; i++){
+    addFeedItem(FEED_ITEMS[i]);
+    updateStats({fetched: i+1, ticks: i===0?1:stats.ticks});
+    await delay(340);
+  }
+  updateStats({ticks:1});
+  await delay(500);
+
+  // Scene 5: Normalisatie
+  setCaption("ORIENT — NORMALISEREN · SANITISEREN · DEDUPLICEREN");
+  setProgress(40);
+  document.getElementById('ooda-o2').classList.add('active');
+  panelActive('panel-resonance','active-amber');
+  await delay(700);
+
+  // Scene 6: Resonantie scoring
+  setCaption("DECIDE — RESONANTIE FILTER SCOORT OP RELEVANTIE VOOR PHILIP");
+  setProgress(52);
+  document.getElementById('ooda-d').classList.add('active');
+  for(let i=0; i<SCORES.length; i++){
+    addScoreItem(SCORES[i]);
+    const s = SCORES[i];
+    if(s.verdict==='filter') updateStats({filtered: stats.filtered+1});
+    else updateStats({stored: stats.stored+1});
+    await delay(380);
+  }
+  await delay(600);
+
+  // Scene 7: Queue vullen
+  setCaption("ACT — ITEMS BOVEN 0.65 GAAN NAAR PHILIP'S QUEUE");
+  setProgress(62);
+  document.getElementById('ooda-a').classList.add('active');
+  panelActive('panel-queue','active-green');
+  for(let i=0; i<QUEUE_ITEMS.length; i++){
+    addQueueItem(QUEUE_ITEMS[i]);
+    updateStats({queued: i+1});
+    flash();
+    await delay(500);
+  }
+  await delay(700);
+
+  // Scene 8: API status
+  setCaption("API — GET /stream/status TOONT LIVE DAEMON STATISTIEKEN");
+  setProgress(72);
+  panelActive('panel-api');
+  show('api-status');
+  await delay(300);
+  document.getElementById('resp-status').classList.add('visible');
+  await delay(1000);
+
+  // Scene 9: API queue
+  setCaption("API — GET /stream/queue LEVERT DE PROPOSE-LIJST");
+  setProgress(80);
+  show('api-queue');
+  await delay(300);
+  document.getElementById('resp-queue').classList.add('visible');
+  await delay(1000);
+
+  // Scene 10: Approve
+  setCaption("API — POST /stream/approve — PHILIP KEURT ITEM GOED");
+  setProgress(86);
+  show('api-approve');
+  await delay(300);
+  document.getElementById('resp-approve').classList.add('visible');
+  flash();
+  // Mark first queue item approved
+  const qItems = document.querySelectorAll('.queue-item');
+  if(qItems[0]){
+    qItems[0].classList.add('approved');
+    const badge = qItems[0].querySelector('.approved-badge');
+    if(badge) badge.classList.add('visible');
+  }
+  await delay(1200);
+
+  // Scene 11: CI/CD
+  setCaption("CI/CD — GITHUB ACTIONS · 288 TESTS GROEN · LINT SCHOON");
+  setProgress(93);
+  panelActive('panel-ci','active-green');
+  show('ci-panel');
+  await delay(200);
+  for(const id of ['ci-b1','ci-b2','ci-b3','ci-b4']){
+    show(id); await delay(250);
+  }
+  await delay(400);
+  show('ci-big');
+  await delay(800);
+
+  // Scene 12: Done
+  setCaption("✓ WINTRIP AI PHASE 7.X — STREAM OF CONSCIOUSNESS OPERATIONEEL");
+  setProgress(100);
+  updateStats({state:'running'});
+  panelActive(null);
+  await delay(3000);
+
+  // Loop
+  setCaption("↺ DEMO WORDT HERHAALD IN 5 SECONDEN...");
+  await delay(5000);
+  location.reload();
+}
+
+// Start
+window.addEventListener('load', () => {
+  setTimeout(runDemo, 800);
+});
+</script>
+</body>
+</html>
