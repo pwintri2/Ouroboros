@@ -27,7 +27,7 @@ import asyncio
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from controller.stream.normalize import NormalizedItem, normalize
@@ -65,7 +65,7 @@ class DaemonStats:
     items_stored: int = 0         # nieuw opgeslagen items
     items_queued: int = 0         # items boven propose-drempel
     items_duplicate: int = 0      # geweigerd als duplicaat
-    items_below_threshold: int = 0 # geweigerd wegens lage score
+    items_below_threshold: int = 0  # geweigerd wegens lage score
     items_error: int = 0          # verwerkingsfouten
     last_tick_at: Optional[float] = None   # epoch timestamp
     started_at: Optional[float] = None

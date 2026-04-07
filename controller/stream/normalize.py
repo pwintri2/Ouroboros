@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List
 
@@ -191,7 +191,7 @@ if __name__ == "__main__":
             "source_type": "rss",
         }
         item = normalize(sample)
-        print(f"[SUCCESS] NormalizedItem aangemaakt")
+        print("[SUCCESS] NormalizedItem aangemaakt")
         print(f"  id           : {item.id}")
         print(f"  title        : {item.title}")
         print(f"  content_hash : {item.content_hash}")

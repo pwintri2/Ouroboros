@@ -22,10 +22,9 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from controller.stream.normalize import NormalizedItem
 from controller.stream.storage import STORE_THRESHOLD, PROPOSE_THRESHOLD

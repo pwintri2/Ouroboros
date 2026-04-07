@@ -5,6 +5,26 @@ import time
 import requests
 from controller.reflector import Reflector
 
+# ---------------------------------------------------------------------------
+# Sandbox hardening defaults (Phase 7.X — wintrip-soc-008)
+# ---------------------------------------------------------------------------
+# Alle code-executie containers draaien met deze beveiligingslimieten.
+# web_ingest en network-dependent tools geven allow_network=True mee.
+_SANDBOX_DEFAULTS = {
+    "image":           "python:3.10-slim",
+    "network_disabled": True,           # netwerk standaard UIT (expliciet opt-in)
+    "mem_limit":       "256m",          # geheugen hard cap
+    "memswap_limit":   "256m",          # swap eveneens begrensd
+    "cpu_period":      100_000,         # 100ms scheduling window
+    "cpu_quota":       50_000,          # max 50% van één CPU-kern
+    "pids_limit":      64,              # max 64 processen (fork-bomb preventie)
+    "read_only":       True,            # rootfs read-only (schrijven alleen via volumes)
+    "tmpfs":           {"/tmp": "size=64m,mode=1777"},  # writable /tmp in geheugen
+    "security_opt":    ["no-new-privileges:true"],
+    "detach":          True,
+}
+
+
 class SandboxExecutor:
     def __init__(self):
         print("🛡️  [Sandbox]: Initialisatie van de Virtuele Quarantaine...")
@@ -26,7 +46,8 @@ class SandboxExecutor:
             self.client.images.pull(image_name)
             print(f"✅ [Sandbox]: Image '{image_name}' klaar voor gebruik.")
 
-    def run_python_code(self, code: str, timeout: int = 15, return_dict: bool = False, task_name: str = "Sandbox Execution"):
+    def run_python_code(self, code: str, timeout: int = 15, return_dict: bool = False,
+                        task_name: str = "Sandbox Execution", allow_network: bool = False):
         """
         Draait AI-gegeneerde Python code in een tijdelijke, geïsoleerde container.
         """
@@ -59,17 +80,18 @@ class SandboxExecutor:
             os.makedirs(host_data_dir, exist_ok=True)
             
             print("⚙️  [Sandbox]: Container wordt opgestart en code wordt uitgevoerd...")
-            container = self.client.containers.run(
-                image="python:3.10-slim",
-                command=f"python /script.py",
-                volumes={
-                    script_path: {'bind': '/script.py', 'mode': 'ro'},
-                    host_data_dir: {'bind': '/app/data', 'mode': 'rw'}
-                },
-                detach=True,
-                network_disabled=False,
-                mem_limit="512m",
-            )
+            # Bouw hardened container-configuratie op basis van _SANDBOX_DEFAULTS
+            container_config = dict(_SANDBOX_DEFAULTS)
+            container_config["command"] = "python /script.py"
+            container_config["volumes"] = {
+                script_path:    {"bind": "/script.py",  "mode": "ro"},
+                host_data_dir:  {"bind": "/app/data",   "mode": "rw"},
+            }
+            # Netwerk: alleen inschakelen als de aanroeper dat expliciet vraagt
+            # (bijv. web_ingest). Code-executie altijd netwerk-loos.
+            container_config["network_disabled"] = not allow_network
+
+            container = self.client.containers.run(**container_config)
             
             # Wacht op de container met harde read timeout protectie
             result = container.wait(timeout=timeout)

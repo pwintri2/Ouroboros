@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
-from controller.stream.daemon import StreamDaemon, DaemonState
+from controller.stream.daemon import StreamDaemon
 from controller.stream.storage import StreamStorage
 
 
@@ -220,7 +220,7 @@ async def approve_stream_item(
     return ApproveResponse(
         approved=True,
         item_id=body.item_id,
-        message=f"Item goedgekeurd en verplaatst naar stream_item_approved.",
+        message="Item goedgekeurd en verplaatst naar stream_item_approved.",
     )
 
 
