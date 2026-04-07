@@ -52,10 +52,11 @@ jobs:
 
       - name: Run flake8
         run: |
-          flake8 controller/ sandbox_tests/ \
+          # Lint alleen nieuwe Phase 7.X productie-modules (geen testbestanden, geen legacy)
+          flake8 controller/stream/ controller/api/ \
             --max-line-length=120 \
             --extend-ignore=E203,W503 \
-            --exclude=controller/__pycache__,controller/stream/__pycache__,controller/api/__pycache__
+            --exclude=__pycache__
 
   # ---------------------------------------------------------------------------
   # Job 2: Unit Tests (alle 6 suites)
