@@ -4,6 +4,7 @@ python-dotenv
 requests
 ollama
 chromadb
+docker
 PyPDF2
 python-docx
 beautifulsoup4

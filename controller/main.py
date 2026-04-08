@@ -11,12 +11,14 @@ from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
-# Forceer het juiste pad
-project_root = "/app"
+# Forceer het juiste project root, zowel lokaal als in container-runtimes
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
 from controller.knowledge_base import KnowledgeBase
+from controller.api.consciousness_routes import init_consciousness
+from controller.consciousness.storage import ConsciousnessMemory
 try:
     from controller.ollama_client import OllamaClient
     from controller.router import AIRouter
@@ -49,6 +51,8 @@ app.add_middleware(
 
 ollama = OllamaClient()
 kb = KnowledgeBase()
+consciousness_memory = ConsciousnessMemory()
+init_consciousness(app, consciousness_memory)
 router = AIRouter(ollama_client=ollama, kb=kb)
 mail_executor = MailExecutor()
 
