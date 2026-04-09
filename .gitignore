@@ -23,5 +23,6 @@ sandbox/*
 !sandbox/.gitkeep
 data/tijdelijke_mail_dumps/*
 data/log_exports/*
+logs/
 
 .aider*

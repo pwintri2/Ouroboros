@@ -83,6 +83,9 @@ class ConsciousnessRouteTests(unittest.TestCase):
             "system": "mac",
             "source": "telemetry",
             "language": "python",
+            "theme_resonance": 0.8,
+            "emotional_valence": 0.9,
+            "karmic_weight": 0.85,
         })
         response = self.client.post("/consciousness/query", json={
             "query": "python worker",
@@ -93,6 +96,9 @@ class ConsciousnessRouteTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["result_count"], 1)
         self.assertIn("score_breakdown", body["results"][0])
+        self.assertEqual(body["results"][0]["metadata"]["quantum_state"], "collapsed")
+        self.assertEqual(body["results"][0]["metadata"]["collapse_observer"], "developer")
+        self.assertIn("entanglement_signature", body["results"][0]["metadata"])
 
     def test_websocket_acknowledges_and_handles_validation_error(self):
         with self.client.websocket_connect("/stream_consciousness/ws") as websocket:

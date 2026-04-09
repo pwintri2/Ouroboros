@@ -2,12 +2,14 @@ import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 # ^^ WintripAI sys.path fix — added automatically ^^
 
+import asyncio
 import os
 import sys
 import uvicorn
+from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, AsyncIterator
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -38,8 +40,58 @@ except ImportError:
 
 load_dotenv()
 
-from provider_router import route_gemini, route_claude, check_providers
-app = FastAPI()
+try:
+    from controller.provider_router import route_gemini, route_claude, check_providers
+except ImportError:
+    from provider_router import route_gemini, route_claude, check_providers
+
+
+async def _entanglement_propagator_daemon(app: FastAPI) -> None:
+    """
+    Phase 11 nervous-system daemon.
+
+    Continuously drains the ConsciousnessMemory entanglement queue while the
+    FastAPI app is alive. The propagator itself uses Chroma metadata lookup on
+    entanglement_signature, so this loop never performs semantic/vector search.
+    """
+    memory = getattr(app.state, "consciousness_memory", None)
+    if memory is None:
+        print("⚠️ [Quantum]: Entanglement propagator niet gestart: consciousness memory ontbreekt.")
+        return
+
+    print("🌌 [Quantum]: Entanglement propagator daemon gestart.")
+    while True:
+        try:
+            processed = await memory.run_entanglement_propagator(max_events=1, idle_timeout=0.5)
+            if not processed:
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            print("🌙 [Quantum]: Entanglement propagator ontvangt shutdown-signaal.")
+            raise
+        except Exception as exc:
+            print(f"⚠️ [Quantum]: Entanglement propagator fout, daemon blijft actief: {exc}")
+            await asyncio.sleep(1.0)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    propagator_task = asyncio.create_task(
+        _entanglement_propagator_daemon(app),
+        name="wintrip-entanglement-propagator",
+    )
+    app.state.entanglement_propagator_task = propagator_task
+
+    try:
+        yield
+    finally:
+        propagator_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await propagator_task
+        app.state.entanglement_propagator_task = None
+        print("✅ [Quantum]: Entanglement propagator daemon schoon afgesloten.")
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -226,7 +278,7 @@ async def commit_save(req: CommitSaveRequest):
 
 
 @app.post("/vergadertafel/chat")
-async def vergadertafel_chat(query: QueryRequest):
+async def vergadertafel_chat(query: Query):
     """Vergadertafel chat met provider-routing (Gemini/Claude/Ollama)."""
     provider = (getattr(query, "provider", None) or "ollama").lower()
     model    = getattr(query, "model", None) or ""
@@ -241,7 +293,6 @@ async def vergadertafel_chat(query: QueryRequest):
 
 @app.get("/providers")
 async def get_providers():
-    from provider_router import check_providers
     result = check_providers()
     try:
         import requests as _r

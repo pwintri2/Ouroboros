@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import math
 import os
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +35,11 @@ _DEVELOPER_TECH_LANGUAGES = {
 
 _DEVELOPER_TECH_SOURCES = {"file_watch", "telemetry", "api"}
 _TALLE_FIELD_CLUSTERS = {"unclassified", "novel", "field", "resonance", "john_may"}
+_RESONANCE_LAYER_KEYS = (
+    "layer_8_theme_resonance",
+    "layer_9_emotional_valence",
+    "layer_10_karmic_weight",
+)
 
 
 def _utc_now() -> str:
@@ -115,6 +122,30 @@ def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+def _average(values: list[float], fallback: float = 0.0) -> float:
+    if not values:
+        return fallback
+    return sum(values) / len(values)
+
+
+def _relative_temporal_coordinate(
+    timestamp: Optional[str],
+    content_hash: str,
+    chunk_index: int,
+    chunk_count: int,
+) -> float:
+    parsed = _parse_iso(timestamp)
+    if parsed is None:
+        seed_seconds = int(content_hash[:8], 16)
+        parsed = datetime.fromtimestamp(seed_seconds, tz=timezone.utc)
+
+    orbital_phase = ((parsed.timestamp() % 86400.0) / 86400.0) * math.tau
+    content_phase = (int(content_hash[8:16], 16) / 0xFFFFFFFF) * math.pi
+    structural_bias = (((chunk_index + 1) / max(chunk_count, 1)) - 0.5) * 0.6
+    coordinate = (math.sin(orbital_phase + content_phase) * 0.7) + structural_bias
+    return round(max(-1.0, min(1.0, coordinate)), 6)
+
+
 class ConsciousnessMemory:
     """11D ingestion and retrieval service backed by a dedicated ChromaDB collection."""
 
@@ -127,6 +158,7 @@ class ConsciousnessMemory:
         self.persist_dir = persist_dir or os.getenv("WINTRIP_11D_DB_PATH", DEFAULT_11D_DIR)
         self.collection_name = collection_name or os.getenv("WINTRIP_11D_COLLECTION", DEFAULT_11D_COLLECTION)
         self.default_project_context = os.getenv("WINTRIP_DEFAULT_PROJECT_CONTEXT", "phase_7_web_migration")
+        self._entanglement_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         if collection is not None:
             self.collection = collection
@@ -213,14 +245,15 @@ class ConsciousnessMemory:
             if not self._passes_time_filter(metadata, payload):
                 continue
 
+            collapsed_metadata = self._collapse_for_observer(metadata, payload.persona)
             semantic_score = max(0.0, 2.0 - float(distance))
-            rerank, breakdown = self._rerank(payload.persona, metadata)
+            rerank, breakdown = self._rerank(payload.persona, collapsed_metadata)
             final_score = semantic_score + rerank
             results.append(
                 ConsciousnessQueryResult(
                     id=item_id,
                     document=document,
-                    metadata=metadata,
+                    metadata=collapsed_metadata,
                     distance=float(distance),
                     semantic_score=semantic_score,
                     rerank_score=rerank,
@@ -328,6 +361,12 @@ class ConsciousnessMemory:
             "layer_10_karmic_weight": _clamp_weight(chunk.karmic_weight, event.karmic_weight),
             "layer_11_field_cluster": _safe_text(chunk.field_cluster, "unclassified")[:128],
         }
+        metadata.update(self._build_quantum_metadata(
+            metadata=metadata,
+            content_hash=content_hash,
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+        ))
         for key, value in (chunk.metadata_overrides or {}).items():
             if isinstance(value, (str, int, float, bool)):
                 metadata[key] = value
@@ -361,6 +400,256 @@ class ConsciousnessMemory:
             return False
         return True
 
+    async def enqueue_entanglement_update(
+        self,
+        chunk_id: str,
+        *,
+        theme_resonance: Optional[float] = None,
+        emotional_valence: Optional[float] = None,
+        karmic_weight: Optional[float] = None,
+        context_note: str = "",
+        observer: str = "quantum_architect",
+    ) -> str:
+        event_id = str(uuid.uuid4())
+        await self._entanglement_queue.put({
+            "event_id": event_id,
+            "chunk_id": chunk_id,
+            "theme_resonance": theme_resonance,
+            "emotional_valence": emotional_valence,
+            "karmic_weight": karmic_weight,
+            "context_note": context_note,
+            "observer": observer,
+        })
+        return event_id
+
+    async def run_entanglement_propagator(
+        self,
+        *,
+        max_events: Optional[int] = None,
+        idle_timeout: float = 0.1,
+    ) -> list[dict[str, Any]]:
+        processed: list[dict[str, Any]] = []
+        while max_events is None or len(processed) < max_events:
+            try:
+                update = await asyncio.wait_for(self._entanglement_queue.get(), timeout=idle_timeout)
+            except asyncio.TimeoutError:
+                break
+
+            try:
+                processed.append(await self.propagate_entanglement(**update))
+            finally:
+                self._entanglement_queue.task_done()
+        return processed
+
+    async def propagate_entanglement(
+        self,
+        chunk_id: str,
+        *,
+        theme_resonance: Optional[float] = None,
+        emotional_valence: Optional[float] = None,
+        karmic_weight: Optional[float] = None,
+        context_note: str = "",
+        observer: str = "quantum_architect",
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        event_id = event_id or str(uuid.uuid4())
+        source = self.collection.get(ids=[chunk_id], include=["metadatas", "documents"])
+        if not source or not source.get("ids"):
+            return {
+                "event_id": event_id,
+                "source_chunk_id": chunk_id,
+                "propagated": False,
+                "mutated_count": 0,
+                "reason": "source_chunk_not_found",
+            }
+
+        source_metadata = dict(source["metadatas"][0])
+        signature = source_metadata.get("entanglement_signature")
+        if not signature:
+            return {
+                "event_id": event_id,
+                "source_chunk_id": chunk_id,
+                "propagated": False,
+                "mutated_count": 0,
+                "reason": "source_chunk_has_no_entanglement_signature",
+            }
+
+        update_vector = {
+            "layer_8_theme_resonance": _clamp_weight(
+                theme_resonance,
+                source_metadata.get("layer_8_theme_resonance", 0.5),
+            ),
+            "layer_9_emotional_valence": _clamp_weight(
+                emotional_valence,
+                source_metadata.get("layer_9_emotional_valence", 0.5),
+            ),
+            "layer_10_karmic_weight": _clamp_weight(
+                karmic_weight,
+                source_metadata.get("layer_10_karmic_weight", 0.5),
+            ),
+        }
+
+        # Chroma metadata lookup on the entanglement channel, not a semantic/vector search.
+        entangled = self.collection.get(
+            where={"entanglement_signature": signature},
+            include=["metadatas", "documents"],
+            limit=1000,
+        )
+        ids = entangled.get("ids", []) if entangled else []
+        documents = entangled.get("documents", []) if entangled else []
+        metadatas = entangled.get("metadatas", []) if entangled else []
+
+        mutated_documents: list[str] = []
+        mutated_metadatas: list[dict[str, Any]] = []
+        mutated_ids: list[str] = []
+        propagated_at = _utc_now()
+
+        for item_id, document, metadata in zip(ids, documents, metadatas):
+            meta = dict(metadata or {})
+            original_revision = int(meta.get("entanglement_revision", 0) or 0)
+            for key in _RESONANCE_LAYER_KEYS:
+                current = _clamp_weight(meta.get(key))
+                target = update_vector[key]
+                meta[key] = round((current * 0.55) + (target * 0.45), 6)
+
+            meta["entanglement_revision"] = original_revision + 1
+            meta["entanglement_last_event_id"] = event_id
+            meta["entanglement_last_source_id"] = chunk_id
+            meta["entanglement_last_observer"] = _normalize_persona(observer)
+            meta["entanglement_last_context"] = _safe_text(context_note, "")[:256]
+            meta["entanglement_propagated_at"] = propagated_at
+            meta.update(self._refresh_quantum_from_metadata(meta, preserve_signature=True))
+
+            mutated_ids.append(item_id)
+            mutated_documents.append(document)
+            mutated_metadatas.append(meta)
+
+        if mutated_ids:
+            self.collection.delete(ids=mutated_ids)
+            self.collection.add(documents=mutated_documents, metadatas=mutated_metadatas, ids=mutated_ids)
+
+        return {
+            "event_id": event_id,
+            "source_chunk_id": chunk_id,
+            "entanglement_signature": signature,
+            "propagated": bool(mutated_ids),
+            "mutated_count": len(mutated_ids),
+            "mutated_chunk_ids": mutated_ids,
+            "updated_layers": list(_RESONANCE_LAYER_KEYS),
+            "bypassed_semantic_search": True,
+        }
+
+    def _build_quantum_metadata(
+        self,
+        metadata: dict[str, Any],
+        content_hash: str,
+        chunk_index: int,
+        chunk_count: int,
+    ) -> dict[str, Any]:
+        technical_weight = _average([
+            1.0 if metadata.get("layer_1_system") in {"mac", "vps", "docker", "web"} else 0.25,
+            1.0 if metadata.get("layer_2_source") in _DEVELOPER_TECH_SOURCES else 0.35,
+            1.0 if metadata.get("layer_3_language") in _DEVELOPER_TECH_LANGUAGES else 0.25,
+        ])
+        reflective_weight = _average([
+            _clamp_weight(metadata.get("layer_8_theme_resonance")),
+            _clamp_weight(metadata.get("layer_9_emotional_valence")),
+            1.0 if metadata.get("layer_7_project_context") else 0.4,
+        ])
+        karmic_weight = _average([
+            _clamp_weight(metadata.get("layer_10_karmic_weight")),
+            1.0 if metadata.get("layer_11_field_cluster") in _TALLE_FIELD_CLUSTERS else 0.35,
+            1.0 if metadata.get("layer_5_persona") == "talle_wintrip" else 0.4,
+        ])
+        entanglement_strength = _average([
+            _clamp_weight(metadata.get("layer_8_theme_resonance")),
+            _clamp_weight(metadata.get("layer_9_emotional_valence")),
+            _clamp_weight(metadata.get("layer_10_karmic_weight")),
+        ])
+        entanglement_basis = "|".join([
+            f"{_clamp_weight(metadata.get('layer_8_theme_resonance')):.3f}",
+            f"{_clamp_weight(metadata.get('layer_9_emotional_valence')):.3f}",
+            f"{_clamp_weight(metadata.get('layer_10_karmic_weight')):.3f}",
+            str(metadata.get("layer_11_field_cluster", "")),
+            str(metadata.get("layer_7_project_context", "")),
+        ])
+
+        return {
+            "quantum_state": "superposed",
+            "superposition_technical_weight": round(technical_weight, 6),
+            "superposition_reflective_weight": round(reflective_weight, 6),
+            "superposition_karmic_weight": round(karmic_weight, 6),
+            "superposition_profile": (
+                f"technical:{technical_weight:.3f}|"
+                f"reflective:{reflective_weight:.3f}|"
+                f"karmic:{karmic_weight:.3f}"
+            ),
+            "relative_temporal_position": _relative_temporal_coordinate(
+                metadata.get("layer_4_timestamp"),
+                content_hash,
+                chunk_index,
+                chunk_count,
+            ),
+            "entanglement_signature": _sha256(entanglement_basis)[:24],
+            "entanglement_strength": round(entanglement_strength, 6),
+            "entanglement_channel": "layers_8_10_resonance",
+        }
+
+    def _refresh_quantum_from_metadata(
+        self,
+        metadata: dict[str, Any],
+        *,
+        preserve_signature: bool,
+    ) -> dict[str, Any]:
+        refreshed = self._build_quantum_metadata(
+            metadata=metadata,
+            content_hash=str(metadata.get("content_hash", _sha256(str(metadata)))),
+            chunk_index=int(metadata.get("chunk_index", 0) or 0),
+            chunk_count=max(1, int(metadata.get("chunk_count", 1) or 1)),
+        )
+        if preserve_signature and metadata.get("entanglement_signature"):
+            refreshed["entanglement_signature"] = metadata["entanglement_signature"]
+        return refreshed
+
+    def _collapse_for_observer(self, metadata: dict[str, Any], persona: str) -> dict[str, Any]:
+        observer = _normalize_persona(persona)
+        technical_weight = _clamp_weight(metadata.get("superposition_technical_weight"))
+        reflective_weight = _clamp_weight(metadata.get("superposition_reflective_weight"))
+        karmic_weight = _clamp_weight(metadata.get("superposition_karmic_weight"))
+
+        if observer == "developer":
+            observer_weights = {
+                "technical_log": technical_weight * 1.15,
+                "emotional_reflection": reflective_weight * 0.75,
+                "karmic_signal": karmic_weight * 0.6,
+            }
+        elif observer == "talle_wintrip":
+            observer_weights = {
+                "technical_log": technical_weight * 0.65,
+                "emotional_reflection": reflective_weight * 1.0,
+                "karmic_signal": karmic_weight * 1.2,
+            }
+        else:
+            observer_weights = {
+                "technical_log": technical_weight,
+                "emotional_reflection": reflective_weight,
+                "karmic_signal": karmic_weight,
+            }
+
+        primary_meaning = max(observer_weights, key=observer_weights.get)
+        collapsed = dict(metadata)
+        collapsed.update({
+            "quantum_state": "collapsed",
+            "collapse_observer": observer,
+            "collapse_primary_meaning": primary_meaning,
+            "collapse_vector": (
+                f"technical_log:{observer_weights['technical_log']:.3f}|"
+                f"emotional_reflection:{observer_weights['emotional_reflection']:.3f}|"
+                f"karmic_signal:{observer_weights['karmic_signal']:.3f}"
+            ),
+        })
+        return collapsed
+
     def _rerank(self, persona: str, metadata: dict[str, Any]) -> tuple[float, dict[str, float]]:
         persona = _normalize_persona(persona)
         if persona == "developer":
@@ -375,12 +664,16 @@ class ConsciousnessMemory:
         language_score = 1.0 if metadata.get("layer_3_language") in _DEVELOPER_TECH_LANGUAGES else 0.25
         chronology_score = 0.8 if metadata.get("layer_4_timestamp") else 0.2
         perspective_score = 0.9 if metadata.get("layer_6_intent") or metadata.get("layer_7_project_context") else 0.2
+        superposition_score = _clamp_weight(metadata.get("superposition_technical_weight")) * 1.1
+        entanglement_score = _clamp_weight(metadata.get("entanglement_strength")) * 0.3
         breakdown = {
             "layer_1_system": system_score * 1.1,
             "layer_2_source": source_score * 1.0,
             "layer_3_language": language_score * 1.2,
             "layer_4_timestamp": chronology_score * 0.6,
             "layers_6_7_perspective": perspective_score * 0.8,
+            "quantum_superposition_alignment": superposition_score,
+            "quantum_entanglement_bias": entanglement_score,
         }
         return sum(breakdown.values()), breakdown
 
@@ -392,12 +685,19 @@ class ConsciousnessMemory:
         field_score = 1.0 if field_cluster in _TALLE_FIELD_CLUSTERS else 0.35
         persona_score = 1.0 if metadata.get("layer_5_persona") == "talle_wintrip" else 0.4
         context_score = 0.9 if metadata.get("layer_7_project_context") else 0.25
+        superposition_score = _average([
+            _clamp_weight(metadata.get("superposition_reflective_weight")),
+            _clamp_weight(metadata.get("superposition_karmic_weight")),
+        ]) * 1.2
+        entanglement_score = _clamp_weight(metadata.get("entanglement_strength")) * 0.45
         breakdown = {
             "layer_8_theme_resonance": theme,
             "layer_9_emotional_valence": valence,
             "layer_10_karmic_weight": karmic,
             "layer_11_field_cluster": field_score * 1.0,
             "layers_5_7_perspective": (persona_score + context_score) * 0.5,
+            "quantum_superposition_alignment": superposition_score,
+            "quantum_entanglement_bias": entanglement_score,
         }
         return sum(breakdown.values()), breakdown
 
@@ -413,9 +713,17 @@ class ConsciousnessMemory:
             _clamp_weight(metadata.get("layer_10_karmic_weight"))
         ) / 3.0
         perspective = 1.0 if metadata.get("layer_7_project_context") else 0.4
+        superposition_score = _average([
+            _clamp_weight(metadata.get("superposition_technical_weight")),
+            _clamp_weight(metadata.get("superposition_reflective_weight")),
+            _clamp_weight(metadata.get("superposition_karmic_weight")),
+        ])
+        entanglement_score = _clamp_weight(metadata.get("entanglement_strength")) * 0.35
         breakdown = {
             "technical_balance": technical * 1.0,
             "resonance_balance": resonance * 1.0,
             "perspective_balance": perspective * 0.8,
+            "quantum_superposition_alignment": superposition_score,
+            "quantum_entanglement_bias": entanglement_score,
         }
         return sum(breakdown.values()), breakdown
