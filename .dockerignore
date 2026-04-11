@@ -1,0 +1,12 @@
+.venv
+venv
+__pycache__
+.git
+*.pyc
+*.pyo
+*.pyd
+.env
+node_modules
+regiekamer/.build
+build
+dist

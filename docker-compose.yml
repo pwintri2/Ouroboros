@@ -1,22 +1,28 @@
-version: "3.8"
 services:
   wintrip:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: wintrip_ai
     working_dir: /app
     volumes:
-      - ./:/app:rw
-      - ./regiekamer:/app/regiekamer:ro
       - ./wintrip_brain:/app/wintrip_brain:rw
       - ./data:/app/data:rw
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "8000:8000"
+      - "8080:8000"
     environment:
       - PYTHONUNBUFFERED=1
-    command: sh -c "pip install --no-cache-dir -r controller/requirements.txt && uvicorn controller.main:app --host 0.0.0.0 --port 8000"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
+  tunnel:
+    image: cloudflare/cloudflared:2024.12.0
+    container_name: wintrip_tunnel
+    command: tunnel --url http://wintrip_ai:8000
+    depends_on:
+      - wintrip
+    restart: unless-stopped

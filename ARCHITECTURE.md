@@ -28,4 +28,12 @@ WintripAI is a local-first autonomous AI system utilizing an OODA (Observe, Orie
 2.  **Frontend Changes:** You may not have access to compile the macOS App. Stick strictly to Swift/SwiftUI conventions. **Never use raw ObjC string mapping (`offsetBy`, `NSRange`)**. Use `safeTruncated(to:)`.
 3.  **Do Not Touch Database Paths:** Leave `CHROMA_PERSIST_DIR` exactly as is.
 
+## Multi-Agent Runtime
+- Hoofdagent/orchestrator gebruikt standaard **Gemini CLI** voor integratie en escalatie.
+- Orchestrator default model: `gemini-2.5-pro`.
+- Uitvoerende sub-agenten (**Wintrip Developer**, **Wintrip UI**, **Wintrip Voorzitter**, **Wintrip Kritiek**) gebruiken standaard **lokale Ollama**.
+- Standaard sub-agentmodel: `gemma4:latest`.
+- Inter-agent communicatie gebruikt verplicht `WINTRIP-AGENT/1.0`.
+- Alle code-executie en validatie loopt via de Docker-sandbox.
+
 *Agent instruction: Always read this file before preparing a Pull Request.*

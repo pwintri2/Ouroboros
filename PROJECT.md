@@ -23,6 +23,15 @@ De AI-agent is niet passief, maar beschikt over een **Agentic Router** die op ba
 -   **Mail Fetcher**: Leest op verzoek recente e-mails via een beveiligde IMAP-verbinding.
 -   **File Parser**: Analyseert lokale documenten (.txt, .json, .md, .eml) en ChatGPT exports.
 
+## 🤝 Multi-Agent Team
+- **Hoofdagent / Orchestrator**: integratie, synthese, escalatie via Gemini CLI
+- **Agent 1 — Wintrip Developer (Backend)**: FastAPI / Python / providers / sandbox backend
+- **Agent 2 — Wintrip UI (Frontend)**: Regiekamer / IDE / UI-contracten
+- **Agent 3 — Wintrip Voorzitter (QA & Tester)**: unit tests / sandbox validatie / regressies
+- **Agent 4 — Wintrip Kritiek (Docs/Planning)**: status / roadmap / architectuurdocs
+
+Alle sub-agenten draaien standaard lokaal via Ollama met model `gemma4:latest`.
+
 ## 🚀 Het project opstarten
 
 1.  **Vereisten**:

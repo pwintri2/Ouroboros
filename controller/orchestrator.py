@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import json
 from datetime import datetime
 
 try:
@@ -10,6 +11,9 @@ try:
     from controller.groq_client import GroqClient
     from controller.knowledge_base import KnowledgeBase
     from controller.web_ingest import ingest_url, fetch_url_text
+    from controller.provider_router import route_provider
+    from controller.agent_runtime import get_orchestrator_config, get_agent_configs
+    from controller.agent_protocol import make_envelope
 except ImportError:
     try:
         from reflector import Reflector
@@ -18,8 +22,12 @@ except ImportError:
         from groq_client import GroqClient
         from knowledge_base import KnowledgeBase
         from web_ingest import ingest_url, fetch_url_text
+        from provider_router import route_provider
+        from agent_runtime import get_orchestrator_config, get_agent_configs
+        from agent_protocol import make_envelope
     except ImportError as e:
         print("--- [DEBUG] IMPORTERROR IN ORCHESTRATOR ---:", e)
+
 
 class TaskModel:
     def __init__(self, task_name, max_iterations=3):
@@ -45,6 +53,7 @@ class TaskModel:
         elif result_classification == "YELLOW":
             self.status = "INVESTIGATING"
 
+
 class ResultClassifier:
     def __init__(self, reflector=None):
         self.reflector = reflector or Reflector()
@@ -53,33 +62,28 @@ class ResultClassifier:
         eval_result = self.reflector.evaluate_action(task_name, raw_output)
         ref_type = eval_result.get("type", "insight")
         lowered = raw_output.lower()
-        
-        # Check against basic python exceptions (Tracebacks always mean a crash)
+
         if "traceback" in lowered or "syntaxerror:" in lowered:
             return "RED", "Reflector overrule: Harde exception (Traceback) gevonden in de output."
-            
+
         if status == "success":
-            # Als Exit Code 0 is (geen systeemcrash) en er zijn geen tracebacks:
-            # Subprocess/PIP protectie: Pip output bevat vaak MB/s snelheden die de anti-hallucinatie bug triggeren.
             if any(pip_str in lowered for pip_str in ["collecting ", "downloading ", "installing collected packages", "successfully installed"]):
                 return "GREEN", "✅ Systeem Logica: Succesvolle package installatie (PIP) gedetecteerd in output. [Reflector overrule]"
 
-            # Cheat/LLM drift detectie:
             if any(num in lowered for num in ["48.0", "48", "50", "50.0"]) and not any(w in lowered for w in ["zero", "nul", "fout", "waarschuwing", "exception", "niet mogelijk"]):
                 return "RED", "Logic Failure: Hallucinatie / Smokkelen gedetecteerd. Je hebt de logica of wiskunde vervalst om output te forceren in plaats van de onvermijdelijke Exception af te vangen!"
 
-            # Beschouw sierlijke exception handling (waarschuwingen geprint) als een GREEN succes!
             if ref_type in ["failure", "insight"]:
                 return "GREEN", "✅ Graceful Exception Handling: Applicatie is veilig afgesloten en fout is opgevangen. [Reflector overrule]"
             return "GREEN", eval_result.get("insight", "Succesvolle executie.")
-            
-        # Voor overige statussen (zoals timeout of force-crash)
+
         if ref_type == "success":
             return "GREEN", eval_result.get("insight", "")
         elif ref_type == "failure":
             return "RED", eval_result.get("insight", "")
         else:
             return "YELLOW", eval_result.get("insight", "")
+
 
 class WintripOrchestrator:
     def __init__(self, ollama_client=None, sandbox=None, reflector=None, kb=None, escalator=None):
@@ -89,27 +93,101 @@ class WintripOrchestrator:
         self.reflector = reflector or Reflector()
         self.kb = kb or KnowledgeBase()
         self.classifier = ResultClassifier(reflector=self.reflector)
-        
+        self.runtime = get_orchestrator_config()
+        self.agent_configs = get_agent_configs(project_root=os.getenv("WINTRIP_PROJECT_ROOT", "/app"))
+        self.active_model = self.runtime.get("provider", "gemini")
+
     def _extract_code(self, response_text):
         match = re.search(r'```(?:python)?(?:.*?)\n(.*?)\n```', response_text, re.DOTALL | re.IGNORECASE)
         if match:
             return match.group(1).strip()
-        # Fallback if no block is provided but it looks like raw python
         return response_text.strip()
 
+    def _task_id(self):
+        return datetime.utcnow().strftime("WT-%Y%m%d-%H%M%S")
+
+    def review_subagent_result(self, envelope: dict) -> dict:
+        summary = envelope.get("summary", "")
+        risks = envelope.get("risks", [])
+        return {
+            "accepted": True,
+            "summary": summary,
+            "risks": risks,
+            "needs_human": envelope.get("requires_human", False),
+        }
+
+    def assign_agent_task(self, agent_id: str, task: str) -> dict:
+        cfg = self.agent_configs[agent_id]
+        task_id = self._task_id()
+        system_prompt = (
+            f"Je bent {cfg.label} binnen WintripAI. "
+            f"Werk uitsluitend binnen jouw ownership. "
+            f"Lever ALTIJD JSON terug volgens WINTRIP-AGENT/1.0. "
+            f"Provider default: {cfg.provider}. Model default: {cfg.model}."
+        )
+
+        raw = route_provider(cfg.provider, task, cfg.model, system_prompt=system_prompt)
+
+        return make_envelope(
+            agent=cfg.label,
+            task_id=task_id,
+            type="result",
+            summary=raw[:1000],
+            owned_paths=cfg.owned_paths,
+            read_paths=[],
+            write_paths=[],
+            outputs=[raw],
+            risks=[],
+            needs_review=True,
+            requires_human=False,
+        )
+
+    def orchestrate_multi_agent(self, task: str) -> dict:
+        outputs = []
+        agent_order = [
+            "wintrip-developer-backend",
+            "wintrip-ui-frontend",
+            "wintrip-voorzitter-qa-tester",
+            "wintrip-kritiek-docs-planning",
+        ]
+        for agent_id in agent_order:
+            outputs.append(self.assign_agent_task(agent_id, task))
+
+        synthesis_prompt = (
+            "Je bent de Hoofdagent van WintripAI. "
+            "Vat de volgende agentresultaten samen, valideer conflicten, "
+            "en geef een integratie-advies. "
+            "Escaleer naar Philip als ownership, sandbox-veiligheid of runtimeconfig onduidelijk is.\n\n"
+            + json.dumps(outputs, ensure_ascii=False, indent=2)
+        )
+        review = route_provider(
+            self.runtime.get("provider", "gemini"),
+            synthesis_prompt,
+            self.runtime.get("model", "gemini-2.5-pro"),
+            system_prompt="Je bent de Hoofdagent/Integrator van WintripAI. Houd je strikt aan de ownership matrix en Human-in-the-Loop.",
+        )
+        return {
+            "status": "SUCCESS",
+            "mode": "multi-agent",
+            "orchestrator_provider": self.runtime.get("provider", "gemini"),
+            "orchestrator_model": self.runtime.get("model", "gemini-2.5-pro"),
+            "agents": outputs,
+            "review": review,
+        }
+
     def execute_task(self, prompt, max_iterations=3):
+        if os.getenv("WINTRIP_MULTI_AGENT_ENABLED", "1") == "1":
+            return self.orchestrate_multi_agent(prompt)
+
         print(f"\n🚀 [Regiekamer]: Start Autonome OODA Loop voor taak: '{prompt}'")
         task = TaskModel(task_name=prompt, max_iterations=max_iterations)
-        
-        # --- OBSERVE & ORIENT ---
+
         print("👀 [Observe & Orient]: Scannen op web links en ophalen van geheugen...")
-        
-        # 1. URL Snipe-Scraping & The Echo Chamber Break
+
         urls = re.findall(r'(https?://[^\s]+)', prompt)
         full_context = ""
-        
+
         if urls:
-            # We skip generic RAG entirely if a URL is provided, preventing echo chamber pollution!
             full_context += "\n[GEHEUGEN CONTEXT]\nSpecifieke letterlijke web-inhoud direct gescraapt uit je taak:\n"
             for url in urls:
                 print(f"🌍 [Orient]: URL gedetecteerd, sniper-scrape wordt uitgevoerd: {url}")
@@ -124,7 +202,6 @@ class WintripOrchestrator:
                     print(f"⚠️ [Orient]: Scrapen mislukt, fallback: we negeren deze URL tijdelijk. ({e})")
             full_context += "[/GEHEUGEN CONTEXT]\n\nBaseer je oplossing uitsluitend op deze bovenstaande web-documentatie.\n"
         else:
-            # 2. Geen URLs? Fallback op normale RAG Context
             memories = self.kb.search_detailed(prompt, n_results=3)
             if memories:
                 full_context = "\n[GEHEUGEN CONTEXT]\nEr is krachtige relevante programmeerkennis gevonden in de Hippocampus:\n"
@@ -132,7 +209,6 @@ class WintripOrchestrator:
                     full_context += f"- Bron ({m['metadata'].get('source_type', 'unknown')}): {m['content']}\n\n"
                 full_context += "[/GEHEUGEN CONTEXT]\n\nGebruik deze kennis strikt bij het schrijven van je oplossing als het relevant is.\n"
 
-        # Initial Fast-Fail Developer prompt
         SANDBOX_CODE_RULES = """
 KRITIEKE REGELS VOOR CODE GENERATIE:
 1. Schrijf UITSLUITEND zelfstandige Python scripts. Importeer alleen modules uit de Python standaardbibliotheek (os, sys, json, csv, math, datetime, re, etc.) tenzij je eerst controleert met pip install.
@@ -141,7 +217,7 @@ KRITIEKE REGELS VOOR CODE GENERATIE:
 4. Bestanden die je wilt bewaren, sla op in /app/data/ (dat is de enige gemounte map).
 5. Gebruik GEEN relatieve paden. Gebruik /app/data/ voor alle file I/O.
 """
-        
+
         system_prompt = (
             "Je bent een expert Python Developer. Geef UITSLUITEND werkende Python code in een ```python blok. "
             "Geen uitleg voor of na de code. Importeer sys/os if needed. Zorg dat de logica print statements heeft zodat output gelezen kan worden.\n\n"
@@ -153,15 +229,10 @@ KRITIEKE REGELS VOOR CODE GENERATIE:
             f"{SANDBOX_CODE_RULES}"
         )
         current_prompt = f"Schrijf een concreet Python script dat exact het volgende oplost:\n\n{prompt}\n{full_context}"
-        
+
         while task.status in ["PENDING", "RETRYING", "INVESTIGATING"]:
             print(f"\n--- 🔄 OODA Iteratie {task.iteration_count + 1}/{task.max_iterations} ---")
-            
-            # Observe/Orient is already done by the state machine receiving the contextual input.
-            
-            # 1. Decide: Genereer Code
-            
-            # RAG enrichment — inject memory context before LLM call
+
             rag_results = self.kb.search(current_prompt, n_results=5)
             if rag_results:
                 memory_block = "\n\n[GEHEUGEN CONTEXT - relevante kennis uit ChromaDB]\n"
@@ -179,28 +250,23 @@ KRITIEKE REGELS VOOR CODE GENERATIE:
                 ai_response = self.ollama.chat(enriched_message, system_prompt=system_prompt, model="llama3.1:latest")
 
             python_code = self._extract_code(ai_response)
-            
-            # API failure protection
+
             if python_code.startswith("LOKALE OLLAMA ERROR") or python_code.startswith("CLOUD GROQ ERROR"):
                 print(f"⚠️ [API FOUT]: {python_code}")
-                # We simuleren direct een mislukking zonder crashende Sandbox executie
                 task.record_iteration("YELLOW", f"LLM API verbinding gefaald: {python_code}")
                 continue
-            
-            # 2. Act: Sandbox Excecutie
+
             print("⚙️  [Act]: Uitvoeren in Sandbox...")
             try:
                 result_dict = self.sandbox.run_python_code(python_code, timeout=15, return_dict=True, task_name=prompt)
             except Exception as e:
                 result_dict = {"status": "error", "logs": str(e), "exit_code": -1}
-                
+
             raw_output = result_dict.get('logs', '')
             status = result_dict.get('status', 'error')
-            
-            # Print output explicitly for terminal users
+
             print(f"📄 [Sandbox Output]:\n{'-'*20}\n{raw_output.strip()}\n{'-'*20}")
-            
-            # 3. Reflect: Classificeer Output
+
             print("🪞 [Reflect]: Classificatie resultaat...")
             if status == "success":
                 color, insight = self.classifier.classify_result(prompt, raw_output, status="success")
@@ -210,18 +276,17 @@ KRITIEKE REGELS VOOR CODE GENERATIE:
             else:
                 color, insight = self.classifier.classify_result(prompt, raw_output, status="error")
                 if color == "GREEN":
-                     color = "RED" # Forceer red bij harde sandbox fails
+                    color = "RED"
                 insight = f"Runtime Crash (Exit code {result_dict.get('exit_code')}): {insight}"
-            
+
             print(f"📊 [Status Check]: Klassering = {color} | Inzicht = {insight}")
-            
-            # 4. Iterate: Werk states bij
+
             task.record_iteration(color, insight)
-            
+
             if task.status == "COMPLETED":
                 print(f"✅ [Regiekamer]: Taak voltooid na {task.iteration_count} iteraties.")
                 return {"status": "SUCCESS", "final_output": raw_output, "history": task.history}
-            
+
             elif task.status in ["RETRYING", "INVESTIGATING"]:
                 print(f"⚠️ [Regiekamer]: Herstelactie ingezet aan de hand van Reflectie-inzichten.")
                 current_prompt = (
@@ -231,9 +296,9 @@ KRITIEKE REGELS VOOR CODE GENERATIE:
                     f"Los exact deze fouten op voor de opdracht '{prompt}' en schrijf de verbeterde complete code binnen een ```python blok. "
                     f"BE REMINDED: Do NOT alter the constraints or cheat the math to avoid errors. Handle the exceptions gracefully if they are inevitable!"
                 )
-                
+
             elif task.status == "FAILED":
                 print(f"❌ [Regiekamer]: Taak gefaald en maximaal aantal pogingen bereikt ({task.iteration_count} iteraties).")
                 return {"status": "FAILED", "final_output": raw_output, "history": task.history}
-                
+
         return {"status": "UNKNOWN", "history": task.history}

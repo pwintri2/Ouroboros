@@ -38,7 +38,8 @@ except ImportError:
 
 load_dotenv()
 
-from provider_router import route_gemini, route_claude, check_providers
+from provider_router import route_gemini, route_claude, route_provider, check_providers
+from agent_runtime import get_orchestrator_config, get_agent_configs
 app = FastAPI()
 
 app.add_middleware(
@@ -56,12 +57,16 @@ mail_executor = MailExecutor()
 
 # Regiekamer / Orchestrator Instantie (Hergebruikt sandbox en reflector uit de router array)
 orchestrator = WintripOrchestrator(ollama_client=ollama, sandbox=router.sandbox, reflector=router.reflector, kb=kb)
-orchestrator.active_model = "ollama"
+orchestrator_runtime = get_orchestrator_config()
+agent_runtime = get_agent_configs(project_root=os.getenv("WINTRIP_PROJECT_ROOT", "/app"))
+orchestrator.active_model = orchestrator_runtime.get("provider", "gemini")
 
 # Expose important objects on app.state for API route modules
 app.state.orchestrator = orchestrator
 app.state.ollama = ollama
 app.state.kb = kb
+app.state.orchestrator_runtime = orchestrator_runtime
+app.state.agent_runtime = agent_runtime
 
 vergadertafel_state: dict = {}
 
@@ -78,6 +83,11 @@ class Query(BaseModel):
     system_prompt: Optional[str] = None
     history: Optional[List[Dict[str, str]]] = None
     files: Optional[List[str]] = None # <--- DIT IS HET PAPIERTJE!
+
+
+# Backward-compatible Request model used by some endpoints
+class QueryRequest(Query):
+    provider: Optional[str] = None
 
 class PlanExecution(BaseModel):
     plan_text: str
@@ -106,6 +116,13 @@ async def health():
 async def get_models():
     models = ollama.list_models()
     return {"models": models}
+
+@app.get("/agent/config")
+async def get_agent_config():
+    return {
+        "orchestrator": orchestrator_runtime,
+        "agents": {k: vars(v) for k, v in agent_runtime.items()}
+    }
 
 @app.post("/keep-alive")
 async def keep_alive():
@@ -230,16 +247,14 @@ async def commit_save(req: CommitSaveRequest):
 
 @app.post("/vergadertafel/chat")
 async def vergadertafel_chat(query: QueryRequest):
-    """Vergadertafel chat met provider-routing (Gemini/Claude/Ollama)."""
+    """Vergadertafel chat met provider-routing (OpenAI/Gemini/Claude/Ollama)."""
     provider = (getattr(query, "provider", None) or "ollama").lower()
     model    = getattr(query, "model", None) or ""
     sys_p    = getattr(query, "system_prompt", None)
-    if provider == "gemini":
-        resp = route_gemini(query.prompt, model=model or "gemini-2.5-pro", system_prompt=sys_p)
-    elif provider == "claude":
-        resp = route_claude(query.prompt, model=model or "claude-opus-4-6", system_prompt=sys_p)
+    if provider in {"openai", "codex", "chatgpt", "gemini", "claude", "antigravity"}:
+        resp = route_provider(provider, query.prompt, model or ("gpt-5.4" if provider in {"openai", "codex", "chatgpt"} else ""), system_prompt=sys_p)
     else:
-        resp = router.route_request(query.prompt, model=model or "llama3.1:latest", history=getattr(query, "history", []) or [])
+        resp = router.route_request(query.prompt, model=model or "gemma4:latest", history=getattr(query, "history", []) or [])
     return {"response": resp, "provider": provider}
 
 @app.get("/providers")
@@ -289,4 +304,6 @@ except Exception:
     pass
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # When running directly with `python controller/main.py` bind to 0.0.0.0
+    # so the container publishes the port to the host correctly.
+    uvicorn.run(app, host="0.0.0.0", port=8000)
