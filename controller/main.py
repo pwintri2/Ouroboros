@@ -5,13 +5,14 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import os
 import sys
 import uvicorn
-from fastapi import FastAPI, HTTPException
+import asyncio
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 # Forceer het juiste pad
 project_root = "/app"
@@ -40,6 +41,7 @@ load_dotenv()
 
 from provider_router import route_gemini, route_claude, route_provider, check_providers
 from agent_runtime import get_orchestrator_config, get_agent_configs
+import subprocess
 app = FastAPI()
 
 app.add_middleware(
@@ -102,10 +104,14 @@ class InviteRequest(BaseModel):
 
 class ModelSwitchRequest(BaseModel):
     model: str
+    provider: Optional[str] = None
 
 class CommitSaveRequest(BaseModel):
     filename: str
     content: str
+
+class RuntimeActionRequest(BaseModel):
+    action: str
 
 @app.get("/status")
 @app.get("/health")
@@ -127,6 +133,41 @@ async def get_agent_config():
 @app.post("/keep-alive")
 async def keep_alive():
     return {"status": "alive"}
+
+@app.get("/api/search")
+async def api_search(q: str, limit: int = 5):
+    if not q.strip():
+        return {"query": q, "results": []}
+    try:
+        results = kb.search(q, n_results=max(1, min(limit, 10)))
+        return {"query": q, "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/upload")
+async def api_upload(file: UploadFile = File(...), ingest: bool = True):
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "uploads"))
+    os.makedirs(uploads_dir, exist_ok=True)
+    filename = os.path.basename(file.filename or "upload.bin")
+    target = os.path.join(uploads_dir, filename)
+    content = await file.read()
+    with open(target, "wb") as fh:
+        fh.write(content)
+
+    ingested = False
+    if ingest:
+        try:
+            ingested = kb.ingest_file(target)
+        except Exception:
+            ingested = False
+
+    return {
+        "status": "ok",
+        "filename": filename,
+        "path": target,
+        "size": len(content),
+        "ingested": ingested
+    }
 
 @app.post("/ask")
 @app.post("/process")
@@ -177,11 +218,23 @@ async def get_table_state(table_id: str):
 
 @app.post("/model/switch")
 async def switch_model(req: ModelSwitchRequest):
+    provider = (req.provider or "").lower().strip()
     orchestrator.active_model = req.model
-    # Also update ollama instance default if it's an ollama model
-    if req.model != 'chatgpt' and req.model != 'claude' and req.model != 'gemini' and req.model != 'groq':
+
+    if provider in {"gemini", "groq", "claude", "openai", "codex", "chatgpt"}:
+        orchestrator.runtime["provider"] = provider
+    elif req.model not in {'chatgpt', 'claude', 'gemini', 'groq'}:
         ollama.model = req.model
-    return {"status": "ok", "active_model": req.model}
+        orchestrator.runtime["provider"] = "ollama"
+
+    orchestrator.runtime["model"] = req.model
+    app.state.orchestrator_runtime = orchestrator.runtime
+
+    return {
+        "status": "ok",
+        "active_model": req.model,
+        "provider": orchestrator.runtime.get("provider", "ollama")
+    }
 
 @app.post("/api/orchestrate")
 @app.post("/orchestrate")
@@ -196,6 +249,23 @@ async def orchestrate_task(request: OrchestrateRequest):
     
     # We returnen direct de status (Success/Failed) plus eventueel final code.
     return result
+
+@app.get("/api/stream/demo")
+async def stream_demo(prompt: str = "Wintrip demo stream"):
+    async def event_gen():
+        chunks = [
+            f"Observer intake: {prompt}",
+            "Wintrip Developer onderzoekt backend-impact.",
+            "Wintrip UI vertaalt dit naar Mission Control componenten.",
+            "Wintrip Voorzitter valideert de sandbox-route.",
+            "Voorzitter summary gereed."
+        ]
+        for idx, chunk in enumerate(chunks):
+            yield f"data: {chunk}\n\n"
+            await asyncio.sleep(0.45)
+        yield "event: done\ndata: complete\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 @app.post("/team/discuss")
 async def discuss_task(request: TeamTask):
@@ -244,6 +314,35 @@ async def commit_save(req: CommitSaveRequest):
     else:
         return {"status": "Error", "detail": result}
 
+@app.post("/commit_preview")
+async def commit_preview(req: CommitSaveRequest):
+    from controller.output_manager import preview_file_creation
+    return preview_file_creation(req.filename, req.content)
+
+@app.get("/runtime/status")
+async def runtime_status():
+    providers = check_providers()
+    sandbox_ok = bool(getattr(router, 'sandbox', None) and getattr(router.sandbox, 'client', None))
+    return {
+        "status": "ok",
+        "orchestrator": orchestrator.runtime,
+        "providers": providers,
+        "sandbox": {"available": sandbox_ok},
+        "docker_socket": os.path.exists('/var/run/docker.sock')
+    }
+
+@app.post("/runtime/action")
+async def runtime_action(req: RuntimeActionRequest):
+    action = (req.action or '').strip().lower()
+    if action == 'docker_ps':
+        try:
+            r = subprocess.run(['docker', 'ps', '--format', '{{.Names}}|{{.Status}}'], capture_output=True, text=True, timeout=10)
+            lines = [line for line in r.stdout.splitlines() if line.strip()]
+            return {"status": "ok", "action": action, "output": lines}
+        except Exception as e:
+            return {"status": "error", "action": action, "detail": str(e)}
+    return {"status": "error", "action": action, "detail": "Unsupported runtime action"}
+
 
 @app.post("/vergadertafel/chat")
 async def vergadertafel_chat(query: QueryRequest):
@@ -260,30 +359,32 @@ async def vergadertafel_chat(query: QueryRequest):
 @app.get("/providers")
 async def get_providers():
     from provider_router import check_providers
-    result = check_providers()
-    try:
-        import requests as _r
-        r2 = _r.get("http://localhost:11434/api/tags", timeout=3)
-        result["ollama"] = {"available": True, "models": [m["name"] for m in r2.json().get("models", [])]}
-    except Exception:
-        result["ollama"] = {"available": False, "models": []}
-    return result
+    return check_providers()
 
 
-# Mount the Regiekamer frontend (if present) at /static and serve SPA root
+# Mount the preferred frontend (webui/dist if built, otherwise regiekamer) and serve SPA root
 try:
-    static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "regiekamer"))
-    if os.path.isdir(static_dir):
-        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    regiekamer_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "regiekamer"))
+    webui_dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "webui", "dist"))
+    webui_assets_dir = os.path.join(webui_dist_dir, "assets")
 
-        @app.get("/")
-        async def serve_ui():
-            index = os.path.join(static_dir, "index.html")
-            if os.path.exists(index):
-                return FileResponse(index)
-            return {"status": "no-ui", "message": "Regiekamer UI not found"}
+    if os.path.isdir(regiekamer_dir):
+        app.mount("/static", StaticFiles(directory=regiekamer_dir), name="static")
+
+    if os.path.isdir(webui_assets_dir):
+        app.mount("/assets", StaticFiles(directory=webui_assets_dir), name="webui-assets")
+
+    @app.get("/")
+    async def serve_ui():
+        webui_index = os.path.join(webui_dist_dir, "index.html")
+        regiekamer_index = os.path.join(regiekamer_dir, "index.html")
+        if os.path.exists(webui_index):
+            return FileResponse(webui_index)
+        if os.path.exists(regiekamer_index):
+            return FileResponse(regiekamer_index)
+        return {"status": "no-ui", "message": "No frontend found"}
 except Exception as _e:
-    print("[Regiekamer] mounting failed:", _e)
+    print("[Frontend] mounting failed:", _e)
 
 
 @app.get("/api/health")

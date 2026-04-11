@@ -13,9 +13,20 @@ services:
       - "8080:8000"
     environment:
       - PYTHONUNBUFFERED=1
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - WINTRIP_GEMINI_CLI=/usr/local/bin/gemini
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3); sys.exit(0)",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

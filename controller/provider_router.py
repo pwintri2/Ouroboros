@@ -1,12 +1,21 @@
 """WintripAI Provider Router — CLI/API-gebaseerde multi-AI routing."""
+import json
 import os
 import subprocess
+import urllib.request
 from typing import Optional
 
 GEMINI_MODELS = ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
 OPENAI_MODELS = ["gpt-5.4", "gpt-5", "gpt-4.1"]
 OLLAMA_MODELS = ["gemma4:latest", "llama3.1:latest", "qwen2.5:latest", "phi4:latest"]
+
+
+def _ollama_tags_url() -> str:
+    base = (os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").strip()
+    if base.endswith("/api"):
+        base = base[:-4]
+    return f"{base}/api/tags"
 
 
 def _run(cmd: list, timeout: int = 90) -> str:
@@ -112,7 +121,23 @@ def check_providers() -> dict:
             result[name] = {"available": False, "version": str(e), "models": []}
 
     result["codex"] = result.get("openai", {"available": False, "version": "", "models": OPENAI_MODELS})
-    result["ollama"] = {"available": True, "models": OLLAMA_MODELS}
+
+    try:
+        with urllib.request.urlopen(_ollama_tags_url(), timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        models = [m.get("name") for m in payload.get("models", []) if m.get("name")]
+        result["ollama"] = {
+            "available": True,
+            "version": "host-api",
+            "models": models or OLLAMA_MODELS,
+        }
+    except Exception as e:
+        result["ollama"] = {
+            "available": False,
+            "version": str(e),
+            "models": [],
+        }
+
     result["antigravity"] = {
         "available": bool(os.getenv("WINTRIP_ANTIGRAVITY_CMD", "").strip()),
         "version": "env-configured",

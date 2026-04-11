@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+NODE_BIN="$(command -v node || true)"
+if [ -z "$NODE_BIN" ]; then
+  NODE_BIN="/usr/bin/node"
+fi
+
+exec "$NODE_BIN" /opt/gemini-cli/node_modules/@google/gemini-cli/bundle/gemini.js "$@"
