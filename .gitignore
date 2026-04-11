@@ -8,6 +8,17 @@ __pycache__/
 venv/
 .env
 
+# Node / Frontend
+node_modules/
+webui/node_modules/
+dist/
+webui/dist/
+
+# Runtime data
+webui/.vite/
+data/chats/
+data/uploads/
+
 # Xcode / Swift
 .build/
 DerivedData/
@@ -21,5 +32,9 @@ sandbox/*
 !sandbox/.gitkeep
 data/tijdelijke_mail_dumps/*
 data/log_exports/*
+
+# Legacy / nested snapshots
+wintripai/
+docker-image/
 
 .aider*
