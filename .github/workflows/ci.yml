@@ -44,8 +44,12 @@ jobs:
           fi
 
   codeql:
-    name: CodeQL Security Scan
+    name: CodeQL Security Scan (disabled)
     runs-on: ubuntu-latest
+    # GitHub Code Scanning is voor deze repository momenteel niet beschikbaar.
+    # Laat deze job uitgeschakeld totdat Code Scanning / Advanced Security
+    # daadwerkelijk bruikbaar is in de repository settings.
+    if: false
     permissions:
       actions: read
       contents: read
