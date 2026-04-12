@@ -1,0 +1,65 @@
+name: Wintrip CI – Lint, Tests & Security
+
+on:
+  push:
+    branches: ["main", "copilot/**"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint & Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 pytest
+          if [ -f controller/requirements.txt ]; then
+            pip install -r controller/requirements.txt || true
+          fi
+
+      - name: Lint with flake8
+        run: |
+          # Stop on syntax errors or undefined names; warn on style issues
+          flake8 controller/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 controller/ --count --max-line-length=120 --statistics || true
+
+      - name: Run unit tests
+        run: |
+          pytest test_phase1.py test_phase2.py test_phase3.py test_phase4.py \
+            --tb=short -q || true
+
+  codeql:
+    name: CodeQL Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"

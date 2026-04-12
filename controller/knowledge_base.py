@@ -10,7 +10,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-CHROMA_PERSIST_DIR = "/Users/philip/wintripai/wintrip_brain"
+_DEFAULT_BRAIN_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wintrip_brain"
+)
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", _DEFAULT_BRAIN_DIR)
 CHROMA_COLLECTION_NAME = "wintrip_knowledge"
 
 class KnowledgeBase:
