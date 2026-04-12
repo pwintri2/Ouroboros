@@ -33,7 +33,7 @@ class Reflector:
            any(keyword in task_lower for keyword in ["error", "readtimeout", "timeout", "gefaald", "fout"]):
             reflection_type = "failure"
             insight_text = f"De actie '{task_name}' is gefaald of deels gestrand (Mogelijke timeout of exception). Mogelijke oorzaak te vinden in de log output."
-        elif any(keyword in output_lower for keyword in ["success", "passed", "done", "voltooid"]):
+        elif any(keyword in output_lower for keyword in ["success", "passed", "done"]):
             reflection_type = "success"
             insight_text = f"De actie '{task_name}' lijkt succesvol afgerond."
         else:

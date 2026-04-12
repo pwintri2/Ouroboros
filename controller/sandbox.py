@@ -140,18 +140,20 @@ class SandboxExecutor:
                 os.remove(script_path)
                 
         if result_dict["status"] in ["error", "timeout"]:
-            print(f"🪞 [Sandbox]: Failover log opslaan voor latere inspectie...")
-            self.reflector.evaluate_action(
-                task_name=f"{task_name} ({result_dict['error_type']})",
-                result_raw_output=result_dict["logs"],
-                expected_outcome=f"Exit code 0 binnen {timeout} seconden"
-            )
+            if getattr(self, "reflector", None) and hasattr(self.reflector, "evaluate_action"):
+                print(f"🪞 [Sandbox]: Failover log opslaan voor latere inspectie...")
+                self.reflector.evaluate_action(
+                    task_name=f"{task_name} ({result_dict['error_type']})",
+                    result_raw_output=result_dict["logs"],
+                    expected_outcome=f"Exit code 0 binnen {timeout} seconden"
+                )
         elif result_dict["status"] == "success":
-            self.reflector.evaluate_action(
-                task_name=task_name,
-                result_raw_output=result_dict["logs"],
-                expected_outcome=f"Exit code 0 binnen {timeout} seconden"
-            )
+            if getattr(self, "reflector", None) and hasattr(self.reflector, "evaluate_action"):
+                self.reflector.evaluate_action(
+                    task_name=task_name,
+                    result_raw_output=result_dict["logs"],
+                    expected_outcome=f"Exit code 0 binnen {timeout} seconden"
+                )
             
         print("="*40 + "\n")
         
