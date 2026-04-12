@@ -17,28 +17,28 @@ export function TelemetryPanel() {
         id: 'main',
         label: 'main.py',
         value: String(lookup.get('main_py')?.value ?? 'RUNNING'),
-        meta: 'CPU 12% | MEM 450MB',
+        meta: lookup.get('main_py')?.source ? String(lookup.get('main_py')?.source) : 'CPU 12% | MEM 450MB',
         status: lookup.get('main_py')?.status ?? 'ok'
       },
       {
         id: 'chroma',
         label: 'ChromaDB',
         value: String(lookup.get('chromadb')?.value ?? 'CONNECTED'),
-        meta: 'Latency 5ms',
+        meta: lookup.get('chromadb')?.source ? String(lookup.get('chromadb')?.source) : 'Latency 5ms',
         status: lookup.get('chromadb')?.status ?? 'ok'
       },
       {
         id: 'docker',
         label: 'Docker Sandbox',
         value: String(lookup.get('sandbox')?.value ?? 'ACTIVE'),
-        meta: 'Containers: 3 | Network: SECURE',
+        meta: lookup.get('sandbox')?.source ? String(lookup.get('sandbox')?.source) : 'Containers: 3 | Network: SECURE',
         status: lookup.get('sandbox')?.status ?? 'active'
       },
       {
         id: 'vps',
         label: 'VPS CNS',
         value: String(lookup.get('latency')?.value ?? 'ONLINE'),
-        meta: 'Edge uplink nominal',
+        meta: lookup.get('latency')?.source ? String(lookup.get('latency')?.source) : 'Edge uplink nominal',
         status: lookup.get('latency')?.status ?? 'ok'
       }
     ]

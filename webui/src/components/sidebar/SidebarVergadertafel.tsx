@@ -4,6 +4,7 @@ import { usePersonaStore } from '../../stores/personaStore'
 import { ChatHistoryPanel } from './ChatHistoryPanel'
 import { MeetingTableControls } from './MeetingTableControls'
 import { PersonaCard } from './PersonaCard'
+import { PersonaEditorCard } from './PersonaEditorCard'
 import { PersonaManagerCard } from './PersonaManagerCard'
 import { PersonaPhotoUploadCard } from './PersonaPhotoUploadCard'
 import { SemanticSearchPanel } from './SemanticSearchPanel'
@@ -130,6 +131,7 @@ export function SidebarVergadertafel() {
         <ChatHistoryPanel />
         <SemanticSearchPanel />
         <PersonaManagerCard />
+        <PersonaEditorCard />
         <PersonaPhotoUploadCard />
         <MeetingTableControls />
 

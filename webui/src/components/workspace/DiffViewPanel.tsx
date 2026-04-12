@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { previewCommit, saveCommit } from '../../lib/api'
 import { useDiffStore } from '../../stores/diffStore'
 
@@ -11,6 +11,11 @@ export function DiffViewPanel() {
   const [previewText, setPreviewText] = useState<string>('')
   const [statusText, setStatusText] = useState<string>('')
   const [busy, setBusy] = useState(false)
+
+  const groupedCount = useMemo(() => {
+    const grouped = new Set(diffs.map((item) => item.filePath))
+    return grouped.size
+  }, [diffs])
 
   if (!diff) {
     return null
@@ -56,9 +61,9 @@ export function DiffViewPanel() {
             <div className="panel-title">DiffView Staging</div>
             <div className="mt-1 text-xs text-[#7c6545]">Inspect generated code before write approval.</div>
           </div>
-          <button className="flex h-7 w-7 items-center justify-center rounded-lg border border-[#ccb28c] bg-[#f5ead5] text-[#755d3d]">
-            ⊕
-          </button>
+          <div className="rounded-lg border border-[#ccb28c] bg-[#f5ead5] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-[#755d3d]">
+            {groupedCount} files
+          </div>
         </div>
       </div>
 
@@ -70,7 +75,8 @@ export function DiffViewPanel() {
               onClick={() => setActiveDiffId(item.id)}
               className={`rounded-xl border px-3 py-2 text-xs ${item.id === diff.id ? 'border-[#b88e4a] bg-[#f1dfbd] text-[#4d3818]' : 'border-[#ccb28c] bg-[#fbf4e7] text-[#7c6545]'}`}
             >
-              {item.sourceAgent}
+              <div className="font-semibold">{item.sourceAgent}</div>
+              <div className="mt-1 text-[10px] uppercase tracking-[0.16em]">{item.status}</div>
             </button>
           ))}
         </div>

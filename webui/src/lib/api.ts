@@ -248,6 +248,28 @@ export async function createPersona(name: string, description: string): Promise<
   return response.json()
 }
 
+export async function updatePersona(personaId: string, name: string, description: string): Promise<PersonaApiItem> {
+  const response = await fetch(`/api/personas/${personaId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description })
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to update persona: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deletePersona(personaId: string): Promise<{ status: string; deleted: string }> {
+  const response = await fetch(`/api/personas/${personaId}`, {
+    method: 'DELETE'
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to delete persona: ${response.status}`)
+  }
+  return response.json()
+}
+
 export async function fetchChats(): Promise<ChatListItem[]> {
   const response = await fetch('/api/chats')
   if (!response.ok) {

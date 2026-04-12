@@ -13,6 +13,8 @@ node_modules/
 webui/node_modules/
 dist/
 webui/dist/
+*.tsbuildinfo
+webui/*.tsbuildinfo
 
 # Runtime data
 webui/.vite/

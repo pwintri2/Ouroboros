@@ -3,6 +3,7 @@ import { useMessageStore } from '../../stores/messageStore'
 import { ChatComposer } from './ChatComposer'
 import { MeetingSummaryCard } from './MeetingSummaryCard'
 import { MessageBubble } from './MessageBubble'
+import { StreamingTranscriptCard } from './StreamingTranscriptCard'
 
 export function ChatStreamPanel() {
   const messages = useMessageStore((state) => state.messages)
@@ -28,6 +29,7 @@ export function ChatStreamPanel() {
 
       <div className="flex-1 space-y-3 overflow-auto bg-[#fcf7ed] p-4">
         <MeetingSummaryCard />
+        <StreamingTranscriptCard />
         {sortedMessages.map((message) => (
           <MessageBubble key={message.id} message={message} />
         ))}

@@ -7,6 +7,7 @@ interface MessageState {
   clearMessages: () => void
   setMessages: (messages: ChatMessage[]) => void
   appendMessage: (message: ChatMessage) => void
+  updateMessage: (id: string, patch: Partial<ChatMessage>) => void
   setSubmitting: (value: boolean) => void
 }
 
@@ -33,5 +34,9 @@ export const useMessageStore = create<MessageState>((set) => ({
   clearMessages: () => set({ messages: initialMessages }),
   setMessages: (messages) => set({ messages }),
   appendMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
+  updateMessage: (id, patch) =>
+    set((state) => ({
+      messages: state.messages.map((message) => (message.id === id ? { ...message, ...patch } : message))
+    })),
   setSubmitting: (isSubmitting) => set({ isSubmitting })
 }))

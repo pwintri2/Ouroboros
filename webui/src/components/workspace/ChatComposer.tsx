@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
-import { openDemoStream, orchestrateTask, uploadAttachment } from '../../lib/api'
+import { useEffect, useRef, useState } from 'react'
+import { createChat, openDemoStream, orchestrateTask, uploadAttachment } from '../../lib/api'
+import { useChatStore } from '../../stores/chatStore'
 import { useDiffStore } from '../../stores/diffStore'
 import { useMessageStore } from '../../stores/messageStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -20,36 +21,62 @@ export function ChatComposer() {
   const [uploadStatus, setUploadStatus] = useState('')
   const [streaming, setStreaming] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const streamMessageIdRef = useRef<string | null>(null)
   const appendMessage = useMessageStore((state) => state.appendMessage)
-  const setMessages = useMessageStore((state) => state.setMessages)
-  const messages = useMessageStore((state) => state.messages)
+  const updateMessage = useMessageStore((state) => state.updateMessage)
   const isSubmitting = useMessageStore((state) => state.isSubmitting)
   const setSubmitting = useMessageStore((state) => state.setSubmitting)
   const addDiff = useDiffStore((state) => state.addDiff)
   const meetingMode = useSessionStore((state) => state.meetingMode)
   const setMeetingMode = useSessionStore((state) => state.setMeetingMode)
+  const activeChatId = useChatStore((state) => state.activeChatId)
+  const prependChat = useChatStore((state) => state.prependChat)
+  const touchChat = useChatStore((state) => state.touchChat)
+
+  useEffect(() => {
+    function onInsertContext(event: Event) {
+      const custom = event as CustomEvent<{ text?: string; title?: string }>
+      const text = custom.detail?.text || ''
+      const title = custom.detail?.title || 'Context'
+      if (!text.trim()) return
+      setInput((current) => `${current}${current ? '\n\n' : ''}[${title}]\n${text}`)
+    }
+
+    window.addEventListener('wintrip-insert-context', onInsertContext as EventListener)
+    return () => window.removeEventListener('wintrip-insert-context', onInsertContext as EventListener)
+  }, [])
+
+  async function ensureChatId(prompt: string) {
+    if (activeChatId) {
+      touchChat(activeChatId, prompt.slice(0, 40) || 'Actieve Chat')
+      return activeChatId
+    }
+    const created = await createChat()
+    prependChat({ id: created.id, title: prompt.slice(0, 40) || 'Nieuwe Chat', last_modified: Date.now() / 1000 })
+    return created.id
+  }
 
   async function handleSubmit() {
     const prompt = input.trim()
     if (!prompt || isSubmitting) return
+
+    const chatId = await ensureChatId(prompt)
 
     const uploaded: string[] = []
     for (const file of attachments) {
       try {
         const result = await uploadAttachment(file)
         uploaded.push(`${result.filename}${result.ingested ? ' (ingested)' : ''}`)
-      } catch (error) {
+      } catch {
         uploaded.push(`${file.name} (upload failed)`)
       }
     }
 
     const attachmentSuffix = uploaded.length ? `\n\nBijlagen: ${uploaded.join(', ')}` : ''
-
     const now = new Date().toISOString()
+
     appendMessage({
       id: `user-${Date.now()}`,
-      threadId: 'mission-control',
+      threadId: chatId,
       source: 'user',
       observer: 'human-philip',
       phase: 'observed',
@@ -65,10 +92,9 @@ export function ChatComposer() {
     setStreaming(true)
 
     const streamMessageId = `stream-${Date.now()}`
-    streamMessageIdRef.current = streamMessageId
     appendMessage({
       id: streamMessageId,
-      threadId: 'mission-control',
+      threadId: chatId,
       source: 'agent',
       observer: 'orchestrator',
       phase: 'streaming',
@@ -83,19 +109,18 @@ export function ChatComposer() {
     const source = openDemoStream(
       prompt,
       (chunk) => {
-        setMessages(
-          messages.map((message) =>
-            message.id === streamMessageId
-              ? {
-                  ...message,
-                  partialContent: `${message.partialContent || ''}\n${chunk}`.trim(),
-                  updatedAt: new Date().toISOString()
-                }
-              : message
-          )
-        )
+        updateMessage(streamMessageId, {
+          partialContent: chunk,
+          updatedAt: new Date().toISOString()
+        })
       },
       () => {
+        updateMessage(streamMessageId, {
+          phase: 'collapsed',
+          content: 'Streaming transcript afgerond.',
+          partialContent: undefined,
+          updatedAt: new Date().toISOString()
+        })
         setStreaming(false)
       }
     )
@@ -108,7 +133,7 @@ export function ChatComposer() {
         result.agents.forEach((agentResult, index) => {
           appendMessage({
             id: `agent-${Date.now()}-${index}`,
-            threadId: 'mission-control',
+            threadId: chatId,
             source: 'agent',
             observer: agentResult.agent,
             phase: 'collapsed',
@@ -136,7 +161,7 @@ export function ChatComposer() {
 
       appendMessage({
         id: `review-${Date.now()}`,
-        threadId: 'mission-control',
+        threadId: chatId,
         source: 'system',
         observer: 'orchestrator',
         phase: 'collapsed',
@@ -150,7 +175,7 @@ export function ChatComposer() {
       const failTime = new Date().toISOString()
       appendMessage({
         id: `error-${Date.now()}`,
-        threadId: 'mission-control',
+        threadId: chatId,
         source: 'system',
         observer: 'orchestrator',
         phase: 'rejected',

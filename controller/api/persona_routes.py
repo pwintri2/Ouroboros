@@ -45,6 +45,41 @@ async def create_persona(p: Persona):
     return obj
 
 
+@persona_router.put('/api/personas/{persona_id}')
+async def update_persona(persona_id: str, p: Persona):
+    d = _persona_dir()
+    meta_path = os.path.join(d, f"{persona_id}.json")
+    if not os.path.exists(meta_path):
+        raise HTTPException(status_code=404, detail='persona not found')
+    with open(meta_path, 'r', encoding='utf-8') as fh:
+        meta = json.load(fh)
+    meta['name'] = p.name
+    meta['description'] = p.description
+    with open(meta_path, 'w', encoding='utf-8') as fh:
+        json.dump(meta, fh)
+    return meta
+
+
+@persona_router.delete('/api/personas/{persona_id}')
+async def delete_persona(persona_id: str):
+    d = _persona_dir()
+    meta_path = os.path.join(d, f"{persona_id}.json")
+    if not os.path.exists(meta_path):
+        raise HTTPException(status_code=404, detail='persona not found')
+    with open(meta_path, 'r', encoding='utf-8') as fh:
+        meta = json.load(fh)
+    photo_path = meta.get('photo')
+    if photo_path:
+        abs_photo = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', photo_path))
+        if os.path.exists(abs_photo):
+            try:
+                os.remove(abs_photo)
+            except Exception:
+                pass
+    os.remove(meta_path)
+    return {"status": "ok", "deleted": persona_id}
+
+
 @persona_router.post('/api/personas/{persona_id}/photo')
 async def upload_photo(persona_id: str, file: UploadFile = File(...)):
     d = _persona_dir()
