@@ -47,7 +47,11 @@ export function PersonaCard({
             />
           </div>
 
-          <div className="mt-1 truncate text-[11px] uppercase tracking-[0.16em] text-[#876b47]">ACTIVE</div>
+          <div className="mt-1 truncate text-[11px] uppercase tracking-[0.16em] text-[#876b47]">
+            {persona.status === 'idle' ? 'Available' : 'Active'}
+          </div>
+
+          <div className="mt-2 truncate text-[11px] text-[#7c6545]">{persona.role}</div>
 
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7c6545]">
             <span>{persona.provider}</span>

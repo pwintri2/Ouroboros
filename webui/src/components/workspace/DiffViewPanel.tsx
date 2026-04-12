@@ -18,7 +18,17 @@ export function DiffViewPanel() {
   }, [diffs])
 
   if (!diff) {
-    return null
+    return (
+      <section className="panel flex h-full flex-col overflow-hidden">
+        <div className="border-b border-[#d8c5a8] px-4 py-3">
+          <div className="panel-title">DiffView Staging</div>
+          <div className="mt-1 text-xs text-[#7c6545]">Geen codewijzigingen in staging.</div>
+        </div>
+        <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-[#866b49]">
+          Diff review verschijnt alleen wanneer sandbox-output of codewijzigingen inspectie nodig hebben.
+        </div>
+      </section>
+    )
   }
 
   async function handlePreview() {
@@ -59,7 +69,7 @@ export function DiffViewPanel() {
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="panel-title">DiffView Staging</div>
-            <div className="mt-1 text-xs text-[#7c6545]">Inspect generated code before write approval.</div>
+            <div className="mt-1 text-xs text-[#7c6545]">Conditionele code-inspectie en approval zone.</div>
           </div>
           <div className="rounded-lg border border-[#ccb28c] bg-[#f5ead5] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-[#755d3d]">
             {groupedCount} files

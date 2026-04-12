@@ -10,7 +10,7 @@ export function RuntimeControlPanel() {
     setBusy(true)
     try {
       const runtime = await fetchRuntimeStatus()
-      setStatusText(`Runtime ok · orchestrator ${runtime.orchestrator.provider}/${runtime.orchestrator.model} · sandbox ${runtime.sandbox.available ? 'beschikbaar' : 'niet beschikbaar'}`)
+      setStatusText(`Local runtime ok · orchestrator ${runtime.orchestrator.provider}/${runtime.orchestrator.model} · sandbox ${runtime.sandbox.available ? 'beschikbaar' : 'niet beschikbaar'}`)
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Runtime refresh mislukt.')
     } finally {
@@ -35,7 +35,7 @@ export function RuntimeControlPanel() {
     <section className="panel flex h-full flex-col p-3">
       <div className="flex items-center justify-between gap-3 border-b border-[#d8c5a8] pb-3">
         <div>
-          <div className="panel-title">Top Bar Control</div>
+          <div className="panel-title">Local + VPS Control</div>
           <div className="mt-1 text-xs text-[#7c6545]">Quick runtime and container observability.</div>
         </div>
         <div className="rounded-xl border border-[#ccb28c] bg-[#f4e6cb] px-3 py-2 text-[10px] uppercase tracking-[0.16em] text-[#7c6545]">

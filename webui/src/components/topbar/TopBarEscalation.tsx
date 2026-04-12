@@ -46,6 +46,7 @@ export function TopBarEscalation() {
     || fallbackPresets.find((preset) => preset.provider === activeProvider)
     || fallbackPresets[0]
 
+  const cloudWarning = activePreset.paid ? 'API / kosten actief' : 'Lokaal / geen API-kosten'
   const costGlow = activePreset.paid ? 'border-[#c16d58] bg-[#e9d1c2] text-[#7b3328]' : 'border-[#bca27e] bg-[#f6eddd] text-[#4f3a1f]'
 
   async function handleSwitch(provider: 'gemini' | 'ollama' | 'groq', model: string) {
@@ -64,12 +65,12 @@ export function TopBarEscalation() {
   }
 
   return (
-    <header className="panel mx-4 mt-4 flex h-[86px] items-center justify-between rounded-[22px] px-5 py-3">
+    <header className="panel mx-4 mt-4 flex h-[96px] items-center justify-between rounded-[22px] px-5 py-3">
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <div className="panel-soft flex min-w-0 flex-1 items-center gap-4 px-4 py-3">
           <div className="text-sm text-[#8d7149]">⌘</div>
           <div className="min-w-0 flex-1">
-            <div className="tech-label">Top Bar</div>
+            <div className="tech-label">Top Bar: Model Selection</div>
             <div className="mt-1 flex min-w-0 items-center gap-3">
               <select
                 value={`${activeProvider}:${activeModel}`}
@@ -92,6 +93,9 @@ export function TopBarEscalation() {
                 {activePreset.paid ? 'Cloud Cost' : 'Local Free'}
               </div>
             </div>
+            <div className={`mt-2 text-[11px] ${activePreset.paid ? 'text-[#8d3e35]' : 'text-[#7c6545]'}`}>
+              {cloudWarning}
+            </div>
           </div>
         </div>
 
@@ -109,15 +113,15 @@ export function TopBarEscalation() {
           onClick={toggleYolo}
           className={`panel-soft flex items-center gap-3 px-4 py-3 ${yoloEnabled ? 'border-[#c09047] bg-[#f0dfba]' : ''}`}
         >
-          <span className="tech-label">Toggles</span>
+          <span className="tech-label">YOLO</span>
           <span className={`relative inline-flex h-6 w-11 items-center rounded-full border border-[#b99d73] ${yoloEnabled ? 'bg-[#d7b16d]' : 'bg-[#e7ddcb]'}`}>
             <span className={`inline-block h-4 w-4 transform rounded-full bg-[#fff7ea] transition ${yoloEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
           </span>
         </button>
       </div>
 
-      <div className="ml-4 min-w-[190px] text-right">
-        <div className="tech-label">Confidential</div>
+      <div className="ml-4 min-w-[210px] text-right">
+        <div className="tech-label">Confidential / Escalation</div>
         <div className={`mt-1 text-xs ${escalationActive ? 'text-[#8d3e35]' : 'text-[#7c6545]'}`}>Tier: {tier}</div>
         <div className="mt-1 text-[11px] text-[#8d7149]">{busy ? 'Switching model...' : statusText || `${activeProvider} · ${activeModel}`}</div>
       </div>
