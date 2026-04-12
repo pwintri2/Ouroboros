@@ -1,6 +1,6 @@
 IMAP_SERVER=imap.gmail.com
-IMAP_USER=philip.wintrip@gmail.com
-IMAP_PASS=qsjcbhcdokfkxvaj
+IMAP_USER=your_email@gmail.com
+IMAP_PASS=your_app_password_here
 
 # === Wintrip Phase 12: Quantum Evolution Academy ===
 # Pad naar de ChromaDB Hippocampus (relatief of absoluut)

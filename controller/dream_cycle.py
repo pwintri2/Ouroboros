@@ -108,13 +108,4 @@ def run_time_dilated_dream(
         sandbox = SandboxExecutor()
 
     dream = DreamCycle(sandbox=sandbox, max_concurrency=max_concurrency)
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("closed")
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    return loop.run_until_complete(dream.run(tasks, timeout_per_task=timeout_per_task))
+    return asyncio.run(dream.run(tasks, timeout_per_task=timeout_per_task))

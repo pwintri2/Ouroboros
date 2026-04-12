@@ -11,7 +11,7 @@ load_dotenv()
 class SandboxExecutor:
     def __init__(self):
         print("🛡️  [Sandbox]: Initialisatie van de Virtuele Quarantaine...")
-        self.reflector = None
+        self.reflector = Reflector()
         try:
             self.client = docker.from_env()
             self.client.ping()
@@ -128,8 +128,6 @@ class SandboxExecutor:
                 os.remove(script_path)
                 
         # Integratie: Sla traces op in geheugen via Reflector (zowel fouten als successen)
-        if not self.reflector:
-            self.reflector = Reflector()
         if result_dict["status"] in ["error", "timeout"]:
             print(f"🪞 [Sandbox]: Failover log opslaan voor latere inspectie...")
             self.reflector.evaluate_action(
@@ -163,7 +161,7 @@ class SandboxExecutor:
         Async wrapper rondom run_python_code zodat meerdere sandbox-runs
         gelijktijdig kunnen draaien binnen een asyncio event loop (DreamCycle).
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
             lambda: self.run_python_code(code, timeout=timeout, return_dict=True, task_name=task_name)
