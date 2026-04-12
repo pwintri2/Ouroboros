@@ -1,34 +1,37 @@
+import asyncio
 import docker
 import os
 import tempfile
 import time
-import requests
+from dotenv import load_dotenv
 from controller.reflector import Reflector
 
+load_dotenv()
+
 # ---------------------------------------------------------------------------
-# Sandbox hardening defaults (Phase 7.X — wintrip-soc-008)
+# Sandbox hardening defaults (Phase 12 compatible)
 # ---------------------------------------------------------------------------
 # Alle code-executie containers draaien met deze beveiligingslimieten.
 # web_ingest en network-dependent tools geven allow_network=True mee.
 _SANDBOX_DEFAULTS = {
-    "image":           "python:3.10-slim",
-    "network_disabled": True,           # netwerk standaard UIT (expliciet opt-in)
-    "mem_limit":       "256m",          # geheugen hard cap
-    "memswap_limit":   "256m",          # swap eveneens begrensd
-    "cpu_period":      100_000,         # 100ms scheduling window
-    "cpu_quota":       50_000,          # max 50% van één CPU-kern
-    "pids_limit":      64,              # max 64 processen (fork-bomb preventie)
-    "read_only":       True,            # rootfs read-only (schrijven alleen via volumes)
-    "tmpfs":           {"/tmp": "size=64m,mode=1777"},  # writable /tmp in geheugen
-    "security_opt":    ["no-new-privileges:true"],
-    "detach":          True,
+    "image":            "python:3.10-slim",
+    "network_disabled": True,
+    "mem_limit":        os.getenv("SANDBOX_MEM_LIMIT", "256m"),
+    "memswap_limit":    os.getenv("SANDBOX_MEM_LIMIT", "256m"),
+    "cpu_period":       100_000,
+    "cpu_quota":        int(os.getenv("SANDBOX_CPU_QUOTA", "50000")),
+    "pids_limit":       64,
+    "read_only":        True,
+    "tmpfs":            {"/tmp": "size=64m,mode=1777"},
+    "security_opt":     ["no-new-privileges:true"],
+    "detach":           True,
 }
 
 
 class SandboxExecutor:
     def __init__(self):
         print("🛡️  [Sandbox]: Initialisatie van de Virtuele Quarantaine...")
-        self.reflector = None
+        self.reflector = Reflector()
         try:
             self.client = docker.from_env()
             self.client.ping()
@@ -75,25 +78,24 @@ class SandboxExecutor:
         }
         
         try:
-            # Veilige datatunnel maken indien deze niet bestaat
-            host_data_dir = "/app/data/speeltuin"
+            # Veilige datatunnel via .env (geen hardcoded paden)
+            host_data_dir = os.getenv(
+                "SANDBOX_DATA_DIR",
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "speeltuin")
+            )
             os.makedirs(host_data_dir, exist_ok=True)
-            
+
             print("⚙️  [Sandbox]: Container wordt opgestart en code wordt uitgevoerd...")
-            # Bouw hardened container-configuratie op basis van _SANDBOX_DEFAULTS
             container_config = dict(_SANDBOX_DEFAULTS)
             container_config["command"] = "python /script.py"
             container_config["volumes"] = {
-                script_path:    {"bind": "/script.py",  "mode": "ro"},
-                host_data_dir:  {"bind": "/app/data",   "mode": "rw"},
+                script_path: {"bind": "/script.py", "mode": "ro"},
+                host_data_dir: {"bind": "/app/data", "mode": "rw"},
             }
-            # Netwerk: alleen inschakelen als de aanroeper dat expliciet vraagt
-            # (bijv. web_ingest). Code-executie altijd netwerk-loos.
             container_config["network_disabled"] = not allow_network
 
             container = self.client.containers.run(**container_config)
             
-            # Wacht op de container met harde read timeout protectie
             result = container.wait(timeout=timeout)
             result_dict["exit_code"] = result.get('StatusCode', -1)
             result_dict["logs"] = container.logs().decode('utf-8', errors='replace')
@@ -137,20 +139,22 @@ class SandboxExecutor:
             if os.path.exists(script_path):
                 os.remove(script_path)
                 
-        # Integratie: Sla falende traces op in geheugen via Reflector
         if result_dict["status"] in ["error", "timeout"]:
-            if not self.reflector:
-                self.reflector = Reflector()
             print(f"🪞 [Sandbox]: Failover log opslaan voor latere inspectie...")
             self.reflector.evaluate_action(
                 task_name=f"{task_name} ({result_dict['error_type']})",
                 result_raw_output=result_dict["logs"],
                 expected_outcome=f"Exit code 0 binnen {timeout} seconden"
             )
+        elif result_dict["status"] == "success":
+            self.reflector.evaluate_action(
+                task_name=task_name,
+                result_raw_output=result_dict["logs"],
+                expected_outcome=f"Exit code 0 binnen {timeout} seconden"
+            )
             
         print("="*40 + "\n")
         
-        # Compatibiliteitslaag zodat huidige aanroepende code via Virtual_team of router.py niet crasht
         if not return_dict:
             if result_dict["status"] == "success":
                 return result_dict["logs"].strip()
@@ -160,3 +164,14 @@ class SandboxExecutor:
                 return f"[SANDBOX ERROR (Code {result_dict['exit_code']})]:\n{result_dict['logs']}".strip()
                 
         return result_dict
+
+    async def arun_python_code(self, code: str, timeout: int = 15, task_name: str = "Async Sandbox Execution") -> dict:
+        """
+        Async wrapper rondom run_python_code zodat meerdere sandbox-runs
+        gelijktijdig kunnen draaien binnen een asyncio event loop (DreamCycle).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.run_python_code(code, timeout=timeout, return_dict=True, task_name=task_name)
+        )

@@ -10,7 +10,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-CHROMA_PERSIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "wintrip_brain"))
+_DEFAULT_BRAIN_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wintrip_brain"
+)
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", _DEFAULT_BRAIN_DIR)
 CHROMA_COLLECTION_NAME = "wintrip_knowledge"
 
 class KnowledgeBase:
@@ -311,6 +314,6 @@ class KnowledgeBase:
             print(f"       Snippet: {snippet}")
             
         if not top_results:
-            print("⚠️ [Hippocampus]: Alle ruwe hits faalden de relevantie-check.")
+            print("⚠️ [Hippocampus]: Geen relevante resultaten boven drempel.")
             
         return top_results

@@ -1,3 +1,16 @@
 IMAP_SERVER=imap.gmail.com
-IMAP_USER=philip.wintrip@gmail.com
-IMAP_PASS=qsjcbhcdokfkxvaj
+IMAP_USER=your_email@gmail.com
+IMAP_PASS=your_app_password_here
+
+# === Wintrip Phase 12: Quantum Evolution Academy ===
+# Pad naar de ChromaDB Hippocampus (relatief of absoluut)
+# CHROMA_PERSIST_DIR=/absolute/path/to/wintrip_brain
+
+# Sandbox Docker-instellingen
+# SANDBOX_DATA_DIR=/absolute/path/to/data/speeltuin
+# SANDBOX_MEM_LIMIT=256m
+# SANDBOX_CPU_QUOTA=50000
+
+# Ollama
+# OLLAMA_BASE_URL=http://localhost:11434
+# OLLAMA_EMBED_MODEL=nomic-embed-text
