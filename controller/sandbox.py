@@ -1,9 +1,12 @@
+import asyncio
 import docker
 import os
 import tempfile
 import time
-import requests
+from dotenv import load_dotenv
 from controller.reflector import Reflector
+
+load_dotenv()
 
 class SandboxExecutor:
     def __init__(self):
@@ -54,21 +57,30 @@ class SandboxExecutor:
         }
         
         try:
-            # Veilige datatunnel maken indien deze niet bestaat
-            host_data_dir = "/Users/philip/WintripAI/data/speeltuin"
+            # Veilige datatunnel via .env (geen hardcoded paden)
+            host_data_dir = os.getenv(
+                "SANDBOX_DATA_DIR",
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "speeltuin")
+            )
             os.makedirs(host_data_dir, exist_ok=True)
-            
+
+            cpu_quota = int(os.getenv("SANDBOX_CPU_QUOTA", "50000"))   # 50% van 1 core
+            mem_limit = os.getenv("SANDBOX_MEM_LIMIT", "256m")
+
             print("⚙️  [Sandbox]: Container wordt opgestart en code wordt uitgevoerd...")
             container = self.client.containers.run(
                 image="python:3.10-slim",
-                command=f"python /script.py",
+                command="python /script.py",
                 volumes={
                     script_path: {'bind': '/script.py', 'mode': 'ro'},
                     host_data_dir: {'bind': '/app/data', 'mode': 'rw'}
                 },
                 detach=True,
-                network_disabled=False,
-                mem_limit="512m",
+                network_disabled=True,
+                mem_limit=mem_limit,
+                cpu_quota=cpu_quota,
+                read_only=True,
+                tmpfs={'/tmp': 'size=64m,mode=1777'},
             )
             
             # Wacht op de container met harde read timeout protectie
@@ -115,13 +127,20 @@ class SandboxExecutor:
             if os.path.exists(script_path):
                 os.remove(script_path)
                 
-        # Integratie: Sla falende traces op in geheugen via Reflector
+        # Integratie: Sla traces op in geheugen via Reflector (zowel fouten als successen)
+        if not self.reflector:
+            self.reflector = Reflector()
         if result_dict["status"] in ["error", "timeout"]:
-            if not self.reflector:
-                self.reflector = Reflector()
             print(f"🪞 [Sandbox]: Failover log opslaan voor latere inspectie...")
             self.reflector.evaluate_action(
                 task_name=f"{task_name} ({result_dict['error_type']})",
+                result_raw_output=result_dict["logs"],
+                expected_outcome=f"Exit code 0 binnen {timeout} seconden"
+            )
+        elif result_dict["status"] == "success":
+            # Autopoiesis: sla succesvolle inzichten ook op in Hippocampus
+            self.reflector.evaluate_action(
+                task_name=task_name,
                 result_raw_output=result_dict["logs"],
                 expected_outcome=f"Exit code 0 binnen {timeout} seconden"
             )
@@ -138,3 +157,14 @@ class SandboxExecutor:
                 return f"[SANDBOX ERROR (Code {result_dict['exit_code']})]:\n{result_dict['logs']}".strip()
                 
         return result_dict
+
+    async def arun_python_code(self, code: str, timeout: int = 15, task_name: str = "Async Sandbox Execution") -> dict:
+        """
+        Async wrapper rondom run_python_code zodat meerdere sandbox-runs
+        gelijktijdig kunnen draaien binnen een asyncio event loop (DreamCycle).
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.run_python_code(code, timeout=timeout, return_dict=True, task_name=task_name)
+        )
