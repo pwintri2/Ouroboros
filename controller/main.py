@@ -21,6 +21,7 @@ try:
     from controller.digestion import digest_text
     from controller.virtual_team import VirtualMeeting
     from controller.orchestrator import WintripOrchestrator
+    from controller.poc_demo import router_demo
 except ImportError:
     from ollama_client import OllamaClient
     from router import AIRouter
@@ -29,6 +30,7 @@ except ImportError:
     from digestion import digest_text
     from virtual_team import VirtualMeeting
     from orchestrator import WintripOrchestrator
+    from poc_demo import router_demo
 
 load_dotenv()
 app = FastAPI()
@@ -40,6 +42,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# PoC demo router — Ambient Sentinel simulation
+app.include_router(router_demo)
 
 ollama = OllamaClient()
 kb = KnowledgeBase()
