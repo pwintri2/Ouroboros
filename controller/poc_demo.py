@@ -184,8 +184,8 @@ class AmbientIngestionEngine:
     process snapshots, audio state, and screen geometry probabilistically.
     """
 
-    _NORMAL_VOLUME_PCT: float = 65.0      # default baseline volume for nominal state
-    _ATTACK_INJECTION_TICK: int = 2       # zero-based tick index at which the attack begins (tick 3 in 1-based)
+    _NORMAL_VOLUME_PCT: float = 65.0           # default baseline volume for nominal state
+    _ATTACK_INJECTION_TICK_INDEX: int = 2      # zero-based: attack starts on the 3rd tick (index 2)
 
     _NORMAL_PROCESSES: Sequence[str] = (
         "WindowServer", "loginwindow", "Finder", "SystemUIServer",
@@ -267,7 +267,7 @@ class AmbientIngestionEngine:
         self._running = True
         snapshots: List[OSStateSnapshot] = []
         for tick in range(ticks):
-            if tick >= self._ATTACK_INJECTION_TICK:
+            if tick >= self._ATTACK_INJECTION_TICK_INDEX:
                 if not self._anomaly_injected:
                     self._anomaly_injected = True
                 snapshot = self._sample_attack_state()
@@ -283,6 +283,11 @@ class AmbientIngestionEngine:
     @property
     def latest_snapshot(self) -> Optional[OSStateSnapshot]:
         return self._latest_snapshot
+
+    @classmethod
+    def nominal_volume_pct(cls) -> float:
+        """Public accessor for the nominal audio volume — avoids direct private-attr access."""
+        return cls._NORMAL_VOLUME_PCT
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +425,7 @@ class AutonomousResolutionLoop:
                 action_type="RESTORE_AUDIO",
                 target="system_audio_sink",
                 success=True,
-                detail=f"Volume restored to {AmbientIngestionEngine._NORMAL_VOLUME_PCT:.0f} % — previous user preference.",
+                detail=f"Volume restored to {AmbientIngestionEngine.nominal_volume_pct():.0f} % — previous user preference.",
             ))
 
         # --- Dismiss overlay ----------------------------------------------
@@ -555,8 +560,9 @@ _detector  = AnomalyDetectionEngine()
 _resolver  = AutonomousResolutionLoop()
 _empathy   = EmpathyEngine()
 
-# Demo run state (kernel + ingestion are reset per run; protected by a lock)
-_run_lock: asyncio.Lock = asyncio.Lock()
+# Demo run state (kernel + ingestion are reset per run; lock created lazily inside the
+# event loop to avoid the "no running event loop" warning on module import).
+_run_lock: Optional[asyncio.Lock] = None
 _kernel    = KernelStateMatrix()
 _ingestion = AmbientIngestionEngine(kernel=_kernel, tick_hz=20.0)
 
@@ -574,7 +580,11 @@ async def run_demo() -> DemoRunResponse:
     3. The AutonomousResolutionLoop silently remediates the detected threat.
     4. The EmpathyEngine composes a gentle reassurance message for the user.
     """
-    global _kernel, _ingestion
+    global _kernel, _ingestion, _run_lock
+
+    # Lazily initialise the lock inside the running event loop
+    if _run_lock is None:
+        _run_lock = asyncio.Lock()
 
     t_start = time.monotonic()
     run_id = uuid.uuid4().hex[:12]

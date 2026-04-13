@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="nl" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wintrip · Ambient Sentinel — NTSSM Core</title>
+
+  <!-- Tailwind CDN (v3 play) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            slate:   { 950: '#020617' },
+            cyan:    { 400: '#22d3ee', 500: '#06b6d4' },
+            emerald: { 400: '#34d399', 500: '#10b981' },
+            crimson: { DEFAULT: '#dc2626', bright: '#ef4444' },
+          },
+          fontFamily: { mono: ['"JetBrains Mono"', '"Fira Code"', 'monospace'] },
+          animation: {
+            'pulse-slow': 'pulse 3s cubic-bezier(0.4,0,0.6,1) infinite',
+            'scan':       'scan 4s linear infinite',
+            'flicker':    'flicker 0.15s ease-in-out 3',
+          },
+          keyframes: {
+            scan: {
+              '0%':   { backgroundPosition: '0% 0%' },
+              '100%': { backgroundPosition: '0% 100%' },
+            },
+            flicker: {
+              '0%,100%': { opacity: '1' },
+              '50%':     { opacity: '0.4' },
+            },
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── base ── */
+    * { box-sizing: border-box; }
+    body { background: #020617; font-family: 'JetBrains Mono', monospace; }
+
+    /* ── neon glow helpers ── */
+    .glow-cyan   { box-shadow: 0 0 12px 2px rgba(34,211,238,.45); }
+    .glow-emerald{ box-shadow: 0 0 12px 2px rgba(52,211,153,.45); }
+    .glow-red    { box-shadow: 0 0 18px 4px rgba(220,38,38,.65); }
+    .glow-text-cyan   { text-shadow: 0 0 8px rgba(34,211,238,.8); }
+    .glow-text-emerald{ text-shadow: 0 0 8px rgba(52,211,153,.8); }
+    .glow-text-red    { text-shadow: 0 0 10px rgba(220,38,38,.9); }
+
+    /* ── scrollbar ── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #22d3ee44; border-radius: 2px; }
+
+    /* ── matrix heatmap cell ── */
+    .hm-cell {
+      width: 14px; height: 14px;
+      border-radius: 2px;
+      transition: background-color 0.25s ease, box-shadow 0.25s ease;
+    }
+
+    /* ── gauge arc ── */
+    .gauge-svg { overflow: visible; }
+
+    /* ── incident row animation ── */
+    @keyframes slideIn {
+      from { opacity:0; transform: translateX(-12px); }
+      to   { opacity:1; transform: translateX(0); }
+    }
+    .incident-row { animation: slideIn .25s ease forwards; }
+
+    /* ── empathy overlay ── */
+    @keyframes overlayIn {
+      from { opacity:0; transform: scale(.94); }
+      to   { opacity:1; transform: scale(1); }
+    }
+    .empathy-card { animation: overlayIn .4s cubic-bezier(0.34,1.56,0.64,1) forwards; }
+
+    /* ── scanline effect ── */
+    .scanlines::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px, transparent 3px,
+        rgba(0,0,0,.18) 3px, rgba(0,0,0,.18) 4px
+      );
+      pointer-events: none;
+    }
+
+    /* ── alert flash ── */
+    @keyframes alertPulse {
+      0%,100% { opacity:1; }
+      50%      { opacity:.3; }
+    }
+    .alert-flash { animation: alertPulse .5s ease-in-out 6; }
+
+    /* ── stream text ── */
+    @keyframes streamScroll {
+      from { transform: translateY(0); }
+      to   { transform: translateY(-50%); }
+    }
+    .stream-text { animation: streamScroll 18s linear infinite; }
+  </style>
+</head>
+
+<body class="min-h-screen text-slate-100 scanlines relative">
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TOP BAR
+  ════════════════════════════════════════════════════════════════════ -->
+  <header class="sticky top-0 z-50 flex items-center justify-between px-6 py-3
+                 bg-slate-900/90 border-b border-cyan-500/20 backdrop-blur-sm">
+    <div class="flex items-center gap-3">
+      <!-- animated logo pulse -->
+      <span class="relative flex h-3 w-3">
+        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+        <span class="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
+      </span>
+      <span class="text-cyan-400 font-bold tracking-widest text-sm glow-text-cyan">
+        WINTRIP · AMBIENT SENTINEL
+      </span>
+      <span class="text-slate-500 text-xs tracking-widest">NTSSM-CORE v4.5</span>
+    </div>
+
+    <div class="flex items-center gap-6 text-xs text-slate-400">
+      <span>AGENT: <span id="hdr-agent" class="text-emerald-400">ONLINE</span></span>
+      <span>VECTORS: <span id="hdr-vectors" class="text-cyan-400 font-bold">0</span></span>
+      <span>SEVERITY: <span id="hdr-severity" class="font-bold text-emerald-400">NOMINAL</span></span>
+      <span id="hdr-clock" class="text-slate-500"></span>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       MAIN GRID
+  ════════════════════════════════════════════════════════════════════ -->
+  <main class="grid grid-cols-12 gap-4 p-4 max-w-screen-2xl mx-auto">
+
+    <!-- ── col 1–8: left column ── -->
+    <div class="col-span-12 xl:col-span-8 flex flex-col gap-4">
+
+      <!-- ┌─────────────────────────────────────────────────────────────┐
+           │  MATRIX VIEW — 64-tick temporal buffer heatmap              │
+           └─────────────────────────────────────────────────────────────┘ -->
+      <section class="rounded-xl border border-cyan-500/20 bg-slate-900 p-4 relative overflow-hidden">
+        <!-- section scanline -->
+        <div class="absolute inset-0 pointer-events-none"
+             style="background: linear-gradient(180deg,rgba(6,182,212,.04) 0%,transparent 100%);"></div>
+
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-xs font-bold tracking-widest text-cyan-400 glow-text-cyan uppercase">
+            ◈ Non-linear Temporal State-Space Matrix
+          </h2>
+          <span class="text-xs text-slate-500">64-tick rolling horizon · 256-dim encoding</span>
+        </div>
+
+        <!-- Heatmap grid: 8 rows × 64 cols -->
+        <div id="heatmap" class="flex flex-col gap-0.5 select-none"></div>
+
+        <!-- Live vector stream (bottom ticker) -->
+        <div class="mt-3 h-6 overflow-hidden relative rounded bg-slate-800/60">
+          <div id="vector-stream" class="stream-text text-xs text-cyan-500/60 whitespace-nowrap px-2 pt-1 font-mono leading-5"></div>
+        </div>
+      </section>
+
+      <!-- ┌─────────────────────────────────────────────────────────────┐
+           │  ANOMALY SCORE  +  SYSTEM STATE  STRIP                      │
+           └─────────────────────────────────────────────────────────────┘ -->
+      <div class="grid grid-cols-3 gap-4">
+
+        <!-- Anomaly Score gauge -->
+        <div class="col-span-1 rounded-xl border border-slate-700 bg-slate-900 p-4 flex flex-col items-center">
+          <h3 class="text-xs tracking-widest text-slate-400 uppercase mb-2">Anomaly Score</h3>
+          <div class="relative w-32 h-20">
+            <svg class="gauge-svg w-full h-full" viewBox="0 0 120 70">
+              <!-- track -->
+              <path d="M10,60 A50,50 0 0,1 110,60" fill="none" stroke="#1e293b" stroke-width="10" stroke-linecap="round"/>
+              <!-- fill (updated via JS) -->
+              <path id="gauge-fill" d="M10,60 A50,50 0 0,1 110,60" fill="none"
+                    stroke="#22d3ee" stroke-width="10" stroke-linecap="round"
+                    stroke-dasharray="157" stroke-dashoffset="157"/>
+              <!-- needle -->
+              <line id="gauge-needle" x1="60" y1="60" x2="60" y2="18"
+                    stroke="#f8fafc" stroke-width="2" stroke-linecap="round"
+                    transform="rotate(0,60,60)"/>
+              <!-- centre dot -->
+              <circle cx="60" cy="60" r="4" fill="#94a3b8"/>
+            </svg>
+          </div>
+          <p id="anomaly-score-val" class="text-3xl font-bold text-cyan-400 glow-text-cyan mt-1">0.00</p>
+          <p id="anomaly-score-label" class="text-xs mt-1 text-emerald-400 tracking-widest">NOMINAL</p>
+        </div>
+
+        <!-- Audio Status -->
+        <div class="col-span-1 rounded-xl border border-slate-700 bg-slate-900 p-4 flex flex-col items-center justify-center gap-3">
+          <h3 class="text-xs tracking-widest text-slate-400 uppercase">Audio State</h3>
+          <div id="audio-icon" class="text-4xl transition-all duration-300">🔊</div>
+          <p id="audio-label" class="text-sm font-bold text-emerald-400 tracking-widest">ACTIVE</p>
+          <div id="audio-bars" class="flex items-end gap-0.5 h-8">
+            <!-- generated by JS -->
+          </div>
+        </div>
+
+        <!-- Active Processes -->
+        <div class="col-span-1 rounded-xl border border-slate-700 bg-slate-900 p-4 flex flex-col items-center justify-center gap-2">
+          <h3 class="text-xs tracking-widest text-slate-400 uppercase">Active Processes</h3>
+          <p id="proc-count" class="text-5xl font-bold text-emerald-400 glow-text-emerald transition-all duration-300">8</p>
+          <p class="text-xs text-slate-500">monitored PIDs</p>
+          <div id="proc-bars" class="w-full mt-1 flex flex-col gap-0.5">
+            <!-- mini CPU bars -->
+          </div>
+        </div>
+
+      </div><!-- /strip -->
+
+    </div><!-- /left column -->
+
+    <!-- ── col 9–12: right column ── -->
+    <div class="col-span-12 xl:col-span-4 flex flex-col gap-4">
+
+      <!-- ┌─────────────────────────────────────────────────────────────┐
+           │  TRIGGER BUTTON                                              │
+           └─────────────────────────────────────────────────────────────┘ -->
+      <div class="rounded-xl border border-slate-700 bg-slate-900 p-4 flex flex-col gap-3">
+        <h3 class="text-xs tracking-widest text-slate-400 uppercase">Scenario Simulator</h3>
+        <p class="text-xs text-slate-500 leading-5">
+          Simulates a malicious scareware popup targeting an 85-year-old user.
+          The Ambient Sentinel will detect and resolve the attack autonomously.
+        </p>
+        <button id="trigger-btn"
+          class="relative overflow-hidden w-full py-3 px-6 rounded-lg font-bold tracking-widest
+                 text-sm uppercase text-slate-900
+                 bg-gradient-to-r from-cyan-400 to-emerald-400
+                 hover:from-cyan-300 hover:to-emerald-300
+                 active:scale-95 transition-all duration-150
+                 glow-cyan focus:outline-none focus:ring-2 focus:ring-cyan-400">
+          <span id="trigger-btn-text">⚡  Trigger Scareware Scenario</span>
+          <!-- spinner (hidden by default) -->
+          <span id="trigger-spinner" class="hidden absolute inset-0 flex items-center justify-center bg-slate-900/70">
+            <svg class="animate-spin h-5 w-5 text-cyan-400" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+              <path class="opacity-75" fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.37 0 0 5.37 0 12h4z"/>
+            </svg>
+          </span>
+        </button>
+        <p id="trigger-status" class="text-xs text-slate-600 text-center h-4"></p>
+      </div>
+
+      <!-- ┌─────────────────────────────────────────────────────────────┐
+           │  INCIDENT CONSOLE                                            │
+           └─────────────────────────────────────────────────────────────┘ -->
+      <section class="rounded-xl border border-slate-700 bg-slate-900 p-4 flex flex-col flex-1 min-h-0"
+               style="min-height:340px;">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-xs font-bold tracking-widest text-emerald-400 glow-text-emerald uppercase">
+            ◈ Incident Console
+          </h2>
+          <button id="clear-console-btn" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">
+            clear
+          </button>
+        </div>
+
+        <!-- log list -->
+        <div id="console-log"
+             class="flex-1 overflow-y-auto space-y-1 font-mono text-xs pr-1"
+             style="max-height:360px;">
+          <!-- rows injected by JS -->
+        </div>
+      </section>
+
+      <!-- ┌─────────────────────────────────────────────────────────────┐
+           │  RESOLUTION TIMELINE (shown after incident)                  │
+           └─────────────────────────────────────────────────────────────┘ -->
+      <section id="resolution-panel"
+               class="hidden rounded-xl border border-slate-700 bg-slate-900 p-4">
+        <h2 class="text-xs font-bold tracking-widest text-slate-400 uppercase mb-3">
+          ◈ Autonomous Resolution Loop
+        </h2>
+        <ol id="resolution-steps" class="space-y-2 text-xs"></ol>
+      </section>
+
+    </div><!-- /right column -->
+
+  </main><!-- /main grid -->
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       EMPATHY OVERLAY (shown after incident resolution)
+  ════════════════════════════════════════════════════════════════════ -->
+  <div id="empathy-overlay"
+       class="hidden fixed inset-0 z-50 flex items-end justify-center p-6 pointer-events-none"
+       style="background:linear-gradient(to top, rgba(2,6,23,.85) 0%, transparent 60%);">
+
+    <div id="empathy-card"
+         class="empathy-card pointer-events-auto max-w-lg w-full rounded-2xl
+                border border-emerald-500/40 bg-slate-900/95 backdrop-blur-xl
+                p-6 shadow-2xl glow-emerald">
+      <!-- header -->
+      <div class="flex items-center gap-3 mb-4">
+        <div class="relative flex h-3 w-3">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+        </div>
+        <span class="text-xs font-bold tracking-widest text-emerald-400 glow-text-emerald uppercase">
+          Agent — Empathy Response
+        </span>
+        <span class="ml-auto text-xs text-slate-500" id="empathy-timestamp"></span>
+      </div>
+
+      <!-- message -->
+      <p id="empathy-message"
+         class="text-slate-100 leading-7 text-sm whitespace-pre-wrap"></p>
+
+      <!-- dismiss -->
+      <button id="empathy-dismiss"
+              class="mt-5 w-full py-2 rounded-lg border border-emerald-500/30
+                     text-xs text-emerald-400 hover:bg-emerald-500/10 transition-colors">
+        Begrepen — sluit dit bericht
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       JAVASCRIPT
+  ════════════════════════════════════════════════════════════════════ -->
+  <script>
+  (() => {
+    'use strict';
+
+    // ── Config ──────────────────────────────────────────────────────────
+    const API_BASE   = 'http://localhost:8000';
+    const POLL_MS    = 500;
+    const HM_COLS    = 64;
+    const HM_ROWS    = 8;
+    const CRIT_THRES = 4.0;
+    const ELEV_THRES = 1.5;
+
+    // ── State ────────────────────────────────────────────────────────────
+    let severity       = 'NOMINAL';
+    let anomalyScore   = 0;
+    let vectorsTotal   = 0;
+    let lastRunId      = null;
+    let isRunning      = false;
+
+    // ── Heatmap buffer: [row][col] 0.0–1.0 ──────────────────────────────
+    const hmBuffer = Array.from({ length: HM_ROWS }, () =>
+      Array.from({ length: HM_COLS }, () => Math.random() * 0.15)
+    );
+
+    // ──────────────────────────────────────────────────────────────────
+    // DOM refs
+    // ──────────────────────────────────────────────────────────────────
+    const $ = id => document.getElementById(id);
+
+    const heatmapEl       = $('heatmap');
+    const vectorStreamEl  = $('vector-stream');
+    const anomalyValEl    = $('anomaly-score-val');
+    const anomalyLabelEl  = $('anomaly-score-label');
+    const gaugeFillEl     = $('gauge-fill');
+    const gaugeNeedleEl   = $('gauge-needle');
+    const audioIconEl     = $('audio-icon');
+    const audioLabelEl    = $('audio-label');
+    const audioBarsEl     = $('audio-bars');
+    const procCountEl     = $('proc-count');
+    const procBarsEl      = $('proc-bars');
+    const consoleLogEl    = $('console-log');
+    const triggerBtn      = $('trigger-btn');
+    const triggerSpinner  = $('trigger-spinner');
+    const triggerBtnText  = $('trigger-btn-text');
+    const triggerStatus   = $('trigger-status');
+    const resolutionPanel = $('resolution-panel');
+    const resolutionSteps = $('resolution-steps');
+    const empathyOverlay  = $('empathy-overlay');
+    const empathyMessage  = $('empathy-message');
+    const empathyTs       = $('empathy-timestamp');
+    const hdrVectors      = $('hdr-vectors');
+    const hdrSeverity     = $('hdr-severity');
+    const hdrClock        = $('hdr-clock');
+
+    // ──────────────────────────────────────────────────────────────────
+    // Build heatmap DOM (static grid, values updated in place)
+    // ──────────────────────────────────────────────────────────────────
+    const hmCells = [];
+    for (let r = 0; r < HM_ROWS; r++) {
+      const row = document.createElement('div');
+      row.className = 'flex gap-0.5';
+      const rowCells = [];
+      for (let c = 0; c < HM_COLS; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'hm-cell flex-1';
+        row.appendChild(cell);
+        rowCells.push(cell);
+      }
+      heatmapEl.appendChild(row);
+      hmCells.push(rowCells);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Build audio level bars
+    // ──────────────────────────────────────────────────────────────────
+    const NUM_BARS = 12;
+    for (let i = 0; i < NUM_BARS; i++) {
+      const bar = document.createElement('div');
+      bar.className = 'w-2 rounded-sm transition-all duration-150';
+      bar.style.height = '4px';
+      audioBarsEl.appendChild(bar);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Colour helpers
+    // ──────────────────────────────────────────────────────────────────
+    function cellColour(v, isCritical) {
+      if (isCritical && v > 0.5) return `rgba(220,38,38,${Math.min(v, 1).toFixed(2)})`;
+      if (v < 0.1) return '#0f172a';
+      const g = Math.round(v * 200);
+      const b = Math.round(v * 238);
+      return `rgba(0,${g},${b},${Math.min(v * 1.2, 1).toFixed(2)})`;
+    }
+
+    function severityColour(s) {
+      if (s === 'CRITICAL') return '#ef4444';
+      if (s === 'ELEVATED') return '#f59e0b';
+      return '#34d399';
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Render heatmap
+    // ──────────────────────────────────────────────────────────────────
+    function renderHeatmap(critical) {
+      for (let r = 0; r < HM_ROWS; r++) {
+        for (let c = 0; c < HM_COLS; c++) {
+          const v = hmBuffer[r][c];
+          const cell = hmCells[r][c];
+          cell.style.backgroundColor = cellColour(v, critical);
+          cell.style.boxShadow = (critical && v > 0.6)
+            ? '0 0 6px 1px rgba(220,38,38,.6)'
+            : (v > 0.7 ? '0 0 4px 1px rgba(34,211,238,.4)' : 'none');
+        }
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Advance heatmap: shift left, add new column of noise/signal
+    // ──────────────────────────────────────────────────────────────────
+    function advanceHeatmap(score, critical) {
+      const intensity = Math.min(score / 8, 1);
+      for (let r = 0; r < HM_ROWS; r++) {
+        hmBuffer[r].shift();
+        let v = Math.random() * 0.12 + (Math.random() < 0.05 ? Math.random() * 0.4 : 0);
+        if (critical) {
+          // Inject spikes into specific rows
+          if (r === 0 || r === 3 || r === 7) v = 0.6 + Math.random() * 0.4;
+          else v = Math.random() * 0.3 + intensity * 0.5;
+        }
+        hmBuffer[r].push(Math.min(v, 1));
+      }
+      renderHeatmap(critical);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Gauge update  (arc length = 157px for a 180° semicircle)
+    // ──────────────────────────────────────────────────────────────────
+    const GAUGE_ARC = 157;
+    function updateGauge(score) {
+      const maxScore = 10;
+      const pct = Math.min(score / maxScore, 1);
+      const offset = GAUGE_ARC * (1 - pct);
+      const col = severityColour(severity);
+
+      gaugeFillEl.style.stroke = col;
+      gaugeFillEl.setAttribute('stroke-dashoffset', offset.toFixed(1));
+
+      // Rotate needle: -90° (left) to +90° (right)
+      const angle = -90 + pct * 180;
+      gaugeNeedleEl.setAttribute('transform', `rotate(${angle.toFixed(1)},60,60)`);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Audio bars animation
+    // ──────────────────────────────────────────────────────────────────
+    function updateAudioBars(muted) {
+      const bars = audioBarsEl.children;
+      for (let i = 0; i < bars.length; i++) {
+        if (muted) {
+          bars[i].style.height = '4px';
+          bars[i].style.backgroundColor = '#dc2626';
+        } else {
+          const h = 4 + Math.random() * 24;
+          bars[i].style.height = h + 'px';
+          bars[i].style.backgroundColor = '#34d399';
+        }
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Process mini-bars (simulated, 8 nominal + 1 malicious when critical)
+    // ──────────────────────────────────────────────────────────────────
+    const PROC_NAMES = ['WindowServer','loginwindow','Finder','SystemUIServer',
+                        'Safari','Mail','Calendar','Spotlight'];
+
+    function updateProcessBars(critical) {
+      const procs = [...PROC_NAMES];
+      if (critical) procs.push('FakeAlert_ChromeExt');
+      procCountEl.textContent = procs.length;
+      procCountEl.className = critical
+        ? 'text-5xl font-bold text-red-400 glow-text-red transition-all duration-300'
+        : 'text-5xl font-bold text-emerald-400 glow-text-emerald transition-all duration-300';
+
+      procBarsEl.innerHTML = '';
+      procs.forEach(name => {
+        const isMal = name === 'FakeAlert_ChromeExt';
+        const cpu = isMal ? 80 + Math.random() * 18 : Math.random() * 12;
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-1';
+        row.innerHTML = `
+          <span class="text-slate-500 w-28 truncate" style="font-size:9px;">${name}</span>
+          <div class="flex-1 bg-slate-800 rounded-full h-1.5 overflow-hidden">
+            <div class="h-full rounded-full transition-all duration-300"
+                 style="width:${cpu.toFixed(0)}%;
+                        background-color:${isMal ? '#ef4444' : '#22d3ee'};
+                        ${isMal ? 'box-shadow:0 0 6px #ef4444' : ''}">
+            </div>
+          </div>
+          <span style="font-size:9px;color:${isMal ? '#ef4444' : '#94a3b8'}">${cpu.toFixed(1)}%</span>
+        `;
+        procBarsEl.appendChild(row);
+      });
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Incident console
+    // ──────────────────────────────────────────────────────────────────
+    const LOG_ICONS = {
+      INFO:    { sym: '·',  col: 'text-slate-500' },
+      DETECT:  { sym: '▲',  col: 'text-amber-400' },
+      ALERT:   { sym: '⚡', col: 'text-red-400' },
+      ACTION:  { sym: '→',  col: 'text-cyan-400' },
+      RESOLVE: { sym: '✓',  col: 'text-emerald-400' },
+      EMPATHY: { sym: '♡',  col: 'text-pink-400' },
+    };
+
+    function logEntry(level, message) {
+      const { sym, col } = LOG_ICONS[level] || LOG_ICONS.INFO;
+      const ts = new Date().toTimeString().slice(0,8);
+      const row = document.createElement('div');
+      row.className = `incident-row flex gap-2 ${col}`;
+      row.innerHTML = `
+        <span class="text-slate-600 shrink-0">${ts}</span>
+        <span class="shrink-0">${sym}</span>
+        <span class="break-all">${message}</span>
+      `;
+      consoleLogEl.appendChild(row);
+      consoleLogEl.scrollTop = consoleLogEl.scrollHeight;
+
+      // Keep log to 200 entries
+      while (consoleLogEl.children.length > 200) {
+        consoleLogEl.removeChild(consoleLogEl.firstChild);
+      }
+    }
+
+    $('clear-console-btn').addEventListener('click', () => {
+      consoleLogEl.innerHTML = '';
+    });
+
+    // ──────────────────────────────────────────────────────────────────
+    // Vector stream ticker
+    // ──────────────────────────────────────────────────────────────────
+    function refreshVectorStream() {
+      const nums = Array.from({ length: 128 }, () =>
+        (Math.random() * 2 - 1).toFixed(3)
+      ).join('  ');
+      vectorStreamEl.textContent = nums + '  ' + nums;
+    }
+    refreshVectorStream();
+
+    // ──────────────────────────────────────────────────────────────────
+    // Header clock
+    // ──────────────────────────────────────────────────────────────────
+    function tickClock() {
+      hdrClock.textContent = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+    }
+    tickClock();
+    setInterval(tickClock, 1000);
+
+    // ──────────────────────────────────────────────────────────────────
+    // Apply severity styling to whole UI
+    // ──────────────────────────────────────────────────────────────────
+    function applySeverity(s, score) {
+      severity = s;
+      anomalyScore = score;
+      const col = severityColour(s);
+
+      anomalyValEl.textContent = score.toFixed(2);
+      anomalyValEl.style.color = col;
+      anomalyValEl.style.textShadow = `0 0 10px ${col}`;
+
+      anomalyLabelEl.textContent = s;
+      anomalyLabelEl.style.color = col;
+
+      hdrSeverity.textContent = s;
+      hdrSeverity.style.color = col;
+
+      updateGauge(score);
+
+      const isCrit = s === 'CRITICAL';
+
+      // Body border flash for critical
+      if (isCrit) {
+        document.body.style.outline = '2px solid rgba(220,38,38,.5)';
+        document.body.style.outlineOffset = '-2px';
+      } else {
+        document.body.style.outline = 'none';
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Polling /demo/state
+    // ──────────────────────────────────────────────────────────────────
+    async function pollState() {
+      try {
+        const res = await fetch(`${API_BASE}/demo/state`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        vectorsTotal = data.kernel_vectors_ingested || 0;
+        hdrVectors.textContent = vectorsTotal;
+
+        const sv = data.latest_severity || 'NOMINAL';
+        const score = sv === 'CRITICAL' ? 6.6 + Math.random() * 0.3
+                    : sv === 'ELEVATED' ? 2.2 + Math.random() * 0.3
+                    : Math.random() * 0.4;
+
+        applySeverity(sv, score);
+      } catch (_) { /* backend offline — keep animating */ }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Ambient animation loop (independent of polling)
+    // ──────────────────────────────────────────────────────────────────
+    let ambientTick = 0;
+    function ambientFrame() {
+      ambientTick++;
+      const crit = severity === 'CRITICAL';
+      const elev = severity === 'ELEVATED';
+
+      advanceHeatmap(anomalyScore, crit);
+
+      updateAudioBars(crit);
+      updateProcessBars(crit);
+
+      if (ambientTick % 6 === 0) refreshVectorStream();
+
+      // Idle noise on score when nominal
+      if (!isRunning && severity === 'NOMINAL') {
+        const noise = Math.sin(ambientTick * 0.07) * 0.15 + 0.18 + Math.random() * 0.08;
+        applySeverity('NOMINAL', noise);
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // POST /demo/run — trigger scenario
+    // ──────────────────────────────────────────────────────────────────
+    triggerBtn.addEventListener('click', async () => {
+      if (isRunning) return;
+      isRunning = true;
+
+      // Button state
+      triggerBtnText.textContent = 'Running…';
+      triggerSpinner.classList.remove('hidden');
+      triggerBtn.disabled = true;
+
+      // Hide previous resolution panel / empathy overlay
+      resolutionPanel.classList.add('hidden');
+      resolutionSteps.innerHTML = '';
+      empathyOverlay.classList.add('hidden');
+
+      logEntry('INFO', 'Scenario initiated — injecting scareware state…');
+
+      try {
+        const res = await fetch(`${API_BASE}/demo/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+
+        if (!res.ok) {
+          const err = await res.text();
+          logEntry('ALERT', `API error ${res.status}: ${err.slice(0, 80)}`);
+          triggerStatus.textContent = `Error ${res.status}`;
+          return;
+        }
+
+        const data = await res.json();
+        await handleDemoResult(data);
+
+      } catch (e) {
+        logEntry('ALERT', `Network error — is the backend running on ${API_BASE}?`);
+        triggerStatus.textContent = 'Connection refused';
+      } finally {
+        isRunning = false;
+        triggerBtnText.textContent = '⚡  Trigger Scareware Scenario';
+        triggerSpinner.classList.add('hidden');
+        triggerBtn.disabled = false;
+      }
+    });
+
+    // ──────────────────────────────────────────────────────────────────
+    // Handle /demo/run response — animated sequence
+    // ──────────────────────────────────────────────────────────────────
+    async function handleDemoResult(data) {
+      const { anomaly, resolution, user_message, total_duration_ms } = data;
+
+      triggerStatus.textContent = `Run ${data.run_id} · ${total_duration_ms.toFixed(0)} ms`;
+
+      // 1. Ingestion log
+      logEntry('INFO', `Kernel ingested ${data.kernel_vectors_ingested} vectors across ${data.ingestion_ticks} ticks`);
+      await sleep(300);
+
+      // 2. Detection
+      logEntry('DETECT', `Anomaly detected — δ-score: ${anomaly.delta_score.toFixed(4)}`);
+      await sleep(200);
+
+      for (const trigger of anomaly.triggers) {
+        const lvl = trigger.includes('MALICIOUS') ? 'ALERT' : 'DETECT';
+        logEntry(lvl, trigger);
+        await sleep(150);
+      }
+
+      // 3. Severity spike
+      applySeverity(anomaly.severity, anomaly.delta_score);
+      await sleep(400);
+
+      // 4. Resolution steps
+      if (resolution.actions.length > 0) {
+        resolutionPanel.classList.remove('hidden');
+
+        for (const action of resolution.actions) {
+          await sleep(350);
+
+          const li = document.createElement('li');
+          const isOk = action.success;
+          li.className = `incident-row flex items-start gap-2 ${isOk ? 'text-emerald-400' : 'text-red-400'}`;
+          li.innerHTML = `
+            <span class="shrink-0 mt-0.5">${isOk ? '✓' : '✗'}</span>
+            <div>
+              <p class="font-bold tracking-wide">${action.action_type.replace(/_/g,' ')}</p>
+              <p class="text-slate-400 text-xs">${action.target}</p>
+              <p class="text-slate-500 text-xs">${action.detail}</p>
+            </div>
+          `;
+          resolutionSteps.appendChild(li);
+
+          const logLvl = action.action_type === 'KILL_PROCESS' ? 'ACTION' : 'RESOLVE';
+          logEntry(logLvl, `${action.action_type}: ${action.target}`);
+        }
+      }
+
+      await sleep(600);
+
+      // 5. Revert severity (resolved)
+      logEntry('RESOLVE', `Resolution complete in ${resolution.duration_ms.toFixed(1)} ms`);
+      applySeverity('NOMINAL', 0.2);
+      await sleep(300);
+
+      // 6. Empathy overlay
+      if (user_message) {
+        logEntry('EMPATHY', 'Agent composing empathetic response…');
+        await sleep(500);
+        showEmpathyOverlay(user_message);
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Empathy overlay
+    // ──────────────────────────────────────────────────────────────────
+    function showEmpathyOverlay(msg) {
+      empathyMessage.textContent = msg;
+      empathyTs.textContent = new Date().toTimeString().slice(0,8);
+      empathyOverlay.classList.remove('hidden');
+    }
+
+    $('empathy-dismiss').addEventListener('click', () => {
+      empathyOverlay.classList.add('hidden');
+    });
+
+    // ──────────────────────────────────────────────────────────────────
+    // Offline / demo mode: simulate data if API unavailable
+    // ──────────────────────────────────────────────────────────────────
+    async function checkBackendAndLog() {
+      try {
+        const r = await fetch(`${API_BASE}/health`, { cache: 'no-store' });
+        if (r.ok) {
+          logEntry('INFO', `Backend online — ${API_BASE}`);
+        } else {
+          logEntry('INFO', `Backend responded ${r.status} — demo mode active`);
+        }
+      } catch (_) {
+        logEntry('INFO', `Backend offline — running in visual demo mode`);
+        logEntry('INFO', `Start the backend with: uvicorn controller.main:app --port 8000`);
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Bootstrap
+    // ──────────────────────────────────────────────────────────────────
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    // Initial nominal render
+    applySeverity('NOMINAL', 0.2);
+    renderHeatmap(false);
+    updateAudioBars(false);
+    updateProcessBars(false);
+
+    logEntry('INFO', 'Wintrip Ambient Sentinel — NTSSM Core v4.5 initialised');
+    logEntry('INFO', 'Temporal buffer: 64 ticks · 256-dim state vectors');
+    logEntry('INFO', 'Awaiting ambient ingestion loop…');
+
+    checkBackendAndLog();
+
+    // Start animation loop at ~10fps
+    setInterval(ambientFrame, 100);
+
+    // Start state polling
+    setInterval(pollState, POLL_MS);
+    pollState();
+
+  })();
+  </script>
+</body>
+</html>
