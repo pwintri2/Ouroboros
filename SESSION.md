@@ -17,6 +17,12 @@ Fase 4.5 is actief. De **Ambient Sentinel PoC Demo** is volledig geïmplementeer
    - `numpy` toegevoegd aan `controller/requirements.txt`
    - Router geregistreerd in `controller/main.py`
 
+## 💻 Windows Demo (nieuw)
+- `start_demo.bat` — dubbelklik om backend + browser te starten (eenvoudigste methode)
+- `start_demo.ps1` — PowerShell alternatief met kleur-output en health-check
+- `dashboard/index.html` — opent automatisch op `http://localhost:8000`
+- Eerste keer: script maakt `.venv` aan en installeert alle dependencies automatisch
+
 ## 🚀 Volgende Stappen
 - [ ] **Orchestrator Definitief Integreren**: De code uit de zandbak (`orchestrator_test_versie.py`) importeren of overschrijven in de centrale Wintrip flow (`router.py`), waardoor de OODA-loop operationeel wordt.
 - [ ] **Permissies en Docker Herstellen**: De Mac host Terminal of Full Disk Access (TCC) configureren zodat `sandbox.py` de actieve docker-containment weer feilloos kan aansturen (Docker daemon was onbereikbaar door permission errors).
