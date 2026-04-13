@@ -1,8 +1,8 @@
 #!/bin/bash
 # Wintrip Start Script - Geoptimaliseerd voor FastAPI
 
-# Navigeer naar de project root
-PROJECT_ROOT="/Users/philip/wintripai"
+# Navigeer naar de project root (map waar dit script staat)
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_ROOT"
 
 # Stel PYTHONPATH in zodat de controller module gevonden kan worden

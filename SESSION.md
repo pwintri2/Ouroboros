@@ -1,18 +1,33 @@
-# 🕒 Wintrip Session Status (Update: 3 April 2026 - Fase 4.5)
+# 🕒 Wintrip Session Status (Update: 13 April 2026 - Fase 4.5 / PoC Demo)
 
 ## 📌 Huidige Status
-We zijn succesvol gestart met **Fase 4.5: De Regiekamer (Orchestrator)**. Het doel was om de WintripAI te transformeren van een reactief model (met jou als "message bus") naar een autonome executie-loop. Omdat er stringente macOS-permissieblokkades en offline Docker-blokkeringen aanwezig waren, is deze iteratie via een autonoom gebouwde scratch-omgeving afgerond onder "YOLO-mode" voorwaarden.
+Fase 4.5 is actief. De **Ambient Sentinel PoC Demo** is volledig geïmplementeerd en geïntegreerd in de bestaande FastAPI-backend.
 
 ## ✅ Voltooide Wijzigingen
-1. **Orchestrator Logica Ontwikkeld**: Een `TaskModel` (voor iteratiebeheer: PENDING, COMPLETED, FAILED, RETRYING, INVESTIGATING) en een `ResultClassifier` (GREEN/RED/YELLOW mapping) zijn gebouwd.
-2. **Naadloze Reflector Integratie**: De gebouwde prototype-laag stuurt raw outputs door naar `controller.reflector.Reflector` en analyseert deterministisch de actiestatus aan de hand van Wintrip's bestaande codebaselines.
-3. **Autonome Bypass**: Omdat de host `Operation not permitted` errors wierp op macOS en `pytest` offline was, hebben we buiten de gebaande paden in een beveiligde, onbeperkte scratch-omgeving native test-runners in pure-Python geconstrueerd.
-4. **100% Groene Unit-Tests**: De `test_orchestrator.py` module slaagde foutloos op alle gespiegelde scenario's (Groene paden, rode iteratielussen, en yellow/ambigue uitkomsten) via de scratch runtime.
+1. **Orchestrator Logica Ontwikkeld** (vorige sessie)
+2. **Naadloze Reflector Integratie** (vorige sessie)
+3. **Autonome Bypass & Unit Tests** (vorige sessie)
+4. **Ambient Sentinel PoC Demo** (`controller/poc_demo.py`):
+   - `KernelStateMatrix`: 256-dim float32 rolling temporal buffer (mock Mojo-kern)
+   - `AmbientIngestionEngine`: simuleert continue OS-state sampling met injecteerbare scareware-aanval
+   - `AnomalyDetectionEngine`: Frobenius-norm temporal delta-score over NTSSM-venster
+   - `AutonomousResolutionLoop`: stille remediatie (process beëindigen, audio herstel, overlay sluiten)
+   - `EmpathyEngine`: empathische, Nederlandstalige gebruikersboodschap
+   - FastAPI router gemount op `/demo` (`POST /demo/run`, `GET /demo/state`)
+   - `numpy` toegevoegd aan `controller/requirements.txt`
+   - Router geregistreerd in `controller/main.py`
+
+## 💻 Windows Demo (nieuw)
+- `start_demo.bat` — dubbelklik om backend + browser te starten (eenvoudigste methode)
+- `start_demo.ps1` — PowerShell alternatief met kleur-output en health-check
+- `dashboard/index.html` — opent automatisch op `http://localhost:8000`
+- Eerste keer: script maakt `.venv` aan en installeert alle dependencies automatisch
 
 ## 🚀 Volgende Stappen
 - [ ] **Orchestrator Definitief Integreren**: De code uit de zandbak (`orchestrator_test_versie.py`) importeren of overschrijven in de centrale Wintrip flow (`router.py`), waardoor de OODA-loop operationeel wordt.
 - [ ] **Permissies en Docker Herstellen**: De Mac host Terminal of Full Disk Access (TCC) configureren zodat `sandbox.py` de actieve docker-containment weer feilloos kan aansturen (Docker daemon was onbereikbaar door permission errors).
 - [ ] **Oneindige Loop Activeren**: De Python API zo instellen dat het `TaskModel` daadwerkelijk achtereenvolgend model-outputs en feedback reïnjecteert zonder menselijke goedkeuring tot `COMPLETED` is bereikt.
+- [ ] **Demo uitbreiden**: `POST /demo/run` voorzien van een optionele `user_profile` body-parameter voor gepersonaliseerde empathische berichten.
 
 ## 🛠️ Herinnering voor volgende sessie
-De werkende prototypes staan momenteel op de tijdelijke locatie: `/Users/philip/.gemini/antigravity/scratch/sandbox_tests/`. Deze bestanden representeren de perfect werkende state-machine. Breng deze logica in de volgende iteratie veilig over naar `/Users/philip/WintripAI/controller/`!
+De werkende prototypes staan momenteel op de tijdelijke locatie: `/Users/philip/.gemini/antigravity/scratch/sandbox_tests/`. De nieuwe PoC demo staat in `controller/poc_demo.py` en is volledig operationeel.
