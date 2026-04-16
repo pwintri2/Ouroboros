@@ -1,0 +1,12 @@
+tools:
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "llama3" # Example of changing the model
+  gemini_cli:
+    cli_path: "/usr/local/bin/gemini"
+  codex:
+    api_key: "YOUR_CODEX_API_KEY"
+  antigravity:
+    api_key: "YOUR_ANTIGRAVITY_API_KEY"
+  grok:
+    api_key: "YOUR_GROK_API_KEY"
