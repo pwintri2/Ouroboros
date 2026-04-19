@@ -166,6 +166,8 @@ h3 {
 .lang-switch {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 0.25rem;
   padding: 0.28rem;
   border: 1px solid rgba(255, 255, 255, 0.08);
