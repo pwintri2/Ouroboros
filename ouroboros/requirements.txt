@@ -1,0 +1,17 @@
+# Ouroboros Proto 1 – Afhankelijkheden
+#
+# Kernvereisten (alle platforms)
+customtkinter>=5.2.0
+Pillow>=10.0.0
+
+# NLP – intentieherkenning (optioneel, vereist ~1-2 GB geheugen)
+# transformers>=4.38.0
+# torch>=2.0.0
+
+# Schermlezer – Windows-specifiek
+# pywinauto>=0.6.8       ; sys_platform == "win32"
+# pytesseract>=0.3.10    ; sys_platform == "win32"
+# opencv-python>=4.8.0   ; sys_platform == "win32"
+
+# Visuele overlay – Windows-specifiek
+# PyQt5>=5.15.0          ; sys_platform == "win32"

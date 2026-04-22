@@ -1,7 +1,26 @@
-# Wintrip Session Status (Update: 8 April 2026 - Phase 7.X)
+# Wintrip Session Status (Update: 22 April 2026 - Ouroboros Proto 1)
 
-## Huidige Status
-De codebase zit niet meer in Fase 4.5, maar in **Phase 7.X: Stream of Consciousness + consciousness memory**. De stream-pipeline is al in recente commits terechtgekomen, en daar bovenop staat nu een lokale, nog niet gecommitte integratie van een aparte `consciousness`-laag voor 11D-ingest en persona-aware retrieval.
+## Ouroboros Proto 1 (demo-ouroboros-proto-1 branch)
+
+### Wat Is Geïmplementeerd
+Volledige demo-versie van Ouroboros Proto 1 in de `ouroboros/` map:
+
+| Module | Functie |
+|---|---|
+| `ouroboros/main.py` | customtkinter demo-UI: invoerveld, Start/Stop/About knoppen |
+| `ouroboros/screen_reader.py` | Schermlezen via pywinauto (UIA) + pytesseract + opencv; stub op niet-Windows |
+| `ouroboros/visual_overlay.py` | Rode pijlen + tekstballonnen via PyQt5; console-stub op niet-Windows |
+| `ouroboros/nlp_engine.py` | Intentieherkenning via transformers zero-shot; keyword-fallback zonder model |
+| `ouroboros/internet_lookup.py` | Mock lookup via lokale `antwoorden.json` met fuzzy matching |
+| `ouroboros/antwoorden.json` | 11 mock-antwoorden (kladblok, verkenner, screenshot, wifi, enz.) |
+| `ouroboros/requirements.txt` | Dependency-lijst (kernpakketten + optionele Windows/NLP pakketten) |
+| `ouroboros/README.md` | Installatie- en gebruikshandleiding |
+| `sandbox_tests/test_ouroboros.py` | 17 unit-tests (alle groen op Linux/macOS CI) |
+
+### Teststatus
+- Groen: `python -m unittest sandbox_tests.test_ouroboros` → 17/17 OK
+
+ De stream-pipeline is al in recente commits terechtgekomen, en daar bovenop staat nu een lokale, nog niet gecommitte integratie van een aparte `consciousness`-laag voor 11D-ingest en persona-aware retrieval.
 
 ## Wat Nu Al Klaar Staat
 1. `controller/stream/*` is aanwezig en getest: daemon, storage bridge, resonance filter, RSS source en API-routes.
