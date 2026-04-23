@@ -10,11 +10,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-CHROMA_PERSIST_DIR = "/Users/philip/wintripai/wintrip_brain"
+CHROMA_PERSIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "wintrip_brain"))
 CHROMA_COLLECTION_NAME = "wintrip_knowledge"
 
 class KnowledgeBase:
-    def __init__(self, persist_dir: str = CHROMA_PERSIST_DIR):
+    def __init__(self, persist_dir: str = None):
+        if not persist_dir:
+            persist_dir = os.getenv("WINTRIP_DB_PATH", CHROMA_PERSIST_DIR)
         os.makedirs(persist_dir, exist_ok=True)
         self.client = chromadb.PersistentClient(path=persist_dir)
         
