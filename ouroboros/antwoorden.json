@@ -1,0 +1,63 @@
+{
+  "kladblok": {
+    "vraag": "Open Kladblok",
+    "antwoord": "Kladblok (Notepad) kan worden geopend via Start → Zoeken → 'Kladblok', of door Win+R te drukken en 'notepad' te typen.",
+    "actie": "open_app",
+    "app": "notepad.exe"
+  },
+  "verkenner": {
+    "vraag": "Open Verkenner",
+    "antwoord": "Verkenner (File Explorer) kan worden geopend via Win+E of via de taakbalk.",
+    "actie": "open_app",
+    "app": "explorer.exe"
+  },
+  "rekenmachine": {
+    "vraag": "Open Rekenmachine",
+    "antwoord": "De Rekenmachine kan worden geopend via Start → Zoeken → 'Rekenmachine'.",
+    "actie": "open_app",
+    "app": "calc.exe"
+  },
+  "browser": {
+    "vraag": "Open browser",
+    "antwoord": "Uw standaardbrowser kan worden geopend via het browserpictogram op de taakbalk of via Start → Zoeken.",
+    "actie": "open_app",
+    "app": "microsoft-edge:"
+  },
+  "instellingen": {
+    "vraag": "Open Instellingen",
+    "antwoord": "Instellingen kan worden geopend via Win+I of via Start → Instellingen.",
+    "actie": "open_app",
+    "app": "ms-settings:"
+  },
+  "screenshot": {
+    "vraag": "Hoe maak ik een screenshot?",
+    "antwoord": "Druk op Win+Shift+S om de Knipprogramma-snelkoppeling te openen, of druk op PrintScreen om een volledig schermafbeelding te maken.",
+    "actie": "info"
+  },
+  "wifi": {
+    "vraag": "Hoe verbind ik met wifi?",
+    "antwoord": "Klik op het wifi-pictogram in de taakbalk (rechtsonder) en selecteer uw netwerk.",
+    "actie": "info"
+  },
+  "volume": {
+    "vraag": "Hoe pas ik het volume aan?",
+    "antwoord": "Klik op het luidsprekerpictogram in de taakbalk (rechtsonder) en verschuif de volumeschuifregelaar.",
+    "actie": "info"
+  },
+  "update": {
+    "vraag": "Hoe update ik Windows?",
+    "antwoord": "Ga naar Instellingen → Windows Update en klik op 'Controleren op updates'.",
+    "actie": "info"
+  },
+  "taakmgr": {
+    "vraag": "Open Taakbeheer",
+    "antwoord": "Taakbeheer kan worden geopend via Ctrl+Shift+Esc of door met de rechtermuisknop op de taakbalk te klikken.",
+    "actie": "open_app",
+    "app": "taskmgr.exe"
+  },
+  "standaard": {
+    "vraag": "Onbekende vraag",
+    "antwoord": "Ik heb geen specifiek antwoord gevonden. Probeer uw vraag anders te formuleren of zoek in de Windows Help via Win+F1.",
+    "actie": "info"
+  }
+}

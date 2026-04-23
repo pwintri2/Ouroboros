@@ -17,9 +17,12 @@ DerivedData/
 # Wintrip Specifieke mappen (Negeer de inhoud, behalve eventuele readme's)
 wintrip_brain/*
 !wintrip_brain/.gitkeep
+controller/wintrip_brain/*
+!controller/wintrip_brain/.gitkeep
 sandbox/*
 !sandbox/.gitkeep
 data/tijdelijke_mail_dumps/*
 data/log_exports/*
+logs/
 
 .aider*

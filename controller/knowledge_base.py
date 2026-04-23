@@ -17,7 +17,9 @@ CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", _DEFAULT_BRAIN_DIR)
 CHROMA_COLLECTION_NAME = "wintrip_knowledge"
 
 class KnowledgeBase:
-    def __init__(self, persist_dir: str = CHROMA_PERSIST_DIR):
+    def __init__(self, persist_dir: str = None):
+        if not persist_dir:
+            persist_dir = os.getenv("WINTRIP_DB_PATH", CHROMA_PERSIST_DIR)
         os.makedirs(persist_dir, exist_ok=True)
         self.client = chromadb.PersistentClient(path=persist_dir)
         

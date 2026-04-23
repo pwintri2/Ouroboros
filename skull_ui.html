@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WintripAI Skull</title>
+  <style>
+    :root {
+      --void: #070b12;
+      --panel: #101722;
+      --panel-2: #172130;
+      --line: #263446;
+      --blue: #9dccff;
+      --mint: #c9f2ca;
+      --gold: #ffe773;
+      --ink: #e9f0f8;
+      --muted: #8290a4;
+      --danger: #ff6b6b;
+      --ok: #59d37d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 50% 42%, rgba(157, 204, 255, .16), transparent 38%),
+        linear-gradient(135deg, #050812 0%, #101725 55%, #080b11 100%);
+      color: var(--ink);
+      font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    .app { display: grid; grid-template-columns: 48px 300px 1fr; height: 100vh; }
+    .rail {
+      background: #070b12d9;
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 22px;
+      padding: 56px 0 18px;
+    }
+    .rail button, .profile {
+      width: 34px;
+      height: 34px;
+      border-radius: 11px;
+      border: 1px solid #314257;
+      background: #111b28;
+      color: var(--blue);
+    }
+    .profile { margin-top: auto; display: grid; place-items: center; border-radius: 50%; }
+    .nav {
+      padding: 38px 14px 14px;
+      background: linear-gradient(180deg, #0b111b, #111a27);
+      border-right: 1px solid var(--line);
+      display: grid;
+      grid-template-rows: 1fr 166px;
+      gap: 12px;
+    }
+    .nav-card {
+      position: relative;
+      border: 1px solid #23354b;
+      border-radius: 5px;
+      background: linear-gradient(135deg, #d5ecff, #b7d7f5);
+      color: #070b12;
+      padding-top: 50px;
+      overflow: hidden;
+    }
+    .nav-card h2 { text-align: center; margin: 0 0 10px; font-size: 16px; }
+    .nav-node {
+      width: 68px;
+      height: 68px;
+      margin: -2px auto 12px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 28%, #26313f, #080c12 72%);
+      color: white;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      box-shadow: 0 8px 18px rgba(0,0,0,.36);
+      font-size: 13px;
+      line-height: 1.05;
+    }
+    .chat-card {
+      border-radius: 7px;
+      border: 1px solid #23354b;
+      background: #111a27;
+      padding: 14px;
+      display: grid;
+      grid-template-rows: 1fr 34px;
+      gap: 12px;
+    }
+    .message-ghost { display: grid; grid-template-columns: 28px 1fr; gap: 10px; opacity: .55; }
+    .avatar { width: 28px; height: 28px; border-radius: 50%; background: #8aa0b4; }
+    .lines span { display: block; height: 8px; border-radius: 8px; background: #627181; margin: 7px 0; }
+    .input-row { display: grid; grid-template-columns: 1fr 56px; gap: 7px; }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid #2a3a4f;
+      background: #0b111a;
+      color: var(--ink);
+      border-radius: 7px;
+      padding: 8px 10px;
+      outline: none;
+      font: inherit;
+    }
+    button { cursor: pointer; font: inherit; }
+    .send { background: #4d9ce8; border: 0; color: white; border-radius: 7px; }
+    main { padding: 42px 8px 8px; position: relative; }
+    .title {
+      position: absolute;
+      top: 12px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 17px;
+      letter-spacing: .08em;
+    }
+    .workspace { display: grid; grid-template-rows: 178px 1fr; gap: 32px; height: 100%; }
+    .config, .work {
+      border: 1px solid #2a3a4f;
+      border-radius: 6px;
+      background: #111a27d9;
+      position: relative;
+      overflow: hidden;
+    }
+    .config h2, .work h2 { margin: 14px 0 0; text-align: center; font-weight: 500; }
+    .orb {
+      position: absolute;
+      width: 68px;
+      height: 68px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 25%, #26313f, #060910 75%);
+      display: grid;
+      place-items: center;
+      box-shadow: 0 10px 22px rgba(0,0,0,.4);
+      z-index: 3;
+    }
+    .models { left: 14%; top: 4px; }
+    .apis { right: 15%; top: 4px; }
+    .chatbox {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(201,242,202,.95), rgba(158,205,161,.82));
+      color: #07120c;
+      padding: 16px 14px;
+    }
+    .chatbox h2 { text-align: left; margin: 0; }
+    .center-node { left: 36%; top: 118px; }
+    .tools-node { right: 8%; bottom: 146px; }
+    .feet-node { right: 8%; bottom: 36px; }
+    .meeting {
+      position: absolute;
+      left: 16%;
+      right: 5%;
+      bottom: 32px;
+      height: 252px;
+      border-radius: 6px;
+      border: 1px solid #d3b846;
+      background: linear-gradient(135deg, rgba(255,231,115,.96), rgba(245,217,78,.9));
+      color: #15120a;
+      box-shadow: 0 10px 30px rgba(0,0,0,.22);
+      padding: 14px;
+      z-index: 2;
+    }
+    .meeting h2 { margin: 0 0 14px; font-size: 18px; }
+    .cards { display: grid; grid-template-columns: 1fr 1.1fr; gap: 10px; max-width: 360px; }
+    .mini {
+      background: #0b111a;
+      color: var(--ink);
+      border: 1px solid #263446;
+      border-radius: 6px;
+      min-height: 150px;
+      padding: 10px;
+      box-shadow: 0 8px 18px rgba(0,0,0,.35);
+    }
+    .mini h3 { margin: 0 0 10px; font-size: 13px; }
+    .service { display: flex; align-items: center; gap: 8px; border-top: 1px solid #1e2b3a; padding: 8px 0; font-size: 11px; }
+    .process { display: grid; grid-template-columns: 1fr 18px 18px 18px; gap: 7px; align-items: center; margin: 8px 0; }
+    .bar { height: 5px; border-radius: 5px; background: linear-gradient(90deg, #74c7ff, #c5d6e2); }
+    .status {
+      position: absolute;
+      right: 12px;
+      top: 10px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 12px currentColor; }
+    .dot.on { background: var(--ok); }
+    .wire { position: absolute; inset: 0; pointer-events: none; opacity: .58; }
+    .log {
+      position: absolute;
+      left: 22px;
+      right: 22px;
+      bottom: 10px;
+      height: 44px;
+      overflow: auto;
+      color: #16321b;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <button>⌂</button><button>♙</button><button>▤</button><button>⚙</button>
+      <div class="profile">◎</div>
+    </aside>
+    <section class="nav">
+      <div class="nav-card">
+        <h2>Navigation</h2>
+        <div class="nav-node">MR<br><small>Meeting Room</small></div>
+        <div class="nav-node">IT<br><small>Team</small></div>
+        <div class="nav-node">Personas</div>
+        <div class="nav-node">Projects</div>
+        <div class="nav-node">Chats</div>
+        <div class="nav-node">New Chat</div>
+      </div>
+      <div class="chat-card">
+        <div class="message-ghost">
+          <div class="avatar"></div>
+          <div class="lines"><span style="width:26%"></span><span style="width:82%"></span><span style="width:62%"></span><span style="width:36%"></span></div>
+        </div>
+        <div class="input-row"><input id="prompt" placeholder="Transmit sensory event..." /><button class="send" id="send">Send</button></div>
+      </div>
+    </section>
+    <main>
+      <div class="title">SYSTEM ARCHITECTURE TOOL</div>
+      <div class="workspace">
+        <section class="config">
+          <h2>Configuration</h2>
+          <div class="status"><span id="ws-dot" class="dot"></span><span id="ws-label">connecting</span></div>
+          <div class="orb models">Models</div>
+          <div class="orb apis">APIs</div>
+          <svg class="wire" viewBox="0 0 1000 620" preserveAspectRatio="none">
+            <path d="M200 55 C420 55 520 55 690 55" stroke="#9dccff" stroke-dasharray="3 5" fill="none"/>
+            <path d="M230 80 C310 205 330 245 390 310" stroke="#9dccff" fill="none"/>
+            <path d="M705 78 C615 210 525 275 440 330" stroke="#9dccff" fill="none"/>
+          </svg>
+        </section>
+        <section class="work">
+          <div class="chatbox">
+            <button style="float:right;border:0;border-radius:5px;background:#c8e8c4;padding:5px 10px">+</button>
+            <h2>Chatbox</h2>
+            <p>(Main Workspace)</p>
+            <div class="orb center-node">Chatbox</div>
+            <div class="orb tools-node">Tools</div>
+            <div class="orb feet-node">Hands & Feet<br><small>Agents Execution</small></div>
+            <div class="meeting">
+              <h2>MEETING TABLE / ACTIONS</h2>
+              <div class="cards">
+                <div class="mini">
+                  <h3>Tools / Agents</h3>
+                  <div class="service">✣ Connected<br><small>Connected integrations</small></div>
+                  <div class="service">▣ Services<br><small>Connected integration</small></div>
+                  <div class="service">A Alerts<br><small>Connected integration</small></div>
+                </div>
+                <div class="mini">
+                  <h3>Hands & Feet / Execution</h3>
+                  <div class="process"><div class="bar"></div><span>▷</span><span>✎</span><span>⌫</span></div>
+                  <div class="process"><div class="bar" style="width:78%"></div><span>▷</span><span>✎</span><span>⌫</span></div>
+                  <div class="process"><div class="bar" style="width:62%"></div><span>▷</span><span>✎</span><span>⌫</span></div>
+                  <div class="process"><div class="bar" style="width:88%"></div><span>▷</span><span>✎</span><span>⌫</span></div>
+                </div>
+              </div>
+            </div>
+            <div id="log" class="log">Skull booting...</div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script>
+    const API = "http://127.0.0.1:8000";
+    const WS = "ws://127.0.0.1:8000/stream_consciousness/ws";
+    const dot = document.getElementById("ws-dot");
+    const label = document.getElementById("ws-label");
+    const log = document.getElementById("log");
+    const prompt = document.getElementById("prompt");
+    let socket;
+
+    function addLog(message) {
+      const line = document.createElement("div");
+      line.textContent = new Date().toLocaleTimeString() + " " + message;
+      log.appendChild(line);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function setOnline(online, text) {
+      dot.classList.toggle("on", online);
+      label.textContent = text;
+    }
+
+    function connect() {
+      socket = new WebSocket(WS);
+      socket.onopen = () => { setOnline(true, "11D stream live"); addLog("WebSocket connected."); };
+      socket.onclose = () => { setOnline(false, "reconnecting"); setTimeout(connect, 1600); };
+      socket.onerror = () => { setOnline(false, "socket error"); };
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.accepted) addLog("Stored chunks: " + (data.stored_chunk_ids || []).length + " | collection " + data.collection);
+        else addLog("Rejected: " + (data.error || "unknown"));
+      };
+    }
+
+    function transmit() {
+      const text = prompt.value.trim();
+      if (!text) return;
+      const payload = {
+        title: "Skull UI sensory event",
+        text,
+        system: "mac",
+        source: "manual",
+        language: "plaintext",
+        persona: "developer",
+        intent: "observe",
+        project_context: "phase_11_skull_ui",
+        theme_resonance: 0.74,
+        emotional_valence: 0.62,
+        karmic_weight: 0.68,
+        field_cluster: "resonance",
+        tags: ["skull", "phase-11", "web-ui"]
+      };
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        addLog("WebSocket not ready; event not sent.");
+        return;
+      }
+      socket.send(JSON.stringify(payload));
+      addLog("Transmitted: " + text);
+      prompt.value = "";
+    }
+
+    document.getElementById("send").addEventListener("click", transmit);
+    prompt.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") transmit();
+    });
+
+    fetch(API + "/health").then(() => addLog("FastAPI health OK.")).catch(() => addLog("Waiting for FastAPI..."));
+    connect();
+  </script>
+</body>
+</html>
