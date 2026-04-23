@@ -3,6 +3,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 # ^^ WintripAI sys.path fix — added automatically ^^
 
 import asyncio
+import logging
 import os
 import sys
 import uvicorn
@@ -12,6 +13,8 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional, AsyncIterator
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+
+logger = logging.getLogger(__name__)
 
 # Forceer het juiste project root, zowel lokaal als in container-runtimes
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -270,7 +273,8 @@ async def learn_url(request: URLRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Fout bij verwerken van URL: %s", url)
+        raise HTTPException(status_code=500, detail="Er is een fout opgetreden bij het verwerken van de URL.")
 
 @app.post("/commit_save")
 async def commit_save(req: CommitSaveRequest):

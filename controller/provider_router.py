@@ -5,6 +5,9 @@ from typing import Optional
 GEMINI_MODELS = ["gemini-2.5-pro","gemini-2.0-flash","gemini-1.5-pro","gemini-1.5-flash"]
 CLAUDE_MODELS = ["claude-opus-4-6","claude-sonnet-4-6","claude-haiku-4-5-20251001"]
 
+_ALLOWED_GEMINI_MODELS = frozenset(GEMINI_MODELS)
+_ALLOWED_CLAUDE_MODELS = frozenset(CLAUDE_MODELS)
+
 def _run(cmd: list, timeout: int = 90) -> str:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -19,6 +22,8 @@ def _run(cmd: list, timeout: int = 90) -> str:
 
 def route_gemini(prompt: str, model: str = "gemini-2.5-pro",
                  system_prompt: Optional[str] = None) -> str:
+    if model not in _ALLOWED_GEMINI_MODELS:
+        model = "gemini-2.5-pro"
     full = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
     for cmd in [["gemini", "-m", model, full],
                 ["gemini", "--model", model, "-p", full],
@@ -30,6 +35,8 @@ def route_gemini(prompt: str, model: str = "gemini-2.5-pro",
 
 def route_claude(prompt: str, model: str = "claude-opus-4-6",
                  system_prompt: Optional[str] = None) -> str:
+    if model not in _ALLOWED_CLAUDE_MODELS:
+        model = "claude-opus-4-6"
     cmd = ["claude", "-p", prompt, "--print", "--model", model]
     if system_prompt:
         cmd += ["--system", system_prompt]
