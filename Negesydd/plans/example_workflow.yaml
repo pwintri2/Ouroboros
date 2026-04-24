@@ -1,0 +1,141 @@
+version: "1.0"
+name: "Multi-Agent Data Processing Pipeline"
+description: "Orchestrate agents to analyze requirements, generate code, and execute tasks"
+
+metadata:
+  author: "PWintri2"
+  created_at: "2024-01-15"
+  estimated_duration_minutes: 45
+  complexity_level: "advanced"
+
+agents:
+  required:
+    - gorilla           # Planning and analysis
+    - goose             # Execution and validation
+  optional:
+    - codex_vscode      # Code generation
+
+execution:
+  mode: "sequential"    # Execute tasks in dependency order
+  timeout_total_seconds: 2700
+  on_failure: "halt"    # Options: halt | continue | skip_dependent
+  retry_policy:
+    max_retries: 3
+    backoff_factor: 2.0
+
+tasks:
+  - id: "analyze_requirements"
+    name: "Analyze Requirements"
+    description: "Use gorilla to analyze and break down the project requirements"
+    agent: "gorilla"
+    depends_on: []
+    timeout_seconds: 300
+    priority: "high"
+    instructions: |
+      Please analyze the following requirements and provide:
+      1. Key objectives and scope
+      2. Technical constraints and considerations
+      3. Recommended architecture approach
+      4. Potential risks and mitigations
+    
+  - id: "design_solution"
+    name: "Design Solution Architecture"
+    description: "Design the overall solution based on analyzed requirements"
+    agent: "gorilla"
+    depends_on: ["analyze_requirements"]
+    timeout_seconds: 300
+    priority: "high"
+    context_from: "analyze_requirements"
+    instructions: |
+      Based on the analyzed requirements, design:
+      1. System architecture diagram (textual)
+      2. Component interactions
+      3. Data flow model
+      4. Integration points
+    
+  - id: "generate_code"
+    name: "Generate Core Code"
+    description: "Generate initial codebase using Codex"
+    agent: "codex_vscode"
+    depends_on: ["design_solution"]
+    timeout_seconds: 600
+    priority: "high"
+    context_from: "design_solution"
+    instructions: |
+      Generate production-ready code based on the architecture:
+      1. Create main module scaffold
+      2. Implement core classes and interfaces
+      3. Add comprehensive docstrings
+      4. Include error handling
+    
+  - id: "validate_code"
+    name: "Validate and Test Code"
+    description: "Execute and validate the generated code"
+    agent: "goose"
+    depends_on: ["generate_code"]
+    timeout_seconds: 300
+    priority: "high"
+    context_from: "generate_code"
+    instructions: |
+      Validate the generated code:
+      1. Check syntax and imports
+      2. Run unit tests
+      3. Execute integration tests
+      4. Verify all functionality
+      5. Generate test coverage report
+    
+  - id: "optimize_performance"
+    name: "Optimize for Performance"
+    description: "Performance profiling and optimization"
+    agent: "goose"
+    depends_on: ["validate_code"]
+    timeout_seconds: 300
+    priority: "normal"
+    context_from: "validate_code"
+    instructions: |
+      Profile and optimize:
+      1. Identify performance bottlenecks
+      2. Optimize critical paths
+      3. Add caching where appropriate
+      4. Re-run tests to ensure stability
+    
+  - id: "document_solution"
+    name: "Create Documentation"
+    description: "Generate comprehensive documentation"
+    agent: "codex_vscode"
+    depends_on: ["validate_code"]
+    timeout_seconds: 300
+    priority: "normal"
+    context_from: ["analyze_requirements", "design_solution", "validate_code"]
+    instructions: |
+      Create detailed documentation:
+      1. API reference with examples
+      2. Installation and setup guide
+      3. Configuration options
+      4. Troubleshooting guide
+      5. Contributing guidelines
+
+notification:
+  on_completion: true
+  channels:
+    - type: "stdout"
+      format: "detailed"
+    - type: "dashboard"
+      format: "summary"
+
+outputs:
+  - type: "code"
+    path: "./generated_code/"
+    description: "Generated source code"
+  
+  - type: "tests"
+    path: "./tests/"
+    description: "Test suite and coverage report"
+  
+  - type: "documentation"
+    path: "./docs/"
+    description: "Project documentation"
+  
+  - type: "report"
+    path: "./execution_report.json"
+    description: "Execution timeline and metrics"

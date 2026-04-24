@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Negesydd
+Comment=Native Negesydd dashboard
+Exec=/home/pwintri2/Negesydd/negesydd-desktop
+Icon=/home/pwintri2/Negesydd/assets/ouroboros-logo.png
+Path=/home/pwintri2/Negesydd
+Terminal=false
+StartupNotify=true
+StartupWMClass=Negesydd Dashboard
+Categories=Development;Utility;

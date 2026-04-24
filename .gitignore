@@ -23,3 +23,13 @@ data/tijdelijke_mail_dumps/*
 data/log_exports/*
 
 .aider*
+
+# Negesydd local/runtime artifacts
+Negesydd/.venv/
+Negesydd/.codex-test-venv/
+Negesydd/.pytest_cache/
+Negesydd/__pycache__/
+Negesydd/build/
+Negesydd/dist/
+Negesydd/logs/
+Negesydd/.coverage

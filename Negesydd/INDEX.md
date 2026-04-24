@@ -1,0 +1,257 @@
+# Negesydd Project Index
+## Docker Sandbox Build & Test System (Ready for Codex Implementation)
+
+---
+
+## 📋 Quick Navigation
+
+### For Codex (Start Here)
+- **[FOR_CODEX.md](FOR_CODEX.md)** ← Read this first
+- **[CODEX_QUICKSTART.md](CODEX_QUICKSTART.md)** - Quick reference for Codex
+- **[CODEX_IMPLEMENTATION_PROMPT_PROTO1.md](CODEX_IMPLEMENTATION_PROMPT_PROTO1.md)** - Full implementation specification
+
+### Docker Setup (Already Complete)
+- **[DOCKER_SETUP_COMPLETE.md](DOCKER_SETUP_COMPLETE.md)** - Setup status and details
+- **[setup-docker.sh](setup-docker.sh)** - Docker PATH configuration script
+- **[verify-setup.sh](verify-setup.sh)** - Verify all components are ready
+
+### Build & Test Automation
+- **[sandbox-build.sh](sandbox-build.sh)** - Main build script
+- **[Dockerfile.sandbox](Dockerfile.sandbox)** - Docker container configuration
+- **[requirements.txt](requirements.txt)** - Python dependencies
+
+### Original Documentation
+- **[CODEX_BUILD_PROMPT.md](CODEX_BUILD_PROMPT.md)** - Original system architecture
+- **[SETUP_GUIDE.md](SETUP_GUIDE.md)** - Detailed setup instructions
+- **[CODEX_QUICKSTART.md](CODEX_QUICKSTART.md)** - Quick reference
+
+### Example Files
+- **[plans/example_workflow.yaml](plans/example_workflow.yaml)** - Sample execution plan
+
+---
+
+## 🚀 Getting Started (Right Now)
+
+### Step 1: Verify Setup
+```bash
+cd /home/pwintri2/Negesydd
+./verify-setup.sh
+```
+
+Expected:
+```
+✓ ALL CHECKS PASSED - READY FOR IMPLEMENTATION
+```
+
+### Step 2: Read For Codex
+```bash
+cat FOR_CODEX.md
+```
+
+### Step 3: Ask Codex for Module 1
+Copy this prompt from **CODEX_QUICKSTART.md** and paste into Codex:
+
+```
+Implement Module 1: LOGGER (logger.py)
+
+[Full specification text...]
+```
+
+### Step 4: Save & Test
+```bash
+# Save generated code to:
+/home/pwintri2/Negesydd/logger.py
+
+# Then test:
+./sandbox-build.sh test logger
+```
+
+---
+
+## 📦 Project Status
+
+| Component | Status | Details |
+|-----------|--------|---------|
+| **Docker** | ✓ Ready | v29.4.1, running |
+| **Sandbox Image** | ✓ Built | negesydd:dev-sandbox (870 MB) |
+| **Docker Volume** | ✓ Created | negesydd-dev |
+| **Test Framework** | ✓ Ready | pytest configured |
+| **LLM** | ✓ Available | deepseek-coder ready in Ollama |
+| **Implementation** | ⏳ Pending | Awaiting Codex module generation |
+
+---
+
+## 🔧 Sandbox Commands Reference
+
+```bash
+# One-time setup
+./sandbox-build.sh init
+
+# Build Docker image (already done)
+./sandbox-build.sh build
+
+# Test individual modules
+./sandbox-build.sh test logger           # Test logger.py
+./sandbox-build.sh test message_types    # Test message_types.py
+./sandbox-build.sh test agent_pool       # Test agent_pool.py
+./sandbox-build.sh test message_queue    # Test message_queue.py
+
+# Run all tests
+./sandbox-build.sh test-all
+
+# Interactive debugging shell
+./sandbox-build.sh shell
+
+# Clean up when complete
+./sandbox-build.sh clean
+```
+
+---
+
+## 📚 Module Implementation Sequence
+
+### Foundation Modules (Ready Now)
+Each module is implemented via Codex, then tested in Docker sandbox:
+
+1. **logger.py** (Foundation)
+   - StructuredLogger class
+   - JSON output, file/console logging
+   - Test file: `tests/test_logger.py`
+   - Estimated: 15 min
+
+2. **message_types.py** (Data Structures)
+   - Message dataclass with envelope format
+   - MessageType, Priority, LifecycleEvent enums
+   - Test file: `tests/test_message_types.py`
+   - Estimated: 20 min
+
+3. **agent_pool.py** (Agent Management)
+   - Agent discovery (gorilla, goose, codex)
+   - Health monitoring
+   - Resource tracking
+   - Test file: `tests/test_agent_pool.py`
+   - Estimated: 25 min
+
+4. **message_queue.py** (Message Routing)
+   - Thread-safe message queue
+   - Priority handling
+   - Dead letter queue
+   - Test file: `tests/test_message_queue.py`
+   - Estimated: 20 min
+
+**Total: ~80 minutes for foundation**
+
+### Advanced Modules (Follow Same Pattern)
+5. config_parser.py - Parse YAML plans
+6. error_handler.py - Error recovery
+7. llm_core.py - Deepseek-coder integration
+8. messenger.py - Core routing (most complex)
+9. lifecycle.py - Orchestration
+10. task_executor.py - Task execution
+11. codex_bridge.py - VSCode integration
+12. dashboard.py - Web UI
+
+---
+
+## 💻 Directory Structure
+
+```
+/home/pwintri2/Negesydd/
+├── FOR_CODEX.md                          ← START HERE
+├── CODEX_QUICKSTART.md                   ← Instructions for Codex
+├── CODEX_IMPLEMENTATION_PROMPT_PROTO1.md ← Full specification
+├── DOCKER_SETUP_COMPLETE.md              ← Setup status
+│
+├── Docker Setup & Build
+├── ├── Dockerfile.sandbox
+├── ├── sandbox-build.sh                  (executable)
+├── ├── setup-docker.sh                   (executable)
+├── └── verify-setup.sh                   (executable)
+│
+├── Configuration
+├── ├── requirements.txt
+├── ├── negesydd_app.py
+├── └── plans/
+│       └── example_workflow.yaml
+│
+├── Core Implementation (To Be Generated by Codex)
+├── ├── logger.py                         (← Implement #1)
+├── ├── message_types.py                  (← Implement #2)
+├── ├── agent_pool.py                     (← Implement #3)
+├── ├── message_queue.py                  (← Implement #4)
+├── ├── config_parser.py                  (← Implement #5)
+├── ├── error_handler.py                  (← Implement #6)
+├── ├── llm_core.py                       (← Implement #7)
+├── ├── messenger.py                      (← Implement #8)
+├── ├── lifecycle.py                      (← Implement #9)
+├── ├── task_executor.py                  (← Implement #10)
+├── ├── codex_bridge.py                   (← Implement #11)
+├── └── dashboard.py                      (← Implement #12)
+│
+└── Tests (Auto-generated by Codex)
+    └── tests/
+        ├── __init__.py
+        ├── test_logger.py                (Run: ./sandbox-build.sh test logger)
+        ├── test_message_types.py         (Run: ./sandbox-build.sh test message_types)
+        ├── test_agent_pool.py            (Run: ./sandbox-build.sh test agent_pool)
+        ├── test_message_queue.py         (Run: ./sandbox-build.sh test message_queue)
+        └── [more tests as modules added]
+```
+
+---
+
+## ✅ Docker Blocker: RESOLVED
+
+**Previous Issue:** Docker not in PATH - couldn't run `./sandbox-build.sh build`
+
+**Resolution:**
+1. ✓ Located Docker at `/usr/bin/docker`
+2. ✓ Added to PATH in `~/.bashrc`
+3. ✓ Built sandbox image successfully
+4. ✓ Created Docker volume
+5. ✓ All verification checks pass
+
+**Status:** Ready for Codex implementation
+
+---
+
+## 🎯 Next Action for Codex
+
+1. **Read:** `FOR_CODEX.md`
+2. **Copy prompt:** From `CODEX_QUICKSTART.md` (Module 1)
+3. **Ask Codex:** To implement `logger.py`
+4. **Save:** Output to `/home/pwintri2/Negesydd/logger.py`
+5. **Test:** `./sandbox-build.sh test logger`
+6. **Repeat:** For modules 2-4
+
+---
+
+## 📞 System Info
+
+- **System:** Pop!_OS 24.04 LTS (x86_64)
+- **Docker:** v29.4.1, running ✓
+- **Memory:** 8 GB
+- **Cores:** 32
+- **LLM:** deepseek-coder:latest (optimal for routing/reasoning)
+- **Build Environment:** Python 3.11 + pytest in Docker sandbox
+
+---
+
+## 📖 Documentation Files
+
+| File | Purpose | Audience |
+|------|---------|----------|
+| FOR_CODEX.md | Main instructions | Codex |
+| CODEX_QUICKSTART.md | Quick reference | Codex |
+| CODEX_IMPLEMENTATION_PROMPT_PROTO1.md | Full specification | Codex/Developers |
+| DOCKER_SETUP_COMPLETE.md | Setup details | Developers |
+| SETUP_GUIDE.md | Detailed guide | Developers |
+| CODEX_BUILD_PROMPT.md | Original architecture | Developers |
+
+---
+
+**Status: Ready for Implementation** ✓
+
+All systems operational. Docker sandbox ready. Awaiting Codex module implementations.
+
+Next: Open `FOR_CODEX.md` and follow instructions.
