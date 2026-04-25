@@ -1,0 +1,7 @@
+chromadb==0.5.23
+gradio>=4.44,<6
+langgraph>=0.2,<1
+openai>=1.40,<3
+pandas>=2.0,<3
+playwright>=1.45,<2
+pytest>=8,<9

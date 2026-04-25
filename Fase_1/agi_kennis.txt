@@ -1,0 +1,28 @@
+﻿### 1. Fundamentele Theorie & Logica
+* **Wiskundige Basis:** Lineaire algebra, calculus (gradient descent), kansberekening en statistiek (Bayesiaanse inferentie).
+* **Computerwetenschap:** Algoritmen en datastructuren, complexiteitstheorie (P vs NP), grafentheorie.
+* **Cognitieve Architectuur:** Reinforcement Learning (RLHF), neurale netwerkarchitecturen (Transformers, State Space Models), neurale symbolische AI.
+
+### 2. Softwareontwikkeling & Talen
+* **High-Level Talen:** Python (AI-standaard), C++, Rust (systeembetrouwbaarheid), Java, JavaScript (web-integratie).
+* **Frameworks:** PyTorch, TensorFlow, JAX (voor training); LangChain, AutoGPT (voor autonomie).
+* **Versiebeheer & CI/CD:** Git-workflows, Docker-containerisatie, Kubernetes-orchestratie.
+
+### 3. Besturingssystemen (OS) & Applicatielagen
+* **Kernel-architectuur:** Unix/Linux (process management, file systems), Windows NT kernel, macOS/Darwin.
+* **Mobiele Ecosystemen:** Android (AOSP, HAL-lagen), iOS (Cocoa Touch, sandboxing).
+* **API & Inter-process Communication (IPC):** RESTful API's, gRPC, sockets, en systeemoproepen (syscalls).
+* **UI/UX Logica:** DOM-manipulatie, mobiele app-lifecycle, event-driven architectuur.
+
+### 4. Low-Level Computerarchitectuur & Machine Code
+* **Instructiesets (ISA):** x86_64, ARM (v8/v9), RISC-V.
+* **Assemblertalen:** Het begrijpen van registers, memory alignment en de stack vs. heap.
+* **Machine Code & Compilatie:** LLVM-architectuur, binaire representatie (Hex/Bin), reverse engineering (decompiler-logica).
+* **Hardware Abstractie:** GPU-architectuur (CUDA, Triton), TPU-optimalisatie, FPGA-aansturing.
+
+### 5. Wereldkennis & Autonome Interactie
+* **Cybersecurity:** Penetratietests, encryptiestandaarden (AES, RSA), kwetsbaarheidsanalyse.
+* **Internetprotocollen:** TCP/IP stack, DNS, HTTP/3, TLS/SSL.
+* **Ethiek & Veiligheid:** Alignment-theorie, sandboxing-beperkingen, wet- en regelgeving rondom AI.
+
+### 6. Modern languages
