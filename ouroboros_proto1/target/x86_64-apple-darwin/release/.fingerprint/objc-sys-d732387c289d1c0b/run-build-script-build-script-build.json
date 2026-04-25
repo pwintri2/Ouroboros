@@ -1,0 +1,1 @@
+{"rustc":7458672600737419911,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[6452682797676277333,"build_script_build",false,9457528229789526471]],"local":[{"RerunIfChanged":{"output":"x86_64-apple-darwin/release/build/objc-sys-d732387c289d1c0b/output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

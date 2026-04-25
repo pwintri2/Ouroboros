@@ -1,0 +1,10 @@
+/home/pwintri2/WintripAI/ouroboros_proto1/target/debug/deps/wayland_protocols-ed5ffd05cb7be1a8.d: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/protocol_macro.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/ext.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/wp.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/xdg.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/xwayland.rs
+
+/home/pwintri2/WintripAI/ouroboros_proto1/target/debug/deps/libwayland_protocols-ed5ffd05cb7be1a8.rmeta: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/protocol_macro.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/ext.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/wp.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/xdg.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/xwayland.rs
+
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/lib.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/protocol_macro.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/ext.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/wp.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/xdg.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wayland-protocols-0.30.1/src/xwayland.rs:

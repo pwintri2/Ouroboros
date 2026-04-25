@@ -1,0 +1,134 @@
+name: Build Ouroboros Proto 1
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ouroboros_proto1/**"
+      - ".github/workflows/ouroboros_proto1_build.yml"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      APP_VERSION: 0.1.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        working-directory: ouroboros_proto1
+        run: cargo build --release
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build Windows installer
+        working-directory: ouroboros_proto1
+        run: |
+          mkdir dist
+          iscc packaging\\windows\\OuroborosProto1.iss
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ouroboros-windows-installer-and-exe
+          path: |
+            ouroboros_proto1/target/release/ouroboros_proto1.exe
+            ouroboros_proto1/dist/OuroborosProto1Setup.exe
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        working-directory: ouroboros_proto1
+        run: cargo build --release
+
+      - name: Create .app bundle
+        working-directory: ouroboros_proto1
+        run: |
+          mkdir -p dist/OuroborosProto1.app/Contents/MacOS
+          mkdir -p dist/OuroborosProto1.app/Contents/Resources
+          cp target/release/ouroboros_proto1 dist/OuroborosProto1.app/Contents/MacOS/OuroborosProto1
+          chmod +x dist/OuroborosProto1.app/Contents/MacOS/OuroborosProto1
+          cp packaging/macos/Info.plist dist/OuroborosProto1.app/Contents/Info.plist
+
+      - name: Zip macOS app bundle
+        working-directory: ouroboros_proto1
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/OuroborosProto1.app dist/OuroborosProto1-macos.zip
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ouroboros-macos-app
+          path: |
+            ouroboros_proto1/dist/OuroborosProto1.app
+            ouroboros_proto1/dist/OuroborosProto1-macos.zip
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        working-directory: ouroboros_proto1
+        run: cargo build --release
+
+      - name: Build Linux desktop package and AppImage
+        working-directory: ouroboros_proto1
+        run: |
+          set -e
+          mkdir -p dist
+          mkdir -p AppDir/usr/bin
+          cp target/release/ouroboros_proto1 AppDir/usr/bin/ouroboros_proto1
+          chmod +x AppDir/usr/bin/ouroboros_proto1
+          cp packaging/linux/ouroboros_proto1.desktop AppDir/ouroboros_proto1.desktop
+          cp packaging/linux/ouroboros_proto1.svg AppDir/ouroboros_proto1.svg
+          cp packaging/linux/ouroboros_proto1.svg AppDir/.DirIcon
+
+          cat > AppDir/AppRun << 'EOF'
+          #!/usr/bin/env bash
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/ouroboros_proto1" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-x86_64.AppImage AppDir dist/OuroborosProto1-x86_64.AppImage
+
+          mkdir -p dist/linux_desktop_package
+          cp target/release/ouroboros_proto1 dist/linux_desktop_package/
+          cp packaging/linux/ouroboros_proto1.desktop dist/linux_desktop_package/
+          cp packaging/linux/ouroboros_proto1.svg dist/linux_desktop_package/
+          tar -czf dist/OuroborosProto1-linux-desktop.tar.gz -C dist linux_desktop_package
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ouroboros-linux-appimage-and-desktop
+          path: |
+            ouroboros_proto1/dist/OuroborosProto1-x86_64.AppImage
+            ouroboros_proto1/dist/OuroborosProto1-linux-desktop.tar.gz
+            ouroboros_proto1/target/release/ouroboros_proto1
+          if-no-files-found: error

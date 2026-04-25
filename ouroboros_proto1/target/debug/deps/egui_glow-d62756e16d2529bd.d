@@ -1,0 +1,11 @@
+/home/pwintri2/WintripAI/ouroboros_proto1/target/debug/deps/egui_glow-d62756e16d2529bd.d: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/painter.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/misc_util.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader_version.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/vao.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader/vertex.glsl /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader/fragment.glsl
+
+/home/pwintri2/WintripAI/ouroboros_proto1/target/debug/deps/libegui_glow-d62756e16d2529bd.rmeta: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/painter.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/misc_util.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader_version.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/vao.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader/vertex.glsl /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader/fragment.glsl
+
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/lib.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/painter.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/misc_util.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader_version.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/vao.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader/vertex.glsl:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui_glow-0.33.3/src/shader/fragment.glsl:

@@ -1,0 +1,10 @@
+/home/pwintri2/WintripAI/ouroboros_proto1/target/debug/deps/screenshots-065169e27a205706.d: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/image_utils.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/mod.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/wayland.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/wayland_screenshot.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/xorg.rs
+
+/home/pwintri2/WintripAI/ouroboros_proto1/target/debug/deps/libscreenshots-065169e27a205706.rmeta: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/image_utils.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/mod.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/wayland.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/wayland_screenshot.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/xorg.rs
+
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/lib.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/image_utils.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/mod.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/wayland.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/wayland_screenshot.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/screenshots-0.8.10/src/linux/xorg.rs:

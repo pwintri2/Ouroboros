@@ -1,0 +1,6 @@
+[80m20:33:55 [1m(INFO)[0m [36mForcing offline mode[0m [0m
+wineserver: using server-side synchronization.
+00d0:err:xrandr:xrandr14_get_adapters Failed to get adapters
+00d0:err:xrandr:xrandr14_get_adapters Failed to get adapters
+00d0:err:xrandr:xrandr14_get_adapters Failed to get adapters
+00d0:err:xrandr:xrandr14_get_adapters Failed to get adapters

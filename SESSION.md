@@ -1,33 +1,21 @@
-# 🕒 Wintrip Session Status (Update: 13 April 2026 - Fase 4.5 / PoC Demo)
+# 🕒 Wintrip Session Status (Update: 24 April 2026 - Pre-Reboot)
 
 ## 📌 Huidige Status
-Fase 4.5 is actief. De **Ambient Sentinel PoC Demo** is volledig geïmplementeerd en geïntegreerd in de bestaande FastAPI-backend.
+- **Audio:** Wacht op herstart om de `headset-mic` kernel parameter te activeren voor de koptelefoon.
+- **Docker:** Docker Desktop is geïnstalleerd, draait, en is ingelogd op Docker Hub (`wintrip`).
+- **Bottles (Little Bird):** Meerdere flessen voorbereid. `LittleBirdNew` is de schoonste optie. Wacht op herstart om Wine-locks te verbreken.
+- **Goose:** Configuratie compleet, wacht op `claude auth login`.
 
-## ✅ Voltooide Wijzigingen
-1. **Orchestrator Logica Ontwikkeld** (vorige sessie)
-2. **Naadloze Reflector Integratie** (vorige sessie)
-3. **Autonome Bypass & Unit Tests** (vorige sessie)
-4. **Ambient Sentinel PoC Demo** (`controller/poc_demo.py`):
-   - `KernelStateMatrix`: 256-dim float32 rolling temporal buffer (mock Mojo-kern)
-   - `AmbientIngestionEngine`: simuleert continue OS-state sampling met injecteerbare scareware-aanval
-   - `AnomalyDetectionEngine`: Frobenius-norm temporal delta-score over NTSSM-venster
-   - `AutonomousResolutionLoop`: stille remediatie (process beëindigen, audio herstel, overlay sluiten)
-   - `EmpathyEngine`: empathische, Nederlandstalige gebruikersboodschap
-   - FastAPI router gemount op `/demo` (`POST /demo/run`, `GET /demo/state`)
-   - `numpy` toegevoegd aan `controller/requirements.txt`
-   - Router geregistreerd in `controller/main.py`
+## ✅ Voltooid (Vandaag)
+- [x] Installatie Docker Desktop + fix voor corrupte apt repos.
+- [x] Configuratie `pass` credential store voor Docker op Linux.
+- [x] Docker Hub Login via PAT.
+- [x] Voorbereiding Little Bird installer in nieuwe fles.
 
-## 💻 Windows Demo (nieuw)
-- `start_demo.bat` — dubbelklik om backend + browser te starten (eenvoudigste methode)
-- `start_demo.ps1` — PowerShell alternatief met kleur-output en health-check
-- `dashboard/index.html` — opent automatisch op `http://localhost:8000`
-- Eerste keer: script maakt `.venv` aan en installeert alle dependencies automatisch
+## 🛠️ Volgende Stappen (Na Herstart)
+- [ ] Test koptelefoon geluid.
+- [ ] Voer `claude auth login` uit voor Goose.
+- [ ] Start de Little Bird installatie in de `LittleBirdNew` fles via de Bottles UI.
+- [ ] Valideer OpenHands MCP connectie na de eerdere fixes.
 
-## 🚀 Volgende Stappen
-- [ ] **Orchestrator Definitief Integreren**: De code uit de zandbak (`orchestrator_test_versie.py`) importeren of overschrijven in de centrale Wintrip flow (`router.py`), waardoor de OODA-loop operationeel wordt.
-- [ ] **Permissies en Docker Herstellen**: De Mac host Terminal of Full Disk Access (TCC) configureren zodat `sandbox.py` de actieve docker-containment weer feilloos kan aansturen (Docker daemon was onbereikbaar door permission errors).
-- [ ] **Oneindige Loop Activeren**: De Python API zo instellen dat het `TaskModel` daadwerkelijk achtereenvolgend model-outputs en feedback reïnjecteert zonder menselijke goedkeuring tot `COMPLETED` is bereikt.
-- [ ] **Demo uitbreiden**: `POST /demo/run` voorzien van een optionele `user_profile` body-parameter voor gepersonaliseerde empathische berichten.
-
-## 🛠️ Herinnering voor volgende sessie
-De werkende prototypes staan momenteel op de tijdelijke locatie: `/Users/philip/.gemini/antigravity/scratch/sandbox_tests/`. De nieuwe PoC demo staat in `controller/poc_demo.py` en is volledig operationeel.
+*Zie `SESSION_SUMMARY_20260424.md` voor de volledige technische details.*

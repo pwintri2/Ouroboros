@@ -1,0 +1,45 @@
+services:
+  chroma:
+    image: chromadb/chroma:0.5.23
+    restart: unless-stopped
+    volumes:
+      - chroma_data:/chroma/chroma
+    ports:
+      - "8000:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+
+  ouroboros:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - chroma
+    restart: unless-stopped
+    environment:
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - CHROMA_COLLECTION=ouroboros_11d_hippocampus
+      - CHROMA_PERSIST_DIR=/workspace/data/chromadb
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+      - BROWSER_HEADLESS=true
+      - MAX_SEED_TOPICS=0
+      - STEPS_PER_TOPIC=3
+      - VISION_PROVIDER=local_stub
+      - GORDON_PROGRESS_FILE=/workspace/gordon_progress.log
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data
+    ports:
+      - "7860:7860"
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        python -m resonant_ouroboros.main learn-seed --seed "/workspace/AGI Kennis.txt" --max-topics "$${MAX_SEED_TOPICS:-0}" --steps-per-topic "$${STEPS_PER_TOPIC:-3}" &
+        python -m resonant_ouroboros.main dashboard
+
+volumes:
+  chroma_data:

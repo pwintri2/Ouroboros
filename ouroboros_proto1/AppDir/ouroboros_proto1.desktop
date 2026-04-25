@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ouroboros proto 1
+Comment=Visual desktop helper with guided arrows and instruction bubbles
+Exec=ouroboros_proto1
+Icon=ouroboros_proto1
+Terminal=false
+Categories=Utility;
+StartupNotify=true

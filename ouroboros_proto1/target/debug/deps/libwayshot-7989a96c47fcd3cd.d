@@ -1,0 +1,11 @@
+/home/pwintri2/WintripAI/ouroboros_proto1/target/debug/deps/libwayshot-7989a96c47fcd3cd.d: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/convert.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/dispatch.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/error.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/image_util.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/output.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/screencopy.rs
+
+/home/pwintri2/WintripAI/ouroboros_proto1/target/debug/deps/liblibwayshot-7989a96c47fcd3cd.rmeta: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/convert.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/dispatch.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/error.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/image_util.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/output.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/screencopy.rs
+
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/lib.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/convert.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/dispatch.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/error.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/image_util.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/output.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libwayshot-0.2.0/src/screencopy.rs:

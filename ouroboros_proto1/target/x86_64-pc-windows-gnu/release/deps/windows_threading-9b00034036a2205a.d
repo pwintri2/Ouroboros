@@ -1,0 +1,10 @@
+/home/pwintri2/WintripAI/ouroboros_proto1/target/x86_64-pc-windows-gnu/release/deps/windows_threading-9b00034036a2205a.d: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/bindings.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/pool.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/../readme.md
+
+/home/pwintri2/WintripAI/ouroboros_proto1/target/x86_64-pc-windows-gnu/release/deps/libwindows_threading-9b00034036a2205a.rlib: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/bindings.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/pool.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/../readme.md
+
+/home/pwintri2/WintripAI/ouroboros_proto1/target/x86_64-pc-windows-gnu/release/deps/libwindows_threading-9b00034036a2205a.rmeta: /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/lib.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/bindings.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/pool.rs /home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/../readme.md
+
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/lib.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/bindings.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/pool.rs:
+/home/pwintri2/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0/src/../readme.md:
