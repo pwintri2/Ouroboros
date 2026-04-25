@@ -42,6 +42,7 @@ services:
       - STEPS_PER_TOPIC=3
       - VISION_PROVIDER=local_stub
       - GORDON_PROGRESS_FILE=/workspace/gordon_progress.log
+      - HUMAN_SEARCH_BASE_URL=https://en.wikipedia.org/w/index.php?search=
     volumes:
       - .:/workspace
       - ./data:/workspace/data

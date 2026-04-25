@@ -8,6 +8,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 from .oscillator import BrowserBehavior
 from .safety import evaluate_url, sanitize_query
@@ -133,10 +134,14 @@ class HumanBrowserEngine:
     ) -> BrowserAction:
         if snapshot is None:
             query = sanitize_query(topic)
+            search_base = os.getenv(
+                "HUMAN_SEARCH_BASE_URL",
+                "https://en.wikipedia.org/w/index.php?search=",
+            )
             return BrowserAction(
                 action_type="navigate",
-                target=f"https://duckduckgo.com/?q={query.replace(' ', '+')}",
-                rationale=f"start human web search for seed topic at mood {behavior.mood}",
+                target=f"{search_base}{quote_plus(query)}",
+                rationale=f"start human web research for seed topic at mood {behavior.mood}",
             )
 
         if snapshot.links and random.random() < behavior.link_jump_probability:

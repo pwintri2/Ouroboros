@@ -1,5 +1,6 @@
 import unittest
 
+from resonant_ouroboros.browser import HumanBrowserEngine
 from resonant_ouroboros.memory import InMemoryHippocampusMemory
 from resonant_ouroboros.oscillator import HertzOscillator
 from resonant_ouroboros.paeu_loop import PAEULoop
@@ -36,6 +37,19 @@ class SeedSafetyPAEUTests(unittest.TestCase):
         for row in memory.rows:
             self.assertEqual(row["metadata"]["dimension_count"], 11)
             self.assertIn("current_hz", row["metadata"])
+
+    def test_initial_browser_action_uses_wikipedia_search(self):
+        async def run_check():
+            oscillator = HertzOscillator(spike_probability=0.0)
+            behavior = oscillator.behavior_for_hz(425.0)
+            engine = HumanBrowserEngine()
+            action = await engine.propose_next_action("linear algebra", None, behavior)
+            self.assertEqual(action.action_type, "navigate")
+            self.assertTrue(action.target.startswith("https://en.wikipedia.org/w/index.php?search="))
+
+        import asyncio
+
+        asyncio.run(run_check())
 
 
 if __name__ == "__main__":

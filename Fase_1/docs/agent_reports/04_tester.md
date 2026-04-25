@@ -90,3 +90,23 @@ Gordon reported the full Docker stack operational:
 - Unit tests inside container: `10/10 PASSED`.
 - LangGraph graph-check returned a compiled graph.
 - Containers are running after clean rebuild and startup.
+
+## Live Collection Verification
+
+Codex reached the live services over exposed ports and verified:
+
+- Gradio responds with HTTP `200` on port `7860`.
+- Chroma heartbeat responds on port `8001`.
+- Collection `ouroboros_11d_hippocampus` exists with dimension `11`.
+- Collection count: `42`.
+- Sampled records: `42/42` have all required 11D metadata plus
+  `current_hz` and `vibration_mood`.
+- Sampled embeddings: `42/42` are exactly 11-dimensional.
+- Browser snapshot documents: `42/42`.
+- Unique seed topics represented: `17`.
+- Hertz range observed in records: `418.026` to `1086.406`.
+- Vibration moods observed: `creative_spike`, `curious_scan`, `deep_read`.
+
+Quality finding: `26/42` sampled documents were DuckDuckGo bot-challenge pages.
+Future seed browsing has been adjusted to start from Wikipedia search by
+default via `HUMAN_SEARCH_BASE_URL`.
