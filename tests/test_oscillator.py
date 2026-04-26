@@ -31,3 +31,11 @@ def test_modulation_state_exposes_hz_temperature_and_curiosity():
     assert state.current_hz >= 418.0
     assert state.temperature_modifier >= 0.0
     assert state.curiosity_factor >= 0.0
+
+
+def test_force_spike_enters_creative_spike_band():
+    oscillator = HertzOscillator(spike_probability=0.0)
+    hz = oscillator.force_spike(777.0)
+    behavior = oscillator.behavior_for_hz(hz)
+    assert hz >= 600.0
+    assert behavior.mood == "creative_spike"

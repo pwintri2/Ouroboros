@@ -1,63 +1,100 @@
-# Final Integration Report - Fase 2 Awake Keeper
+# Final Integration Report - Resonant Ouroboros Proto 1.1 Fase 2.5
 
-## Integrated Result
-- Fase 2 Awake Keeper is implemented as a Docker-ready Python app.
-- The Fase 1 source surface was recreated from bytecode metadata and covered with source tests.
-- The background loop, Ollama bridge, Playwright browser engine, seed loader, 11D memory path, Gradio dashboard, Docker compose file, and README instructions are present.
+## Role Scope
 
-## Files Created Or Modified
-- `.dockerignore`
-- `AGI Kennis.txt`
-- `Dockerfile.ouroboros`
-- `README.md`
-- `docker-compose.ouroboros.yml`
+Role: Final Integration.
+
+The implementation was initially held behind the permission gate. After the user typed `JA, build & run now`, the Docker service was rebuilt/restarted and the standalone UI was launched.
+
+## Integration Summary
+
+Fase 2.5 adds a Goose-inspired standalone desktop UI path for the existing Awake Keeper stack.
+
+- Swift/xcrun detection returned unavailable, so the selected implementation is the Python/customtkinter fallback.
+- The backend now exposes a local REST API alongside the existing Gradio dashboard.
+- The REST API shares the same `AwakeKeeper` runtime as Gradio: no second backend state, no direct UI-to-Ollama path.
+- The desktop UI in `goose_like_ui/` polls `http://127.0.0.1:7861`, displays Safe Mode, renders chat, and maps controls to bounded backend actions.
+- The UI never runs shell commands and does not apply code automatically.
+
+## Files Created
+
+- `goose_like_ui/awake_keeper_goose_ui.py`
+- `goose_like_ui/launch_goose_like_ui.sh`
+- `goose_like_ui/launch_goose_like_ui.command`
+- `goose_like_ui/requirements.txt`
+- `goose_like_ui/README.md`
+- `tests/test_goose_api.py`
+
+## Files Modified
+
+- `requirements.ouroboros.txt`
+- `resonant_ouroboros/awake_keeper.py`
+- `resonant_ouroboros/dashboard.py`
+- `resonant_ouroboros/oscillator.py`
+- `tests/test_oscillator.py`
 - `docs/agent_reports/01_planner.md`
 - `docs/agent_reports/02_orchestrator.md`
 - `docs/agent_reports/03_builder.md`
 - `docs/agent_reports/04_tester.md`
 - `docs/agent_reports/05_critic.md`
 - `docs/agent_reports/08_final_integration.md`
-- `requirements.ouroboros.txt`
-- `resonant_ouroboros/__init__.py`
-- `resonant_ouroboros/awake_keeper.py`
-- `resonant_ouroboros/browser.py`
-- `resonant_ouroboros/dashboard.py`
-- `resonant_ouroboros/gordon_bridge.py`
-- `resonant_ouroboros/harmonic_state_engine.py`
-- `resonant_ouroboros/main.py`
-- `resonant_ouroboros/memory.py`
-- `resonant_ouroboros/oscillator.py`
-- `resonant_ouroboros/paeu_graph.py`
-- `resonant_ouroboros/paeu_loop.py`
-- `resonant_ouroboros/safety.py`
-- `resonant_ouroboros/schema.py`
-- `resonant_ouroboros/seed.py`
-- `resonant_ouroboros/vision.py`
-- `tests/test_awake_keeper.py`
-- `tests/test_dashboard.py`
-- `tests/test_gordon_bridge.py`
-- `tests/test_harmonic_state_engine.py`
-- `tests/test_oscillator.py`
-- `tests/test_schema_memory.py`
-- `tests/test_seed_safety_paeu.py`
 
-## Verification Summary
-- Compile check passed.
-- Deterministic source test harness passed: 23 passed, 0 failed.
-- Host Docker was reached through `flatpak-spawn --host` because VS Code is Flatpak-sandboxed.
-- Docker compose config passed.
-- After explicit user permission, Fase 2 was deployed.
-- Fase 2 dashboard is running on `http://localhost:7861`.
-- Fase 2 app uses host Ollama at `http://host.docker.internal:11434`, where `llama2-uncensored:latest` is installed.
-- Optional Docker Ollama service is still available on `http://localhost:11435` with its own separate volume.
-- Docker Fase 2 test suite passed: `23 passed in 0.30s`.
-- Real app-container Ollama inference with `llama2-uncensored:latest` succeeded.
+## Backend API
 
-## Known Limitations
-- Real Ollama model discovery and inference from inside the app container are verified against host Ollama.
-- The optional Docker Ollama service has a separate model volume; it may remain empty unless explicitly used.
-- Persistent ChromaDB is optional; default Docker environment uses in-memory mode unless configured otherwise.
-- Fase 1 already occupies host dashboard port `7860`, so Fase 2 is deployed on host port `7861`.
+- `GET /health`
+- `GET /status`
+- `POST /chat`
+- `POST /control`
+- `GET /memory`
 
-## Review Readiness
-The repository is ready for review. The remaining operational step is pulling the desired Ollama model into the running Fase 2 Ollama service.
+Compatibility aliases are included where useful: status exposes `running` and `awake`, `learning_queue_size` and `queue_size`; chat exposes `answer`, `reply`, and `content`; control accepts either `command` or `action`.
+
+## Run Instructions
+
+Restart the existing Fase 2 service so the new API code is loaded:
+
+```sh
+flatpak-spawn --host bash -lc 'cd /home/pwintri2/WintripAI && OUROBOROS_GRADIO_PORT=7861 docker compose -f docker-compose.ouroboros.yml -p ouroboros-fase2 up -d ouroboros'
+```
+
+Install the desktop UI dependency if needed:
+
+```sh
+python3 -m pip install -r goose_like_ui/requirements.txt
+```
+
+Launch the standalone UI:
+
+```sh
+AWAKE_KEEPER_API_URL=http://127.0.0.1:7861 sh goose_like_ui/launch_goose_like_ui.sh
+```
+
+## Verification Evidence
+
+- Targeted tests: `10 passed`
+- Full Docker test suite: `34 passed`
+- Combined FastAPI + Gradio TestClient smoke: `/health` returned `200`, `/status` returned `safe_mode: true`
+- Syntax check passed for backend, UI, and new tests via `python -m py_compile`
+- Post-permission Docker build/recreate completed successfully for `ouroboros-fase2-ouroboros-1`
+- Post-permission full Docker test suite passed: `34 passed`
+- Live endpoint checks after restart:
+  - `/health` returned HTTP `200`
+  - `/status` returned HTTP `200` with `safe_mode: true` and `running: true`
+  - `/memory?limit=3` returned HTTP `200`
+  - `/chat` returned HTTP `200` with `ok: true`
+- Host desktop runtime:
+  - `python3.11` had `tkinter`
+  - a local `goose_like_ui/.venv` was created
+  - `customtkinter` installed successfully in that venv
+  - UI process launched as `awake_keeper_goose_ui.py`
+
+## Limitations
+
+- The live `localhost:7861` service has been restarted and is serving the new REST endpoints.
+- The standalone desktop app was launched after explicit permission.
+- `customtkinter` and local Tk support are required on the desktop host.
+- Visual confirmation still depends on the user's desktop session displaying the launched Tk window.
+
+## Permission Gate
+
+Permission was granted by the user with: `JA, build & run now`

@@ -1,89 +1,61 @@
-# Tester Report - Verification
+# 04 Tester Report - Resonant Ouroboros Proto 1.1 Fase 2.5
 
-## Commands Run
+## Role Boundary
 
-```sh
-python -m compileall -q resonant_ouroboros tests
-```
+Role: Tester.
 
-Result: passed.
+Scope for this pass:
+- Record validation evidence for the Goose-like standalone UI work.
+- Summarize the test matrix and acceptance status.
+- Note anything intentionally not run because it requires explicit user permission.
 
-```sh
-python - <<'PY'
-import importlib, inspect, traceback
-modules = [
-    'tests.test_schema_memory',
-    'tests.test_oscillator',
-    'tests.test_seed_safety_paeu',
-    'tests.test_harmonic_state_engine',
-    'tests.test_dashboard',
-    'tests.test_gordon_bridge',
-    'tests.test_awake_keeper',
-]
-passed = failed = 0
-for module_name in modules:
-    module = importlib.import_module(module_name)
-    for name, fn in inspect.getmembers(module, inspect.isfunction):
-        if name.startswith('test_'):
-            try:
-                fn()
-            except Exception:
-                failed += 1
-                print(f'FAIL {module_name}.{name}')
-                traceback.print_exc()
-            else:
-                passed += 1
-print(f'RESULT passed={passed} failed={failed}')
-raise SystemExit(1 if failed else 0)
-PY
-```
+No final build, Docker `up`, Docker restart, package command, or desktop app launch was run by this role.
 
-Result: `RESULT passed=23 failed=0`.
+## Evidence Source
 
-```sh
-docker --version
-docker compose version
-```
+This report relies on the visible handoff context for executed tests and smoke checks:
+- Targeted test command: `pytest -q tests/test_goose_api.py tests/test_oscillator.py tests/test_dashboard.py`
+- Targeted result: `10 passed`
+- Full test command: `pytest -q tests`
+- Full result: `34 passed`
+- Combined FastAPI + Gradio smoke via TestClient:
+  - `/health` returned HTTP `200`
+  - `/status` returned `safe_mode: true`
 
-Initial result: blocked inside the Flatpak VS Code shell with `docker: command not found`.
+## Test Matrix
 
-Follow-up diagnosis found host Docker through Flatpak:
+| Area | Coverage | Evidence | Result |
+| --- | --- | --- | --- |
+| Goose API endpoints | Targeted API tests for the new Goose-style integration surface | `tests/test_goose_api.py` included in targeted run | Passed |
+| Oscillator behavior | Existing oscillator behavior remains valid after integration work | `tests/test_oscillator.py` included in targeted run | Passed |
+| Dashboard compatibility | Existing dashboard behavior remains valid with backend changes | `tests/test_dashboard.py` included in targeted run | Passed |
+| Full regression suite | Entire repository test suite | `pytest -q tests` | 34/34 passed |
+| App composition smoke | FastAPI and Gradio combined app can be instantiated and queried | TestClient `/health` | HTTP 200 |
+| Safe Mode signal | Backend exposes safe UI runtime state | TestClient `/status` | `safe_mode: true` |
 
-```sh
-flatpak-spawn --host bash -lc 'command -v docker; docker --version; docker compose version'
-```
+## Acceptance Notes
 
-Result: host Docker available at `/usr/local/bin/docker`; Docker version 29.4.1 and Compose v5.1.2.
+- The backend test surface is green for both targeted Goose/Fase 2.5 coverage and the full test suite.
+- The combined FastAPI + Gradio app smoke check confirms that the backend can answer health and status requests without requiring a desktop launch.
+- Safe Mode is visible through `/status`, satisfying the requirement for a clear safety indicator path in the UI.
+- The targeted test set covers the key integration risk areas named for this phase: Goose API, oscillator state, and dashboard compatibility.
 
-## Coverage
-- 11D schema and metadata validation.
-- In-memory hippocampus store/search.
-- Hz oscillator base band, spike behavior, low-frequency behavior, and modulation state.
-- Seed parsing from `AGI Kennis.txt`.
-- URL safety gates.
-- PAEU loop storing accepted browser snapshots.
-- Harmonic State Engine routing.
-- Dashboard Hz history pruning.
-- Gordon progress bridge file write behavior.
-- Awake Keeper one-shot run and chat routing.
-- OllamaBridge HTTP API path using a local fake Ollama-compatible test server.
+## Not Run Pending User Permission
 
-## Docker Status
-- After explicit user permission, `docker compose up --build -d` was run through `flatpak-spawn --host`.
-- Initial build failed on the spaced filename `AGI Kennis.txt`; fixed with Dockerfile JSON-form `COPY`.
-- Initial dashboard start failed because host port `7860` was already used by Fase 1.
-- Fase 2 was started with `OUROBOROS_GRADIO_PORT=7861`.
-- Running services:
-  - `ouroboros-fase2-ollama-1` on host port `11435`.
-  - `ouroboros-fase2-ouroboros-1` on host port `7861`.
-- Dashboard probe returned HTTP 200 and a 53152-byte HTML page.
-- Docker Fase 2 test suite passed: `23 passed in 0.30s` with `pytest -q tests`.
-- Follow-up fix: the Docker Desktop VM could not bind-mount `/usr/share/ollama/.ollama` as the real 46 GB host store, so the app now uses host Ollama via `http://host.docker.internal:11434`.
-- App-container probe confirmed `host.docker.internal:11434/api/tags` returns the host models, including `llama2-uncensored:latest`.
-- App-container inference probe succeeded through `OllamaBridge` with `llama2-uncensored:latest`; `last_error=None`.
+The following were intentionally not run because they would count as build, deployment, service start/restart, or app launch actions:
+- Final desktop UI build/package command.
+- Docker `compose up`, service restart, or container recreation.
+- Standalone app launch via launcher script.
+- Manual end-to-end desktop interaction against a live launched UI.
+- Any command that would start or restart the Fase 2.5 runtime.
 
-## Ollama Test Status
-- A local fake Ollama-compatible HTTP server verified `/api/tags` and `/api/chat` behavior through `OllamaBridge`.
-- Host Ollama is reachable from the app container at `http://host.docker.internal:11434` and exposes the installed laptop models.
-- Real `llama2-uncensored:latest` inference from inside the app container is verified.
-- The optional Docker Ollama service is reachable at `http://localhost:11435`, but its named volume is separate and may be empty unless used explicitly.
+## Tester Verdict
+
+Tester acceptance is conditionally passed for code-level and backend-smoke validation.
+
+Final runtime acceptance remains pending explicit user permission to build and run the standalone UI, then manually verify:
+- Chat send/receive flow.
+- Live polling every 1-2 seconds.
+- Sidebar fields: Hz, mood, iterations, current topic, and last action.
+- Control buttons: Start Awake Mode, Stop, Manual PAEU Step, Creative Spike, View 11D Memory, and Clear Queue.
+- Safe Mode indicator visibility in the desktop UI.

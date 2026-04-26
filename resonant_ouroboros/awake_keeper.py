@@ -477,6 +477,27 @@ class AwakeKeeper:
         )
         return "Awake mode stopped."
 
+    def force_creative_spike(self, hz: float | None = None) -> str:
+        current_hz = self.oscillator.force_spike(hz)
+        behavior = self.oscillator.behavior_for_hz(current_hz)
+        self._set_status(
+            current_hz=current_hz,
+            vibration_mood=behavior.mood,
+            last_action="creative_spike_forced",
+            last_error=None,
+        )
+        return f"Creative spike forced at {current_hz:.2f} Hz."
+
+    def clear_queue(self) -> str:
+        with self._lock:
+            self._topic_index = 0
+            self._status.learning_queue_size = 0
+            self._status.current_topic = None
+            self._status.next_wake_at = None
+            self._status.last_action = "queue_cleared"
+            self._status.last_error = None
+        return "Learning queue marker cleared."
+
     def _thread_main(self) -> None:
         try:
             asyncio.run(self._awake_loop())

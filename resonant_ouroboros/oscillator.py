@@ -133,6 +133,15 @@ class HertzOscillator:
         hz = self.sample()
         return hz, self.behavior_for_hz(hz)
 
+    def force_spike(self, hz: float | None = None, now: float | None = None) -> float:
+        """Force an immediate creative spike and return the current sample."""
+
+        moment = now if now is not None else time.monotonic()
+        target = hz if hz is not None else self.rng.uniform(self.spike_min_hz, self.spike_max_hz)
+        self._active_spike_hz = max(self.spike_min_hz, min(self.spike_max_hz, target))
+        self._spike_started_at = moment
+        return self.sample(moment)
+
     def modulation_state(self, now: float | None = None) -> OscillatorState:
         hz = self.sample(now=now)
         behavior = self.behavior_for_hz(hz)
