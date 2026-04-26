@@ -1,0 +1,10 @@
+.git
+.pytest_cache
+**/__pycache__
+*.pyc
+.venv
+venv
+controller/wintrip_brain
+data/chromadb
+ouroboros_proto1/target
+wintrip_volledige_code.txt
