@@ -9,6 +9,7 @@ from resonant_ouroboros.browser import BrowserAction, BrowserSnapshot
 from resonant_ouroboros.memory import InMemoryHippocampusMemory
 from resonant_ouroboros.oscillator import HertzOscillator
 from resonant_ouroboros.vision import VisionObservation
+from resonant_ouroboros.seed import SeedKnowledgeLoader
 
 
 class FakeOllama:
@@ -107,6 +108,34 @@ def test_awake_keeper_chat_uses_code_help_for_programming_question():
     keeper = AwakeKeeper(config=config, browser_factory=FakeBrowser, ollama=FakeOllama())
     answer = asyncio.run(keeper.answer_question("Python code bug"))
     assert answer.startswith("code:")
+
+
+def test_awake_keeper_bootstrap_imports_all_seed_topics():
+    memory = InMemoryHippocampusMemory()
+    config = AwakeKeeperConfig(
+        seed_path=Path("AGI Kennis.txt"),
+        interval_min_seconds=0.01,
+        interval_max_seconds=0.02,
+        model="fake:latest",
+        ollama_base_url="http://fake",
+    )
+    keeper = AwakeKeeper(
+        config=config,
+        oscillator=HertzOscillator(spike_probability=0.0),
+        memory_factory=lambda: memory,
+        browser_factory=FakeBrowser,
+        ollama=FakeOllama(),
+    )
+    topics = SeedKnowledgeLoader("AGI Kennis.txt").load_topics()
+    keeper._bootstrap_seed_memory(memory)
+    status = keeper.status()
+    feed = keeper.knowledge_feed()
+    assert memory.count() == len(topics)
+    assert status.seed_records_imported == len(topics)
+    assert status.iterations == len(topics)
+    assert len(feed) == len(topics)
+    assert any(row["kind"] == "Empathy / Context" for row in feed)
+    assert any("AGI communication posture" in row["topic"] for row in feed)
 
 
 def test_ollama_bridge_uses_http_api_and_available_models():

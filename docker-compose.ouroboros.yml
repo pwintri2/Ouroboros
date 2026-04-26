@@ -6,6 +6,7 @@ services:
     image: wintripai/ouroboros-fase2:local
     environment:
       AWAKE_KEEPER_SEED: /workspace/agi_kennis.txt
+      AWAKE_KEEPER_AUTOSTART: ${AWAKE_KEEPER_AUTOSTART:-true}
       AWAKE_KEEPER_INTERVAL_MIN: ${AWAKE_KEEPER_INTERVAL_MIN:-10}
       AWAKE_KEEPER_INTERVAL_MAX: ${AWAKE_KEEPER_INTERVAL_MAX:-30}
       BROWSER_HEADLESS: ${BROWSER_HEADLESS:-true}

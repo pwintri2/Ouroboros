@@ -13,6 +13,13 @@ from .memory import InMemoryHippocampusMemory, create_memory_from_env
 from .oscillator import HertzOscillator
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "ja", "on"}
+
+
 @dataclass(frozen=True)
 class HzSample:
     sampled_at: datetime
@@ -65,6 +72,8 @@ def create_dashboard(
             return InMemoryHippocampusMemory()
 
     keeper = AwakeKeeper(config=config, oscillator=oscillator, memory_factory=dashboard_memory)
+    if _env_bool("AWAKE_KEEPER_AUTOSTART", False):
+        keeper.start()
 
     def refresh_status():
         state = oscillator.modulation_state()

@@ -21,7 +21,7 @@ from .browser import BrowserSnapshot, HumanBrowserEngine
 from .memory import HippocampusMemory, create_memory_from_env
 from .oscillator import HertzOscillator
 from .paeu_loop import PAEUEvent, PAEULoop
-from .seed import SeedKnowledgeLoader
+from .seed import SeedKnowledgeLoader, SeedTopic
 
 
 DEFAULT_OLLAMA_MODEL = "llama2-uncensored:latest"
@@ -94,6 +94,8 @@ class AwakeKeeperStatus:
     last_error: str | None = None
     next_wake_at: str | None = None
     ollama_model: str = DEFAULT_OLLAMA_MODEL
+    seed_records_imported: int = 0
+    learning_queue_size: int = 0
 
     def as_lines(self) -> str:
         rows = [
@@ -111,6 +113,8 @@ class AwakeKeeperStatus:
             f"last_error: {self.last_error}",
             f"next_wake_at: {self.next_wake_at}",
             f"ollama_model: {self.ollama_model}",
+            f"seed_records_imported: {self.seed_records_imported}",
+            f"learning_queue_size: {self.learning_queue_size}",
         ]
         return "\n".join(rows)
 
@@ -320,6 +324,7 @@ class AwakeKeeper:
         self._thread: threading.Thread | None = None
         self._topic_index = 0
         self._knowledge_events: deque[KnowledgeIncorporationEvent] = deque(maxlen=80)
+        self._bootstrapped_topics: set[str] = set()
 
     def status(self) -> AwakeKeeperStatus:
         with self._lock:
@@ -363,8 +368,48 @@ class AwakeKeeper:
             self._status.last_knowledge_kind = knowledge_kind
             self._status.last_source_url = event.snapshot.url
 
+    def _record_seed_event(
+        self,
+        *,
+        topic: SeedTopic,
+        record_id: str,
+        current_hz: float,
+        vibration_mood: str,
+    ) -> None:
+        details = topic.details or topic.title
+        knowledge_kind = self._knowledge_kind_from_text(f"{topic.section} {topic.title} {details}")
+        summary = (
+            f"Seed knowledge saved from AGI Kennis.txt. Section: {topic.section}. "
+            f"Details: {details}. Browser/Ollama enrichment is queued for this topic."
+        )
+        record = KnowledgeIncorporationEvent(
+            incorporated_at=datetime.now(timezone.utc).isoformat(),
+            topic=topic.search_phrase,
+            knowledge_kind=knowledge_kind,
+            source_url="AGI Kennis.txt",
+            title=f"Seed: {topic.title}",
+            record_id=record_id,
+            action="seed_bootstrap",
+            current_hz=current_hz,
+            vibration_mood=vibration_mood,
+            signal_fidelity=0.7,
+            summary=summary,
+        )
+        with self._lock:
+            self._knowledge_events.append(record)
+            self._status.last_knowledge_kind = knowledge_kind
+            self._status.last_source_url = "AGI Kennis.txt"
+            self._status.last_record_id = record_id
+            self._status.last_action = "seed_bootstrap"
+            self._status.last_summary = summary
+            self._status.seed_records_imported += 1
+
     def _knowledge_kind(self, topic: str, snapshot: BrowserSnapshot) -> str:
         text = f"{topic} {snapshot.title} {snapshot.visible_text[:1600]}".lower()
+        return self._knowledge_kind_from_text(text)
+
+    def _knowledge_kind_from_text(self, text: str) -> str:
+        text = text.lower()
         categories = [
             ("AGI Architecture", ("agi", "agent", "alignment", "memory", "reasoning", "autonomous")),
             ("Cybersecurity / Safety", ("security", "sandbox", "threat", "privacy", "attack", "safe", "safety")),
@@ -377,17 +422,24 @@ class AwakeKeeper:
                 return label
         return "General Web Knowledge"
 
-    def _load_topic_strings(self) -> list[str]:
+    def _load_seed_topics(self) -> list[SeedTopic]:
         try:
             topics = SeedKnowledgeLoader(self.config.seed_path).load_topics()
-            values = [topic.search_phrase for topic in topics]
         except Exception:
-            values = []
-        return values or [
-            "mathematical foundations for AGI",
-            "cybersecurity and safe autonomous agents",
-            "context understanding and empathetic user support",
+            topics = []
+        if topics:
+            return topics
+        return [
+            SeedTopic("Fallback", "Mathematical foundations for AGI", "linear algebra, probability, and optimization"),
+            SeedTopic("Fallback", "Cybersecurity and safe autonomous agents", "sandboxing, threat modeling, and browser safety"),
+            SeedTopic("Fallback", "Context understanding and empathetic user support", "empathy, validation, and uncertainty"),
         ]
+
+    def _load_topic_strings(self) -> list[str]:
+        topics = self._load_seed_topics()
+        values = [topic.search_phrase for topic in topics]
+        self._set_status(learning_queue_size=len(values))
+        return values
 
     def _next_topic(self) -> str:
         topics = self._load_topic_strings()
@@ -406,6 +458,7 @@ class AwakeKeeper:
                 loop_started_at=now,
                 browser_active=False,
                 ollama_model=self.config.model,
+                learning_queue_size=len(self._load_seed_topics()),
             )
             self._thread = threading.Thread(target=self._thread_main, name="awake_keeper_loop", daemon=True)
             self._thread.start()
@@ -433,8 +486,9 @@ class AwakeKeeper:
     async def _awake_loop(self) -> None:
         browser = self.browser_factory()
         memory = self.memory_factory()
-        self._set_status(browser_active=True)
+        self._set_status(browser_active=True, current_topic="Bootstrapping AGI Kennis.txt")
         try:
+            self._bootstrap_seed_memory(memory)
             while not self._stop_event.is_set():
                 await self.run_once(browser=browser, memory=memory)
                 interval = self.rng.uniform(
@@ -452,6 +506,45 @@ class AwakeKeeper:
                 if asyncio.iscoroutine(result):
                     await result
             self._set_status(browser_active=False, running=False, loop_stopped_at=datetime.now(timezone.utc).isoformat())
+
+    def _bootstrap_seed_memory(self, memory: HippocampusMemory) -> None:
+        topics = self._load_seed_topics()
+        self._set_status(
+            current_topic="Saving AGI Kennis.txt seed knowledge",
+            learning_queue_size=len(topics),
+        )
+        seed_loop = PAEULoop(
+            oscillator=self.oscillator,
+            browser=self.browser_factory(),
+            memory=memory,
+            persona_actor="awake_keeper_seed_bootstrap",
+            emotional_valence_provider=None,
+        )
+        imported_now = 0
+        for topic in topics:
+            key = topic.search_phrase
+            if key in self._bootstrapped_topics:
+                continue
+            hz, behavior = self.oscillator.current_behavior()
+            try:
+                record_id = seed_loop.store_seed_topic_without_browser(key, reason=f"seed:{topic.section}")
+            except Exception as exc:
+                self._set_status(last_error=f"seed bootstrap failed for {topic.title}: {exc}")
+                continue
+            self._bootstrapped_topics.add(key)
+            imported_now += 1
+            self._record_seed_event(
+                topic=topic,
+                record_id=record_id,
+                current_hz=hz,
+                vibration_mood=behavior.mood,
+            )
+        if imported_now:
+            self._set_status(
+                iterations=self.status().iterations + imported_now,
+                current_topic="Seed knowledge saved; browser/Ollama enrichment running",
+                last_error=None,
+            )
 
     async def run_once(
         self,

@@ -5,6 +5,7 @@ This repository contains the Fase 2 `awake_keeper` supervisor app for Resonant O
 ## What Fase 2 Adds
 
 - `AwakeKeeper` background supervisor with start/stop lifecycle.
+- Docker dashboard autostarts Awake Mode by default, so opening the UI begins seed import and background enrichment.
 - Automatic PAEU ticks every 10-30 seconds by default.
 - Ollama bridge with `llama2-uncensored:latest` as the default model and local fallback models.
 - Playwright-based human browser actions with URL safety gates.
