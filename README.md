@@ -70,6 +70,8 @@ start_awake_keeper_launcher.sh
 
 The launcher has buttons for Start Fase 2, Open Dashboard, Status, and Stop. It automatically uses `flatpak-spawn --host` when Docker is hidden inside a Flatpak VS Code terminal.
 
+If Tkinter is not installed, the same launcher automatically opens a small browser UI instead. It runs locally at `http://127.0.0.1:8791` when that port is free.
+
 ## Deployment Gate
 
 Do not run `docker compose up` until explicit permission is given by the user.

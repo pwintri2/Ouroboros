@@ -29,3 +29,17 @@ def test_compose_command_uses_flatpak_spawn_when_docker_hidden(monkeypatch):
 def test_launcher_paths_are_repo_local():
     assert launcher.PROJECT_DIR == Path(__file__).resolve().parents[1]
     assert launcher.COMPOSE_FILE.name == "docker-compose.ouroboros.yml"
+
+
+def test_sanitize_dashboard_port_rejects_bad_values():
+    assert launcher.sanitize_dashboard_port("7861") == "7861"
+    assert launcher.sanitize_dashboard_port("not-a-port") == "7861"
+    assert launcher.sanitize_dashboard_port("99999") == "7861"
+
+
+def test_browser_fallback_page_has_controls():
+    state = launcher.BrowserLauncherState(port="7862")
+    page = launcher.render_browser_page(state)
+    assert "Start Fase 2" in page
+    assert "Open Dashboard" in page
+    assert "name=\"port\" value=\"7862\"" in page
