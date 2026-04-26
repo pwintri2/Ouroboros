@@ -54,6 +54,22 @@ docker compose -f docker-compose.ouroboros.yml -p ouroboros-fase2 exec ollama ol
 
 To reuse an existing host Ollama model directory, set `OLLAMA_MODELS_PATH` to that absolute directory before starting Docker.
 
+## No-Terminal Launcher
+
+For a small desktop UI, open:
+
+```text
+AwakeKeeperLauncher.desktop
+```
+
+or double-click:
+
+```text
+start_awake_keeper_launcher.sh
+```
+
+The launcher has buttons for Start Fase 2, Open Dashboard, Status, and Stop. It automatically uses `flatpak-spawn --host` when Docker is hidden inside a Flatpak VS Code terminal.
+
 ## Deployment Gate
 
 Do not run `docker compose up` until explicit permission is given by the user.
