@@ -9,7 +9,7 @@ This repository contains the Fase 2 `awake_keeper` supervisor app for Resonant O
 - Ollama bridge with `llama2-uncensored:latest` as the default model and local fallback models.
 - Playwright-based human browser actions with URL safety gates.
 - Seed learning from `AGI Kennis.txt`.
-- Gradio dashboard with awake mode controls, status, Hz history, screenshot view, and live chat.
+- Gradio dashboard with awake mode controls, 3-times-per-second live refresh, status, Hz history, knowledge incorporation feed, screenshot view, and live chat.
 
 ## Docker Files
 

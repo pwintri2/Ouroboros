@@ -72,24 +72,24 @@ def create_dashboard(
         status = keeper.status().as_lines()
         hz_label = f"{state.current_hz:.2f} Hz | {state.mood} | curiosity {state.curiosity_factor:.2f}"
         image = str(screenshot_path) if Path(screenshot_path).exists() else None
-        return status, history.rows(), hz_label, image
+        return status, history.rows(), hz_label, image, keeper.knowledge_feed()
 
     def start_awake():
         message = keeper.start()
-        status, rows, label, image = refresh_status()
-        return f"{message}\n\n{status}", rows, label, image
+        status, rows, label, image, knowledge = refresh_status()
+        return f"{message}\n\n{status}", rows, label, image, knowledge
 
     def stop_awake():
         message = keeper.stop()
-        status, rows, label, image = refresh_status()
-        return f"{message}\n\n{status}", rows, label, image
+        status, rows, label, image, knowledge = refresh_status()
+        return f"{message}\n\n{status}", rows, label, image, knowledge
 
     def chat(message, chat_history):
         answer = keeper.answer_question_sync(message)
         chat_history = chat_history or []
         chat_history.append((message, answer))
-        status, rows, label, image = refresh_status()
-        return "", chat_history, status, rows, label, image
+        status, rows, label, image, knowledge = refresh_status()
+        return "", chat_history, status, rows, label, image, knowledge
 
     with gr.Blocks(title="Resonant Ouroboros Awake Keeper") as demo:
         gr.Markdown("# Resonant Ouroboros Awake Keeper")
@@ -100,25 +100,34 @@ def create_dashboard(
         hz_label = gr.Textbox(label="Hertz state", interactive=False)
         status_box = gr.Textbox(label="Background loop status", lines=12, interactive=False)
         hz_table = gr.Dataframe(headers=["seconds_ago", "hz"], label="Hz history", interactive=False)
+        knowledge_table = gr.Dataframe(
+            headers=["time", "kind", "topic", "title", "source", "record_id", "hz", "mood", "fidelity", "summary"],
+            label="Knowledge Incorporation",
+            interactive=False,
+            wrap=True,
+        )
         screenshot = gr.Image(label="Latest browser view", interactive=False)
         chatbot = gr.Chatbot(label="Live Ollama + Browser Chat")
         chat_input = gr.Textbox(label="Ask Awake Keeper")
         chat_button = gr.Button("Send")
 
-        start_button.click(start_awake, outputs=[status_box, hz_table, hz_label, screenshot])
-        stop_button.click(stop_awake, outputs=[status_box, hz_table, hz_label, screenshot])
-        refresh_button.click(refresh_status, outputs=[status_box, hz_table, hz_label, screenshot])
+        live_outputs = [status_box, hz_table, hz_label, screenshot, knowledge_table]
+        start_button.click(start_awake, outputs=live_outputs)
+        stop_button.click(stop_awake, outputs=live_outputs)
+        refresh_button.click(refresh_status, outputs=live_outputs)
         chat_button.click(
             chat,
             inputs=[chat_input, chatbot],
-            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot],
+            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table],
         )
         chat_input.submit(
             chat,
             inputs=[chat_input, chatbot],
-            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot],
+            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table],
         )
-        demo.load(refresh_status, outputs=[status_box, hz_table, hz_label, screenshot])
+        demo.load(refresh_status, outputs=live_outputs)
+        refresh_timer = gr.Timer(value=1 / 3)
+        refresh_timer.tick(refresh_status, outputs=live_outputs)
     return demo
 
 

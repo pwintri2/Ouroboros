@@ -145,7 +145,7 @@ def render_browser_page(state: BrowserLauncherState) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="3">
+  <meta http-equiv="refresh" content="0.333">
   <title>Awake Keeper Launcher</title>
   <style>
     body {{ font-family: system-ui, sans-serif; max-width: 860px; margin: 32px auto; padding: 0 18px; background: #f7f8fb; color: #172033; }}

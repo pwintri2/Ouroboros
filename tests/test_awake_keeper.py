@@ -87,6 +87,12 @@ def test_awake_keeper_run_once_updates_status_and_memory():
     assert status.iterations == 1
     assert status.last_record_id
     assert status.last_summary.startswith("summary:")
+    assert status.last_knowledge_kind == "AGI Architecture"
+    feed = keeper.knowledge_feed()
+    assert feed
+    assert feed[0]["kind"] == "AGI Architecture"
+    assert feed[0]["record_id"] == status.last_record_id
+    assert "summary:" in feed[0]["summary"]
 
 
 def test_awake_keeper_chat_uses_code_help_for_programming_question():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
@@ -87,6 +88,8 @@ class AwakeKeeperStatus:
     current_topic: str | None = None
     last_action: str | None = None
     last_record_id: str | None = None
+    last_knowledge_kind: str | None = None
+    last_source_url: str | None = None
     last_summary: str | None = None
     last_error: str | None = None
     next_wake_at: str | None = None
@@ -102,12 +105,43 @@ class AwakeKeeperStatus:
             f"current_topic: {self.current_topic}",
             f"last_action: {self.last_action}",
             f"last_record_id: {self.last_record_id}",
+            f"last_knowledge_kind: {self.last_knowledge_kind}",
+            f"last_source_url: {self.last_source_url}",
             f"last_summary: {self.last_summary}",
             f"last_error: {self.last_error}",
             f"next_wake_at: {self.next_wake_at}",
             f"ollama_model: {self.ollama_model}",
         ]
         return "\n".join(rows)
+
+
+@dataclass(frozen=True)
+class KnowledgeIncorporationEvent:
+    incorporated_at: str
+    topic: str
+    knowledge_kind: str
+    source_url: str
+    title: str
+    record_id: str
+    action: str
+    current_hz: float
+    vibration_mood: str
+    signal_fidelity: float
+    summary: str
+
+    def row(self) -> dict[str, object]:
+        return {
+            "time": self.incorporated_at,
+            "kind": self.knowledge_kind,
+            "topic": self.topic,
+            "title": self.title,
+            "source": self.source_url,
+            "record_id": self.record_id,
+            "hz": round(self.current_hz, 3),
+            "mood": self.vibration_mood,
+            "fidelity": round(self.signal_fidelity, 3),
+            "summary": self.summary,
+        }
 
 
 class OllamaBridge:
@@ -285,6 +319,7 @@ class AwakeKeeper:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._topic_index = 0
+        self._knowledge_events: deque[KnowledgeIncorporationEvent] = deque(maxlen=80)
 
     def status(self) -> AwakeKeeperStatus:
         with self._lock:
@@ -294,6 +329,53 @@ class AwakeKeeper:
         with self._lock:
             for key, value in updates.items():
                 setattr(self._status, key, value)
+
+    def knowledge_feed(self) -> list[dict[str, object]]:
+        with self._lock:
+            return [event.row() for event in reversed(self._knowledge_events)]
+
+    def _record_knowledge_event(
+        self,
+        *,
+        topic: str,
+        event: PAEUEvent,
+        summary: str | None,
+    ) -> None:
+        if not event.snapshot or not event.stored_record_id:
+            return
+        knowledge_kind = self._knowledge_kind(topic, event.snapshot)
+        compact_summary = " ".join((summary or event.snapshot.vision.summary or "").split())[:700]
+        record = KnowledgeIncorporationEvent(
+            incorporated_at=datetime.now(timezone.utc).isoformat(),
+            topic=topic,
+            knowledge_kind=knowledge_kind,
+            source_url=event.snapshot.url,
+            title=event.snapshot.title,
+            record_id=event.stored_record_id,
+            action=event.action.action_type,
+            current_hz=event.current_hz,
+            vibration_mood=event.vibration_mood,
+            signal_fidelity=event.signal_fidelity,
+            summary=compact_summary,
+        )
+        with self._lock:
+            self._knowledge_events.append(record)
+            self._status.last_knowledge_kind = knowledge_kind
+            self._status.last_source_url = event.snapshot.url
+
+    def _knowledge_kind(self, topic: str, snapshot: BrowserSnapshot) -> str:
+        text = f"{topic} {snapshot.title} {snapshot.visible_text[:1600]}".lower()
+        categories = [
+            ("AGI Architecture", ("agi", "agent", "alignment", "memory", "reasoning", "autonomous")),
+            ("Cybersecurity / Safety", ("security", "sandbox", "threat", "privacy", "attack", "safe", "safety")),
+            ("Mathematics / Foundations", ("linear algebra", "calculus", "probability", "matrix", "vector", "gradient")),
+            ("Programming / Code", ("python", "code", "programming", "bug", "function", "class", "api")),
+            ("Empathy / Context", ("empathy", "emotional", "context", "care", "calm", "human")),
+        ]
+        for label, markers in categories:
+            if any(marker in text for marker in markers):
+                return label
+        return "General Web Knowledge"
 
     def _load_topic_strings(self) -> list[str]:
         try:
@@ -422,6 +504,8 @@ class AwakeKeeper:
             last_error=self.ollama.last_error,
             ollama_model=self.ollama.last_model_used or self.config.model,
         )
+        if last_event:
+            self._record_knowledge_event(topic=active_topic, event=last_event, summary=summary)
         return events
 
     async def answer_question(self, question: str) -> str:

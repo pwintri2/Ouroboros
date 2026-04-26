@@ -43,3 +43,4 @@ def test_browser_fallback_page_has_controls():
     assert "Start Fase 2" in page
     assert "Open Dashboard" in page
     assert "name=\"port\" value=\"7862\"" in page
+    assert 'content="0.333"' in page
