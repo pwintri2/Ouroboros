@@ -1,0 +1,20 @@
+# AGI Kennis
+
+### Wiskundige Basis
+* **Linear algebra:** vectors, matrices, embeddings, transformations, eigenvectors, and geometric intuition for learning systems.
+* **Calculus:** gradients, optimization, loss surfaces, and how small changes propagate through models.
+* **Probability:** uncertainty, Bayes reasoning, calibration, sampling, and decision making under incomplete context.
+
+### Cybersecurity
+* **Sandboxing:** isolate tools, block unsafe hosts, and keep autonomous loops inside explicit boundaries.
+* **Threat modeling:** identify assets, attack surfaces, trust boundaries, mitigations, and residual risk.
+* **Browser safety:** use a real browser, respect robots and login boundaries, avoid private networks, and keep provenance.
+
+### AGI Architectuur
+* **Memory systems:** episodic records, semantic retrieval, vector stores, and provenance-aware recall.
+* **Agent loops:** perceive, act, evaluate, update, and pause when safety gates fail.
+* **Alignment:** helpfulness, honesty, humility, user consent, and reversible actions.
+
+### Empathie en Context
+* **Emotional valence:** detect tone without overclaiming and respond with practical steadiness.
+* **Context windows:** summarize, preserve uncertainty, and refresh stale assumptions with new observations.
