@@ -6,6 +6,7 @@ import json
 
 from resonant_ouroboros.awake_keeper import AwakeKeeper, AwakeKeeperConfig, OllamaBridge
 from resonant_ouroboros.browser import BrowserAction, BrowserSnapshot
+from resonant_ouroboros.evolution import EvolutionEvent
 from resonant_ouroboros.memory import InMemoryHippocampusMemory
 from resonant_ouroboros.oscillator import HertzOscillator
 from resonant_ouroboros.vision import VisionObservation
@@ -186,6 +187,47 @@ def test_awake_keeper_imports_extra_local_knowledge(tmp_path):
     assert status.local_records_imported == 1
     assert feed[0]["action"] == "local_knowledge_bootstrap"
     assert "README.md" in feed[0]["topic"]
+
+
+def test_awake_keeper_prompt_context_populates_links_and_proposals(tmp_path):
+    memory = InMemoryHippocampusMemory()
+    config = AwakeKeeperConfig(
+        seed_path=Path("AGI Kennis.txt"),
+        model="fake:latest",
+        ollama_base_url="http://fake",
+        chat_browser_enabled=False,
+        self_model_path=tmp_path / "self_model.json",
+        evolution_events_path=tmp_path / "evolution.jsonl",
+    )
+    keeper = AwakeKeeper(
+        config=config,
+        memory_factory=lambda: memory,
+        browser_factory=FakeBrowser,
+        ollama=FakeOllama(),
+    )
+    keeper.evolution_store.append(
+        EvolutionEvent(
+            event_type="knowledge_link",
+            topic="Jarosmalen links",
+            input_summary="link input",
+            output_summary="linked r1 to r2",
+            score_delta=0.07,
+        )
+    )
+    keeper.evolution_store.reflect(
+        "prompt context",
+        "reflect input",
+        "Proposal: surface pending proposals in prompts.",
+        status="approved",
+        score_delta=0.14,
+    )
+
+    context = keeper._prompt_context(task="chat", query="Jarosmalen")
+    state = context.current_state_text()
+    assert "knowledge_links=(" in state
+    assert "linked r1 to r2" in state
+    assert "reviewed_proposals=UNTRUSTED approved proposal summaries" in state
+    assert "surface pending proposals" in state
 
 
 def test_ollama_bridge_uses_http_api_and_available_models():

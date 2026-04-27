@@ -86,6 +86,40 @@ def test_safe_executor_can_execute_when_explicitly_enabled(tmp_path):
     ]
 
 
+def test_safe_executor_evolution_proposal_is_review_only_and_batch_approvable(tmp_path):
+    executor = SafeActionExecutor(path=tmp_path / "actions.json")
+    first = executor.propose(
+        kind="evolution_proposal",
+        label="Evolution Proposal",
+        payload={
+            "proposal": "Improve prompt context links.",
+            "target_files": ["resonant_ouroboros/prompt_context.py"],
+            "tests_to_run": ["pytest -q"],
+            "risk": "low",
+        },
+    )
+    second = executor.propose(
+        kind="safe_evolution_proposal",
+        label="Safe Evolution Proposal",
+        payload={"proposal": "Clarify self-model goals."},
+    )
+    assert first["proposal"]["status"] == "pending"
+    assert first["proposal"]["classification"] == "approval_required"
+    assert executor.summary()["pending_evolution_proposals"] == 2
+
+    batch = executor.approve_many(
+        [
+            {"action_id": first["proposal"]["id"], "approval_token": first["approval_token"]},
+            {"action_id": second["proposal"]["id"], "approval_token": second["approval_token"]},
+        ],
+        approved_by="test",
+    )
+    assert batch["ok"] is True
+    assert batch["summary"]["pending_evolution_proposals"] == 0
+    assert batch["results"][0]["proposal"]["result"]["mode"] == "evolution_review_only"
+    assert "No prompts, code, files" in batch["results"][0]["proposal"]["result"]["message"]
+
+
 def test_safe_executor_blocks_secret_relative_paths_and_python_inline(tmp_path):
     executor = SafeActionExecutor(path=tmp_path / "actions.json")
     secret = executor.propose(

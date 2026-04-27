@@ -39,7 +39,7 @@ services:
       ollama:
         condition: service_started
     ports:
-      - "${OUROBOROS_GRADIO_PORT:-7861}:7860"
+      - "${OUROBOROS_GRADIO_HOST:-127.0.0.1}:${OUROBOROS_GRADIO_PORT:-7861}:7860"
     volumes:
       - ./:/workspace
       - ${JAROSMALEN_PATH:-/home/pwintri2/Jarosmalen}:/workspace/external/Jarosmalen:ro

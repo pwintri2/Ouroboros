@@ -146,6 +146,8 @@ class GooseLikeApp(ctk.CTk):
             ("Last action", "last_action"),
             ("Model", "ollama_model"),
             ("Co-evolution", "co_evolution_score"),
+            ("Events", "latest_event"),
+            ("Proposals", "pending_proposals"),
             ("Sandbox", "sandbox_status"),
         ]
         for index, (label, key) in enumerate(status_items):
@@ -172,6 +174,8 @@ class GooseLikeApp(ctk.CTk):
         self._control_button(controls, "Creative Spike", "creative_spike", 1, 1, "#8854ff")
         self._control_button(controls, "View 11D Memory", "memory", 2, 0, "#3a404a")
         self._control_button(controls, "Clear Queue", "clear_queue", 2, 1, "#3a404a")
+        self._control_button(controls, "Reflect", "reflect", 3, 0, "#274a43")
+        self._control_button(controls, "Evolution", "evolution", 3, 1, "#3a404a")
         self.approvals_button = ctk.CTkButton(
             controls,
             text="Approvals (0)",
@@ -180,7 +184,7 @@ class GooseLikeApp(ctk.CTk):
             hover_color="#37665c",
             command=self._open_approvals,
         )
-        self.approvals_button.grid(row=3, column=0, columnspan=2, padx=8, pady=8, sticky="ew")
+        self.approvals_button.grid(row=4, column=0, columnspan=2, padx=8, pady=8, sticky="ew")
 
         self.connection_label = ctk.CTkLabel(
             sidebar,
@@ -244,7 +248,14 @@ class GooseLikeApp(ctk.CTk):
         column: int,
         color: str,
     ) -> None:
-        action = self._open_memory if command == "memory" else lambda cmd=command: self._run_control(cmd)
+        if command == "memory":
+            action = self._open_memory
+        elif command == "reflect":
+            action = self._run_reflect
+        elif command == "evolution":
+            action = self._open_evolution
+        else:
+            action = lambda cmd=command: self._run_control(cmd)
         ctk.CTkButton(
             parent,
             text=text,
@@ -405,14 +416,20 @@ class GooseLikeApp(ctk.CTk):
                 self._handle_chat(payload)
             elif event == "control":
                 self._handle_control(payload)
+            elif event == "reflect":
+                self._handle_reflect(payload)
             elif event == "memory":
                 self._show_memory_window(payload)
+            elif event == "evolution":
+                self._show_evolution_window(payload)
             elif event == "actions":
                 self._show_approvals_window(payload)
             elif event == "action_created":
                 self._handle_action_created(payload)
             elif event == "action_update":
                 self._handle_action_update(payload)
+            elif event == "action_batch_update":
+                self._handle_action_batch_update(payload)
         self.after(120, self._drain_events)
 
     def _handle_status(self, result: ApiResult) -> None:
@@ -431,6 +448,8 @@ class GooseLikeApp(ctk.CTk):
             "last_action": clamp_text(result.data.get("last_action") or "none", 80),
             "ollama_model": clamp_text(result.data.get("ollama_model") or "unknown", 80),
             "co_evolution_score": str((result.data.get("co_evolution") or {}).get("score") or 0),
+            "latest_event": clamp_text((result.data.get("events") or {}).get("latest_event_id") or "none", 80),
+            "pending_proposals": str((result.data.get("proposals") or {}).get("pending_count") or 0),
             "sandbox_status": clamp_text((result.data.get("sandbox") or {}).get("status_label") or "unknown", 80),
         }
         for key, value in values.items():
@@ -516,6 +535,34 @@ class GooseLikeApp(ctk.CTk):
             self._append_system_message(f"Action {status}: {reasons or proposal.get('label')}")
         self.activity_label.configure(text="Action updated", text_color="#87ffd3")
 
+    def _run_reflect(self) -> None:
+        topic = self.current_status.get("current_topic") or "Fase 4 co-evolution loop"
+        self.activity_label.configure(text="Reflecting...", text_color="#ffd27d")
+
+        def worker() -> None:
+            result = api_request("POST", "/reflect", {"topic": topic}, timeout=180.0)
+            self.event_queue.put(("reflect", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_reflect(self, result: ApiResult) -> None:
+        if not result.ok:
+            self._append_system_message(f"Reflection failed: {result.error}")
+            self.activity_label.configure(text="Reflection error", text_color="#ff8f8f")
+            return
+        safe_action = result.data.get("safe_action") or {}
+        token = result.data.get("approval_token")
+        if token and safe_action.get("id"):
+            self.approval_tokens[str(safe_action["id"])] = str(token)
+        self._append_system_message(
+            "Reflection proposal created.\n"
+            f"{clamp_text(result.data.get('proposal'), 1100)}\n\n"
+            f"Approval action: {safe_action.get('id') or 'none'}"
+        )
+        self._handle_status(ApiResult(True, result.data.get("status") or {}))
+        if safe_action.get("status") == "pending":
+            self._open_approvals()
+
     def _run_control(self, command: str) -> None:
         self.activity_label.configure(text=f"{command}...", text_color="#ffd27d")
 
@@ -551,12 +598,32 @@ class GooseLikeApp(ctk.CTk):
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
         actions = result.data.get("actions") or []
+        selected_vars: dict[str, tk.BooleanVar] = {}
+        header = ctk.CTkFrame(window, fg_color="#101113", corner_radius=0)
+        header.grid(row=0, column=0, padx=18, pady=16, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            window,
+            header,
             text=f"Pending Approvals: {len(actions)}",
             text_color="#f2f6ff",
             font=ctk.CTkFont(size=16, weight="bold"),
-        ).grid(row=0, column=0, padx=18, pady=16, sticky="w")
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            header,
+            text="Approve Selected",
+            width=142,
+            height=30,
+            fg_color="#2d7ff9",
+            command=lambda: self._approve_selected_actions(selected_vars, window),
+        ).grid(row=0, column=1, padx=(8, 0), sticky="e")
+        ctk.CTkButton(
+            header,
+            text="Reject Selected",
+            width=122,
+            height=30,
+            fg_color="#3a404a",
+            command=lambda: self._reject_selected_actions(selected_vars, window),
+        ).grid(row=0, column=2, padx=(8, 0), sticky="e")
         scroll = ctk.CTkScrollableFrame(window, fg_color="#15171b", corner_radius=8)
         scroll.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
         scroll.grid_columnconfigure(0, weight=1)
@@ -574,6 +641,16 @@ class GooseLikeApp(ctk.CTk):
             item.grid_columnconfigure(0, weight=1)
             label = action.get("label") or action.get("kind") or "action"
             reasons = "; ".join(str(reason) for reason in action.get("safety_reasons") or [])
+            action_id = str(action.get("id") or "")
+            if action_id:
+                selected_vars[action_id] = tk.BooleanVar(value=False)
+                ctk.CTkCheckBox(
+                    item,
+                    text="",
+                    variable=selected_vars[action_id],
+                    width=24,
+                    fg_color="#2d7ff9",
+                ).grid(row=0, column=1, rowspan=4, padx=10, pady=12, sticky="ne")
             ctk.CTkLabel(
                 item,
                 text=f"{label} / {action.get('risk')} risk",
@@ -588,12 +665,21 @@ class GooseLikeApp(ctk.CTk):
                 justify="left",
                 font=ctk.CTkFont(size=12),
             ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="w")
+            preview = self._action_preview_text(action)
+            if preview:
+                ctk.CTkLabel(
+                    item,
+                    text=preview,
+                    text_color="#9da7b8",
+                    wraplength=780,
+                    justify="left",
+                    font=ctk.CTkFont(size=11),
+                ).grid(row=2, column=0, padx=12, pady=(0, 8), sticky="w")
             buttons = ctk.CTkFrame(item, fg_color="transparent")
-            buttons.grid(row=2, column=0, padx=12, pady=(0, 10), sticky="w")
-            action_id = str(action.get("id") or "")
+            buttons.grid(row=3, column=0, padx=12, pady=(0, 10), sticky="w")
             ctk.CTkButton(
                 buttons,
-                text="Approve & Execute",
+                text="Approve Review" if action.get("kind") in {"evolution_proposal", "safe_evolution_proposal"} else "Approve & Execute",
                 width=150,
                 height=28,
                 fg_color="#2d7ff9",
@@ -607,6 +693,88 @@ class GooseLikeApp(ctk.CTk):
                 fg_color="#3a404a",
                 command=lambda aid=action_id, win=window: self._reject_action(aid, win),
             ).grid(row=0, column=1, padx=(0, 8))
+
+    def _action_preview_text(self, action: dict[str, Any]) -> str:
+        payload = action.get("payload") or {}
+        result = action.get("result") or {}
+        parts = []
+        argv = payload.get("argv") or payload.get("command")
+        if argv:
+            parts.append(f"command: {argv}")
+        target_files = payload.get("target_files")
+        if target_files:
+            parts.append(f"targets: {', '.join(str(item) for item in target_files[:4])}")
+        prepared = result.get("prepared_command") if isinstance(result, dict) else None
+        if prepared:
+            parts.append(f"prepared: {' '.join(str(item) for item in prepared[:8])}")
+        stdout = result.get("stdout_preview") if isinstance(result, dict) else None
+        stderr = result.get("stderr_preview") if isinstance(result, dict) else None
+        if stdout:
+            parts.append(f"stdout: {clamp_text(stdout, 220)}")
+        if stderr:
+            parts.append(f"stderr: {clamp_text(stderr, 220)}")
+        return "\n".join(parts)
+
+    def _selected_action_ids(self, selected_vars: dict[str, tk.BooleanVar]) -> list[str]:
+        return [action_id for action_id, var in selected_vars.items() if var.get()]
+
+    def _approve_selected_actions(
+        self,
+        selected_vars: dict[str, tk.BooleanVar],
+        window: ctk.CTkToplevel | None = None,
+    ) -> None:
+        action_ids = self._selected_action_ids(selected_vars)
+        if not action_ids:
+            messagebox.showinfo("Batch approval", "Select one or more actions first.")
+            return
+        missing = [action_id for action_id in action_ids if action_id not in self.approval_tokens]
+        if missing:
+            messagebox.showwarning(
+                "Approval token unavailable",
+                "This UI session does not hold every selected one-time approval token. "
+                "Recreate missing proposals from chat or approve only actions created in this session.",
+            )
+            return
+        if window:
+            window.destroy()
+        approvals = [
+            {"action_id": action_id, "approval_token": self.approval_tokens[action_id]}
+            for action_id in action_ids
+        ]
+
+        def worker() -> None:
+            result = api_request(
+                "POST",
+                "/actions/approve-batch",
+                {"approvals": approvals, "approved_by": "local_ui"},
+                timeout=180.0,
+            )
+            self.event_queue.put(("action_batch_update", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _reject_selected_actions(
+        self,
+        selected_vars: dict[str, tk.BooleanVar],
+        window: ctk.CTkToplevel | None = None,
+    ) -> None:
+        action_ids = self._selected_action_ids(selected_vars)
+        if not action_ids:
+            messagebox.showinfo("Batch rejection", "Select one or more actions first.")
+            return
+        if window:
+            window.destroy()
+
+        def worker() -> None:
+            result = api_request(
+                "POST",
+                "/actions/reject-batch",
+                {"action_ids": action_ids, "reason": "Rejected in Goose-like UI batch."},
+                timeout=120.0,
+            )
+            self.event_queue.put(("action_batch_update", result))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _approve_action(self, action_id: str, window: ctk.CTkToplevel | None = None) -> None:
         token = self.approval_tokens.get(action_id)
@@ -673,6 +841,28 @@ class GooseLikeApp(ctk.CTk):
         )
         self.activity_label.configure(text="Action updated", text_color="#87ffd3")
 
+    def _handle_action_batch_update(self, result: ApiResult) -> None:
+        if not result.ok:
+            self._append_system_message(f"Batch action update failed: {result.error}")
+            self.activity_label.configure(text="Batch action error", text_color="#ff8f8f")
+            return
+        lines = []
+        for item in result.data.get("results") or []:
+            proposal = item.get("proposal") or {}
+            action_id = str(proposal.get("id") or item.get("action_id") or "")
+            if action_id and proposal.get("status") != "pending":
+                self.approval_tokens.pop(action_id, None)
+            result_text = proposal.get("result") or {}
+            feedback = result_text.get("feedback") if isinstance(result_text, dict) else None
+            lines.append(
+                f"{proposal.get('label') or proposal.get('kind') or action_id}: "
+                f"{proposal.get('status') or item.get('message')}"
+                + (f" / {feedback}" if feedback else "")
+            )
+        self._append_system_message("Batch action update:\n" + "\n".join(lines))
+        self._handle_status(ApiResult(True, result.data.get("status") or self.current_status))
+        self.activity_label.configure(text="Batch action updated", text_color="#87ffd3")
+
     def _open_memory(self) -> None:
         query = self.input_box.get("1.0", "end").strip()
 
@@ -681,6 +871,77 @@ class GooseLikeApp(ctk.CTk):
             self.event_queue.put(("memory", result))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _open_evolution(self) -> None:
+        def worker() -> None:
+            result = api_get("/evolution", {"limit": 24}, timeout=45.0)
+            self.event_queue.put(("evolution", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_evolution_window(self, result: ApiResult) -> None:
+        if not result.ok:
+            messagebox.showerror("Co-evolution", result.error or "Evolution request failed")
+            return
+        window = ctk.CTkToplevel(self)
+        window.title("Co-evolution Events")
+        window.geometry("920x660")
+        window.configure(fg_color="#101113")
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+        scorecard = result.data.get("scorecard") or {}
+        header = (
+            f"Score: {scorecard.get('score', result.data.get('score'))} / "
+            f"Recent delta: {scorecard.get('recent_delta', 0)} / "
+            f"Events: {result.data.get('count')}"
+        )
+        ctk.CTkLabel(
+            window,
+            text=header,
+            text_color="#f2f6ff",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).grid(row=0, column=0, padx=18, pady=16, sticky="w")
+        scroll = ctk.CTkScrollableFrame(window, fg_color="#15171b", corner_radius=8)
+        scroll.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
+        scroll.grid_columnconfigure(0, weight=1)
+        rows = result.data.get("events") or []
+        if not rows:
+            ctk.CTkLabel(
+                scroll,
+                text="No co-evolution events yet.",
+                text_color="#8f98a8",
+                font=ctk.CTkFont(size=13),
+            ).grid(row=0, column=0, padx=14, pady=14, sticky="w")
+            return
+        for index, row in enumerate(rows):
+            item = ctk.CTkFrame(scroll, fg_color="#202329", corner_radius=8)
+            item.grid(row=index, column=0, padx=8, pady=8, sticky="ew")
+            item.grid_columnconfigure(0, weight=1)
+            title = f"{row.get('type')} / {row.get('status')} / +{row.get('score_delta')}"
+            body = row.get("proposal") or row.get("output_summary") or row.get("input_summary")
+            ctk.CTkLabel(
+                item,
+                text=clamp_text(title, 160),
+                text_color="#c7b9ff",
+                font=ctk.CTkFont(size=12, weight="bold"),
+            ).grid(row=0, column=0, padx=12, pady=(10, 2), sticky="w")
+            ctk.CTkLabel(
+                item,
+                text=clamp_text(body, 820),
+                text_color="#f2f6ff",
+                wraplength=800,
+                justify="left",
+                font=ctk.CTkFont(size=12),
+            ).grid(row=1, column=0, padx=12, pady=(0, 6), sticky="w")
+            meta = f"id={row.get('id')} / records={', '.join(row.get('record_ids') or [])}"
+            ctk.CTkLabel(
+                item,
+                text=clamp_text(meta, 820),
+                text_color="#8f98a8",
+                wraplength=800,
+                justify="left",
+                font=ctk.CTkFont(size=11),
+            ).grid(row=2, column=0, padx=12, pady=(0, 10), sticky="w")
 
     def _show_memory_window(self, result: ApiResult) -> None:
         if not result.ok:

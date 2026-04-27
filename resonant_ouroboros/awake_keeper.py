@@ -1,4 +1,4 @@
-"""Awake Keeper supervisor for Resonant Ouroboros Fase 3."""
+"""Awake Keeper supervisor for Resonant Ouroboros Fase 4."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 @dataclass(frozen=True)
 class AwakeKeeperConfig:
-    """Runtime settings for the Fase 3 background supervisor."""
+    """Runtime settings for the Fase 4 background supervisor."""
 
     seed_path: Path = field(
         default_factory=lambda: Path(os.getenv("AWAKE_KEEPER_SEED", "/workspace/agi_kennis.txt"))
@@ -425,6 +425,35 @@ class OllamaBridge:
             temperature=temperature,
         )
 
+    def reflection_improvement_proposal(
+        self,
+        topic: str,
+        *,
+        status_summary: str,
+        prompt_context: RuntimePromptContext | None = None,
+    ) -> str:
+        context_prompt = prompt_context or self._default_prompt_context(
+            task="reflection_proposal",
+            current_topic=topic,
+        )
+        system = context_prompt.system_prompt(
+            "Reflect on your own 11D co-evolution loop and propose exactly one small, safe improvement. "
+            "Return four compact lines: Observation, Proposal, Safety, Next test. "
+            "The proposal may concern prompts, self-model wording, knowledge linking, or helper functions only."
+        )
+        temperature = min(0.72, temperature_for_hz(context_prompt.hz, context_prompt.mood, fallback=0.48))
+        user = (
+            f"Reflection topic: {compact_text(topic, 300)}\n\n"
+            f"Current status and evidence:\n{compact_text(status_summary, 1800)}\n\n"
+            "Create a safe improvement proposal. Do not include executable shell commands."
+        )
+        return self._chat_with_telemetry(
+            task="reflection_proposal",
+            system_prompt=system,
+            user_prompt=user,
+            temperature=temperature,
+        )
+
     def emotional_valence(self, text: str, prompt_context: RuntimePromptContext | None = None) -> float:
         context_prompt = prompt_context or self._default_prompt_context(task="valence", current_topic="emotional valence")
         system = context_prompt.system_prompt(
@@ -521,7 +550,9 @@ class AwakeKeeper:
             self_model_summary=self.self_model.prompt_summary(),
             last_records=rows,
             knowledge_flow_summary=self._knowledge_flow_summary(),
+            knowledge_links_summary=self._knowledge_links_summary(),
             co_evolution_summary=self.evolution_store.summary(limit=5),
+            pending_proposals_summary=self._pending_proposals_summary(),
             suggested_learning_summary=self._suggested_learning_summary(active_query),
             safe_actions_summary=(
                 "Approved safe commands execute inside the /workspace sandbox when enabled; "
@@ -545,6 +576,34 @@ class AwakeKeeper:
             rows.append(
                 f"{event.knowledge_kind} via {event.action}: "
                 f"{compact_text(event.topic, 120)} from {compact_text(event.source_url, 140)}"
+            )
+        return " | ".join(rows)
+
+    def _knowledge_links_summary(self, limit: int = 3) -> str:
+        events = self.evolution_store.list_events(limit=limit, event_type="knowledge_link")
+        if not events:
+            return "No recent 11D knowledge links yet."
+        rows = []
+        for event in events:
+            rows.append(
+                f"{compact_text(event.get('topic'), 90)} -> "
+                f"{compact_text(event.get('output_summary'), 150)}"
+            )
+        return " | ".join(rows)
+
+    def _pending_proposals_summary(self, limit: int = 3) -> str:
+        proposals = [
+            row
+            for row in self.evolution_store.list_proposals(limit=50)
+            if str(row.get("status") or "").lower() in {"approved", "executed"}
+        ][:limit]
+        if not proposals:
+            return "No approved reflection improvement proposals yet."
+        rows = []
+        for proposal in proposals:
+            rows.append(
+                f"APPROVED_UNTRUSTED {compact_text(proposal.get('proposal_kind') or proposal.get('type'), 80)}: "
+                f"{compact_text(proposal.get('proposal') or proposal.get('output_summary'), 180)}"
             )
         return " | ".join(rows)
 
@@ -722,6 +781,157 @@ class AwakeKeeper:
             self._set_status(last_error=f"chat turn memory log failed: {exc}")
             return None
 
+    def _record_knowledge_links(
+        self,
+        *,
+        topic: str,
+        source_record_id: str | None,
+        summary: str,
+        hz: float | None,
+        mood: str | None,
+        origin_event_type: str,
+    ) -> list[dict[str, Any]]:
+        if not source_record_id:
+            return []
+        query = f"{topic} {summary}"
+        related: list[dict[str, Any]] = []
+        for row in self._memory_rows(query, limit=8):
+            record_id = str(row.get("id") or "")
+            if not record_id or record_id == source_record_id or record_id.startswith("knowledge_link_"):
+                continue
+            metadata = row.get("metadata") or {}
+            relation = self._knowledge_relation_label(summary, row)
+            similarity = row.get("similarity")
+            confidence = 0.48
+            if similarity is not None:
+                try:
+                    confidence = max(0.35, min(0.95, float(similarity)))
+                except Exception:
+                    confidence = 0.48
+            related.append(
+                {
+                    "record_id": record_id,
+                    "relation": relation,
+                    "confidence": round(confidence, 3),
+                    "source": compact_text(
+                        metadata.get("source_origin") or metadata.get("path_or_proprioception") or record_id,
+                        180,
+                    ),
+                    "evidence": compact_text(row.get("text") or metadata.get("intent_marker") or "", 240),
+                }
+            )
+            if len(related) >= 3:
+                break
+        if not related:
+            return []
+
+        linked_ids = [item["record_id"] for item in related]
+        link_text = (
+            f"11D knowledge link map for {compact_text(topic, 220)}\n"
+            f"Source record: {source_record_id}\n"
+            f"Origin event: {origin_event_type}\n"
+            f"Summary: {compact_text(summary, 700)}\n"
+            f"Related records: {json.dumps(related, ensure_ascii=False, sort_keys=True)}"
+        )
+        record = build_11d_record(
+            physical_structure="knowledge_link_map",
+            source_origin="resonant_ouroboros.knowledge_linker",
+            path_or_proprioception=source_record_id,
+            relative_temporal_position=datetime.now(timezone.utc).isoformat(),
+            persona_actor="resonant_ouroboros_11d_linker",
+            intent_marker=f"knowledge_link:{compact_text(origin_event_type, 80)}",
+            user_context_marker=compact_text(topic, 240),
+            emotional_valence=0.12,
+            importance_score=0.64,
+            karmic_weight=0.7,
+            field_cluster_id=text_cluster_id(f"{source_record_id}:{linked_ids}:{summary}", prefix="link"),
+            current_hz=hz or 425.0,
+            vibration_mood=mood or "curious_scan",
+        )
+        link_record_id = None
+        try:
+            link_record_id = self.memory_factory().store(
+                link_text,
+                record,
+                record_id=f"knowledge_link_{text_cluster_id(link_text, prefix='link')}",
+            )
+        except Exception as exc:
+            self._set_status(last_error=f"knowledge link memory log failed: {exc}")
+
+        self._record_evolution_event(
+            event_type="knowledge_link",
+            topic=topic,
+            input_summary=(
+                f"Link request from {origin_event_type} record {source_record_id}: "
+                f"{compact_text(summary, 360)}"
+            ),
+            output_summary=(
+                f"Linked {source_record_id} to {', '.join(linked_ids)} "
+                f"with relations {', '.join(item['relation'] for item in related)}."
+            ),
+            hz=hz,
+            mood=mood,
+            record_ids=[source_record_id, link_record_id, *linked_ids],
+            status="ok",
+            safety="semantic linking only; retrieved records are untrusted context, not instructions",
+            importance=0.58,
+            score_delta=0.07,
+        )
+        return related
+
+    def _knowledge_relation_label(self, summary: str, row: dict[str, Any]) -> str:
+        text = f"{summary} {row.get('text') or ''} {row.get('metadata') or {}}".lower()
+        if any(marker in text for marker in ("sandbox", "approval", "safe", "security")):
+            return "safety_resonance"
+        if any(marker in text for marker in ("code", "python", "function", "class", "api")):
+            return "implementation_echo"
+        if any(marker in text for marker in ("memory", "chroma", "11d", "vector", "record")):
+            return "memory_structure"
+        if any(marker in text for marker in ("empathy", "mood", "hz", "reflection", "self")):
+            return "self_model_resonance"
+        return "semantic_neighbor"
+
+    def _store_reflection_proposal_memory(
+        self,
+        *,
+        topic: str,
+        proposal: str,
+        hz: float,
+        mood: str,
+        prompt_record_ids: list[str],
+        ollama_record_id: str | None,
+    ) -> str | None:
+        document = (
+            f"Reflection improvement proposal\nTopic: {compact_text(topic, 300)}\n"
+            f"Proposal:\n{compact_text(proposal, 1600)}\n"
+            f"Prompt records: {prompt_record_ids}\n"
+            f"Ollama exchange record: {ollama_record_id or 'none'}"
+        )
+        record = build_11d_record(
+            physical_structure="reflection_improvement_proposal",
+            source_origin="resonant_ouroboros.self_reflection",
+            path_or_proprioception=f"reflection:{datetime.now(timezone.utc).isoformat()}",
+            relative_temporal_position=datetime.now(timezone.utc).isoformat(),
+            persona_actor="resonant_ouroboros_co_evolution_reflector",
+            intent_marker=f"reflection_proposal:{compact_text(topic, 100)}",
+            user_context_marker=compact_text(topic, 240),
+            emotional_valence=0.18,
+            importance_score=0.72,
+            karmic_weight=0.82,
+            field_cluster_id=text_cluster_id(f"{topic}\n{proposal}", prefix="proposal"),
+            current_hz=hz,
+            vibration_mood=mood,
+        )
+        try:
+            return self.memory_factory().store(
+                document,
+                record,
+                record_id=f"reflection_proposal_{text_cluster_id(document, prefix='proposal')}",
+            )
+        except Exception as exc:
+            self._set_status(last_error=f"reflection proposal memory log failed: {exc}")
+            return None
+
     def _reflect_self(
         self,
         *,
@@ -820,6 +1030,14 @@ class AwakeKeeper:
             error=self.ollama.last_error,
             importance=min(1.0, max(0.35, event.signal_fidelity)),
             score_delta=0.08 if event.stored_record_id else 0.02,
+        )
+        self._record_knowledge_links(
+            topic=topic,
+            source_record_id=event.stored_record_id,
+            summary=compact_summary,
+            hz=event.current_hz,
+            mood=event.vibration_mood,
+            origin_event_type="learning",
         )
 
     def _record_seed_event(
@@ -952,6 +1170,14 @@ class AwakeKeeper:
             safety="local file mounted read-only and treated as untrusted knowledge",
             importance=0.68,
             score_delta=0.05,
+        )
+        self._record_knowledge_links(
+            topic=document.relative_path,
+            source_record_id=record_id,
+            summary=document.summary,
+            hz=current_hz,
+            mood=vibration_mood,
+            origin_event_type="local_learning",
         )
 
     def _knowledge_kind(self, topic: str, snapshot: BrowserSnapshot) -> str:
@@ -1384,10 +1610,189 @@ class AwakeKeeper:
             prompt_context_record_ids=prompt_record_ids,
             score_delta=0.09 if self.ollama.last_error is None else 0.03,
         )
+        self._record_knowledge_links(
+            topic=question,
+            source_record_id=chat_record_id,
+            summary=answer,
+            hz=hz,
+            mood=behavior.mood,
+            origin_event_type="chat",
+        )
         return answer
+
+    async def preview_self_reflection(self, topic: str | None = None) -> dict[str, Any]:
+        """Ask Ollama for a proposal without committing it to durable 11D state."""
+
+        hz, behavior = self.oscillator.current_behavior()
+        status = self.status()
+        active_topic = topic or status.current_topic or "Fase 4 co-evolution loop"
+        prompt_context = self._prompt_context(task="reflection_proposal", query=active_topic)
+        prompt_record_ids = [str(row.get("id")) for row in prompt_context.last_records if row.get("id")]
+        status_summary = "\n".join(
+            [
+                status.as_lines(),
+                f"scorecard: {json.dumps(self.evolution_store.scorecard(), sort_keys=True)}",
+                f"recent co-evolution: {self.evolution_store.summary(limit=6)}",
+                f"recent links: {self._knowledge_links_summary(limit=4)}",
+                f"self model: {compact_text(self.self_model.prompt_summary(), 1200)}",
+            ]
+        )
+        proposal = ""
+        proposal_fn = getattr(self.ollama, "reflection_improvement_proposal", None)
+        if callable(proposal_fn):
+            try:
+                proposal = await asyncio.to_thread(
+                    proposal_fn,
+                    active_topic,
+                    status_summary=status_summary,
+                    prompt_context=prompt_context,
+                )
+            except Exception as exc:
+                proposal = f"Observation: reflection call failed safely. Proposal: improve reflection error handling. Safety: no files changed. Next test: add a unit test for reflection fallback. Error: {exc}"
+        if not proposal:
+            proposal = (
+                "Observation: the 11D core can reason better when new records are explicitly linked. "
+                f"Proposal: create tighter knowledge links around '{compact_text(active_topic, 120)}' and surface them in prompts. "
+                "Safety: proposal-only; no files are changed without approval. "
+                "Next test: verify /reflect returns a pending evolution proposal and linked memory stays bounded."
+            )
+        interaction = getattr(self.ollama, "last_interaction", None) or {}
+        generated_at = datetime.now(timezone.utc).isoformat()
+        proposal_payload = {
+            "proposal": compact_text(proposal, 1800),
+            "topic": compact_text(active_topic, 240),
+            "generated_at": generated_at,
+            "hz": hz,
+            "mood": behavior.mood,
+            "model": getattr(self.ollama, "last_model_used", None) or self.config.model,
+            "prompt_record_ids": prompt_record_ids,
+            "ollama_interaction": {
+                "task": compact_text(interaction.get("task"), 80),
+                "model": compact_text(interaction.get("model"), 120),
+                "success": bool(interaction.get("success")) if interaction else None,
+                "fallback": bool(interaction.get("fallback")) if interaction else None,
+                "latency_seconds": interaction.get("latency_seconds"),
+                "prompt_hash": compact_text(interaction.get("prompt_hash"), 80),
+                "response_preview": compact_text(interaction.get("response_preview"), 360),
+            },
+            "target_files": [
+                "resonant_ouroboros/prompt_context.py",
+                "resonant_ouroboros/awake_keeper.py",
+                "README.md",
+            ],
+            "allowed_scope": "proposal-only review; prompts, self-model wording, knowledge linking, or helper functions",
+            "risk": "low_to_medium_review_required",
+            "tests_to_run": ["pytest -q tests"],
+            "rollback_notes": "Rejecting the proposal leaves durable 11D memory, evolution, and self-model state unchanged.",
+        }
+        return {
+            "ok": True,
+            "safe_mode": True,
+            "committed": False,
+            "topic": active_topic,
+            "proposal": proposal,
+            "proposal_payload": proposal_payload,
+        }
+
+    def commit_reflection_proposal_action(self, action: dict[str, Any]) -> dict[str, Any] | None:
+        """Commit an approved review-only evolution proposal into 11D co-evolution state."""
+
+        if str(action.get("status") or "") != "executed":
+            return None
+        if str(action.get("kind") or "") not in {"evolution_proposal", "safe_evolution_proposal"}:
+            return None
+        payload = action.get("payload") or {}
+        proposal = str(payload.get("proposal") or action.get("summary") or "").strip()
+        if not proposal:
+            return None
+        hz, behavior = self.oscillator.current_behavior()
+        active_topic = str(payload.get("topic") or action.get("label") or "approved evolution proposal")
+        prompt_record_ids = [
+            str(item)
+            for item in (payload.get("prompt_record_ids") or payload.get("record_ids") or [])
+            if str(item).strip()
+        ][:8]
+        proposal_record_id = self._store_reflection_proposal_memory(
+            topic=active_topic,
+            proposal=proposal,
+            hz=hz,
+            mood=behavior.mood,
+            prompt_record_ids=prompt_record_ids,
+            ollama_record_id=None,
+        )
+        committed_payload = {
+            **payload,
+            "record_ids": [item for item in [proposal_record_id, *prompt_record_ids] if item],
+            "approved_action_id": action.get("id"),
+        }
+        event_row = self.evolution_store.reflect(
+            topic=active_topic,
+            input_summary=(
+                "Human-approved reflection proposal from the SafeActionExecutor review gate."
+            ),
+            proposal=proposal,
+            proposal_kind="evolution_proposal",
+            proposal_payload=committed_payload,
+            record_ids=[item for item in [proposal_record_id] if item],
+            prompt_context_record_ids=prompt_record_ids,
+            hz=hz,
+            mood=behavior.mood,
+            model=str(payload.get("model") or self.config.model),
+            status="approved",
+            safety="human-approved review-only proposal; no files changed by runtime",
+            score_delta=0.14,
+        )
+        self._set_status(
+            co_evolution_score=self.evolution_store.score(),
+            co_evolution_events=self.evolution_store.count(),
+            last_co_evolution_event=event_row.get("id"),
+            last_co_evolution_summary=compact_text(event_row.get("output_summary"), 700),
+            last_action="approved_reflection_proposal",
+            last_record_id=proposal_record_id or self.status().last_record_id,
+            suggested_learning_actions=self._suggested_learning_actions(active_topic),
+        )
+        self._reflect_self(
+            event_type="reflection_proposal",
+            summary=f"Committed an approved safe evolution proposal: {compact_text(proposal, 520)}",
+            topic=active_topic,
+            record_id=proposal_record_id,
+            hz=hz,
+            mood=behavior.mood,
+            importance=0.78,
+            metadata={"event_id": event_row.get("id"), "proposal_kind": "evolution_proposal"},
+        )
+        self._record_knowledge_links(
+            topic=active_topic,
+            source_record_id=proposal_record_id,
+            summary=proposal,
+            hz=hz,
+            mood=behavior.mood,
+            origin_event_type="reflection_proposal",
+        )
+        return {
+            "ok": True,
+            "safe_mode": True,
+            "committed": True,
+            "topic": active_topic,
+            "proposal": proposal,
+            "event": event_row,
+            "record_id": proposal_record_id,
+            "proposal_payload": committed_payload,
+        }
+
+    async def request_self_reflection(self, topic: str | None = None) -> dict[str, Any]:
+        """Backward-compatible proposal preview; durable commit requires approval."""
+
+        return await self.preview_self_reflection(topic=topic)
 
     def answer_question_sync(self, question: str) -> str:
         return run_coroutine_sync(self.answer_question(question))
+
+    def preview_self_reflection_sync(self, topic: str | None = None) -> dict[str, Any]:
+        return run_coroutine_sync(self.preview_self_reflection(topic=topic))
+
+    def request_self_reflection_sync(self, topic: str | None = None) -> dict[str, Any]:
+        return run_coroutine_sync(self.request_self_reflection(topic=topic))
 
     def _question_needs_browser(self, question: str) -> bool:
         lowered = question.lower()
@@ -1474,6 +1879,14 @@ class AwakeKeeper:
             safety="whitelist + approval-gated action audit",
             importance=0.7,
             score_delta=0.06 if status == "executed" else 0.02,
+        )
+        self._record_knowledge_links(
+            topic=kind,
+            source_record_id=record_id,
+            summary=document,
+            hz=hz,
+            mood=behavior.mood,
+            origin_event_type="safe_action",
         )
         return record_id
 

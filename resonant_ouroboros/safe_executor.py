@@ -1,4 +1,4 @@
-"""Approval-gated safe action executor for Resonant Ouroboros Fase 3."""
+"""Approval-gated safe action executor for Resonant Ouroboros Fase 4."""
 
 from __future__ import annotations
 
@@ -159,6 +159,12 @@ class SafeActionExecutor:
             actions = list(self._store.get("actions") or [])
             return {
                 "pending_count": sum(1 for action in actions if action.get("status") == "pending"),
+                "pending_evolution_proposals": sum(
+                    1
+                    for action in actions
+                    if action.get("status") == "pending"
+                    and action.get("kind") in {"evolution_proposal", "safe_evolution_proposal"}
+                ),
                 "blocked_count": sum(1 for action in actions if action.get("status") == "blocked"),
                 "approved_count": sum(1 for action in actions if action.get("status") == "approved"),
                 "executed_count": sum(1 for action in actions if action.get("status") == "executed"),
@@ -259,6 +265,48 @@ class SafeActionExecutor:
                 action["approval_note"] = compact_text(note, 500)
             return {"ok": True, "proposal": self._public_action(self._execute(action, policy.argv))}
 
+    def approve_many(
+        self,
+        approvals: list[dict[str, Any]],
+        *,
+        approved_by: str = "local_user",
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        for item in approvals[:20]:
+            action_id = str(item.get("action_id") or item.get("id") or "")
+            if not action_id:
+                continue
+            try:
+                results.append(
+                    self.approve(
+                        action_id,
+                        approval_token=str(item.get("approval_token") or ""),
+                        approved_by=approved_by,
+                        note=note,
+                    )
+                )
+            except Exception as exc:
+                results.append({"ok": False, "action_id": action_id, "message": str(exc)})
+        return {
+            "ok": bool(results) and all(result.get("ok") for result in results),
+            "results": results,
+            "summary": self.summary(),
+        }
+
+    def reject_many(self, action_ids: list[str], *, reason: str | None = None) -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        for action_id in [str(item) for item in action_ids[:20] if str(item).strip()]:
+            try:
+                results.append(self.reject(action_id, reason=reason))
+            except Exception as exc:
+                results.append({"ok": False, "action_id": action_id, "message": str(exc)})
+        return {
+            "ok": bool(results) and all(result.get("ok") for result in results),
+            "results": results,
+            "summary": self.summary(),
+        }
+
     def reject(self, action_id: str, *, reason: str | None = None) -> dict[str, Any]:
         with self._lock:
             action = self._find(action_id)
@@ -279,6 +327,16 @@ class SafeActionExecutor:
             return ActionPolicy("auto_safe", "low", "pending", ["Bounded Awake Keeper control command."])
         if normalized == "safe_command":
             return self._classify_safe_command(payload)
+        if normalized in {"evolution_proposal", "safe_evolution_proposal"}:
+            return ActionPolicy(
+                "approval_required",
+                "medium",
+                "pending",
+                [
+                    "Evolution proposals are review-only and cannot modify files from the running app.",
+                    "Human approval records intent before any future manual implementation.",
+                ],
+            )
         if normalized == "open_url":
             url = str(payload.get("url") or "").strip()
             if self._safe_url(url):
@@ -352,6 +410,22 @@ class SafeActionExecutor:
                 }
                 action["status"] = "executed"
                 action["result"] = result
+            elif kind in {"evolution_proposal", "safe_evolution_proposal"}:
+                payload = action.get("payload") or {}
+                result = {
+                    "mode": "evolution_review_only",
+                    "message": (
+                        "Evolution proposal acknowledged for review only. "
+                        "No prompts, code, files, commands, or model settings were changed."
+                    ),
+                    "proposal_preview": compact_text(payload.get("proposal") or action.get("summary"), 1400),
+                    "target_files": [compact_text(item, 180) for item in (payload.get("target_files") or [])[:8]],
+                    "tests_to_run": [compact_text(item, 180) for item in (payload.get("tests_to_run") or [])[:8]],
+                    "risk": compact_text(payload.get("risk"), 160),
+                    "feedback": "Proposal is now part of the audit trail; implementation still requires a separate human-approved coding session.",
+                }
+                action["status"] = "executed"
+                action["result"] = result
             elif kind == "memory_note":
                 action["status"] = "executed"
                 action["result"] = {"mode": "logged", "message": "Memory note accepted for audit logging."}
@@ -401,7 +475,18 @@ class SafeActionExecutor:
     def _run_sandbox_exec(self, argv: list[str]) -> dict[str, Any]:
         cwd = self.sandbox_cwd
         if not cwd.exists():
-            cwd = Path.cwd()
+            return {
+                "mode": "sandbox_exec",
+                "argv": argv,
+                "command_line": shlex.join(argv),
+                "cwd": str(cwd),
+                "exit_code": 126,
+                "stdout": "",
+                "stderr": f"Sandbox cwd does not exist: {cwd}",
+                "stdout_preview": "",
+                "stderr_preview": f"Sandbox cwd does not exist: {cwd}",
+                "feedback": "Command was not launched because the configured sandbox directory is unavailable.",
+            }
         completed = subprocess.run(
             argv,
             cwd=str(cwd),

@@ -1,4 +1,4 @@
-"""Persistent self-model for Resonant Ouroboros Fase 3."""
+"""Persistent self-model for Resonant Ouroboros Fase 4."""
 
 from __future__ import annotations
 

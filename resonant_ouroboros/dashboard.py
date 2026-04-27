@@ -1,4 +1,4 @@
-"""Gradio dashboard and local REST API for the Fase 3 Awake Keeper."""
+"""Gradio dashboard and local REST API for the Fase 4 Awake Keeper."""
 
 from __future__ import annotations
 
@@ -79,6 +79,11 @@ class DashboardRuntime:
         current_hz = status.current_hz if status.current_hz is not None else state.current_hz
         mood = status.vibration_mood or state.mood
         knowledge_feed = self.keeper.knowledge_feed()
+        action_summary = self.safe_executor.summary()
+        recent_events = self.keeper.evolution_store.list_events(limit=6)
+        recent_links = self.keeper.evolution_store.list_events(limit=5, event_type="knowledge_link")
+        recent_proposals = self.keeper.evolution_store.list_proposals(limit=6)
+        scorecard = self.keeper.evolution_store.scorecard()
         updated_at = datetime.now(timezone.utc).isoformat()
         return {
             "ok": True,
@@ -111,15 +116,30 @@ class DashboardRuntime:
             "learning_queue_size": status.learning_queue_size,
             "queue_size": status.learning_queue_size,
             "self_model": self.keeper.self_model.status_summary(),
-            "actions": self.safe_executor.summary(),
-            "sandbox": self.safe_executor.summary(),
+            "actions": action_summary,
+            "sandbox": action_summary,
             "co_evolution": {
-                "score": status.co_evolution_score,
-                "events": status.co_evolution_events,
+                "score": scorecard["score"],
+                "events": self.keeper.evolution_store.count(),
                 "last_event": status.last_co_evolution_event,
                 "last_summary": status.last_co_evolution_summary,
                 "summary": self.keeper.evolution_store.summary(limit=5),
+                "scorecard": scorecard,
+                "recent_events": recent_events,
                 "suggested_learning_actions": status.suggested_learning_actions,
+            },
+            "events": {
+                "count": self.keeper.evolution_store.count(),
+                "latest_event_id": recent_events[0].get("id") if recent_events else None,
+                "recent": recent_events,
+            },
+            "knowledge_links": {
+                "recent": recent_links,
+                "count_recent": len(recent_links),
+            },
+            "proposals": {
+                "pending_count": int(action_summary.get("pending_evolution_proposals") or 0),
+                "recent": recent_proposals,
             },
             "history": self.history.rows(),
             "knowledge_feed": knowledge_feed,
@@ -145,6 +165,8 @@ class DashboardRuntime:
                 "self_model": "/self-model",
                 "actions": "/actions",
                 "evolution": "/evolution",
+                "events": "/events",
+                "reflect": "/reflect",
             },
         }
 
@@ -174,6 +196,8 @@ class DashboardRuntime:
             f"pending_actions: {status['actions']['pending_count']}",
             f"co_evolution_score: {status['co_evolution']['score']}",
             f"co_evolution_events: {status['co_evolution']['events']}",
+            f"pending_evolution_proposals: {status['proposals']['pending_count']}",
+            f"recent_knowledge_links: {status['knowledge_links']['count_recent']}",
             f"sandbox_exec_enabled: {status['actions']['sandbox_exec_enabled']}",
         ]
         return "\n".join(rows)
@@ -306,8 +330,24 @@ class DashboardRuntime:
             "safe_mode": True,
             "count": self.keeper.evolution_store.count(),
             "score": self.keeper.evolution_store.score(),
+            "scorecard": self.keeper.evolution_store.scorecard(),
             "events": rows,
+            "proposals": self.keeper.evolution_store.list_proposals(limit=min(limit, 20)),
+            "knowledge_links": self.keeper.evolution_store.list_events(
+                limit=min(limit, 20),
+                event_type="knowledge_link",
+            ),
             "summary": self.keeper.evolution_store.summary(limit=5),
+        }
+
+    def events_payload(self, limit: int = 20, event_type: str | None = None) -> dict[str, Any]:
+        rows = self.keeper.evolution_store.list_events(limit=limit, event_type=event_type)
+        return {
+            "ok": True,
+            "safe_mode": True,
+            "latest_event_id": rows[0].get("id") if rows else None,
+            "events": rows,
+            "scorecard": self.keeper.evolution_store.scorecard(),
         }
 
     def self_model_payload(self) -> dict[str, Any]:
@@ -316,6 +356,23 @@ class DashboardRuntime:
             "safe_mode": True,
             "self_model": self.keeper.self_model.snapshot(),
             "summary": self.keeper.self_model.status_summary(),
+        }
+
+    def reflect_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        reflection = self.keeper.preview_self_reflection_sync(topic=payload.get("topic"))
+        action_result = self.safe_executor.propose(
+            kind="evolution_proposal",
+            label="Evolution Proposal",
+            summary=reflection["proposal"],
+            payload=reflection.get("proposal_payload") or {"proposal": reflection["proposal"]},
+            source={"client": "api", "phase": "proposal_preview"},
+            auto_execute=False,
+        )
+        return {
+            **reflection,
+            "safe_action": action_result["proposal"],
+            "approval_token": action_result["approval_token"],
+            "status": self.status_payload(),
         }
 
     def actions_payload(self, status: str | None = None, limit: int = 20) -> dict[str, Any]:
@@ -340,7 +397,12 @@ class DashboardRuntime:
             payload=payload.get("payload") or {},
             source=payload.get("source") or {"client": "api"},
         )
-        self.keeper.record_safe_action(result["proposal"])
+        proposal = result["proposal"]
+        if proposal.get("status") != "pending" or proposal.get("kind") not in {
+            "evolution_proposal",
+            "safe_evolution_proposal",
+        }:
+            self.keeper.record_safe_action(proposal)
         result["safe_mode"] = True
         result["summary"] = self.safe_executor.summary()
         return result
@@ -352,9 +414,44 @@ class DashboardRuntime:
             approved_by=str(payload.get("approved_by") or "local_user"),
             note=payload.get("note"),
         )
+        if result.get("ok"):
+            commit = self.keeper.commit_reflection_proposal_action(result["proposal"])
+            if commit:
+                result["evolution_commit"] = commit
         self.keeper.record_safe_action(result["proposal"])
         result["safe_mode"] = True
         result["summary"] = self.safe_executor.summary()
+        return result
+
+    def approve_actions_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.safe_executor.approve_many(
+            list(payload.get("approvals") or []),
+            approved_by=str(payload.get("approved_by") or "local_user"),
+            note=payload.get("note"),
+        )
+        for item in result.get("results") or []:
+            proposal = item.get("proposal")
+            if proposal:
+                if item.get("ok"):
+                    commit = self.keeper.commit_reflection_proposal_action(proposal)
+                    if commit:
+                        item["evolution_commit"] = commit
+                self.keeper.record_safe_action(proposal)
+        result["safe_mode"] = True
+        result["status"] = self.status_payload()
+        return result
+
+    def reject_actions_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.safe_executor.reject_many(
+            [str(item) for item in payload.get("action_ids") or []],
+            reason=payload.get("reason") or "Rejected by local user.",
+        )
+        for item in result.get("results") or []:
+            proposal = item.get("proposal")
+            if proposal:
+                self.keeper.record_safe_action(proposal)
+        result["safe_mode"] = True
+        result["status"] = self.status_payload()
         return result
 
     def reject_action(self, action_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -524,6 +621,13 @@ def create_api_app(runtime: DashboardRuntime | None = None, demo: Any | None = N
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    @app.post("/reflect")
+    def reflect(payload: dict[str, Any]):
+        try:
+            return runtime.reflect_payload(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @app.get("/memory")
     def memory(
         query: str = Query(default=""),
@@ -537,6 +641,13 @@ def create_api_app(runtime: DashboardRuntime | None = None, demo: Any | None = N
         event_type: str | None = Query(default=None),
     ):
         return runtime.evolution_payload(limit=limit, event_type=event_type)
+
+    @app.get("/events")
+    def events(
+        limit: int = Query(default=20, ge=1, le=100),
+        event_type: str | None = Query(default=None),
+    ):
+        return runtime.events_payload(limit=limit, event_type=event_type)
 
     @app.get("/actions")
     def actions(
@@ -556,6 +667,20 @@ def create_api_app(runtime: DashboardRuntime | None = None, demo: Any | None = N
     def propose_action(payload: dict[str, Any]):
         try:
             return runtime.propose_action(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/actions/approve-batch")
+    def approve_actions_batch(payload: dict[str, Any]):
+        try:
+            return runtime.approve_actions_batch(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/actions/reject-batch")
+    def reject_actions_batch(payload: dict[str, Any]):
+        try:
+            return runtime.reject_actions_batch(payload)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -629,7 +754,8 @@ def create_dashboard(
     def chat(message, chat_history):
         response = runtime.chat_sync(message)
         chat_history = chat_history or []
-        chat_history.append((message, response["answer"]))
+        chat_history.append({"role": "user", "content": message})
+        chat_history.append({"role": "assistant", "content": response["answer"]})
         status, rows, label, image, knowledge = refresh_status()
         return "", chat_history, status, rows, label, image, knowledge
 
@@ -652,7 +778,7 @@ def create_dashboard(
             wrap=True,
         )
         screenshot = gr.Image(label="Latest browser view", interactive=False)
-        chatbot = gr.Chatbot(label="Live Ollama + Browser Chat")
+        chatbot = gr.Chatbot(label="Live Ollama + Browser Chat", type="messages")
         chat_input = gr.Textbox(label="Ask Awake Keeper")
         chat_button = gr.Button("Send")
 

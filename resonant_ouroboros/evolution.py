@@ -73,6 +73,33 @@ class EvolutionEvent:
         }
 
 
+@dataclass(frozen=True)
+class ReflectionEvent(EvolutionEvent):
+    """Special event for reflections leading to improvement proposals."""
+
+    proposal: str | None = None  # Proposed improvement
+    proposal_kind: str | None = None
+    proposal_payload: dict[str, Any] | None = None
+
+    def row(self) -> dict[str, Any]:
+        base = super().row()
+        base["proposal"] = compact_text(self.proposal, 500) if self.proposal else None
+        base["proposal_kind"] = compact_text(self.proposal_kind, 80) if self.proposal_kind else None
+        base["proposal_payload"] = self._compact_payload(self.proposal_payload or {})
+        return base
+
+    def _compact_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        compact: dict[str, Any] = {}
+        for key, value in payload.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                compact[compact_text(key, 80)] = compact_text(value, 700) if isinstance(value, str) else value
+            elif isinstance(value, list):
+                compact[compact_text(key, 80)] = [compact_text(item, 240) for item in value[:8]]
+            else:
+                compact[compact_text(key, 80)] = compact_text(value, 700)
+        return compact
+
+
 class EvolutionEventStore:
     """Small JSONL journal used as the durable co-evolution read model."""
 
@@ -119,8 +146,60 @@ class EvolutionEventStore:
             return sum(1 for line in self.path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip())
 
     def score(self) -> float:
-        events = self.list_events(limit=200)
-        return round(sum(float(event.get("score_delta") or 0.0) for event in events), 3)
+        return float(self.scorecard()["score"])
+
+    def scorecard(self, limit: int = 200) -> dict[str, Any]:
+        """Return a bounded, explainable co-evolution score view.
+
+        The score rewards useful, successful exchanges more than noisy or blocked
+        events, while still keeping fallback and pending proposal signals visible.
+        """
+
+        events = self.list_events(limit=limit)
+        by_type: dict[str, float] = {}
+        score = 0.0
+        recent_delta = 0.0
+        proposal_events = 0
+        fallback_events = 0
+        failed_events = 0
+        status_weights = {
+            "ok": 1.0,
+            "executed": 1.0,
+            "approved": 0.8,
+            "pending": 0.45,
+            "fallback": 0.35,
+            "blocked": 0.1,
+            "rejected": 0.05,
+            "failed": 0.0,
+        }
+        for index, event in enumerate(events):
+            event_type = str(event.get("type") or "unknown")
+            status = str(event.get("status") or "ok").lower()
+            importance = max(0.0, min(1.0, float(event.get("importance") or 0.5)))
+            delta = max(0.0, min(1.0, float(event.get("score_delta") or 0.0)))
+            weighted = delta * (0.35 + (0.65 * importance)) * status_weights.get(status, 0.65)
+            score += weighted
+            by_type[event_type] = by_type.get(event_type, 0.0) + weighted
+            if index < 12:
+                recent_delta += weighted
+            if "proposal" in event_type or event.get("proposal"):
+                proposal_events += 1
+            if status == "fallback":
+                fallback_events += 1
+            if status in {"failed", "blocked"}:
+                failed_events += 1
+        return {
+            "score": round(score, 3),
+            "recent_delta": round(recent_delta, 3),
+            "event_count": len(events),
+            "proposal_events": proposal_events,
+            "fallback_events": fallback_events,
+            "failed_or_blocked_events": failed_events,
+            "by_type": {key: round(value, 3) for key, value in sorted(by_type.items())},
+            "meaning": (
+                "Weighted by importance, status, successful memory feedback, and approved safe proposals."
+            ),
+        }
 
     def summary(self, limit: int | None = None) -> str:
         events = self.list_events(limit=limit or self.max_summary_events)
@@ -133,3 +212,52 @@ class EvolutionEventStore:
                 f"{compact_text(event.get('output_summary'), 140)}"
             )
         return " | ".join(parts)
+
+    def list_proposals(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for event in self.list_events(limit=200):
+            event_type = str(event.get("type") or "")
+            if event.get("proposal") or "proposal" in event_type:
+                rows.append(event)
+            if len(rows) >= max(1, min(int(limit or 20), 100)):
+                break
+        return rows
+
+    def reflect(
+        self,
+        topic: str,
+        input_summary: str,
+        proposal: str,
+        *,
+        proposal_kind: str = "evolution_proposal",
+        proposal_payload: dict[str, Any] | None = None,
+        record_ids: list[str] | None = None,
+        prompt_context_record_ids: list[str] | None = None,
+        hz: float | None = None,
+        mood: str | None = None,
+        model: str | None = None,
+        status: str = "pending",
+        safety: str = "proposal_only_until_approved",
+        score_delta: float = 0.0,
+    ) -> dict[str, Any]:
+        """Generate a reflection event with proposal."""
+
+        event = ReflectionEvent(
+            event_type="reflection_proposal",
+            topic=topic,
+            input_summary=input_summary,
+            output_summary=f"Reflection generated an improvement proposal: {compact_text(proposal, 520)}",
+            proposal=proposal,
+            proposal_kind=proposal_kind,
+            proposal_payload=proposal_payload or {},
+            record_ids=record_ids or [],
+            prompt_context_record_ids=prompt_context_record_ids or [],
+            hz=hz,
+            mood=mood,
+            model=model,
+            status=status,
+            safety=safety,
+            importance=0.8,
+            score_delta=score_delta,
+        )
+        return self.append(event)

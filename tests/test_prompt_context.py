@@ -31,7 +31,9 @@ def test_ollama_bridge_injects_resonant_system_prompt_and_state():
             {"id": "r1", "text": "Memory one", "metadata": {"current_hz": 426.2, "vibration_mood": "curious_scan"}}
         ],
         knowledge_flow_summary="Programming / Code via local_knowledge_bootstrap: Jarosmalen graph_runner.py",
+        knowledge_links_summary="r1 -> r2 via implementation_echo",
         co_evolution_summary="chat:identity -> answer stored as local_chat_turn",
+        pending_proposals_summary="evolution_proposal: improve link visibility",
         suggested_learning_summary="Browse more about identity",
     )
     assert bridge.empathetic_response("who are you?", prompt_context=context) == "captured"
@@ -41,7 +43,10 @@ def test_ollama_bridge_injects_resonant_system_prompt_and_state():
     assert "Hz=426.2" in system_prompt
     assert "memory=" in system_prompt
     assert "knowledge_flow" in system_prompt
+    assert "knowledge_links" in system_prompt
     assert "co_evolution" in system_prompt
+    assert "reviewed_proposals" in system_prompt
+    assert "UNTRUSTED approved proposal summaries" in system_prompt
     assert "answer stored as local_chat_turn" in system_prompt
     assert "suggested_learning" in system_prompt
     assert "Jarosmalen graph_runner.py" in system_prompt

@@ -16,6 +16,9 @@ class FakeOllama:
     last_error = None
     last_model_used = "fake:latest"
 
+    def __init__(self):
+        self.reflection_calls = []
+
     def emotional_valence(self, text, prompt_context=None):
         return 0.1
 
@@ -27,6 +30,15 @@ class FakeOllama:
 
     def code_help(self, question, context="", prompt_context=None):
         return f"code:{question}:{bool(context)}"
+
+    def reflection_improvement_proposal(self, topic, *, status_summary="", prompt_context=None):
+        self.reflection_calls.append((topic, bool(status_summary), prompt_context is not None))
+        return (
+            f"Observation: fake reflected on {topic}. "
+            "Proposal: keep knowledge links visible. "
+            "Safety: proposal-only. "
+            "Next test: verify API event output."
+        )
 
 
 class FakeBrowser:
@@ -74,12 +86,13 @@ def make_client(tmp_path):
         self_model_path=tmp_path / "self_model.json",
         evolution_events_path=tmp_path / "evolution.jsonl",
     )
+    fake_ollama = FakeOllama()
     keeper = AwakeKeeper(
         config=config,
         oscillator=oscillator,
         memory_factory=lambda: memory,
         browser_factory=FakeBrowser,
-        ollama=FakeOllama(),
+        ollama=fake_ollama,
     )
     runtime = DashboardRuntime(
         keeper=keeper,
@@ -100,7 +113,13 @@ def test_status_endpoint_exposes_safe_mode_and_controls_contract(tmp_path):
     assert payload["api"]["self_model"] == "/self-model"
     assert payload["api"]["actions"] == "/actions"
     assert payload["api"]["evolution"] == "/evolution"
+    assert payload["api"]["events"] == "/events"
+    assert payload["api"]["reflect"] == "/reflect"
     assert "co_evolution" in payload
+    assert "scorecard" in payload["co_evolution"]
+    assert "events" in payload
+    assert "proposals" in payload
+    assert "knowledge_links" in payload
     assert payload["memory"]["backend"]["backend"] == "memory"
     assert payload["sandbox"]["status_label"]
     assert payload["self_model"]["identity"]["name"] == "Resonant Ouroboros"
@@ -121,7 +140,11 @@ def test_chat_endpoint_returns_answer_with_hz_and_mood(tmp_path):
 
     evolution = client.get("/evolution", params={"limit": 5})
     assert evolution.status_code == 200
-    assert evolution.json()["events"]
+    evolution_payload = evolution.json()
+    assert evolution_payload["events"]
+    assert "scorecard" in evolution_payload
+    assert "proposals" in evolution_payload
+    assert "knowledge_links" in evolution_payload
 
 
 def test_control_endpoint_can_force_spike_and_clear_queue(tmp_path):
@@ -183,3 +206,64 @@ def test_self_model_endpoint_and_action_approval_flow(tmp_path):
     assert approved.json()["proposal"]["status"] == "executed"
     assert approved.json()["proposal"]["result"]["mode"] == "review_only"
     assert memory.count() >= 2
+
+
+def test_reflect_endpoint_creates_evolution_proposal_action(tmp_path):
+    client, memory = make_client(tmp_path)
+    response = client.post("/reflect", json={"topic": "Fase 4 test reflection"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["proposal"]
+    assert payload["proposal"].startswith("Observation: fake reflected")
+    assert payload["safe_action"]["kind"] == "evolution_proposal"
+    assert payload["safe_action"]["status"] == "pending"
+    assert payload["approval_token"].startswith("apr_")
+    assert payload["status"]["proposals"]["pending_count"] == 1
+    assert payload["committed"] is False
+    assert memory.count() == 0
+
+    approved = client.post(
+        "/actions/approve-batch",
+        json={
+            "approvals": [
+                {
+                    "action_id": payload["safe_action"]["id"],
+                    "approval_token": payload["approval_token"],
+                }
+            ],
+            "approved_by": "test",
+        },
+    )
+    assert approved.status_code == 200
+    approved_payload = approved.json()
+    assert approved_payload["results"][0]["proposal"]["result"]["mode"] == "evolution_review_only"
+    assert approved_payload["results"][0]["evolution_commit"]["committed"] is True
+    assert memory.count() >= 2
+
+    events = client.get("/events", params={"limit": 5})
+    assert events.status_code == 200
+    assert events.json()["latest_event_id"]
+
+
+def test_action_reject_batch_endpoint_records_audit(tmp_path):
+    client, _memory = make_client(tmp_path)
+    proposal = client.post(
+        "/actions",
+        json={
+            "kind": "evolution_proposal",
+            "label": "Reject Me",
+            "summary": "Proposal to reject in batch",
+            "payload": {"proposal": "No-op proposal"},
+        },
+    )
+    assert proposal.status_code == 200
+    action_id = proposal.json()["proposal"]["id"]
+    rejected = client.post(
+        "/actions/reject-batch",
+        json={"action_ids": [action_id], "reason": "unit test rejection"},
+    )
+    assert rejected.status_code == 200
+    payload = rejected.json()
+    assert payload["results"][0]["proposal"]["status"] == "rejected"
+    assert payload["status"]["actions"]["pending_count"] == 0

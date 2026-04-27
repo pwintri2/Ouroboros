@@ -1,7 +1,7 @@
 """Resonant Ouroboros Proto 1.1.
 
 The package contains the vibrational PAEU core, the Awake Keeper supervisor,
-and the Fase 3 self-model plus safe action layer.
+and the Fase 4 11D ChromaDB, co-evolution, self-model, and safe action layer.
 """
 
 __all__ = [
