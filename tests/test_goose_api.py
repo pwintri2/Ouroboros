@@ -7,6 +7,7 @@ from resonant_ouroboros.browser import BrowserAction, BrowserSnapshot
 from resonant_ouroboros.dashboard import DashboardRuntime, create_api_app
 from resonant_ouroboros.memory import InMemoryHippocampusMemory
 from resonant_ouroboros.oscillator import HertzOscillator
+from resonant_ouroboros.safe_executor import SafeActionExecutor
 from resonant_ouroboros.vision import VisionObservation
 
 
@@ -15,16 +16,16 @@ class FakeOllama:
     last_error = None
     last_model_used = "fake:latest"
 
-    def emotional_valence(self, text):
+    def emotional_valence(self, text, prompt_context=None):
         return 0.1
 
-    def summarize_page(self, title, url, visible_text, hz=None, mood=None):
+    def summarize_page(self, title, url, visible_text, hz=None, mood=None, prompt_context=None):
         return f"summary:{title}:{mood}"
 
-    def empathetic_response(self, message, context=""):
+    def empathetic_response(self, message, context="", prompt_context=None):
         return f"empathy:{message}:{bool(context)}"
 
-    def code_help(self, question, context=""):
+    def code_help(self, question, context="", prompt_context=None):
         return f"code:{question}:{bool(context)}"
 
 
@@ -58,7 +59,7 @@ class FakeBrowser:
         )
 
 
-def make_client():
+def make_client(tmp_path):
     oscillator = HertzOscillator(spike_probability=0.0)
     memory = InMemoryHippocampusMemory()
     config = AwakeKeeperConfig(
@@ -70,6 +71,7 @@ def make_client():
         model="fake:latest",
         ollama_base_url="http://fake",
         chat_browser_enabled=False,
+        self_model_path=tmp_path / "self_model.json",
     )
     keeper = AwakeKeeper(
         config=config,
@@ -78,23 +80,30 @@ def make_client():
         browser_factory=FakeBrowser,
         ollama=FakeOllama(),
     )
-    runtime = DashboardRuntime(keeper=keeper, oscillator=oscillator)
+    runtime = DashboardRuntime(
+        keeper=keeper,
+        oscillator=oscillator,
+        safe_executor=SafeActionExecutor(path=tmp_path / "actions.json", docker_bin="true"),
+    )
     return TestClient(create_api_app(runtime=runtime)), memory
 
 
-def test_status_endpoint_exposes_safe_mode_and_controls_contract():
-    client, _memory = make_client()
+def test_status_endpoint_exposes_safe_mode_and_controls_contract(tmp_path):
+    client, _memory = make_client(tmp_path)
     response = client.get("/status")
     assert response.status_code == 200
     payload = response.json()
     assert payload["safe_mode"] is True
     assert payload["api"]["chat"] == "/chat"
     assert payload["api"]["control"] == "/control"
+    assert payload["api"]["self_model"] == "/self-model"
+    assert payload["api"]["actions"] == "/actions"
+    assert payload["self_model"]["identity"]["name"] == "Resonant Ouroboros"
     assert payload["poll_seconds"] == 1.5
 
 
-def test_chat_endpoint_returns_answer_with_hz_and_mood():
-    client, _memory = make_client()
+def test_chat_endpoint_returns_answer_with_hz_and_mood(tmp_path):
+    client, _memory = make_client(tmp_path)
     response = client.post("/chat", json={"message": "hello awake keeper"})
     assert response.status_code == 200
     payload = response.json()
@@ -105,8 +114,8 @@ def test_chat_endpoint_returns_answer_with_hz_and_mood():
     assert payload["mood"] in {"deep_read", "curious_scan", "creative_spike"}
 
 
-def test_control_endpoint_can_force_spike_and_clear_queue():
-    client, _memory = make_client()
+def test_control_endpoint_can_force_spike_and_clear_queue(tmp_path):
+    client, _memory = make_client(tmp_path)
     spike = client.post("/control", json={"command": "creative_spike"})
     assert spike.status_code == 200
     spike_payload = spike.json()
@@ -121,8 +130,8 @@ def test_control_endpoint_can_force_spike_and_clear_queue():
     assert clear_payload["status"]["last_action"] == "queue_cleared"
 
 
-def test_manual_paeu_control_stores_memory_and_memory_endpoint_reads_it():
-    client, memory = make_client()
+def test_manual_paeu_control_stores_memory_and_memory_endpoint_reads_it(tmp_path):
+    client, memory = make_client(tmp_path)
     manual = client.post("/control", json={"command": "manual_paeu_step", "topic": "goose ui"})
     assert manual.status_code == 200
     assert memory.count() == 1
@@ -133,3 +142,34 @@ def test_manual_paeu_control_stores_memory_and_memory_endpoint_reads_it():
     assert payload["ok"] is True
     assert payload["count"] == 1
     assert payload["rows"]
+
+
+def test_self_model_endpoint_and_action_approval_flow(tmp_path):
+    client, memory = make_client(tmp_path)
+    self_model = client.get("/self-model")
+    assert self_model.status_code == 200
+    assert self_model.json()["summary"]["identity"]["name"] == "Resonant Ouroboros"
+
+    proposal = client.post(
+        "/actions",
+        json={
+            "kind": "apply_code_review",
+            "label": "Approve & Review Code",
+            "summary": "Review code from chat",
+            "payload": {"code": "print('safe')", "language": "python"},
+        },
+    )
+    assert proposal.status_code == 200
+    body = proposal.json()
+    assert body["proposal"]["status"] == "pending"
+    assert body["approval_token"].startswith("apr_")
+
+    action_id = body["proposal"]["id"]
+    approved = client.post(
+        f"/actions/{action_id}/approve",
+        json={"approval_token": body["approval_token"], "approved_by": "test"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["proposal"]["status"] == "executed"
+    assert approved.json()["proposal"]["result"]["mode"] == "review_only"
+    assert memory.count() >= 2

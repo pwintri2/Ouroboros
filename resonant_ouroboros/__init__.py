@@ -1,7 +1,7 @@
 """Resonant Ouroboros Proto 1.1.
 
-The package contains the Fase 1 vibrational signal-processing core plus the
-Fase 2 Awake Keeper supervisor for background PAEU orchestration.
+The package contains the vibrational PAEU core, the Awake Keeper supervisor,
+and the Fase 3 self-model plus safe action layer.
 """
 
 __all__ = [
@@ -14,4 +14,7 @@ __all__ = [
     "paeu_loop",
     "seed",
     "dashboard",
+    "self_model",
+    "prompt_context",
+    "safe_executor",
 ]

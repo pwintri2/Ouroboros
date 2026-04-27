@@ -1,6 +1,6 @@
 # Resonant Ouroboros Goose-Like UI
 
-Standalone desktop UI for the Fase 2 Awake Keeper.
+Standalone desktop UI for the Fase 3 Awake Keeper.
 
 ## Build Decision
 
@@ -13,10 +13,12 @@ Swift and `xcrun` were not available in the Docker-safe detection step, so Fase 
 - Shows Hz, mood, iterations, current topic, last action, model, and Safe Mode.
 - Sends chat through the existing Awake Keeper stack: Ollama, browser context, and 11D memory.
 - Exposes controls for Start, Stop, Manual PAEU Step, Creative Spike, View 11D Memory, and Clear Queue.
+- Shows pending safe action approvals and lets the user approve/reject queued proposals.
+- Turns code/action proposals from chat into REST action proposals instead of running anything locally.
 
 ## Requirements
 
-- The Fase 2 Docker service must expose the API on `http://127.0.0.1:7861`.
+- The Fase 3 Docker service must expose the API on `http://127.0.0.1:7861`.
 - Python 3 with Tk support.
 - `customtkinter`.
 
@@ -44,7 +46,11 @@ For double-click use, run `goose_like_ui/launch_goose_like_ui.command` or `goose
 - `POST /chat` with `{"message": "..."}`
 - `POST /control` with `{"command": "start|stop|manual_paeu_step|creative_spike|clear_queue"}`
 - `GET /memory?query=...&limit=18`
+- `GET /actions?status=pending&limit=20`
+- `POST /actions`
+- `POST /actions/{id}/approve`
+- `POST /actions/{id}/reject`
 
 ## Safety
 
-The UI never runs shell commands. It only calls the local REST API. Code-application buttons are blocked by Safe Mode and display a review-only notice.
+The UI never runs shell commands. It only calls the local REST API. Code/action buttons create Safe Action Executor proposals, and approval uses one-time local tokens returned by the API.

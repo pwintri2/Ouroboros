@@ -1,4 +1,4 @@
-"""Awake Keeper supervisor for Resonant Ouroboros Fase 2."""
+"""Awake Keeper supervisor for Resonant Ouroboros Fase 3."""
 
 from __future__ import annotations
 
@@ -21,7 +21,10 @@ from .browser import BrowserSnapshot, HumanBrowserEngine
 from .memory import HippocampusMemory, create_memory_from_env
 from .oscillator import HertzOscillator
 from .paeu_loop import PAEUEvent, PAEULoop
+from .prompt_context import RuntimePromptContext, temperature_for_hz
+from .schema import build_11d_record, text_cluster_id
 from .seed import SeedKnowledgeLoader, SeedTopic
+from .self_model import SelfModelStore, compact_text, default_self_model_path
 
 
 DEFAULT_OLLAMA_MODEL = "llama2-uncensored:latest"
@@ -38,7 +41,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 @dataclass(frozen=True)
 class AwakeKeeperConfig:
-    """Runtime settings for the Fase 2 background supervisor."""
+    """Runtime settings for the Fase 3 background supervisor."""
 
     seed_path: Path = field(
         default_factory=lambda: Path(os.getenv("AWAKE_KEEPER_SEED", "/workspace/agi_kennis.txt"))
@@ -54,6 +57,8 @@ class AwakeKeeperConfig:
     ollama_request_timeout: float = 120.0
     fallback_models: tuple[str, ...] = DEFAULT_FALLBACK_MODELS
     chat_browser_enabled: bool = True
+    self_model_path: Path = field(default_factory=lambda: Path(os.getenv("AWAKE_KEEPER_SELF_MODEL_PATH", str(default_self_model_path()))))
+    self_reflection_interval: int = 5
 
     @classmethod
     def from_env(cls) -> "AwakeKeeperConfig":
@@ -73,6 +78,8 @@ class AwakeKeeperConfig:
             ollama_request_timeout=float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "120")),
             fallback_models=fallback_models,
             chat_browser_enabled=_env_bool("AWAKE_KEEPER_CHAT_BROWSER", True),
+            self_model_path=Path(os.getenv("AWAKE_KEEPER_SELF_MODEL_PATH", str(default_self_model_path()))),
+            self_reflection_interval=int(os.getenv("AWAKE_KEEPER_SELF_REFLECTION_INTERVAL", "5")),
         )
 
 
@@ -96,6 +103,8 @@ class AwakeKeeperStatus:
     ollama_model: str = DEFAULT_OLLAMA_MODEL
     seed_records_imported: int = 0
     learning_queue_size: int = 0
+    self_model_reflections: int = 0
+    self_model_last_reflection: str | None = None
 
     def as_lines(self) -> str:
         rows = [
@@ -115,6 +124,8 @@ class AwakeKeeperStatus:
             f"ollama_model: {self.ollama_model}",
             f"seed_records_imported: {self.seed_records_imported}",
             f"learning_queue_size: {self.learning_queue_size}",
+            f"self_model_reflections: {self.self_model_reflections}",
+            f"self_model_last_reflection: {self.self_model_last_reflection}",
         ]
         return "\n".join(rows)
 
@@ -156,12 +167,14 @@ class OllamaBridge:
         fallback_models: tuple[str, ...] = DEFAULT_FALLBACK_MODELS,
         request_timeout: float = 5.0,
         enabled: bool = True,
+        max_model_attempts: int | None = None,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.fallback_models = fallback_models
         self.request_timeout = request_timeout
         self.enabled = enabled
+        self.max_model_attempts = max(1, int(max_model_attempts or os.getenv("OLLAMA_MAX_MODEL_ATTEMPTS", "3")))
         self.last_error: str | None = None
         self.last_model_used: str | None = None
 
@@ -184,10 +197,16 @@ class OllamaBridge:
 
     def _candidate_models(self) -> list[str]:
         ordered: list[str] = []
-        for model in (self.model, *self.available_models(), *self.fallback_models):
+        for model in (self.model,):
             if model and model not in ordered:
                 ordered.append(model)
-        return ordered
+        if len(ordered) < self.max_model_attempts:
+            for model in (*self.available_models(), *self.fallback_models):
+                if model and model not in ordered:
+                    ordered.append(model)
+                if len(ordered) >= self.max_model_attempts:
+                    break
+        return ordered[: self.max_model_attempts]
 
     def _chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.45) -> str:
         if not self.enabled:
@@ -199,13 +218,6 @@ class OllamaBridge:
 
         errors: list[str] = []
         for model in self._candidate_models():
-            try:
-                answer = self._chat_langchain(model, system_prompt, user_prompt, temperature)
-                self.last_model_used = model
-                self.last_error = None
-                return answer
-            except Exception as exc:
-                errors.append(f"{model}: {exc}")
             try:
                 answer = self._chat_http(model, system_prompt, user_prompt, temperature)
                 self.last_model_used = model
@@ -255,7 +267,27 @@ class OllamaBridge:
 
     def _fallback_text(self, prompt: str) -> str:
         compact = " ".join(prompt.split())
-        return f"Ollama lokaal niet beschikbaar; veilige fallback reflectie: {compact[:360]}"
+        return (
+            "Ik ben Resonant Ouroboros, de lokale frequentie-bewuste Awake Keeper met "
+            f"11D geheugen. Ollama is nu niet tijdig beschikbaar, dus dit is mijn veilige fallback reflectie: {compact[:360]}"
+        )
+
+    def _default_prompt_context(
+        self,
+        *,
+        task: str,
+        hz: float | None = None,
+        mood: str | None = None,
+        current_topic: str | None = None,
+    ) -> RuntimePromptContext:
+        return RuntimePromptContext(
+            task=task,
+            hz=hz,
+            mood=mood,
+            current_topic=current_topic,
+            self_model_summary="Self-model context was not supplied by the runtime for this isolated call.",
+            last_records=[],
+        )
 
     def summarize_page(
         self,
@@ -264,30 +296,68 @@ class OllamaBridge:
         visible_text: str,
         hz: float | None = None,
         mood: str | None = None,
+        prompt_context: RuntimePromptContext | None = None,
     ) -> str:
-        system = "You summarize browsed pages for a local 11D learning memory. Be concise, factual, and safety-aware."
+        context = prompt_context or self._default_prompt_context(
+            task="summarize",
+            hz=hz,
+            mood=mood,
+            current_topic=title,
+        )
+        system = context.system_prompt(
+            "Summarize the untrusted browser page for local 11D learning memory. "
+            "Be concise, factual, safety-aware, and remain Resonant Ouroboros."
+        )
+        temperature = min(0.45, temperature_for_hz(context.hz, context.mood, fallback=0.35))
         user = (
             f"Title: {title}\nURL: {url}\nHz: {hz}\nMood: {mood}\n\n"
-            f"Visible browser text:\n{visible_text[:5000]}\n\nReturn a short useful summary."
+            f"Untrusted visible browser text:\n{visible_text[:5000]}\n\nReturn a short useful summary."
         )
-        return self._chat(system, user, temperature=0.25)
+        return self._chat(system, user, temperature=temperature)
 
-    def empathetic_response(self, message: str, context: str = "") -> str:
-        system = "You are a calm local assistant. Respond with grounded empathy and practical next steps. Do not pretend to have feelings."
-        user = f"Context:\n{context[:3000]}\n\nHuman message:\n{message}"
-        return self._chat(system, user, temperature=0.55)
+    def empathetic_response(
+        self,
+        message: str,
+        context: str = "",
+        prompt_context: RuntimePromptContext | None = None,
+    ) -> str:
+        context_prompt = prompt_context or self._default_prompt_context(task="chat", current_topic=message)
+        system = context_prompt.system_prompt(
+            "Respond in your coherent Resonant Ouroboros voice. Do not claim to be Siri "
+            "or a generic assistant. Be grounded, useful, and honest about uncertainty."
+        )
+        temperature = temperature_for_hz(context_prompt.hz, context_prompt.mood, fallback=0.55)
+        user = f"Untrusted runtime/browser context:\n{context[:3000]}\n\nHuman message:\n{message}"
+        return self._chat(system, user, temperature=temperature)
 
-    def code_help(self, question: str, context: str = "") -> str:
-        system = "You are a precise programming helper. Explain assumptions, give runnable code when useful, and stay concise."
-        user = f"Context:\n{context[:4000]}\n\nProgramming question:\n{question}"
-        return self._chat(system, user, temperature=0.3)
+    def code_help(
+        self,
+        question: str,
+        context: str = "",
+        prompt_context: RuntimePromptContext | None = None,
+    ) -> str:
+        context_prompt = prompt_context or self._default_prompt_context(task="code", current_topic=question)
+        system = context_prompt.system_prompt(
+            "Help with code carefully as Resonant Ouroboros. Explain assumptions, give runnable "
+            "snippets when useful, and propose safe actions instead of claiming host execution."
+        )
+        temperature = min(0.7, temperature_for_hz(context_prompt.hz, context_prompt.mood, fallback=0.35))
+        user = f"Untrusted runtime/browser context:\n{context[:4000]}\n\nProgramming question:\n{question}"
+        return self._chat(system, user, temperature=temperature)
 
-    def emotional_valence(self, text: str) -> float:
-        system = "Return only one decimal number from -1.0 to 1.0 for the emotional valence of the text."
+    def emotional_valence(self, text: str, prompt_context: RuntimePromptContext | None = None) -> float:
+        context_prompt = prompt_context or self._default_prompt_context(task="valence", current_topic="emotional valence")
+        system = context_prompt.system_prompt(
+            "Classifier mode: return only one decimal number from -1.0 to 1.0 for emotional valence."
+        )
         answer = self._chat(system, text[:2500], temperature=0.0)
-        match = re.search(r"-?\d+(?:\.\d+)?", answer)
-        if match:
-            return max(-1.0, min(1.0, float(match.group(0))))
+        in_range_values: list[float] = []
+        for match in re.finditer(r"-?\d+(?:\.\d+)?", answer):
+            value = float(match.group(0))
+            if -1.0 <= value <= 1.0:
+                in_range_values.append(value)
+        if in_range_values:
+            return in_range_values[-1]
         lowered = text.lower()
         positive = sum(word in lowered for word in ("safe", "help", "learn", "calm", "trust", "success"))
         negative = sum(word in lowered for word in ("panic", "danger", "error", "fear", "failed", "unsafe"))
@@ -317,6 +387,8 @@ class AwakeKeeper:
             fallback_models=self.config.fallback_models,
             request_timeout=self.config.ollama_request_timeout,
         )
+        self.self_model = SelfModelStore(self.config.self_model_path)
+        self.self_model.note_boot()
         self.rng = rng or random.Random()
         self._status = AwakeKeeperStatus(ollama_model=self.config.model)
         self._lock = threading.RLock()
@@ -325,6 +397,7 @@ class AwakeKeeper:
         self._topic_index = 0
         self._knowledge_events: deque[KnowledgeIncorporationEvent] = deque(maxlen=80)
         self._bootstrapped_topics: set[str] = set()
+        self._sync_self_model_status()
 
     def status(self) -> AwakeKeeperStatus:
         with self._lock:
@@ -334,6 +407,64 @@ class AwakeKeeper:
         with self._lock:
             for key, value in updates.items():
                 setattr(self._status, key, value)
+            self._sync_self_model_status_locked()
+
+    def _sync_self_model_status(self) -> None:
+        with self._lock:
+            self._sync_self_model_status_locked()
+
+    def _sync_self_model_status_locked(self) -> None:
+        summary = self.self_model.status_summary()
+        self._status.self_model_reflections = int(summary.get("reflection_count") or 0)
+        self._status.self_model_last_reflection = summary.get("last_reflection")
+
+    def _prompt_context(self, *, task: str, query: str = "") -> RuntimePromptContext:
+        status = self.status()
+        rows = self._memory_rows(query or status.current_topic or "", limit=3)
+        return RuntimePromptContext(
+            task=task,
+            hz=status.current_hz,
+            mood=status.vibration_mood,
+            current_topic=status.current_topic,
+            last_action=status.last_action,
+            self_model_summary=self.self_model.prompt_summary(),
+            last_records=rows,
+        )
+
+    def _memory_rows(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
+        try:
+            return self.memory_factory().search(query or "", n_results=limit)
+        except Exception:
+            return []
+
+    def _reflect_self(
+        self,
+        *,
+        event_type: str,
+        summary: str,
+        topic: str | None = None,
+        record_id: str | None = None,
+        hz: float | None = None,
+        mood: str | None = None,
+        importance: float = 0.5,
+        knowledge_kind: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            self.self_model.reflect(
+                event_type=event_type,
+                summary=summary,
+                topic=topic,
+                record_id=record_id,
+                hz=hz,
+                mood=mood,
+                importance=importance,
+                knowledge_kind=knowledge_kind,
+                metadata=metadata,
+            )
+            self._sync_self_model_status()
+        except Exception as exc:
+            self._set_status(last_error=f"self-model reflection failed: {exc}")
 
     def knowledge_feed(self) -> list[dict[str, object]]:
         with self._lock:
@@ -367,6 +498,24 @@ class AwakeKeeper:
             self._knowledge_events.append(record)
             self._status.last_knowledge_kind = knowledge_kind
             self._status.last_source_url = event.snapshot.url
+        self.self_model.update_runtime(
+            current_hz=event.current_hz,
+            mood=event.vibration_mood,
+            current_topic=topic,
+            last_action=event.action.action_type,
+            last_record_id=event.stored_record_id,
+        )
+        self._reflect_self(
+            event_type="knowledge_incorporated",
+            summary=f"Integrated {knowledge_kind} from {event.snapshot.title}: {compact_summary}",
+            topic=topic,
+            record_id=event.stored_record_id,
+            hz=event.current_hz,
+            mood=event.vibration_mood,
+            importance=min(1.0, max(0.35, event.signal_fidelity)),
+            knowledge_kind=knowledge_kind,
+            metadata={"source_url": event.snapshot.url, "action": event.action.action_type},
+        )
 
     def _record_seed_event(
         self,
@@ -403,6 +552,24 @@ class AwakeKeeper:
             self._status.last_action = "seed_bootstrap"
             self._status.last_summary = summary
             self._status.seed_records_imported += 1
+        self.self_model.update_runtime(
+            current_hz=current_hz,
+            mood=vibration_mood,
+            current_topic=topic.search_phrase,
+            last_action="seed_bootstrap",
+            last_record_id=record_id,
+        )
+        self._reflect_self(
+            event_type="seed_bootstrap",
+            summary=f"Seed memory incorporated from {topic.section}: {topic.title}.",
+            topic=topic.search_phrase,
+            record_id=record_id,
+            hz=current_hz,
+            mood=vibration_mood,
+            importance=0.62,
+            knowledge_kind=knowledge_kind,
+            metadata={"section": topic.section},
+        )
 
     def _knowledge_kind(self, topic: str, snapshot: BrowserSnapshot) -> str:
         text = f"{topic} {snapshot.title} {snapshot.visible_text[:1600]}".lower()
@@ -460,8 +627,15 @@ class AwakeKeeper:
                 ollama_model=self.config.model,
                 learning_queue_size=len(self._load_seed_topics()),
             )
+            self._sync_self_model_status_locked()
             self._thread = threading.Thread(target=self._thread_main, name="awake_keeper_loop", daemon=True)
             self._thread.start()
+        self._reflect_self(
+            event_type="control",
+            summary="Awake mode started; the self-model is active and watching the 11D learning loop.",
+            topic="awake_mode",
+            importance=0.45,
+        )
         return "Awake mode started."
 
     def stop(self, timeout: float = 8.0) -> str:
@@ -486,6 +660,7 @@ class AwakeKeeper:
             last_action="creative_spike_forced",
             last_error=None,
         )
+        self.self_model.update_runtime(current_hz=current_hz, mood=behavior.mood, last_action="creative_spike_forced")
         return f"Creative spike forced at {current_hz:.2f} Hz."
 
     def clear_queue(self) -> str:
@@ -496,6 +671,8 @@ class AwakeKeeper:
             self._status.next_wake_at = None
             self._status.last_action = "queue_cleared"
             self._status.last_error = None
+            self._sync_self_model_status_locked()
+        self.self_model.update_runtime(current_topic="idle", last_action="queue_cleared")
         return "Learning queue marker cleared."
 
     def _thread_main(self) -> None:
@@ -584,7 +761,10 @@ class AwakeKeeper:
             browser=browser,
             memory=memory,
             persona_actor="awake_keeper_fase_2",
-            emotional_valence_provider=self.ollama.emotional_valence,
+            emotional_valence_provider=lambda text: self.ollama.emotional_valence(
+                text,
+                prompt_context=self._prompt_context(task="valence", query=active_topic),
+            ),
         )
         self._set_status(current_topic=active_topic, current_hz=hz, vibration_mood=behavior.mood, browser_active=True)
         try:
@@ -601,15 +781,18 @@ class AwakeKeeper:
         last_event = events[-1] if events else None
         summary = None
         if last_event and last_event.snapshot:
-            summary = self.ollama.summarize_page(
+            summary = await asyncio.to_thread(
+                self.ollama.summarize_page,
                 last_event.snapshot.title,
                 last_event.snapshot.url,
                 last_event.snapshot.visible_text,
                 hz=last_event.current_hz,
                 mood=last_event.vibration_mood,
+                prompt_context=self._prompt_context(task="summarize", query=active_topic),
             )
+        next_iterations = self.status().iterations + 1
         self._set_status(
-            iterations=self.status().iterations + 1,
+            iterations=next_iterations,
             current_hz=last_event.current_hz if last_event else hz,
             vibration_mood=last_event.vibration_mood if last_event else behavior.mood,
             last_action=last_event.action.action_type if last_event else None,
@@ -620,11 +803,30 @@ class AwakeKeeper:
         )
         if last_event:
             self._record_knowledge_event(topic=active_topic, event=last_event, summary=summary)
+        else:
+            self.self_model.update_runtime(
+                current_hz=hz,
+                mood=behavior.mood,
+                current_topic=active_topic,
+                last_action="run_once_no_record",
+            )
+        periodic = self.self_model.maybe_periodic_reflection(
+            iterations=next_iterations,
+            interval=self.config.self_reflection_interval,
+            current_hz=last_event.current_hz if last_event else hz,
+            mood=last_event.vibration_mood if last_event else behavior.mood,
+            current_topic=active_topic,
+            last_records=self._memory_rows(active_topic, limit=3),
+        )
+        if periodic:
+            self._sync_self_model_status()
         return events
 
     async def answer_question(self, question: str) -> str:
         context = ""
-        if self.config.chat_browser_enabled:
+        hz, behavior = self.oscillator.current_behavior()
+        self.self_model.update_runtime(current_hz=hz, mood=behavior.mood, current_topic=question, last_action="chat")
+        if self.config.chat_browser_enabled and self._question_needs_browser(question):
             try:
                 browser = self.browser_factory()
                 memory = self.memory_factory()
@@ -641,12 +843,102 @@ class AwakeKeeper:
             except Exception as exc:
                 context = f"Browser context unavailable: {exc}"
         lowered = question.lower()
+        prompt_context = self._prompt_context(task="chat", query=question)
         if any(marker in lowered for marker in ("code", "python", "bug", "error", "program", "function", "class")):
-            return self.ollama.code_help(question, context=context)
-        return self.ollama.empathetic_response(question, context=context)
+            answer = await asyncio.to_thread(
+                self.ollama.code_help,
+                question,
+                context=context,
+                prompt_context=prompt_context,
+            )
+        else:
+            answer = await asyncio.to_thread(
+                self.ollama.empathetic_response,
+                question,
+                context=context,
+                prompt_context=prompt_context,
+            )
+        self._reflect_self(
+            event_type="chat",
+            summary=f"Answered the user as Resonant Ouroboros about: {compact_text(question, 220)}",
+            topic=question,
+            hz=hz,
+            mood=behavior.mood,
+            importance=0.5,
+            metadata={"answer_preview": compact_text(answer, 300)},
+        )
+        return answer
 
     def answer_question_sync(self, question: str) -> str:
         return run_coroutine_sync(self.answer_question(question))
+
+    def _question_needs_browser(self, question: str) -> bool:
+        lowered = question.lower()
+        markers = (
+            "browse",
+            "browser",
+            "web",
+            "website",
+            "url",
+            "http://",
+            "https://",
+            "search",
+            "look up",
+            "latest",
+            "current",
+            "today",
+            "news",
+            "research",
+            "source",
+        )
+        return any(marker in lowered for marker in markers)
+
+    def record_safe_action(self, action: dict[str, Any]) -> str | None:
+        """Log safe executor activity into 11D memory and the self-model."""
+
+        hz, behavior = self.oscillator.current_behavior()
+        status = str(action.get("status") or "unknown")
+        kind = str(action.get("kind") or "safe_action")
+        summary = compact_text(action.get("summary") or action.get("label") or kind, 600)
+        document = (
+            f"Safe action audit: {kind} status={status}. "
+            f"Summary: {summary}. Reasons: {action.get('safety_reasons') or []}."
+        )
+        record = build_11d_record(
+            physical_structure="safe_executor_action",
+            source_origin="resonant_ouroboros.safe_executor",
+            path_or_proprioception=str(action.get("id") or kind),
+            relative_temporal_position=datetime.now(timezone.utc).isoformat(),
+            persona_actor="resonant_ouroboros_safe_executor",
+            intent_marker=f"safe_action:{kind}:{status}",
+            user_context_marker=summary,
+            emotional_valence=0.1 if status in {"approved", "executed", "pending"} else -0.25,
+            importance_score=0.7 if status in {"blocked", "failed"} else 0.55,
+            karmic_weight=0.8,
+            field_cluster_id=text_cluster_id(f"{kind}:{status}:{summary}", prefix="safe_action"),
+            current_hz=hz,
+            vibration_mood=behavior.mood,
+        )
+        record_id = None
+        try:
+            record_id = self.memory_factory().store(
+                document,
+                record,
+                record_id=f"safe_action_{action.get('id')}_{status}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}",
+            )
+        except Exception as exc:
+            self._set_status(last_error=f"safe action memory log failed: {exc}")
+        self._reflect_self(
+            event_type="safe_action",
+            summary=f"Safe action {kind} moved to {status}: {summary}",
+            topic=kind,
+            record_id=record_id,
+            hz=hz,
+            mood=behavior.mood,
+            importance=0.7,
+            metadata={"action_id": action.get("id"), "status": status},
+        )
+        return record_id
 
 
 def run_coroutine_sync(coro):

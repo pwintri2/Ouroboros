@@ -20,16 +20,16 @@ class FakeOllama:
     def __init__(self):
         self.texts = []
 
-    def emotional_valence(self, text):
+    def emotional_valence(self, text, prompt_context=None):
         return 0.2
 
-    def summarize_page(self, title, url, visible_text, hz=None, mood=None):
+    def summarize_page(self, title, url, visible_text, hz=None, mood=None, prompt_context=None):
         return f"summary:{title}:{round(hz or 0)}:{mood}"
 
-    def empathetic_response(self, message, context=""):
+    def empathetic_response(self, message, context="", prompt_context=None):
         return f"empathy:{message}:{bool(context)}"
 
-    def code_help(self, question, context=""):
+    def code_help(self, question, context="", prompt_context=None):
         return f"code:{question}:{bool(context)}"
 
 
@@ -63,7 +63,7 @@ class FakeBrowser:
         )
 
 
-def test_awake_keeper_run_once_updates_status_and_memory():
+def test_awake_keeper_run_once_updates_status_and_memory(tmp_path):
     memory = InMemoryHippocampusMemory()
     config = AwakeKeeperConfig(
         seed_path=Path("AGI Kennis.txt"),
@@ -73,6 +73,7 @@ def test_awake_keeper_run_once_updates_status_and_memory():
         spike_steps_per_tick=1,
         model="fake:latest",
         ollama_base_url="http://fake",
+        self_model_path=tmp_path / "self_model.json",
     )
     keeper = AwakeKeeper(
         config=config,
@@ -94,9 +95,11 @@ def test_awake_keeper_run_once_updates_status_and_memory():
     assert feed[0]["kind"] == "AGI Architecture"
     assert feed[0]["record_id"] == status.last_record_id
     assert "summary:" in feed[0]["summary"]
+    assert keeper.self_model.status_summary()["identity"]["name"] == "Resonant Ouroboros"
+    assert keeper.self_model.status_summary()["reflection_count"] >= 1
 
 
-def test_awake_keeper_chat_uses_code_help_for_programming_question():
+def test_awake_keeper_chat_uses_code_help_for_programming_question(tmp_path):
     config = AwakeKeeperConfig(
         seed_path=Path("AGI Kennis.txt"),
         interval_min_seconds=0.01,
@@ -104,13 +107,14 @@ def test_awake_keeper_chat_uses_code_help_for_programming_question():
         model="fake:latest",
         ollama_base_url="http://fake",
         chat_browser_enabled=False,
+        self_model_path=tmp_path / "self_model.json",
     )
     keeper = AwakeKeeper(config=config, browser_factory=FakeBrowser, ollama=FakeOllama())
     answer = asyncio.run(keeper.answer_question("Python code bug"))
     assert answer.startswith("code:")
 
 
-def test_awake_keeper_bootstrap_imports_all_seed_topics():
+def test_awake_keeper_bootstrap_imports_all_seed_topics(tmp_path):
     memory = InMemoryHippocampusMemory()
     config = AwakeKeeperConfig(
         seed_path=Path("AGI Kennis.txt"),
@@ -118,6 +122,7 @@ def test_awake_keeper_bootstrap_imports_all_seed_topics():
         interval_max_seconds=0.02,
         model="fake:latest",
         ollama_base_url="http://fake",
+        self_model_path=tmp_path / "self_model.json",
     )
     keeper = AwakeKeeper(
         config=config,
@@ -172,3 +177,14 @@ def test_ollama_bridge_uses_http_api_and_available_models():
         assert bridge.last_model_used == "missing:latest"
     finally:
         server.shutdown()
+
+
+def test_ollama_bridge_respects_max_model_attempts_without_tag_lookup():
+    bridge = OllamaBridge(
+        model="primary:latest",
+        base_url="http://127.0.0.1:9",
+        fallback_models=("fallback:latest",),
+        request_timeout=0.01,
+        max_model_attempts=1,
+    )
+    assert bridge._candidate_models() == ["primary:latest"]

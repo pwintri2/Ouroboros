@@ -1,4 +1,4 @@
-"""Command-line entrypoint for Resonant Ouroboros Fase 1 and Fase 2."""
+"""Command-line entrypoint for Resonant Ouroboros Awake Keeper."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     learn.add_argument("--dry-run", action="store_true", help="Queue seed topics without opening a browser")
 
     sub.add_parser("dashboard", help="Launch the Gradio dashboard")
-    sub.add_parser("awake", help="Run the Fase 2 Awake Keeper loop without the dashboard")
+    sub.add_parser("awake", help="Run the Awake Keeper loop without the dashboard")
     sub.add_parser("graph-check", help="Check that the LangGraph PAEU graph can compile")
     return parser
 

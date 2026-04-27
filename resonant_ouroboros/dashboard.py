@@ -1,4 +1,4 @@
-"""Gradio dashboard and local REST API for the Fase 2 Awake Keeper."""
+"""Gradio dashboard and local REST API for the Fase 3 Awake Keeper."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Any
 from .awake_keeper import AwakeKeeper, AwakeKeeperConfig, run_coroutine_sync
 from .memory import InMemoryHippocampusMemory, create_memory_from_env
 from .oscillator import HertzOscillator
+from .safe_executor import SafeActionExecutor
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -62,6 +63,7 @@ class DashboardRuntime:
     history: HzHistory = field(default_factory=HzHistory)
     screenshot_path: Path = Path("/workspace/data/screenshots/current_browser_view.png")
     chat_log: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=80))
+    safe_executor: SafeActionExecutor = field(default_factory=SafeActionExecutor.from_env)
 
     def _status_with_sample(self) -> tuple[Any, Any]:
         state = self.oscillator.modulation_state()
@@ -104,6 +106,8 @@ class DashboardRuntime:
             "seed_records_imported": status.seed_records_imported,
             "learning_queue_size": status.learning_queue_size,
             "queue_size": status.learning_queue_size,
+            "self_model": self.keeper.self_model.status_summary(),
+            "actions": self.safe_executor.summary(),
             "history": self.history.rows(),
             "knowledge_feed": knowledge_feed,
             "screenshot": str(self.screenshot_path) if self.screenshot_path.exists() else None,
@@ -124,6 +128,8 @@ class DashboardRuntime:
                 "chat": "/chat",
                 "control": "/control",
                 "memory": "/memory",
+                "self_model": "/self-model",
+                "actions": "/actions",
             },
         }
 
@@ -147,6 +153,9 @@ class DashboardRuntime:
             f"ollama_model: {status['ollama_model']}",
             f"seed_records_imported: {status['seed_records_imported']}",
             f"learning_queue_size: {status['learning_queue_size']}",
+            f"self_model_reflections: {status['self_model']['reflection_count']}",
+            f"last_self_reflection: {status['self_model']['last_reflection']}",
+            f"pending_actions: {status['actions']['pending_count']}",
         ]
         return "\n".join(rows)
 
@@ -180,6 +189,13 @@ class DashboardRuntime:
             message = self.keeper.clear_queue()
         else:
             raise ValueError(f"Unsupported control command: {command}")
+        self.keeper.self_model.reflect(
+            event_type="control",
+            summary=f"Control command '{normalized}' completed: {message}",
+            topic=topic or self.keeper.status().current_topic,
+            importance=0.45,
+            metadata={"command": normalized},
+        )
         return {
             "ok": True,
             "accepted": True,
@@ -200,10 +216,11 @@ class DashboardRuntime:
         answer = await self.keeper.answer_question(clean_message)
         status = self.status_payload()
         sources = self._sources_from_feed(status["knowledge_feed"])
+        message_id = f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}"
         response = {
             "ok": True,
             "conversation_id": "local-ui-default",
-            "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}",
+            "message_id": message_id,
             "role": "assistant",
             "message": clean_message,
             "answer": answer,
@@ -217,7 +234,8 @@ class DashboardRuntime:
                     "kind": "control",
                     "payload": {"command": "manual_paeu_step"},
                 }
-            ],
+            ]
+            + self._proposed_actions(clean_message, answer, message_id),
             "hz": status["current_hz"],
             "mood": status["vibration_mood"],
             "safe_mode": status["safe_mode"],
@@ -259,6 +277,60 @@ class DashboardRuntime:
             "error": error,
         }
 
+    def self_model_payload(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "safe_mode": True,
+            "self_model": self.keeper.self_model.snapshot(),
+            "summary": self.keeper.self_model.status_summary(),
+        }
+
+    def actions_payload(self, status: str | None = None, limit: int = 20) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "safe_mode": True,
+            "actions": self.safe_executor.list_actions(status=status, limit=limit),
+            "summary": self.safe_executor.summary(),
+        }
+
+    def action_payload(self, action_id: str) -> dict[str, Any]:
+        action = self.safe_executor.get_action(action_id)
+        if not action:
+            raise KeyError(action_id)
+        return {"ok": True, "safe_mode": True, "action": action}
+
+    def propose_action(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.safe_executor.propose(
+            kind=str(payload.get("kind") or ""),
+            label=payload.get("label"),
+            summary=payload.get("summary"),
+            payload=payload.get("payload") or {},
+            source=payload.get("source") or {"client": "api"},
+        )
+        self.keeper.record_safe_action(result["proposal"])
+        result["safe_mode"] = True
+        result["summary"] = self.safe_executor.summary()
+        return result
+
+    def approve_action(self, action_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.safe_executor.approve(
+            action_id,
+            approval_token=str(payload.get("approval_token") or ""),
+            approved_by=str(payload.get("approved_by") or "local_user"),
+            note=payload.get("note"),
+        )
+        self.keeper.record_safe_action(result["proposal"])
+        result["safe_mode"] = True
+        result["summary"] = self.safe_executor.summary()
+        return result
+
+    def reject_action(self, action_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.safe_executor.reject(action_id, reason=payload.get("reason"))
+        self.keeper.record_safe_action(result["proposal"])
+        result["safe_mode"] = True
+        result["summary"] = self.safe_executor.summary()
+        return result
+
     def _sources_from_feed(self, feed: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sources = []
         seen: set[str] = set()
@@ -281,6 +353,45 @@ class DashboardRuntime:
             if len(sources) >= 4:
                 break
         return sources
+
+    def _proposed_actions(self, message: str, answer: str, message_id: str) -> list[dict[str, Any]]:
+        proposals: list[dict[str, Any]] = []
+        lowered = message.lower()
+        if "```" in answer or "def " in answer or "class " in answer:
+            proposals.append(
+                {
+                    "id": "apply_code_review",
+                    "label": "Approve & Review Code",
+                    "kind": "apply_code_review",
+                    "requires_approval": True,
+                    "payload": {
+                        "message_id": message_id,
+                        "code": answer[:6000],
+                        "language": "text",
+                    },
+                }
+            )
+        command = self._safe_command_from_message(lowered)
+        if command:
+            proposals.append(
+                {
+                    "id": "safe_command",
+                    "label": f"Approve & Execute: {' '.join(command)}",
+                    "kind": "safe_command",
+                    "requires_approval": True,
+                    "payload": {"argv": command},
+                }
+            )
+        return proposals
+
+    def _safe_command_from_message(self, lowered: str) -> list[str] | None:
+        if "list files" in lowered or "show files" in lowered or "run ls" in lowered:
+            return ["ls", "-la", "/workspace"]
+        if "current directory" in lowered or "run pwd" in lowered:
+            return ["pwd"]
+        if "python version" in lowered:
+            return ["python3", "--version"]
+        return None
 
 
 def _dashboard_memory():
@@ -320,7 +431,7 @@ def create_api_app(runtime: DashboardRuntime | None = None, demo: Any | None = N
     app = FastAPI(
         title="Resonant Ouroboros Awake Keeper API",
         description="Docker-local REST bridge for the Goose-like standalone UI.",
-        version="2.5",
+        version="3.0",
     )
 
     @app.get("/health")
@@ -330,6 +441,10 @@ def create_api_app(runtime: DashboardRuntime | None = None, demo: Any | None = N
     @app.get("/status")
     def status():
         return runtime.status_payload()
+
+    @app.get("/self-model")
+    def self_model():
+        return runtime.self_model_payload()
 
     @app.post("/control")
     async def control(payload: dict[str, Any]):
@@ -359,6 +474,45 @@ def create_api_app(runtime: DashboardRuntime | None = None, demo: Any | None = N
         limit: int = Query(default=12, ge=1, le=50),
     ):
         return runtime.memory_payload(query=query, limit=limit)
+
+    @app.get("/actions")
+    def actions(
+        status: str | None = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=100),
+    ):
+        return runtime.actions_payload(status=status, limit=limit)
+
+    @app.get("/actions/{action_id}")
+    def action(action_id: str):
+        try:
+            return runtime.action_payload(action_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown action: {action_id}") from exc
+
+    @app.post("/actions")
+    def propose_action(payload: dict[str, Any]):
+        try:
+            return runtime.propose_action(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/actions/{action_id}/approve")
+    def approve_action(action_id: str, payload: dict[str, Any]):
+        try:
+            return runtime.approve_action(action_id, payload)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown action: {action_id}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/actions/{action_id}/reject")
+    def reject_action(action_id: str, payload: dict[str, Any]):
+        try:
+            return runtime.reject_action(action_id, payload)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown action: {action_id}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if demo is not None:
         try:

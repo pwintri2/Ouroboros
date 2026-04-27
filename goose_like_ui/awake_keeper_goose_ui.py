@@ -83,6 +83,7 @@ class GooseLikeApp(ctk.CTk):
         self.status_vars: dict[str, tk.StringVar] = {}
         self.polling = True
         self.current_status: dict[str, Any] = {}
+        self.approval_tokens: dict[str, str] = {}
 
         self._build_layout()
         self._append_system_message(
@@ -169,6 +170,15 @@ class GooseLikeApp(ctk.CTk):
         self._control_button(controls, "Creative Spike", "creative_spike", 1, 1, "#8854ff")
         self._control_button(controls, "View 11D Memory", "memory", 2, 0, "#3a404a")
         self._control_button(controls, "Clear Queue", "clear_queue", 2, 1, "#3a404a")
+        self.approvals_button = ctk.CTkButton(
+            controls,
+            text="Approvals (0)",
+            height=38,
+            fg_color="#274a43",
+            hover_color="#37665c",
+            command=self._open_approvals,
+        )
+        self.approvals_button.grid(row=3, column=0, columnspan=2, padx=8, pady=8, sticky="ew")
 
         self.connection_label = ctk.CTkLabel(
             sidebar,
@@ -277,18 +287,41 @@ class GooseLikeApp(ctk.CTk):
             fg_color="#3a404a",
             command=lambda: self._send_chat(prefix="Browse more with context about: "),
         ).grid(row=0, column=0, padx=(0, 8))
-        if "```" in str(answer) or "def " in str(answer) or "class " in str(answer):
+        button_column = 1
+        action_proposals = [
+            action for action in (payload.get("actions") or []) if action.get("kind") not in {"control"}
+        ]
+        for action in action_proposals[:2]:
             ctk.CTkButton(
                 actions,
-                text="Apply this code",
-                width=124,
+                text=clamp_text(action.get("label") or "Approve & Execute", 28),
+                width=154,
                 height=28,
-                fg_color="#3a404a",
-                command=lambda: messagebox.showinfo(
-                    "Safe Mode",
-                    "Safe Mode blocks automatic code application from chat. Review and apply changes manually.",
+                fg_color="#274a43",
+                command=lambda item=action, msg=payload.get("message_id"): self._create_action_from_chat(
+                    item,
+                    answer,
+                    str(msg or ""),
                 ),
-            ).grid(row=0, column=1, padx=(0, 8))
+            ).grid(row=0, column=button_column, padx=(0, 8))
+            button_column += 1
+        if not action_proposals and ("```" in str(answer) or "def " in str(answer) or "class " in str(answer)):
+            ctk.CTkButton(
+                actions,
+                text="Approve & Review Code",
+                width=166,
+                height=28,
+                fg_color="#274a43",
+                command=lambda: self._create_action_from_chat(
+                    {
+                        "kind": "apply_code_review",
+                        "label": "Approve & Review Code",
+                        "payload": {"code": answer, "language": "text"},
+                    },
+                    answer,
+                    str(payload.get("message_id") or ""),
+                ),
+            ).grid(row=0, column=button_column, padx=(0, 8))
 
     def _append_message(
         self,
@@ -357,6 +390,12 @@ class GooseLikeApp(ctk.CTk):
                 self._handle_control(payload)
             elif event == "memory":
                 self._show_memory_window(payload)
+            elif event == "actions":
+                self._show_approvals_window(payload)
+            elif event == "action_created":
+                self._handle_action_created(payload)
+            elif event == "action_update":
+                self._handle_action_update(payload)
         self.after(120, self._drain_events)
 
     def _handle_status(self, result: ApiResult) -> None:
@@ -377,6 +416,12 @@ class GooseLikeApp(ctk.CTk):
         }
         for key, value in values.items():
             self.status_vars[key].set(value)
+        actions = result.data.get("actions") or {}
+        pending = int(actions.get("pending_count") or 0)
+        self.approvals_button.configure(
+            text=f"Approvals ({pending})",
+            fg_color="#8a6430" if pending else "#274a43",
+        )
 
     def _send_chat(self, prefix: str = "") -> None:
         message = self.input_box.get("1.0", "end").strip()
@@ -403,6 +448,53 @@ class GooseLikeApp(ctk.CTk):
         self._append_system_message(f"Chat failed: {result.error}")
         self.activity_label.configure(text="Chat error", text_color="#ff8f8f")
 
+    def _create_action_from_chat(self, action: dict[str, Any], answer: str, message_id: str) -> None:
+        kind = str(action.get("kind") or "apply_code_review")
+        payload = dict(action.get("payload") or {})
+        if kind == "apply_code_review":
+            payload.setdefault("code", answer)
+            payload.setdefault("language", "text")
+        if message_id:
+            payload.setdefault("message_id", message_id)
+        body = {
+            "kind": kind,
+            "label": action.get("label") or "Approve & Execute",
+            "summary": action.get("summary") or f"Action proposed from chat message {message_id or '(unknown)'}",
+            "payload": payload,
+            "source": {"client": "goose_like_ui", "conversation_id": "local-ui-default"},
+        }
+        self.activity_label.configure(text="Creating action...", text_color="#ffd27d")
+
+        def worker() -> None:
+            result = api_request("POST", "/actions", body, timeout=90.0)
+            self.event_queue.put(("action_created", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_action_created(self, result: ApiResult) -> None:
+        if not result.ok:
+            self._append_system_message(f"Action proposal failed: {result.error}")
+            self.activity_label.configure(text="Action error", text_color="#ff8f8f")
+            return
+        proposal = result.data.get("proposal") or {}
+        token = result.data.get("approval_token")
+        if token and proposal.get("id"):
+            self.approval_tokens[str(proposal["id"])] = str(token)
+        status = proposal.get("status")
+        if status == "pending":
+            self._append_system_message(
+                f"Action queued for approval: {proposal.get('label') or proposal.get('kind')}"
+            )
+            self._open_approvals()
+        elif status == "executed":
+            self._append_system_message(
+                f"Safe action executed in Docker: {proposal.get('label') or proposal.get('kind')}"
+            )
+        else:
+            reasons = "; ".join(str(item) for item in proposal.get("safety_reasons") or [])
+            self._append_system_message(f"Action {status}: {reasons or proposal.get('label')}")
+        self.activity_label.configure(text="Action updated", text_color="#87ffd3")
+
     def _run_control(self, command: str) -> None:
         self.activity_label.configure(text=f"{command}...", text_color="#ffd27d")
 
@@ -419,6 +511,133 @@ class GooseLikeApp(ctk.CTk):
             return
         self._append_system_message(f"Control failed: {result.error}")
         self.activity_label.configure(text="Control error", text_color="#ff8f8f")
+
+    def _open_approvals(self) -> None:
+        def worker() -> None:
+            result = api_get("/actions", {"status": "pending", "limit": 20}, timeout=45.0)
+            self.event_queue.put(("actions", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_approvals_window(self, result: ApiResult) -> None:
+        if not result.ok:
+            messagebox.showerror("Approvals", result.error or "Action request failed")
+            return
+        window = ctk.CTkToplevel(self)
+        window.title("Safe Action Approvals")
+        window.geometry("900x600")
+        window.configure(fg_color="#101113")
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+        actions = result.data.get("actions") or []
+        ctk.CTkLabel(
+            window,
+            text=f"Pending Approvals: {len(actions)}",
+            text_color="#f2f6ff",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).grid(row=0, column=0, padx=18, pady=16, sticky="w")
+        scroll = ctk.CTkScrollableFrame(window, fg_color="#15171b", corner_radius=8)
+        scroll.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
+        scroll.grid_columnconfigure(0, weight=1)
+        if not actions:
+            ctk.CTkLabel(
+                scroll,
+                text="No pending actions.",
+                text_color="#8f98a8",
+                font=ctk.CTkFont(size=13),
+            ).grid(row=0, column=0, padx=14, pady=14, sticky="w")
+            return
+        for index, action in enumerate(actions):
+            item = ctk.CTkFrame(scroll, fg_color="#202329", corner_radius=8)
+            item.grid(row=index, column=0, padx=8, pady=8, sticky="ew")
+            item.grid_columnconfigure(0, weight=1)
+            label = action.get("label") or action.get("kind") or "action"
+            reasons = "; ".join(str(reason) for reason in action.get("safety_reasons") or [])
+            ctk.CTkLabel(
+                item,
+                text=f"{label} / {action.get('risk')} risk",
+                text_color="#c7b9ff",
+                font=ctk.CTkFont(size=12, weight="bold"),
+            ).grid(row=0, column=0, padx=12, pady=(10, 2), sticky="w")
+            ctk.CTkLabel(
+                item,
+                text=clamp_text(action.get("summary") or reasons or action.get("payload"), 820),
+                text_color="#f2f6ff",
+                wraplength=780,
+                justify="left",
+                font=ctk.CTkFont(size=12),
+            ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="w")
+            buttons = ctk.CTkFrame(item, fg_color="transparent")
+            buttons.grid(row=2, column=0, padx=12, pady=(0, 10), sticky="w")
+            action_id = str(action.get("id") or "")
+            ctk.CTkButton(
+                buttons,
+                text="Approve & Execute",
+                width=150,
+                height=28,
+                fg_color="#2d7ff9",
+                command=lambda aid=action_id, win=window: self._approve_action(aid, win),
+            ).grid(row=0, column=0, padx=(0, 8))
+            ctk.CTkButton(
+                buttons,
+                text="Reject",
+                width=84,
+                height=28,
+                fg_color="#3a404a",
+                command=lambda aid=action_id, win=window: self._reject_action(aid, win),
+            ).grid(row=0, column=1, padx=(0, 8))
+
+    def _approve_action(self, action_id: str, window: ctk.CTkToplevel | None = None) -> None:
+        token = self.approval_tokens.get(action_id)
+        if not token:
+            messagebox.showwarning(
+                "Approval token unavailable",
+                "This UI session does not hold the one-time approval token. Create the proposal again from chat.",
+            )
+            return
+        if window:
+            window.destroy()
+
+        def worker() -> None:
+            result = api_request(
+                "POST",
+                f"/actions/{parse.quote(action_id)}/approve",
+                {"approval_token": token, "approved_by": "local_ui"},
+                timeout=120.0,
+            )
+            self.event_queue.put(("action_update", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _reject_action(self, action_id: str, window: ctk.CTkToplevel | None = None) -> None:
+        if window:
+            window.destroy()
+
+        def worker() -> None:
+            result = api_request(
+                "POST",
+                f"/actions/{parse.quote(action_id)}/reject",
+                {"reason": "Rejected in Goose-like UI."},
+                timeout=60.0,
+            )
+            self.event_queue.put(("action_update", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_action_update(self, result: ApiResult) -> None:
+        if not result.ok:
+            self._append_system_message(f"Action update failed: {result.error}")
+            self.activity_label.configure(text="Action error", text_color="#ff8f8f")
+            return
+        proposal = result.data.get("proposal") or {}
+        if proposal.get("id") in self.approval_tokens and proposal.get("status") != "pending":
+            self.approval_tokens.pop(str(proposal.get("id")), None)
+        result_text = proposal.get("result") or {}
+        message = result_text.get("message") if isinstance(result_text, dict) else None
+        self._append_system_message(
+            f"Action {proposal.get('status')}: {message or proposal.get('label') or proposal.get('kind')}"
+        )
+        self.activity_label.configure(text="Action updated", text_color="#87ffd3")
 
     def _open_memory(self) -> None:
         query = self.input_box.get("1.0", "end").strip()
