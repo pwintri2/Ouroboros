@@ -84,7 +84,7 @@ class ActionPolicy:
 
 
 class SafeActionExecutor:
-    """Persist, classify, approve, and execute bounded Docker-contained actions."""
+    """Persist, classify, approve, and execute bounded sandbox-contained actions."""
 
     def __init__(
         self,
@@ -94,6 +94,8 @@ class SafeActionExecutor:
         docker_bin: str | None = None,
         timeout_seconds: float = 45.0,
         enable_docker_exec: bool | None = None,
+        enable_sandbox_exec: bool | None = None,
+        sandbox_cwd: str | Path | None = None,
     ):
         self.path = Path(path) if path is not None else default_actions_path()
         self.container_name = container_name or os.getenv("OUROBOROS_EXEC_CONTAINER", "ouroboros-fase2-ouroboros-1")
@@ -107,7 +109,17 @@ class SafeActionExecutor:
                 "ja",
                 "on",
             }
+        if enable_sandbox_exec is None:
+            enable_sandbox_exec = os.getenv("OUROBOROS_ENABLE_SANDBOX_EXEC", "false").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "ja",
+                "on",
+            }
         self.enable_docker_exec = bool(enable_docker_exec)
+        self.enable_sandbox_exec = bool(enable_sandbox_exec)
+        self.sandbox_cwd = Path(sandbox_cwd or os.getenv("OUROBOROS_SANDBOX_CWD", "/workspace"))
         self._lock = threading.RLock()
         self._store = self._load()
 
@@ -149,6 +161,8 @@ class SafeActionExecutor:
                 "failed_count": sum(1 for action in actions if action.get("status") == "failed"),
                 "whitelist": list(SAFE_EXEC_COMMANDS),
                 "docker_exec_enabled": self.enable_docker_exec,
+                "sandbox_exec_enabled": self.enable_sandbox_exec,
+                "sandbox_cwd": str(self.sandbox_cwd),
             }
 
     def list_actions(self, *, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
@@ -266,7 +280,7 @@ class SafeActionExecutor:
                     "approval_required",
                     "medium",
                     "pending",
-                    ["HTTP(S) URL is syntactically safe; human approval required before Docker executor."],
+                    ["HTTP(S) URL is syntactically safe; human approval required before sandbox executor."],
                     self._open_url_argv(url),
                 )
             return ActionPolicy("blocked", "high", "blocked", ["Only explicit http(s) URLs are allowed."])
@@ -278,7 +292,7 @@ class SafeActionExecutor:
                     "approval_required",
                     "medium",
                     "pending",
-                    ["Safe app whitelist matched; approval required before containerized open attempt."],
+                    ["Safe app whitelist matched; approval required before sandboxed open attempt."],
                     self._open_app_argv(app, url),
                 )
             return ActionPolicy("blocked", "high", "blocked", ["App is not on the safe app whitelist."])
@@ -315,7 +329,7 @@ class SafeActionExecutor:
             "approval_required",
             "medium",
             "pending",
-            ["Command is whitelisted and path-bounded; human approval required before Docker executor."],
+            ["Command is whitelisted and path-bounded; human approval required before sandbox execution."],
             argv,
         )
 
@@ -344,14 +358,19 @@ class SafeActionExecutor:
                     argv = policy.argv
                 if not argv:
                     raise RuntimeError("No executable argv for action.")
-                if not self.enable_docker_exec:
+                if self.enable_sandbox_exec:
+                    action["result"] = self._run_sandbox_exec(argv)
+                    action["status"] = "executed" if action["result"].get("exit_code") == 0 else "failed"
+                elif not self.enable_docker_exec:
                     action["status"] = "approved"
                     action["result"] = {
-                        "mode": "docker_exec_disabled",
+                        "mode": "sandbox_exec_disabled",
                         "message": (
-                            "Action was approved and logged, but Docker execution is disabled. "
-                            "Set OUROBOROS_ENABLE_DOCKER_EXEC=true in the deployment environment to execute."
+                            "Action was approved and logged, but sandbox execution is disabled. "
+                            "Set OUROBOROS_ENABLE_SANDBOX_EXEC=true to execute inside the app sandbox, "
+                            "or OUROBOROS_ENABLE_DOCKER_EXEC=true to execute through Docker."
                         ),
+                        "prepared_argv": argv,
                         "prepared_command": self._docker_exec_command(argv),
                     }
                 else:
@@ -364,6 +383,27 @@ class SafeActionExecutor:
             action["updated_at"] = utc_now()
             self._save()
         return action
+
+    def _run_sandbox_exec(self, argv: list[str]) -> dict[str, Any]:
+        cwd = self.sandbox_cwd
+        if not cwd.exists():
+            cwd = Path.cwd()
+        completed = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=self.timeout_seconds,
+            check=False,
+        )
+        return {
+            "mode": "sandbox_exec",
+            "argv": argv,
+            "cwd": str(cwd),
+            "exit_code": completed.returncode,
+            "stdout": compact_text(completed.stdout, 4000),
+            "stderr": compact_text(completed.stderr, 4000),
+        }
 
     def _run_docker_exec(self, argv: list[str]) -> dict[str, Any]:
         docker_command = self._docker_exec_command(argv)

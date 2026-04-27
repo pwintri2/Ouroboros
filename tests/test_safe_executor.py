@@ -38,13 +38,13 @@ def test_safe_executor_requires_approval_for_code_review(tmp_path):
 
 
 def test_safe_executor_safe_command_requires_approval_and_uses_docker_exec_vector(tmp_path):
-    executor = SafeActionExecutor(path=tmp_path / "actions.json", docker_bin="true")
+    executor = SafeActionExecutor(path=tmp_path / "actions.json", docker_bin="true", enable_sandbox_exec=False)
     result = executor.propose(kind="safe_command", payload={"argv": ["ls", "/workspace"]})
     assert result["proposal"]["classification"] == "approval_required"
     assert result["proposal"]["status"] == "pending"
     approved = executor.approve(result["proposal"]["id"], approval_token=result["approval_token"])
     assert approved["proposal"]["status"] == "approved"
-    assert approved["proposal"]["result"]["mode"] == "docker_exec_disabled"
+    assert approved["proposal"]["result"]["mode"] == "sandbox_exec_disabled"
     assert approved["proposal"]["result"]["prepared_command"][:3] == [
         "true",
         "exec",
@@ -52,8 +52,27 @@ def test_safe_executor_safe_command_requires_approval_and_uses_docker_exec_vecto
     ]
 
 
+def test_safe_executor_can_execute_in_current_sandbox_when_enabled(tmp_path):
+    executor = SafeActionExecutor(
+        path=tmp_path / "actions.json",
+        enable_sandbox_exec=True,
+        sandbox_cwd=tmp_path,
+    )
+    result = executor.propose(kind="safe_command", payload={"argv": ["pwd"]})
+    approved = executor.approve(result["proposal"]["id"], approval_token=result["approval_token"])
+    assert approved["proposal"]["status"] == "executed"
+    assert approved["proposal"]["result"]["mode"] == "sandbox_exec"
+    assert approved["proposal"]["result"]["exit_code"] == 0
+    assert str(tmp_path) in approved["proposal"]["result"]["stdout"]
+
+
 def test_safe_executor_can_execute_when_explicitly_enabled(tmp_path):
-    executor = SafeActionExecutor(path=tmp_path / "actions.json", docker_bin="true", enable_docker_exec=True)
+    executor = SafeActionExecutor(
+        path=tmp_path / "actions.json",
+        docker_bin="true",
+        enable_docker_exec=True,
+        enable_sandbox_exec=False,
+    )
     result = executor.propose(kind="safe_command", payload={"argv": ["ls", "/workspace"]})
     approved = executor.approve(result["proposal"]["id"], approval_token=result["approval_token"])
     assert approved["proposal"]["status"] == "executed"

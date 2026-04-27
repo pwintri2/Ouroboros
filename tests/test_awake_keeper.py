@@ -143,6 +143,37 @@ def test_awake_keeper_bootstrap_imports_all_seed_topics(tmp_path):
     assert any("AGI communication posture" in row["topic"] for row in feed)
 
 
+def test_awake_keeper_imports_extra_local_knowledge(tmp_path):
+    local_root = tmp_path / "Jarosmalen"
+    local_root.mkdir()
+    (local_root / "README.md").write_text("# Jarosmalen\nGraph runner local project knowledge.", encoding="utf-8")
+    memory = InMemoryHippocampusMemory()
+    config = AwakeKeeperConfig(
+        seed_path=Path("AGI Kennis.txt"),
+        interval_min_seconds=0.01,
+        interval_max_seconds=0.02,
+        model="fake:latest",
+        ollama_base_url="http://fake",
+        self_model_path=tmp_path / "self_model.json",
+        extra_knowledge_paths=(local_root,),
+        extra_knowledge_max_files=5,
+    )
+    keeper = AwakeKeeper(
+        config=config,
+        oscillator=HertzOscillator(spike_probability=0.0),
+        memory_factory=lambda: memory,
+        browser_factory=FakeBrowser,
+        ollama=FakeOllama(),
+    )
+    keeper._bootstrap_local_knowledge(memory)
+    status = keeper.status()
+    feed = keeper.knowledge_feed()
+    assert memory.count() == 1
+    assert status.local_records_imported == 1
+    assert feed[0]["action"] == "local_knowledge_bootstrap"
+    assert "README.md" in feed[0]["topic"]
+
+
 def test_ollama_bridge_uses_http_api_and_available_models():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):

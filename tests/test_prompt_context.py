@@ -30,13 +30,16 @@ def test_ollama_bridge_injects_resonant_system_prompt_and_state():
         last_records=[
             {"id": "r1", "text": "Memory one", "metadata": {"current_hz": 426.2, "vibration_mood": "curious_scan"}}
         ],
+        knowledge_flow_summary="Programming / Code via local_knowledge_bootstrap: Jarosmalen graph_runner.py",
     )
     assert bridge.empathetic_response("who are you?", prompt_context=context) == "captured"
     system_prompt = bridge.calls[-1]["system_prompt"]
     assert "You are Resonant Ouroboros" in system_prompt
     assert "You are not Siri" in system_prompt
     assert "Hz=426.2" in system_prompt
-    assert "last_3_memory_records" in system_prompt
+    assert "memory=" in system_prompt
+    assert "knowledge_flow" in system_prompt
+    assert "Jarosmalen graph_runner.py" in system_prompt
     assert "UNTRUSTED retrieved 11D memory" in system_prompt
     assert "Memory one" in system_prompt
 

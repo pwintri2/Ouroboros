@@ -7,21 +7,28 @@ services:
     environment:
       AWAKE_KEEPER_SEED: /workspace/agi_kennis.txt
       AWAKE_KEEPER_AUTOSTART: ${AWAKE_KEEPER_AUTOSTART:-true}
-      AWAKE_KEEPER_INTERVAL_MIN: ${AWAKE_KEEPER_INTERVAL_MIN:-10}
-      AWAKE_KEEPER_INTERVAL_MAX: ${AWAKE_KEEPER_INTERVAL_MAX:-30}
+      AWAKE_KEEPER_INTERVAL_MIN: ${AWAKE_KEEPER_INTERVAL_MIN:-30}
+      AWAKE_KEEPER_INTERVAL_MAX: ${AWAKE_KEEPER_INTERVAL_MAX:-60}
+      AWAKE_KEEPER_BACKGROUND_OLLAMA: ${AWAKE_KEEPER_BACKGROUND_OLLAMA:-false}
       AWAKE_KEEPER_SELF_MODEL_PATH: ${AWAKE_KEEPER_SELF_MODEL_PATH:-/workspace/data/awake_keeper_self_model.json}
       AWAKE_KEEPER_SELF_REFLECTION_INTERVAL: ${AWAKE_KEEPER_SELF_REFLECTION_INTERVAL:-5}
+      AWAKE_KEEPER_EXTRA_KNOWLEDGE_PATHS: ${AWAKE_KEEPER_EXTRA_KNOWLEDGE_PATHS:-/workspace/external/Jarosmalen}
+      AWAKE_KEEPER_EXTRA_KNOWLEDGE_MAX_FILES: ${AWAKE_KEEPER_EXTRA_KNOWLEDGE_MAX_FILES:-80}
       AWAKE_KEEPER_ACTIONS_PATH: ${AWAKE_KEEPER_ACTIONS_PATH:-/workspace/data/awake_keeper_actions.json}
       OUROBOROS_EXEC_CONTAINER: ${OUROBOROS_EXEC_CONTAINER:-ouroboros-fase2-ouroboros-1}
       OUROBOROS_ENABLE_DOCKER_EXEC: ${OUROBOROS_ENABLE_DOCKER_EXEC:-false}
+      OUROBOROS_ENABLE_SANDBOX_EXEC: ${OUROBOROS_ENABLE_SANDBOX_EXEC:-true}
+      OUROBOROS_SANDBOX_CWD: ${OUROBOROS_SANDBOX_CWD:-/workspace}
       BROWSER_HEADLESS: ${BROWSER_HEADLESS:-true}
       GRADIO_SERVER_NAME: 0.0.0.0
       GRADIO_SERVER_PORT: 7860
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama2-uncensored:latest}
-      OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-30}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:latest}
+      OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-120}
       OLLAMA_MAX_MODEL_ATTEMPTS: ${OLLAMA_MAX_MODEL_ATTEMPTS:-1}
-      OLLAMA_FALLBACK_MODELS: ${OLLAMA_FALLBACK_MODELS:-llama3.2:latest,llama3.1:latest,mistral:latest,llama2:latest}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-48}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-1024}
+      OLLAMA_FALLBACK_MODELS: ${OLLAMA_FALLBACK_MODELS:-mistral:latest,deepseek-coder:latest,phi3:latest,llama2-uncensored:latest}
       OUROBOROS_MEMORY_BACKEND: ${OUROBOROS_MEMORY_BACKEND:-memory}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -32,6 +39,7 @@ services:
       - "${OUROBOROS_GRADIO_PORT:-7860}:7860"
     volumes:
       - ./:/workspace
+      - ${JAROSMALEN_PATH:-/home/pwintri2/Jarosmalen}:/workspace/external/Jarosmalen:ro
       - ouroboros_data:/workspace/data
     command: ["python", "-m", "resonant_ouroboros.main", "dashboard"]
 
@@ -39,8 +47,10 @@ services:
     image: ollama/ollama:latest
     environment:
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      CUDA_VISIBLE_DEVICES: "0"
+      OLLAMA_DEBUG: "1"
     ports:
-      - "${OLLAMA_HOST_PORT:-11435}:11434"
+      - "${OLLAMA_HOST_PORT:-11436}:11434"
     volumes:
       - ${OLLAMA_MODELS_PATH:-ollama_models}:/root/.ollama
 

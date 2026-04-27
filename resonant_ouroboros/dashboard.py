@@ -15,6 +15,9 @@ from .oscillator import HertzOscillator
 from .safe_executor import SafeActionExecutor
 
 
+_DASHBOARD_MEMORY_SINGLETON: InMemoryHippocampusMemory | None = None
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -104,6 +107,7 @@ class DashboardRuntime:
             "ollama_model": status.ollama_model,
             "model": status.ollama_model,
             "seed_records_imported": status.seed_records_imported,
+            "local_records_imported": status.local_records_imported,
             "learning_queue_size": status.learning_queue_size,
             "queue_size": status.learning_queue_size,
             "self_model": self.keeper.self_model.status_summary(),
@@ -152,6 +156,7 @@ class DashboardRuntime:
             f"next_wake_at: {status['next_wake_at']}",
             f"ollama_model: {status['ollama_model']}",
             f"seed_records_imported: {status['seed_records_imported']}",
+            f"local_records_imported: {status['local_records_imported']}",
             f"learning_queue_size: {status['learning_queue_size']}",
             f"self_model_reflections: {status['self_model']['reflection_count']}",
             f"last_self_reflection: {status['self_model']['last_reflection']}",
@@ -395,6 +400,12 @@ class DashboardRuntime:
 
 
 def _dashboard_memory():
+    global _DASHBOARD_MEMORY_SINGLETON
+    backend = os.getenv("OUROBOROS_MEMORY_BACKEND", "").strip().lower()
+    if backend in {"memory", "inmemory", "in-memory"}:
+        if _DASHBOARD_MEMORY_SINGLETON is None:
+            _DASHBOARD_MEMORY_SINGLETON = InMemoryHippocampusMemory()
+        return _DASHBOARD_MEMORY_SINGLETON
     try:
         return create_memory_from_env(fallback_in_memory=True)
     except Exception:
@@ -583,7 +594,7 @@ def create_dashboard(
         status_box = gr.Textbox(label="Background loop status", lines=12, interactive=False)
         hz_table = gr.Dataframe(headers=["seconds_ago", "hz"], label="Hz history", interactive=False)
         knowledge_table = gr.Dataframe(
-            headers=["time", "kind", "topic", "title", "source", "record_id", "hz", "mood", "fidelity", "summary"],
+            headers=["time", "kind", "topic", "title", "source", "record_id", "action", "hz", "mood", "fidelity", "summary"],
             label="Knowledge Incorporation",
             interactive=False,
             wrap=True,
