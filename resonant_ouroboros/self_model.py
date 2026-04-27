@@ -78,6 +78,7 @@ def _base_model() -> dict[str, Any]:
             "chat_turns_seen": 0,
             "control_events_seen": 0,
             "safe_actions_seen": 0,
+            "co_evolution_events_seen": 0,
             "periodic_reflections_seen": 0,
         },
         "learning": {
@@ -299,6 +300,7 @@ class SelfModelStore:
             "chat": "chat_turns_seen",
             "control": "control_events_seen",
             "safe_action": "safe_actions_seen",
+            "co_evolution": "co_evolution_events_seen",
             "periodic_self_reflection": "periodic_reflections_seen",
         }
         key = mapping.get(event_type)

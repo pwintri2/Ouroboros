@@ -15,6 +15,7 @@ services:
       AWAKE_KEEPER_EXTRA_KNOWLEDGE_PATHS: ${AWAKE_KEEPER_EXTRA_KNOWLEDGE_PATHS:-/workspace/external/Jarosmalen}
       AWAKE_KEEPER_EXTRA_KNOWLEDGE_MAX_FILES: ${AWAKE_KEEPER_EXTRA_KNOWLEDGE_MAX_FILES:-80}
       AWAKE_KEEPER_ACTIONS_PATH: ${AWAKE_KEEPER_ACTIONS_PATH:-/workspace/data/awake_keeper_actions.json}
+      AWAKE_KEEPER_EVOLUTION_EVENTS_PATH: ${AWAKE_KEEPER_EVOLUTION_EVENTS_PATH:-/workspace/data/awake_keeper_evolution_events.jsonl}
       OUROBOROS_EXEC_CONTAINER: ${OUROBOROS_EXEC_CONTAINER:-ouroboros-fase2-ouroboros-1}
       OUROBOROS_ENABLE_DOCKER_EXEC: ${OUROBOROS_ENABLE_DOCKER_EXEC:-false}
       OUROBOROS_ENABLE_SANDBOX_EXEC: ${OUROBOROS_ENABLE_SANDBOX_EXEC:-true}
@@ -29,14 +30,16 @@ services:
       OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-48}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-1024}
       OLLAMA_FALLBACK_MODELS: ${OLLAMA_FALLBACK_MODELS:-mistral:latest,deepseek-coder:latest,phi3:latest,llama2-uncensored:latest}
-      OUROBOROS_MEMORY_BACKEND: ${OUROBOROS_MEMORY_BACKEND:-memory}
+      OUROBOROS_MEMORY_BACKEND: ${OUROBOROS_MEMORY_BACKEND:-chroma}
+      CHROMA_PERSIST_DIR: ${CHROMA_PERSIST_DIR:-/workspace/data/chromadb}
+      CHROMA_COLLECTION: ${CHROMA_COLLECTION:-ouroboros_11d}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       ollama:
         condition: service_started
     ports:
-      - "${OUROBOROS_GRADIO_PORT:-7860}:7860"
+      - "${OUROBOROS_GRADIO_PORT:-7861}:7860"
     volumes:
       - ./:/workspace
       - ${JAROSMALEN_PATH:-/home/pwintri2/Jarosmalen}:/workspace/external/Jarosmalen:ro

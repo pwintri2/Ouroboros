@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from .awake_keeper import AwakeKeeper, AwakeKeeperConfig, run_coroutine_sync
-from .memory import InMemoryHippocampusMemory, create_memory_from_env
+from .memory import HippocampusMemory, InMemoryHippocampusMemory, create_memory_from_env
 from .oscillator import HertzOscillator
 from .safe_executor import SafeActionExecutor
 
 
-_DASHBOARD_MEMORY_SINGLETON: InMemoryHippocampusMemory | None = None
+_DASHBOARD_MEMORY_SINGLETON: HippocampusMemory | None = None
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -112,6 +112,15 @@ class DashboardRuntime:
             "queue_size": status.learning_queue_size,
             "self_model": self.keeper.self_model.status_summary(),
             "actions": self.safe_executor.summary(),
+            "sandbox": self.safe_executor.summary(),
+            "co_evolution": {
+                "score": status.co_evolution_score,
+                "events": status.co_evolution_events,
+                "last_event": status.last_co_evolution_event,
+                "last_summary": status.last_co_evolution_summary,
+                "summary": self.keeper.evolution_store.summary(limit=5),
+                "suggested_learning_actions": status.suggested_learning_actions,
+            },
             "history": self.history.rows(),
             "knowledge_feed": knowledge_feed,
             "screenshot": str(self.screenshot_path) if self.screenshot_path.exists() else None,
@@ -123,9 +132,10 @@ class DashboardRuntime:
                 "model": status.ollama_model,
             },
             "memory": {
-                "records": len(knowledge_feed),
+                "records": self._memory_count_fallback(len(knowledge_feed)),
                 "last_record_id": status.last_record_id,
                 "last_source": status.last_source_url,
+                "backend": self._memory_info(),
             },
             "api": {
                 "status": "/status",
@@ -134,6 +144,7 @@ class DashboardRuntime:
                 "memory": "/memory",
                 "self_model": "/self-model",
                 "actions": "/actions",
+                "evolution": "/evolution",
             },
         }
 
@@ -161,6 +172,9 @@ class DashboardRuntime:
             f"self_model_reflections: {status['self_model']['reflection_count']}",
             f"last_self_reflection: {status['self_model']['last_reflection']}",
             f"pending_actions: {status['actions']['pending_count']}",
+            f"co_evolution_score: {status['co_evolution']['score']}",
+            f"co_evolution_events: {status['co_evolution']['events']}",
+            f"sandbox_exec_enabled: {status['actions']['sandbox_exec_enabled']}",
         ]
         return "\n".join(rows)
 
@@ -241,6 +255,8 @@ class DashboardRuntime:
                 }
             ]
             + self._proposed_actions(clean_message, answer, message_id),
+            "suggested_learning_actions": self.keeper.status().suggested_learning_actions
+            or self.keeper._suggested_learning_actions(clean_message),
             "hz": status["current_hz"],
             "mood": status["vibration_mood"],
             "safe_mode": status["safe_mode"],
@@ -276,10 +292,22 @@ class DashboardRuntime:
             "safe_mode": True,
             "query": query,
             "count": count,
+            "backend": self._memory_info(),
             "rows": rows,
             "records": rows,
             "knowledge_feed": self.keeper.knowledge_feed()[:bounded_limit],
             "error": error,
+        }
+
+    def evolution_payload(self, limit: int = 20, event_type: str | None = None) -> dict[str, Any]:
+        rows = self.keeper.evolution_store.list_events(limit=limit, event_type=event_type)
+        return {
+            "ok": True,
+            "safe_mode": True,
+            "count": self.keeper.evolution_store.count(),
+            "score": self.keeper.evolution_store.score(),
+            "events": rows,
+            "summary": self.keeper.evolution_store.summary(limit=5),
         }
 
     def self_model_payload(self) -> dict[str, Any]:
@@ -398,18 +426,35 @@ class DashboardRuntime:
             return ["python3", "--version"]
         return None
 
+    def _memory_info(self) -> dict[str, Any]:
+        try:
+            memory = self.keeper.memory_factory()
+            info = getattr(memory, "info", None)
+            if callable(info):
+                return info()
+            return {
+                "backend": getattr(memory, "backend_name", type(memory).__name__),
+                "records": memory.count(),
+            }
+        except Exception as exc:
+            return {"backend": "unavailable", "error": str(exc)}
+
+    def _memory_count_fallback(self, fallback: int) -> int:
+        try:
+            return int(self.keeper.memory_factory().count())
+        except Exception:
+            return fallback
+
 
 def _dashboard_memory():
     global _DASHBOARD_MEMORY_SINGLETON
-    backend = os.getenv("OUROBOROS_MEMORY_BACKEND", "").strip().lower()
-    if backend in {"memory", "inmemory", "in-memory"}:
-        if _DASHBOARD_MEMORY_SINGLETON is None:
-            _DASHBOARD_MEMORY_SINGLETON = InMemoryHippocampusMemory()
+    if _DASHBOARD_MEMORY_SINGLETON is not None:
         return _DASHBOARD_MEMORY_SINGLETON
     try:
-        return create_memory_from_env(fallback_in_memory=True)
+        _DASHBOARD_MEMORY_SINGLETON = create_memory_from_env(fallback_in_memory=True)
     except Exception:
-        return InMemoryHippocampusMemory()
+        _DASHBOARD_MEMORY_SINGLETON = InMemoryHippocampusMemory()
+    return _DASHBOARD_MEMORY_SINGLETON
 
 
 def create_dashboard_runtime(
@@ -442,7 +487,7 @@ def create_api_app(runtime: DashboardRuntime | None = None, demo: Any | None = N
     app = FastAPI(
         title="Resonant Ouroboros Awake Keeper API",
         description="Docker-local REST bridge for the Goose-like standalone UI.",
-        version="3.0",
+        version="4.0",
     )
 
     @app.get("/health")
@@ -485,6 +530,13 @@ def create_api_app(runtime: DashboardRuntime | None = None, demo: Any | None = N
         limit: int = Query(default=12, ge=1, le=50),
     ):
         return runtime.memory_payload(query=query, limit=limit)
+
+    @app.get("/evolution")
+    def evolution(
+        limit: int = Query(default=20, ge=1, le=100),
+        event_type: str | None = Query(default=None),
+    ):
+        return runtime.evolution_payload(limit=limit, event_type=event_type)
 
     @app.get("/actions")
     def actions(

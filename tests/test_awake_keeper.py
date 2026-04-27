@@ -74,6 +74,7 @@ def test_awake_keeper_run_once_updates_status_and_memory(tmp_path):
         model="fake:latest",
         ollama_base_url="http://fake",
         self_model_path=tmp_path / "self_model.json",
+        evolution_events_path=tmp_path / "evolution.jsonl",
     )
     keeper = AwakeKeeper(
         config=config,
@@ -100,6 +101,7 @@ def test_awake_keeper_run_once_updates_status_and_memory(tmp_path):
 
 
 def test_awake_keeper_chat_uses_code_help_for_programming_question(tmp_path):
+    memory = InMemoryHippocampusMemory()
     config = AwakeKeeperConfig(
         seed_path=Path("AGI Kennis.txt"),
         interval_min_seconds=0.01,
@@ -108,10 +110,20 @@ def test_awake_keeper_chat_uses_code_help_for_programming_question(tmp_path):
         ollama_base_url="http://fake",
         chat_browser_enabled=False,
         self_model_path=tmp_path / "self_model.json",
+        evolution_events_path=tmp_path / "evolution.jsonl",
     )
-    keeper = AwakeKeeper(config=config, browser_factory=FakeBrowser, ollama=FakeOllama())
+    keeper = AwakeKeeper(
+        config=config,
+        memory_factory=lambda: memory,
+        browser_factory=FakeBrowser,
+        ollama=FakeOllama(),
+    )
     answer = asyncio.run(keeper.answer_question("Python code bug"))
     assert answer.startswith("code:")
+    assert memory.count() == 1
+    assert keeper.evolution_store.list_events(limit=1)[0]["type"] == "chat"
+    assert keeper.status().co_evolution_score > 0
+    assert keeper.status().suggested_learning_actions
 
 
 def test_awake_keeper_bootstrap_imports_all_seed_topics(tmp_path):
@@ -123,6 +135,7 @@ def test_awake_keeper_bootstrap_imports_all_seed_topics(tmp_path):
         model="fake:latest",
         ollama_base_url="http://fake",
         self_model_path=tmp_path / "self_model.json",
+        evolution_events_path=tmp_path / "evolution.jsonl",
     )
     keeper = AwakeKeeper(
         config=config,
@@ -155,6 +168,7 @@ def test_awake_keeper_imports_extra_local_knowledge(tmp_path):
         model="fake:latest",
         ollama_base_url="http://fake",
         self_model_path=tmp_path / "self_model.json",
+        evolution_events_path=tmp_path / "evolution.jsonl",
         extra_knowledge_paths=(local_root,),
         extra_knowledge_max_files=5,
     )

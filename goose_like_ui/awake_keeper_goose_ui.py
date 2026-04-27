@@ -145,6 +145,8 @@ class GooseLikeApp(ctk.CTk):
             ("Topic", "current_topic"),
             ("Last action", "last_action"),
             ("Model", "ollama_model"),
+            ("Co-evolution", "co_evolution_score"),
+            ("Sandbox", "sandbox_status"),
         ]
         for index, (label, key) in enumerate(status_items):
             ctk.CTkLabel(status_frame, text=label, text_color="#8f98a8", font=ctk.CTkFont(size=12)).grid(
@@ -277,8 +279,23 @@ class GooseLikeApp(ctk.CTk):
                 font=ctk.CTkFont(size=12),
             ).grid(row=3, column=0, padx=14, pady=(0, 10), sticky="w")
 
+        suggestions = payload.get("suggested_learning_actions") or []
+        if suggestions:
+            suggestion_frame = ctk.CTkFrame(frame, fg_color="transparent")
+            suggestion_frame.grid(row=4, column=0, padx=12, pady=(0, 10), sticky="w")
+            for index, suggestion in enumerate(suggestions[:2]):
+                prompt = suggestion.get("label") or "Connect this to 11D memory"
+                ctk.CTkButton(
+                    suggestion_frame,
+                    text=clamp_text(prompt, 32),
+                    width=190,
+                    height=28,
+                    fg_color="#3a404a",
+                    command=lambda text=prompt: self._send_chat(prefix=f"{text}: "),
+                ).grid(row=0, column=index, padx=(0, 8))
+
         actions = ctk.CTkFrame(frame, fg_color="transparent")
-        actions.grid(row=4, column=0, padx=12, pady=(0, 12), sticky="w")
+        actions.grid(row=5, column=0, padx=12, pady=(0, 12), sticky="w")
         ctk.CTkButton(
             actions,
             text="Browse more",
@@ -413,6 +430,8 @@ class GooseLikeApp(ctk.CTk):
             "current_topic": clamp_text(result.data.get("current_topic") or "idle", 80),
             "last_action": clamp_text(result.data.get("last_action") or "none", 80),
             "ollama_model": clamp_text(result.data.get("ollama_model") or "unknown", 80),
+            "co_evolution_score": str((result.data.get("co_evolution") or {}).get("score") or 0),
+            "sandbox_status": clamp_text((result.data.get("sandbox") or {}).get("status_label") or "unknown", 80),
         }
         for key, value in values.items():
             self.status_vars[key].set(value)
@@ -487,8 +506,10 @@ class GooseLikeApp(ctk.CTk):
             )
             self._open_approvals()
         elif status == "executed":
+            result_text = proposal.get("result") or {}
+            feedback = result_text.get("feedback") if isinstance(result_text, dict) else None
             self._append_system_message(
-                f"Safe action executed in Docker: {proposal.get('label') or proposal.get('kind')}"
+                f"Safe action executed: {proposal.get('label') or proposal.get('kind')}. {feedback or ''}"
             )
         else:
             reasons = "; ".join(str(item) for item in proposal.get("safety_reasons") or [])
@@ -634,8 +655,21 @@ class GooseLikeApp(ctk.CTk):
             self.approval_tokens.pop(str(proposal.get("id")), None)
         result_text = proposal.get("result") or {}
         message = result_text.get("message") if isinstance(result_text, dict) else None
+        stdout = result_text.get("stdout_preview") if isinstance(result_text, dict) else None
+        stderr = result_text.get("stderr_preview") if isinstance(result_text, dict) else None
+        feedback = result_text.get("feedback") if isinstance(result_text, dict) else None
+        details = "\n".join(
+            item
+            for item in (
+                feedback,
+                f"stdout: {stdout}" if stdout else "",
+                f"stderr: {stderr}" if stderr else "",
+            )
+            if item
+        )
         self._append_system_message(
             f"Action {proposal.get('status')}: {message or proposal.get('label') or proposal.get('kind')}"
+            + (f"\n{details}" if details else "")
         )
         self.activity_label.configure(text="Action updated", text_color="#87ffd3")
 

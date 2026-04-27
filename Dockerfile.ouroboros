@@ -7,7 +7,9 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/workspace \
     BROWSER_HEADLESS=true \
     OLLAMA_BASE_URL=http://ollama:11434 \
-    OLLAMA_MODEL=llama2-uncensored:latest
+    OLLAMA_MODEL=llama3.2:latest \
+    OUROBOROS_MEMORY_BACKEND=chroma \
+    CHROMA_COLLECTION=ouroboros_11d
 
 COPY requirements.ouroboros.txt /tmp/requirements.ouroboros.txt
 RUN python -m pip install --no-cache-dir --upgrade pip \

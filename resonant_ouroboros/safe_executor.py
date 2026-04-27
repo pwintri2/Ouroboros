@@ -18,7 +18,7 @@ from uuid import uuid4
 from .self_model import compact_text
 
 
-ACTION_SCHEMA_VERSION = "ouroboros_safe_actions_proto_1_1_fase_3"
+ACTION_SCHEMA_VERSION = "ouroboros_safe_actions_proto_1_1_fase_4"
 TERMINAL_STATUSES = {"approved", "blocked", "executed", "failed", "rejected"}
 SAFE_EXEC_COMMANDS = (
     "ls",
@@ -30,6 +30,10 @@ SAFE_EXEC_COMMANDS = (
     "grep",
     "rg",
     "find",
+    "wc",
+    "sort",
+    "uniq",
+    "stat",
     "python",
     "python3",
     "open",
@@ -163,6 +167,8 @@ class SafeActionExecutor:
                 "docker_exec_enabled": self.enable_docker_exec,
                 "sandbox_exec_enabled": self.enable_sandbox_exec,
                 "sandbox_cwd": str(self.sandbox_cwd),
+                "status_label": self._status_label(),
+                "last_action": self._public_action(actions[-1]) if actions else None,
             }
 
     def list_actions(self, *, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
@@ -372,13 +378,21 @@ class SafeActionExecutor:
                         ),
                         "prepared_argv": argv,
                         "prepared_command": self._docker_exec_command(argv),
+                        "feedback": "No command output exists because execution is disabled.",
                     }
                 else:
                     action["result"] = self._run_docker_exec(argv)
                     action["status"] = "executed" if action["result"].get("exit_code") == 0 else "failed"
         except Exception as exc:
             action["status"] = "failed"
-            action["result"] = {"error": str(exc)}
+            action["result"] = {
+                "mode": "executor_error",
+                "error": str(exc),
+                "message": f"Safe executor failed before command output was available: {exc}",
+                "stdout": "",
+                "stderr": str(exc),
+                "feedback": f"Execution failed before launch: {exc}",
+            }
         finally:
             action["updated_at"] = utc_now()
             self._save()
@@ -399,10 +413,14 @@ class SafeActionExecutor:
         return {
             "mode": "sandbox_exec",
             "argv": argv,
+            "command_line": shlex.join(argv),
             "cwd": str(cwd),
             "exit_code": completed.returncode,
             "stdout": compact_text(completed.stdout, 4000),
             "stderr": compact_text(completed.stderr, 4000),
+            "stdout_preview": compact_text(completed.stdout, 700),
+            "stderr_preview": compact_text(completed.stderr, 700),
+            "feedback": self._result_feedback(completed.returncode, completed.stdout, completed.stderr),
         }
 
     def _run_docker_exec(self, argv: list[str]) -> dict[str, Any]:
@@ -417,9 +435,13 @@ class SafeActionExecutor:
         return {
             "mode": "docker_exec",
             "command": docker_command,
+            "command_line": shlex.join(docker_command),
             "exit_code": completed.returncode,
             "stdout": compact_text(completed.stdout, 4000),
             "stderr": compact_text(completed.stderr, 4000),
+            "stdout_preview": compact_text(completed.stdout, 700),
+            "stderr_preview": compact_text(completed.stderr, 700),
+            "feedback": self._result_feedback(completed.returncode, completed.stdout, completed.stderr),
         }
 
     def _docker_exec_command(self, argv: list[str]) -> list[str]:
@@ -504,3 +526,23 @@ class SafeActionExecutor:
 
     def _hash_token(self, token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _status_label(self) -> str:
+        if self.enable_sandbox_exec:
+            return f"Sandbox exec enabled in {self.sandbox_cwd}"
+        if self.enable_docker_exec:
+            return f"Docker exec enabled for {self.container_name}"
+        return "Execution disabled; actions are approved and logged with prepared command feedback."
+
+    def _result_feedback(self, exit_code: int, stdout: str, stderr: str) -> str:
+        if exit_code == 0:
+            if stdout.strip():
+                return "Command completed successfully; stdout is available."
+            if stderr.strip():
+                return "Command completed successfully; stderr contains diagnostic output."
+            return "Command completed successfully with no output."
+        if stderr.strip():
+            return "Command failed; stderr explains the failure."
+        if stdout.strip():
+            return "Command failed; stdout contains the available command output."
+        return "Command failed with no stdout or stderr."

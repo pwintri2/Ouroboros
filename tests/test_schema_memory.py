@@ -50,3 +50,26 @@ def test_in_memory_store_and_search():
     rows = memory.search("linear algebra")
     assert rows
     assert rows[0]["id"] == identifier
+
+
+def test_in_memory_store_upserts_stable_ids():
+    memory = InMemoryHippocampusMemory()
+    record = build_11d_record(
+        physical_structure="local_chat_turn",
+        source_origin="unit",
+        path_or_proprioception="chat",
+        relative_temporal_position="now",
+        persona_actor="tester",
+        intent_marker="chat",
+        user_context_marker="unit",
+        emotional_valence=0.0,
+        importance_score=0.5,
+        karmic_weight=0.5,
+        field_cluster_id="field_upsert",
+        current_hz=426.0,
+        vibration_mood="curious_scan",
+    )
+    memory.store("first", record, record_id="stable")
+    memory.store("second", record, record_id="stable")
+    assert memory.count() == 1
+    assert memory.search("second")[0]["text"] == "second"

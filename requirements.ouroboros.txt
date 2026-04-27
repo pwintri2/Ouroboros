@@ -6,3 +6,4 @@ langgraph>=0.2.0
 playwright>=1.49.0
 pytest>=8.0
 requests>=2.32
+chromadb>=0.5.23

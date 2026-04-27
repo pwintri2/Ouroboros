@@ -45,6 +45,7 @@ def test_safe_executor_safe_command_requires_approval_and_uses_docker_exec_vecto
     approved = executor.approve(result["proposal"]["id"], approval_token=result["approval_token"])
     assert approved["proposal"]["status"] == "approved"
     assert approved["proposal"]["result"]["mode"] == "sandbox_exec_disabled"
+    assert "feedback" in approved["proposal"]["result"]
     assert approved["proposal"]["result"]["prepared_command"][:3] == [
         "true",
         "exec",
@@ -63,6 +64,7 @@ def test_safe_executor_can_execute_in_current_sandbox_when_enabled(tmp_path):
     assert approved["proposal"]["status"] == "executed"
     assert approved["proposal"]["result"]["mode"] == "sandbox_exec"
     assert approved["proposal"]["result"]["exit_code"] == 0
+    assert approved["proposal"]["result"]["feedback"].startswith("Command completed successfully")
     assert str(tmp_path) in approved["proposal"]["result"]["stdout"]
 
 
@@ -104,6 +106,7 @@ def test_safe_executor_blocks_secret_relative_paths_and_python_inline(tmp_path):
 def test_safe_executor_whitelist_is_explicit():
     assert "ls" in SAFE_EXEC_COMMANDS
     assert "cat" in SAFE_EXEC_COMMANDS
+    assert "wc" in SAFE_EXEC_COMMANDS
     assert "python3" in SAFE_EXEC_COMMANDS
     assert "open" in SAFE_EXEC_COMMANDS
     assert "rm" not in SAFE_EXEC_COMMANDS

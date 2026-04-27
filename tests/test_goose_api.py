@@ -72,6 +72,7 @@ def make_client(tmp_path):
         ollama_base_url="http://fake",
         chat_browser_enabled=False,
         self_model_path=tmp_path / "self_model.json",
+        evolution_events_path=tmp_path / "evolution.jsonl",
     )
     keeper = AwakeKeeper(
         config=config,
@@ -98,6 +99,10 @@ def test_status_endpoint_exposes_safe_mode_and_controls_contract(tmp_path):
     assert payload["api"]["control"] == "/control"
     assert payload["api"]["self_model"] == "/self-model"
     assert payload["api"]["actions"] == "/actions"
+    assert payload["api"]["evolution"] == "/evolution"
+    assert "co_evolution" in payload
+    assert payload["memory"]["backend"]["backend"] == "memory"
+    assert payload["sandbox"]["status_label"]
     assert payload["self_model"]["identity"]["name"] == "Resonant Ouroboros"
     assert payload["poll_seconds"] == 1.5
 
@@ -112,6 +117,11 @@ def test_chat_endpoint_returns_answer_with_hz_and_mood(tmp_path):
     assert payload["safe_mode"] is True
     assert payload["hz"] >= 418.0
     assert payload["mood"] in {"deep_read", "curious_scan", "creative_spike"}
+    assert payload["suggested_learning_actions"]
+
+    evolution = client.get("/evolution", params={"limit": 5})
+    assert evolution.status_code == 200
+    assert evolution.json()["events"]
 
 
 def test_control_endpoint_can_force_spike_and_clear_queue(tmp_path):
