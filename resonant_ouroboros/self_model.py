@@ -85,6 +85,15 @@ def _base_model() -> dict[str, Any]:
             "recent_topics": [],
             "knowledge_kinds": {},
         },
+        "autonomy": {
+            "score": 0.0,
+            "level": "seeded",
+            "trend": "quiet",
+            "summary": "Autonomy has not been measured yet.",
+            "signals": {},
+            "penalties": {},
+            "updated_at": now,
+        },
         "recent_reflections": [],
     }
 
@@ -133,6 +142,7 @@ class SelfModelStore:
             reflections = self._model.get("recent_reflections") or []
             identity = self._model.get("identity") or {}
             learning = self._model.get("learning") or {}
+            autonomy = self._model.get("autonomy") or {}
             return {
                 "schema_version": self._model.get("schema_version"),
                 "updated_at": self._model.get("updated_at"),
@@ -145,6 +155,7 @@ class SelfModelStore:
                 "reflection_count": len(reflections),
                 "last_reflection": reflections[-1].get("summary") if reflections else None,
                 "recent_topics": list(learning.get("recent_topics") or [])[:8],
+                "autonomy": deepcopy(autonomy),
             }
 
     def prompt_summary(self, reflection_limit: int = 3) -> str:
@@ -154,6 +165,7 @@ class SelfModelStore:
             reflections = list(model.get("recent_reflections") or [])[-reflection_limit:]
             goals = "; ".join(model.get("current_goals") or [])
             values = "; ".join(model.get("core_values") or [])
+            autonomy = model.get("autonomy") or {}
             reflection_lines = [
                 f"- {item.get('created_at')}: {compact_text(item.get('summary'), 240)}"
                 for item in reflections
@@ -164,6 +176,8 @@ class SelfModelStore:
                 f"Description: {identity.get('description')}.\n"
                 f"Core values: {values}.\n"
                 f"Current goals: {goals}.\n"
+                f"Autonomy: {float(autonomy.get('score') or 0):.1f}% "
+                f"({autonomy.get('level') or 'seeded'}; {compact_text(autonomy.get('summary'), 260)}).\n"
                 f"Recent self-reflections:\n{reflections_text}"
             )
 
@@ -172,6 +186,31 @@ class SelfModelStore:
             lifecycle = self._model.setdefault("lifecycle", {})
             lifecycle["boot_count"] = int(lifecycle.get("boot_count") or 0) + 1
             self._model["updated_at"] = utc_now()
+            self._save()
+
+    def update_autonomy(
+        self,
+        *,
+        score: float,
+        level: str,
+        trend: str,
+        summary: str,
+        signals: dict[str, Any] | None = None,
+        penalties: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            bounded_score = max(0.0, min(100.0, float(score)))
+            self._model["autonomy"] = {
+                "score": round(bounded_score, 1),
+                "level": compact_text(level, 80),
+                "label": compact_text(level.replace("_", " ").title(), 80),
+                "trend": compact_text(trend, 80),
+                "summary": compact_text(summary, 500),
+                "signals": deepcopy(signals or {}),
+                "penalties": deepcopy(penalties or {}),
+                "updated_at": utc_now(),
+            }
+            self._model["updated_at"] = self._model["autonomy"]["updated_at"]
             self._save()
 
     def update_runtime(
@@ -273,14 +312,19 @@ class SelfModelStore:
                 )
             )
         joined = "; ".join(record_summaries) if record_summaries else "no recent 11D records available"
+        clean_topic = compact_text(current_topic or "current context", 140)
+        improvement = (
+            f"Safe improvement proposal: review whether weak 11D links around '{clean_topic}' "
+            "should be strengthened through the existing approval gate."
+        )
         return self.reflect(
             event_type="periodic_self_reflection",
-            summary=f"At iteration {iterations}, I integrated recent 11D traces: {joined}.",
+            summary=f"At iteration {iterations}, I integrated recent 11D traces: {joined}. {improvement}",
             topic=current_topic,
             hz=current_hz,
             mood=mood,
             importance=0.65,
-            metadata={"iteration": iterations},
+            metadata={"iteration": iterations, "suggested_improvement": improvement},
         )
 
     def _remember_topic(self, topic: str) -> None:

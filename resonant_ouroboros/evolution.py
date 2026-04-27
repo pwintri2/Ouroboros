@@ -148,6 +148,151 @@ class EvolutionEventStore:
     def score(self) -> float:
         return float(self.scorecard()["score"])
 
+    def autonomy_scorecard(
+        self,
+        *,
+        runtime_status: dict[str, Any] | None = None,
+        action_summary: dict[str, Any] | None = None,
+        limit: int = 80,
+    ) -> dict[str, Any]:
+        """Return a bounded read model for visible self-sufficiency.
+
+        This is not a permission model. It is a UI metric derived from recent
+        local evidence: memory use, 11D linking, approved review proposals,
+        safe-action health, and whether the loop is currently awake.
+        """
+
+        events = self.list_events(limit=limit)
+        action_summary = action_summary or {}
+        runtime_status = runtime_status or {}
+
+        chat_events = [event for event in events if event.get("type") == "chat"]
+        memory_assisted_chats = [
+            event
+            for event in chat_events
+            if event.get("prompt_context_record_ids")
+        ]
+        knowledge_links = [event for event in events if event.get("type") == "knowledge_link"]
+        approved_proposals = [
+            event
+            for event in events
+            if (event.get("proposal") or "proposal" in str(event.get("type") or ""))
+            and str(event.get("status") or "").lower() in {"approved", "executed"}
+        ]
+        learning_events = [event for event in events if event.get("type") in {"learning", "seed_learning", "local_learning"}]
+        fallback_events = [event for event in events if str(event.get("status") or "").lower() == "fallback"]
+        failed_events = [
+            event
+            for event in events
+            if str(event.get("status") or "").lower() in {"failed", "blocked"}
+        ]
+
+        pending_approvals = int(action_summary.get("pending_count") or 0)
+        pending_proposals = int(action_summary.get("pending_evolution_proposals") or 0)
+        failed_actions = int(action_summary.get("failed_count") or 0)
+        blocked_actions = int(action_summary.get("blocked_count") or 0)
+
+        memory_signal = 0.0
+        if chat_events:
+            memory_signal = min(25.0, 25.0 * (len(memory_assisted_chats) / max(1, len(chat_events))))
+        elif knowledge_links or learning_events:
+            memory_signal = min(25.0, 10.0 + (1.5 * len(knowledge_links)))
+
+        link_signal = min(20.0, len(knowledge_links) * 4.0)
+        reflection_signal = min(15.0, len(approved_proposals) * 5.0)
+
+        terminal_pressure = pending_approvals + pending_proposals + failed_actions + blocked_actions + len(failed_events)
+        safe_action_signal = max(0.0, 20.0 - (terminal_pressure * 2.5))
+        if approved_proposals:
+            safe_action_signal = min(20.0, safe_action_signal + 2.0)
+
+        liveness_signal = 0.0
+        if runtime_status.get("running"):
+            liveness_signal += 10.0
+        if runtime_status.get("current_hz") is not None:
+            liveness_signal += 4.0
+        if runtime_status.get("current_topic"):
+            liveness_signal += 3.0
+        if events:
+            liveness_signal += 3.0
+        liveness_signal = min(20.0, liveness_signal)
+
+        penalties = {
+            "pending_approvals": pending_approvals,
+            "pending_evolution_proposals": pending_proposals,
+            "fallback_events": len(fallback_events),
+            "failed_or_blocked_events": len(failed_events) + failed_actions + blocked_actions,
+            "last_error": bool(runtime_status.get("last_error")),
+        }
+        penalty_score = (
+            len(fallback_events) * 1.5
+            + penalties["failed_or_blocked_events"] * 3.0
+            + pending_approvals * 0.75
+            + (4.0 if runtime_status.get("last_error") else 0.0)
+        )
+
+        signals = {
+            "memory_assisted_answers": round(memory_signal, 1),
+            "knowledge_links": round(link_signal, 1),
+            "reflection_closure": round(reflection_signal, 1),
+            "safe_action_health": round(safe_action_signal, 1),
+            "liveness": round(liveness_signal, 1),
+        }
+        score = max(0.0, min(100.0, sum(signals.values()) - penalty_score))
+
+        if score >= 75:
+            level = "self_sufficient"
+        elif score >= 50:
+            level = "supervised_autonomy"
+        elif score >= 25:
+            level = "memory_assisted"
+        else:
+            level = "seeded"
+
+        recent_delta = float(self.scorecard(limit=limit).get("recent_delta") or 0.0)
+        if penalties["failed_or_blocked_events"] or penalties["last_error"]:
+            trend = "needs_attention"
+        elif recent_delta > 0.2 or len(knowledge_links) >= 2:
+            trend = "warming"
+        elif score > 0:
+            trend = "stable"
+        else:
+            trend = "quiet"
+
+        if pending_proposals:
+            phase = "approval_waiting"
+        elif runtime_status.get("running"):
+            phase = "awake_learning"
+        elif events:
+            phase = "quiet_memory"
+        else:
+            phase = "seed_state"
+
+        summary = (
+            f"{level.replace('_', ' ')} at {score:.1f}%: "
+            f"{len(memory_assisted_chats)} memory-assisted chat(s), "
+            f"{len(knowledge_links)} recent 11D link(s), "
+            f"{len(approved_proposals)} approved proposal(s)."
+        )
+        if pending_proposals:
+            summary += f" {pending_proposals} evolution proposal(s) waiting for review."
+        if penalties["last_error"]:
+            summary += " Last runtime error is still visible."
+
+        return {
+            "score": round(score, 1),
+            "level": level,
+            "label": level.replace("_", " ").title(),
+            "trend": trend,
+            "phase": phase,
+            "signals": signals,
+            "penalties": penalties,
+            "summary": compact_text(summary, 700),
+            "meaning": (
+                "Observational UI metric only; safety and execution still require explicit approval."
+            ),
+        }
+
     def scorecard(self, limit: int = 200) -> dict[str, Any]:
         """Return a bounded, explainable co-evolution score view.
 

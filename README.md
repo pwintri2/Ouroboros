@@ -20,6 +20,16 @@ This repository contains the `awake_keeper` supervisor app for Resonant Ouroboro
 - Seed learning from `AGI Kennis.txt`.
 - Gradio dashboard plus REST API with awake mode controls, status, Hz history, knowledge incorporation feed, screenshot view, live chat, self-model, evolution events, reflection, and action approval endpoints.
 
+## Fase 4.5 Visibility Leap
+
+Fase 4.5 makes the quiet growth visible without loosening safety:
+
+- `/status` now exposes `co_evolution_status`, `ollama_core`, and `autonomy` read models.
+- Both the Gradio dashboard and Goose-like desktop UI show a clear co-evolution state, recent mutual-help moments, and the Autonomy Level / Self-Sufficiency Score.
+- Autonomy Level is observational only. It rises with memory-assisted answers, 11D knowledge links, approved review proposals, safe-action health, and live runtime context. It never bypasses Docker containment or approval gates.
+- Periodic self-reflection now includes one small safe improvement idea. When the dashboard runtime is active, that idea is queued as a review-only `evolution_proposal` through the existing Safe Action Executor and still requires explicit approval.
+- Ollama's chat prompt now receives a live nervous-system block: frequency/Hertz meaning, ChromaDB backend and recent retrieved record IDs, co-evolution status, Autonomy Level, and the approval-gated shell/self-improvement policy.
+
 ## Fase 4 API
 
 - `GET /health`
@@ -55,6 +65,8 @@ Every Awake Keeper Ollama call is wrapped with the Resonant Ouroboros system pro
 Fase 4 defaults to `OUROBOROS_MEMORY_BACKEND=chroma`, `CHROMA_COLLECTION=ouroboros_11d`, and persistent storage under `/workspace/data/chromadb` in Docker. Each stored record uses exactly 11 numeric dimensions from `resonant_ouroboros/schema.py`.
 
 The co-evolution journal is append-only JSONL at `AWAKE_KEEPER_EVOLUTION_EVENTS_PATH` or `/workspace/data/awake_keeper_evolution_events.jsonl`. It records learning, chat, Ollama exchange, safe action, knowledge link, and approved reflection proposal events. `/reflect` creates a pending review action first; only approval commits the proposal into 11D memory and the co-evolution scorecard. `/evolution` exposes both the raw recent events and an explainable scorecard weighted by importance and status.
+
+`/status` and `/evolution` also expose the Fase 4.5 Autonomy Level. This score is bounded from `0` to `100` and is computed from recent local evidence: memory-assisted chat, 11D knowledge links, approved reflection proposals, safe-action health, liveness, fallbacks, and blocked/failed events.
 
 ## Docker Files
 

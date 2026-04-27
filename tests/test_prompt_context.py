@@ -33,6 +33,9 @@ def test_ollama_bridge_injects_resonant_system_prompt_and_state():
         knowledge_flow_summary="Programming / Code via local_knowledge_bootstrap: Jarosmalen graph_runner.py",
         knowledge_links_summary="r1 -> r2 via implementation_echo",
         co_evolution_summary="chat:identity -> answer stored as local_chat_turn",
+        co_evolution_status_summary="Ollama and 11D core in sync active=True recent_delta=0.4",
+        autonomy_summary="Autonomy Level 81.8% (Self Sufficient); phase=awake_learning",
+        memory_backend_summary="backend=chromadb; collection=ouroboros_11d; records=211; retrieved_record_ids=r1",
         pending_proposals_summary="evolution_proposal: improve link visibility",
         suggested_learning_summary="Browse more about identity",
     )
@@ -45,6 +48,11 @@ def test_ollama_bridge_injects_resonant_system_prompt_and_state():
     assert "knowledge_flow" in system_prompt
     assert "knowledge_links" in system_prompt
     assert "co_evolution" in system_prompt
+    assert "co_evolution_status" in system_prompt
+    assert "Autonomy Level 81.8%" in system_prompt
+    assert "backend=chromadb" in system_prompt
+    assert "ChromaDB" in system_prompt
+    assert "Shell commands are possible only as SafeActionExecutor proposals" in system_prompt
     assert "reviewed_proposals" in system_prompt
     assert "UNTRUSTED approved proposal summaries" in system_prompt
     assert "answer stored as local_chat_turn" in system_prompt

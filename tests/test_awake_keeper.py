@@ -125,6 +125,10 @@ def test_awake_keeper_chat_uses_code_help_for_programming_question(tmp_path):
     assert keeper.evolution_store.list_events(limit=1)[0]["type"] == "chat"
     assert keeper.status().co_evolution_score > 0
     assert keeper.status().suggested_learning_actions
+    growth = keeper.growth_indicators()
+    assert "autonomy" in growth
+    assert "co_evolution_status" in growth
+    assert growth["co_evolution_status"]["help_moments"]
 
 
 def test_awake_keeper_bootstrap_imports_all_seed_topics(tmp_path):

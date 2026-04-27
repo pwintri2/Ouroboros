@@ -21,6 +21,14 @@ def test_self_model_persists_identity_runtime_and_reflections(tmp_path):
         mood="curious_scan",
         knowledge_kind="AGI Architecture",
     )
+    store.update_autonomy(
+        score=42.3,
+        level="memory_assisted",
+        trend="warming",
+        summary="Unit autonomy snapshot.",
+        signals={"memory_assisted_answers": 12.0},
+        penalties={"pending_approvals": 0},
+    )
 
     reloaded = SelfModelStore(path, max_reflections=5)
     snapshot = reloaded.snapshot()
@@ -29,6 +37,8 @@ def test_self_model_persists_identity_runtime_and_reflections(tmp_path):
     assert snapshot["recent_reflections"][-1]["id"] == reflection["id"]
     assert reloaded.status_summary()["last_reflection"].startswith("I connected")
     assert "self model unit" in reloaded.status_summary()["recent_topics"]
+    assert reloaded.status_summary()["autonomy"]["score"] == 42.3
+    assert "Autonomy: 42.3%" in reloaded.prompt_summary()
 
 
 def test_periodic_reflection_runs_once_per_iteration(tmp_path):
@@ -52,3 +62,5 @@ def test_periodic_reflection_runs_once_per_iteration(tmp_path):
     assert first is not None
     assert second is None
     assert store.status_summary()["reflection_count"] == 1
+    assert "Safe improvement proposal" in first["summary"]
+    assert "suggested_improvement" in first["metadata"]

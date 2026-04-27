@@ -71,7 +71,7 @@ class FakeBrowser:
         )
 
 
-def make_client(tmp_path):
+def make_client(tmp_path, *, self_reflection_interval: int = 5):
     oscillator = HertzOscillator(spike_probability=0.0)
     memory = InMemoryHippocampusMemory()
     config = AwakeKeeperConfig(
@@ -83,6 +83,7 @@ def make_client(tmp_path):
         model="fake:latest",
         ollama_base_url="http://fake",
         chat_browser_enabled=False,
+        self_reflection_interval=self_reflection_interval,
         self_model_path=tmp_path / "self_model.json",
         evolution_events_path=tmp_path / "evolution.jsonl",
     )
@@ -117,6 +118,10 @@ def test_status_endpoint_exposes_safe_mode_and_controls_contract(tmp_path):
     assert payload["api"]["reflect"] == "/reflect"
     assert "co_evolution" in payload
     assert "scorecard" in payload["co_evolution"]
+    assert "ui_status" in payload["co_evolution"]
+    assert "autonomy" in payload
+    assert "ollama_core" in payload
+    assert payload["autonomy_level"] == payload["autonomy"]["score"]
     assert "events" in payload
     assert "proposals" in payload
     assert "knowledge_links" in payload
@@ -143,8 +148,56 @@ def test_chat_endpoint_returns_answer_with_hz_and_mood(tmp_path):
     evolution_payload = evolution.json()
     assert evolution_payload["events"]
     assert "scorecard" in evolution_payload
+    assert "autonomy" in evolution_payload
+    assert "co_evolution_status" in evolution_payload
     assert "proposals" in evolution_payload
     assert "knowledge_links" in evolution_payload
+
+
+def test_chat_endpoint_surfaces_safe_command_and_self_improvement_actions(tmp_path):
+    client, _memory = make_client(tmp_path)
+    command = client.post("/chat", json={"message": "execute: ls -la /workspace"})
+    assert command.status_code == 200
+    command_actions = command.json()["actions"]
+    safe = [action for action in command_actions if action.get("kind") == "safe_command"]
+    assert safe
+    assert safe[0]["payload"]["argv"] == ["ls", "-la", "/workspace"]
+
+    improve = client.post("/chat", json={"message": "please improve yourself safely"})
+    assert improve.status_code == 200
+    improve_actions = improve.json()["actions"]
+    proposals = [action for action in improve_actions if action.get("kind") == "evolution_proposal"]
+    assert proposals
+    assert proposals[0]["requires_approval"] is True
+    assert "review-only" in proposals[0]["payload"]["proposal"]
+
+
+def test_periodic_reflection_queues_approval_gated_evolution_proposal(tmp_path):
+    client, memory = make_client(tmp_path, self_reflection_interval=1)
+    manual = client.post("/control", json={"command": "manual_paeu_step", "topic": "periodic bridge"})
+    assert manual.status_code == 200
+    assert memory.count() == 1
+
+    pending = client.get("/actions", params={"status": "pending", "limit": 20})
+    assert pending.status_code == 200
+    actions = pending.json()["actions"]
+    periodic = [action for action in actions if action.get("label") == "Periodic Reflection Proposal"]
+    assert periodic
+    assert periodic[0]["approval_token"].startswith("apr_")
+    events_before_approval = client.get("/events", params={"limit": 10}).json()["events"]
+    assert not any(
+        event.get("type") == "safe_action" and event.get("action_ids") == [periodic[0]["id"]]
+        for event in events_before_approval
+    )
+
+    approved = client.post(
+        f"/actions/{periodic[0]['id']}/approve",
+        json={"approval_token": periodic[0]["approval_token"], "approved_by": "unit_test"},
+    )
+    assert approved.status_code == 200
+    approved_payload = approved.json()
+    assert approved_payload["proposal"]["status"] == "executed"
+    assert approved_payload["evolution_commit"]["committed"] is True
 
 
 def test_control_endpoint_can_force_spike_and_clear_queue(tmp_path):

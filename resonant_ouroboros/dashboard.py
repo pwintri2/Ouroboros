@@ -7,12 +7,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import shlex
 from typing import Any
 
 from .awake_keeper import AwakeKeeper, AwakeKeeperConfig, run_coroutine_sync
 from .memory import HippocampusMemory, InMemoryHippocampusMemory, create_memory_from_env
 from .oscillator import HertzOscillator
-from .safe_executor import SafeActionExecutor
+from .safe_executor import SAFE_EXEC_COMMANDS, SafeActionExecutor
 
 
 _DASHBOARD_MEMORY_SINGLETON: HippocampusMemory | None = None
@@ -67,6 +68,11 @@ class DashboardRuntime:
     screenshot_path: Path = Path("/workspace/data/screenshots/current_browser_view.png")
     chat_log: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=80))
     safe_executor: SafeActionExecutor = field(default_factory=SafeActionExecutor.from_env)
+    server_approval_tokens: dict[str, str] = field(default_factory=dict)
+    queued_periodic_reflections: set[str] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        self.keeper.reflection_proposal_callback = self.queue_periodic_reflection_proposal
 
     def _status_with_sample(self) -> tuple[Any, Any]:
         state = self.oscillator.modulation_state()
@@ -84,6 +90,29 @@ class DashboardRuntime:
         recent_links = self.keeper.evolution_store.list_events(limit=5, event_type="knowledge_link")
         recent_proposals = self.keeper.evolution_store.list_proposals(limit=6)
         scorecard = self.keeper.evolution_store.scorecard()
+        growth = self.keeper.growth_indicators(action_summary=action_summary)
+        autonomy = growth["autonomy"]
+        co_status = growth["co_evolution_status"]
+        interaction = getattr(self.keeper.ollama, "last_interaction", None) or {}
+        ollama_core = {
+            "model": status.ollama_model,
+            "reachable": status.last_error is None,
+            "last_task": interaction.get("task"),
+            "success": interaction.get("success"),
+            "fallback": interaction.get("fallback"),
+            "latency_seconds": interaction.get("latency_seconds"),
+            "co_evolution_state": co_status["state"],
+            "co_evolution_label": co_status["label"],
+            "score": scorecard["score"],
+            "recent_delta": scorecard.get("recent_delta", 0),
+            "event_count": self.keeper.evolution_store.count(),
+            "pending_evolution_proposals": int(action_summary.get("pending_evolution_proposals") or 0),
+            "help_moments": co_status["help_moments"],
+            "summary": (
+                f"{co_status['label']}: {co_status['summary']} "
+                f"Autonomy {autonomy['score']:.1f}% ({autonomy['label']})."
+            ),
+        }
         updated_at = datetime.now(timezone.utc).isoformat()
         return {
             "ok": True,
@@ -116,6 +145,11 @@ class DashboardRuntime:
             "learning_queue_size": status.learning_queue_size,
             "queue_size": status.learning_queue_size,
             "self_model": self.keeper.self_model.status_summary(),
+            "autonomy": autonomy,
+            "autonomy_level": autonomy["score"],
+            "self_sufficiency_score": autonomy["score"],
+            "ollama_core": ollama_core,
+            "co_evolution_status": co_status,
             "actions": action_summary,
             "sandbox": action_summary,
             "co_evolution": {
@@ -125,6 +159,10 @@ class DashboardRuntime:
                 "last_summary": status.last_co_evolution_summary,
                 "summary": self.keeper.evolution_store.summary(limit=5),
                 "scorecard": scorecard,
+                "ui_status": co_status,
+                "status": co_status["state"],
+                "active": co_status["active"],
+                "help_moments": co_status["help_moments"],
                 "recent_events": recent_events,
                 "suggested_learning_actions": status.suggested_learning_actions,
             },
@@ -196,11 +234,37 @@ class DashboardRuntime:
             f"pending_actions: {status['actions']['pending_count']}",
             f"co_evolution_score: {status['co_evolution']['score']}",
             f"co_evolution_events: {status['co_evolution']['events']}",
+            f"co_evolution_status: {status['co_evolution']['ui_status']['label']}",
+            f"co_evolution_active: {status['co_evolution']['ui_status']['active']}",
+            f"autonomy_level: {status['autonomy']['score']}%",
+            f"autonomy_label: {status['autonomy']['label']}",
             f"pending_evolution_proposals: {status['proposals']['pending_count']}",
             f"recent_knowledge_links: {status['knowledge_links']['count_recent']}",
             f"sandbox_exec_enabled: {status['actions']['sandbox_exec_enabled']}",
         ]
         return "\n".join(rows)
+
+    def growth_lines(self, payload: dict[str, Any] | None = None) -> str:
+        status = payload or self.status_payload()
+        co_status = status["co_evolution"]["ui_status"]
+        autonomy = status["autonomy"]
+        moments = co_status.get("help_moments") or []
+        moment_rows = [
+            f"- {moment.get('summary')}"
+            for moment in moments[:5]
+        ] or ["- No mutual-help moments yet."]
+        return "\n".join(
+            [
+                f"Co-evolution Status: {co_status['label']} [{co_status['indicator']}]",
+                f"Active collaboration: {co_status['active']}",
+                f"Recent co-evolution delta: {co_status.get('recent_delta', 0)}",
+                f"Autonomy Level: {autonomy['score']}% ({autonomy['label']}, {autonomy['trend']})",
+                f"Self-sufficiency phase: {autonomy['phase']}",
+                f"Meaning: {autonomy['summary']}",
+                "Recent mutual help:",
+                *moment_rows,
+            ]
+        )
 
     def gradio_outputs(self):
         payload = self.status_payload()
@@ -214,6 +278,7 @@ class DashboardRuntime:
             hz_label,
             payload["screenshot"],
             payload["knowledge_feed"],
+            self.growth_lines(payload),
         )
 
     async def control_async(self, command: str, topic: str | None = None) -> dict[str, Any]:
@@ -325,12 +390,17 @@ class DashboardRuntime:
 
     def evolution_payload(self, limit: int = 20, event_type: str | None = None) -> dict[str, Any]:
         rows = self.keeper.evolution_store.list_events(limit=limit, event_type=event_type)
+        action_summary = self.safe_executor.summary()
+        growth = self.keeper.growth_indicators(action_summary=action_summary)
+        scorecard = self.keeper.evolution_store.scorecard()
         return {
             "ok": True,
             "safe_mode": True,
             "count": self.keeper.evolution_store.count(),
-            "score": self.keeper.evolution_store.score(),
-            "scorecard": self.keeper.evolution_store.scorecard(),
+            "score": scorecard["score"],
+            "scorecard": scorecard,
+            "autonomy": growth["autonomy"],
+            "co_evolution_status": growth["co_evolution_status"],
             "events": rows,
             "proposals": self.keeper.evolution_store.list_proposals(limit=min(limit, 20)),
             "knowledge_links": self.keeper.evolution_store.list_events(
@@ -379,7 +449,7 @@ class DashboardRuntime:
         return {
             "ok": True,
             "safe_mode": True,
-            "actions": self.safe_executor.list_actions(status=status, limit=limit),
+            "actions": self._actions_with_tokens(self.safe_executor.list_actions(status=status, limit=limit)),
             "summary": self.safe_executor.summary(),
         }
 
@@ -418,6 +488,7 @@ class DashboardRuntime:
             commit = self.keeper.commit_reflection_proposal_action(result["proposal"])
             if commit:
                 result["evolution_commit"] = commit
+            self.server_approval_tokens.pop(str(result["proposal"].get("id") or ""), None)
         self.keeper.record_safe_action(result["proposal"])
         result["safe_mode"] = True
         result["summary"] = self.safe_executor.summary()
@@ -436,6 +507,7 @@ class DashboardRuntime:
                     commit = self.keeper.commit_reflection_proposal_action(proposal)
                     if commit:
                         item["evolution_commit"] = commit
+                    self.server_approval_tokens.pop(str(proposal.get("id") or ""), None)
                 self.keeper.record_safe_action(proposal)
         result["safe_mode"] = True
         result["status"] = self.status_payload()
@@ -449,6 +521,7 @@ class DashboardRuntime:
         for item in result.get("results") or []:
             proposal = item.get("proposal")
             if proposal:
+                self.server_approval_tokens.pop(str(proposal.get("id") or ""), None)
                 self.keeper.record_safe_action(proposal)
         result["safe_mode"] = True
         result["status"] = self.status_payload()
@@ -456,10 +529,46 @@ class DashboardRuntime:
 
     def reject_action(self, action_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         result = self.safe_executor.reject(action_id, reason=payload.get("reason"))
+        self.server_approval_tokens.pop(str(action_id), None)
         self.keeper.record_safe_action(result["proposal"])
         result["safe_mode"] = True
         result["summary"] = self.safe_executor.summary()
         return result
+
+    def queue_periodic_reflection_proposal(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        reflection_id = str(payload.get("reflection_id") or payload.get("generated_at") or "")
+        if reflection_id and reflection_id in self.queued_periodic_reflections:
+            return None
+        result = self.safe_executor.propose(
+            kind="evolution_proposal",
+            label="Periodic Reflection Proposal",
+            summary=str(payload.get("proposal") or ""),
+            payload=payload,
+            source={"client": "awake_keeper", "phase": "periodic_self_reflection"},
+            auto_execute=False,
+        )
+        self._remember_approval_token(result)
+        proposal = result.get("proposal") or {}
+        if reflection_id:
+            self.queued_periodic_reflections.add(reflection_id)
+        return result
+
+    def _remember_approval_token(self, result: dict[str, Any]) -> None:
+        proposal = result.get("proposal") or {}
+        token = result.get("approval_token")
+        action_id = proposal.get("id")
+        if token and action_id:
+            self.server_approval_tokens[str(action_id)] = str(token)
+
+    def _actions_with_tokens(self, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        for action in actions:
+            row = dict(action)
+            token = self.server_approval_tokens.get(str(row.get("id") or ""))
+            if token and row.get("status") == "pending":
+                row["approval_token"] = token
+            enriched.append(row)
+        return enriched
 
     def _sources_from_feed(self, feed: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sources = []
@@ -486,7 +595,6 @@ class DashboardRuntime:
 
     def _proposed_actions(self, message: str, answer: str, message_id: str) -> list[dict[str, Any]]:
         proposals: list[dict[str, Any]] = []
-        lowered = message.lower()
         if "```" in answer or "def " in answer or "class " in answer:
             proposals.append(
                 {
@@ -501,7 +609,7 @@ class DashboardRuntime:
                     },
                 }
             )
-        command = self._safe_command_from_message(lowered)
+        command = self._safe_command_from_message(message)
         if command:
             proposals.append(
                 {
@@ -512,16 +620,98 @@ class DashboardRuntime:
                     "payload": {"argv": command},
                 }
             )
+        improvement = self._self_improvement_payload(message, answer, message_id)
+        if improvement:
+            proposals.append(improvement)
         return proposals
 
-    def _safe_command_from_message(self, lowered: str) -> list[str] | None:
+    def _safe_command_from_message(self, message: str) -> list[str] | None:
+        lowered = message.lower()
         if "list files" in lowered or "show files" in lowered or "run ls" in lowered:
             return ["ls", "-la", "/workspace"]
         if "current directory" in lowered or "run pwd" in lowered:
             return ["pwd"]
         if "python version" in lowered:
             return ["python3", "--version"]
+        command_text = self._extract_requested_command(message)
+        if not command_text:
+            return None
+        try:
+            argv = shlex.split(command_text)
+        except ValueError:
+            return None
+        if not argv:
+            return None
+        executable = Path(argv[0]).name
+        if executable not in SAFE_EXEC_COMMANDS:
+            return None
+        return argv[:12]
+
+    def _extract_requested_command(self, message: str) -> str | None:
+        lowered = message.lower()
+        markers = (
+            "run command:",
+            "run shell:",
+            "shell command:",
+            "execute command:",
+            "execute:",
+            "run:",
+            "please run ",
+            "can you run ",
+            "execute ",
+        )
+        for marker in markers:
+            index = lowered.find(marker)
+            if index < 0:
+                continue
+            command_text = message[index + len(marker) :].strip()
+            command_text = command_text.strip("`'\" ")
+            return command_text.splitlines()[0][:300]
         return None
+
+    def _self_improvement_payload(self, message: str, answer: str, message_id: str) -> dict[str, Any] | None:
+        lowered = message.lower()
+        markers = (
+            "improve yourself",
+            "self improve",
+            "self-improve",
+            "improve your prompt",
+            "improve the system",
+            "fix yourself",
+            "evolve yourself",
+            "change yourself",
+            "update yourself",
+        )
+        if not any(marker in lowered for marker in markers):
+            return None
+        proposal = (
+            f"Observation: the user asked for a self-improvement around '{message[:240]}'. "
+            f"Current answer preview: {answer[:420]} "
+            "Proposal: review the relevant prompt, self-model, knowledge-linking, or helper-function path and make one bounded improvement. "
+            "Safety: review-only SafeActionExecutor proposal; no files change until a separate human-approved coding session. "
+            "Next test: run the focused pytest suite for the touched path."
+        )
+        return {
+            "id": "evolution_proposal",
+            "label": "Approve Evolution Proposal",
+            "kind": "evolution_proposal",
+            "requires_approval": True,
+            "summary": "Review a bounded self-improvement request.",
+            "payload": {
+                "proposal": proposal,
+                "topic": message[:240],
+                "message_id": message_id,
+                "target_files": [
+                    "resonant_ouroboros/prompt_context.py",
+                    "resonant_ouroboros/awake_keeper.py",
+                    "resonant_ouroboros/dashboard.py",
+                    "README.md",
+                ],
+                "allowed_scope": "prompt wording, self-model wording, knowledge linking, or small helper functions",
+                "risk": "medium_review_required",
+                "tests_to_run": ["pytest -q tests"],
+            },
+        }
 
     def _memory_info(self) -> dict[str, Any]:
         try:
@@ -728,36 +918,36 @@ def create_dashboard(
 
     def start_awake():
         response = runtime.control_sync("start")
-        status, rows, label, image, knowledge = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge
+        status, rows, label, image, knowledge, growth = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
 
     def stop_awake():
         response = runtime.control_sync("stop")
-        status, rows, label, image, knowledge = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge
+        status, rows, label, image, knowledge, growth = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
 
     def manual_step():
         response = runtime.control_sync("manual_paeu_step")
-        status, rows, label, image, knowledge = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge
+        status, rows, label, image, knowledge, growth = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
 
     def creative_spike():
         response = runtime.control_sync("creative_spike")
-        status, rows, label, image, knowledge = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge
+        status, rows, label, image, knowledge, growth = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
 
     def clear_queue():
         response = runtime.control_sync("clear_queue")
-        status, rows, label, image, knowledge = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge
+        status, rows, label, image, knowledge, growth = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
 
     def chat(message, chat_history):
         response = runtime.chat_sync(message)
         chat_history = chat_history or []
         chat_history.append({"role": "user", "content": message})
         chat_history.append({"role": "assistant", "content": response["answer"]})
-        status, rows, label, image, knowledge = refresh_status()
-        return "", chat_history, status, rows, label, image, knowledge
+        status, rows, label, image, knowledge, growth = refresh_status()
+        return "", chat_history, status, rows, label, image, knowledge, growth
 
     with gr.Blocks(title="Resonant Ouroboros Awake Keeper") as demo:
         gr.Markdown("# Resonant Ouroboros Awake Keeper")
@@ -769,6 +959,7 @@ def create_dashboard(
             clear_button = gr.Button("Clear Queue")
             refresh_button = gr.Button("Refresh")
         hz_label = gr.Textbox(label="Hertz state", interactive=False)
+        growth_box = gr.Textbox(label="Co-evolution Status + Autonomy Level", lines=9, interactive=False)
         status_box = gr.Textbox(label="Background loop status", lines=12, interactive=False)
         hz_table = gr.Dataframe(headers=["seconds_ago", "hz"], label="Hz history", interactive=False)
         knowledge_table = gr.Dataframe(
@@ -782,7 +973,7 @@ def create_dashboard(
         chat_input = gr.Textbox(label="Ask Awake Keeper")
         chat_button = gr.Button("Send")
 
-        live_outputs = [status_box, hz_table, hz_label, screenshot, knowledge_table]
+        live_outputs = [status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box]
         start_button.click(start_awake, outputs=live_outputs)
         stop_button.click(stop_awake, outputs=live_outputs)
         step_button.click(manual_step, outputs=live_outputs)
@@ -792,12 +983,12 @@ def create_dashboard(
         chat_button.click(
             chat,
             inputs=[chat_input, chatbot],
-            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table],
+            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box],
         )
         chat_input.submit(
             chat,
             inputs=[chat_input, chatbot],
-            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table],
+            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box],
         )
         demo.load(refresh_status, outputs=live_outputs)
         refresh_timer = gr.Timer(value=1 / 3)

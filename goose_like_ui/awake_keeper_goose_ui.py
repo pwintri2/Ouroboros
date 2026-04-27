@@ -146,6 +146,8 @@ class GooseLikeApp(ctk.CTk):
             ("Last action", "last_action"),
             ("Model", "ollama_model"),
             ("Co-evolution", "co_evolution_score"),
+            ("Autonomy", "autonomy_level"),
+            ("Ollama/Core", "ollama_core_status"),
             ("Events", "latest_event"),
             ("Proposals", "pending_proposals"),
             ("Sandbox", "sandbox_status"),
@@ -437,9 +439,18 @@ class GooseLikeApp(ctk.CTk):
             self.activity_label.configure(text="API disconnected", text_color="#ff8f8f")
             self.connection_label.configure(text=f"API: {API_BASE_URL}\n{result.error}")
             return
-        self.activity_label.configure(text=f"Live {datetime.now().strftime('%H:%M:%S')}", text_color="#87ffd3")
         self.current_status = result.data
         self.safe_detail.configure(text=result.data.get("safe_mode_label") or "Docker-local API")
+        co_evolution = result.data.get("co_evolution") or {}
+        co_status = co_evolution.get("ui_status") or result.data.get("co_evolution_status") or {}
+        autonomy = result.data.get("autonomy") or {}
+        ollama_core = result.data.get("ollama_core") or {}
+        status_text = co_status.get("indicator") or "live"
+        status_color = "#87ffd3" if co_status.get("active") else "#8f98a8"
+        self.activity_label.configure(
+            text=f"{status_text} {datetime.now().strftime('%H:%M:%S')}",
+            text_color=status_color,
+        )
         values = {
             "hz": f"{float(result.data.get('current_hz') or 0):.2f}",
             "mood": str(result.data.get("vibration_mood") or "..."),
@@ -447,7 +458,18 @@ class GooseLikeApp(ctk.CTk):
             "current_topic": clamp_text(result.data.get("current_topic") or "idle", 80),
             "last_action": clamp_text(result.data.get("last_action") or "none", 80),
             "ollama_model": clamp_text(result.data.get("ollama_model") or "unknown", 80),
-            "co_evolution_score": str((result.data.get("co_evolution") or {}).get("score") or 0),
+            "co_evolution_score": clamp_text(
+                f"{co_evolution.get('score') or 0} | {co_status.get('label') or co_status.get('state') or 'quiet'}",
+                90,
+            ),
+            "autonomy_level": clamp_text(
+                f"{float(autonomy.get('score') or 0):.1f}% {autonomy.get('label') or ''}",
+                90,
+            ),
+            "ollama_core_status": clamp_text(
+                ollama_core.get("summary") or co_status.get("summary") or "waiting for mutual help",
+                110,
+            ),
             "latest_event": clamp_text((result.data.get("events") or {}).get("latest_event_id") or "none", 80),
             "pending_proposals": str((result.data.get("proposals") or {}).get("pending_count") or 0),
             "sandbox_status": clamp_text((result.data.get("sandbox") or {}).get("status_label") or "unknown", 80),
@@ -642,6 +664,9 @@ class GooseLikeApp(ctk.CTk):
             label = action.get("label") or action.get("kind") or "action"
             reasons = "; ".join(str(reason) for reason in action.get("safety_reasons") or [])
             action_id = str(action.get("id") or "")
+            approval_token = action.get("approval_token")
+            if action_id and approval_token:
+                self.approval_tokens[action_id] = str(approval_token)
             if action_id:
                 selected_vars[action_id] = tk.BooleanVar(value=False)
                 ctk.CTkCheckBox(
@@ -890,10 +915,14 @@ class GooseLikeApp(ctk.CTk):
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
         scorecard = result.data.get("scorecard") or {}
+        autonomy = result.data.get("autonomy") or {}
+        co_status = result.data.get("co_evolution_status") or {}
         header = (
             f"Score: {scorecard.get('score', result.data.get('score'))} / "
             f"Recent delta: {scorecard.get('recent_delta', 0)} / "
-            f"Events: {result.data.get('count')}"
+            f"Events: {result.data.get('count')} / "
+            f"Autonomy: {float(autonomy.get('score') or 0):.1f}% / "
+            f"{co_status.get('label') or 'Quiet'}"
         )
         ctk.CTkLabel(
             window,

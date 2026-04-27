@@ -169,6 +169,12 @@ class SafeActionExecutor:
                 "approved_count": sum(1 for action in actions if action.get("status") == "approved"),
                 "executed_count": sum(1 for action in actions if action.get("status") == "executed"),
                 "failed_count": sum(1 for action in actions if action.get("status") == "failed"),
+                "rejected_count": sum(1 for action in actions if action.get("status") == "rejected"),
+                "review_only_count": sum(
+                    1
+                    for action in actions
+                    if action.get("kind") in {"evolution_proposal", "safe_evolution_proposal", "apply_code_review"}
+                ),
                 "whitelist": list(SAFE_EXEC_COMMANDS),
                 "docker_exec_enabled": self.enable_docker_exec,
                 "sandbox_exec_enabled": self.enable_sandbox_exec,
