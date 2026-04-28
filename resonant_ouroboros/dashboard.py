@@ -13,6 +13,7 @@ from typing import Any
 from .awake_keeper import AwakeKeeper, AwakeKeeperConfig, run_coroutine_sync
 from .memory import HippocampusMemory, InMemoryHippocampusMemory, create_memory_from_env
 from .oscillator import HertzOscillator
+from .quantum_memory import QuantumMemoryBody
 from .safe_executor import SAFE_EXEC_COMMANDS, SafeActionExecutor
 
 
@@ -68,15 +69,24 @@ class DashboardRuntime:
     screenshot_path: Path = Path("/workspace/data/screenshots/current_browser_view.png")
     chat_log: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=80))
     safe_executor: SafeActionExecutor = field(default_factory=SafeActionExecutor.from_env)
+    quantum_body: QuantumMemoryBody = field(default_factory=QuantumMemoryBody.from_env)
     server_approval_tokens: dict[str, str] = field(default_factory=dict)
     queued_periodic_reflections: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.keeper.reflection_proposal_callback = self.queue_periodic_reflection_proposal
+        try:
+            self.keeper.quantum_body = self.quantum_body
+        except Exception:
+            pass
 
     def _status_with_sample(self) -> tuple[Any, Any]:
         state = self.oscillator.modulation_state()
         self.history.add(state.current_hz)
+        try:
+            self.quantum_body.pulse(state.current_hz, mood=state.mood)
+        except Exception:
+            pass
         status = self.keeper.status()
         return status, state
 
@@ -91,9 +101,11 @@ class DashboardRuntime:
         recent_proposals = self.keeper.evolution_store.list_proposals(limit=6)
         scorecard = self.keeper.evolution_store.scorecard()
         growth = self.keeper.growth_indicators(action_summary=action_summary)
-        autonomy = growth["autonomy"]
+        autonomy = dict(growth["autonomy"])
         co_status = growth["co_evolution_status"]
         interaction = getattr(self.keeper.ollama, "last_interaction", None) or {}
+        quantum_body = self.keeper.quantum_memory_status(hz=current_hz, mood=mood)
+        autonomy["last_answer_mode"] = self._last_answer_mode(recent_events, interaction)
         ollama_core = {
             "model": status.ollama_model,
             "reachable": status.last_error is None,
@@ -112,6 +124,27 @@ class DashboardRuntime:
                 f"{co_status['label']}: {co_status['summary']} "
                 f"Autonomy {autonomy['score']:.1f}% ({autonomy['label']})."
             ),
+        }
+        collaboration = {
+            "label": "Ollama <-> Core Collaboration",
+            "state": co_status["state"],
+            "active": co_status["active"],
+            "model": status.ollama_model,
+            "last_task": interaction.get("task"),
+            "last_contribution": interaction.get("response_preview"),
+            "core_recording": status.last_co_evolution_summary,
+            "summary": ollama_core["summary"],
+        }
+        shell_status = {
+            "enabled": bool(action_summary.get("sandbox_exec_enabled") or action_summary.get("docker_exec_enabled")),
+            "mode": "sandbox_exec" if action_summary.get("sandbox_exec_enabled") else "docker_exec" if action_summary.get("docker_exec_enabled") else "approval_log_only",
+            "cwd": action_summary.get("sandbox_cwd"),
+            "whitelist": action_summary.get("whitelist") or [],
+            "last_command_line": action_summary.get("last_command_line"),
+            "last_exit_code": action_summary.get("last_exit_code"),
+            "last_feedback": action_summary.get("last_command_feedback"),
+            "last_stdout_preview": action_summary.get("last_stdout_preview"),
+            "last_stderr_preview": action_summary.get("last_stderr_preview"),
         }
         updated_at = datetime.now(timezone.utc).isoformat()
         return {
@@ -149,9 +182,12 @@ class DashboardRuntime:
             "autonomy_level": autonomy["score"],
             "self_sufficiency_score": autonomy["score"],
             "ollama_core": ollama_core,
+            "ollama_core_collaboration": collaboration,
             "co_evolution_status": co_status,
             "actions": action_summary,
             "sandbox": action_summary,
+            "shell": shell_status,
+            "quantum_memory": quantum_body,
             "co_evolution": {
                 "score": scorecard["score"],
                 "events": self.keeper.evolution_store.count(),
@@ -236,11 +272,17 @@ class DashboardRuntime:
             f"co_evolution_events: {status['co_evolution']['events']}",
             f"co_evolution_status: {status['co_evolution']['ui_status']['label']}",
             f"co_evolution_active: {status['co_evolution']['ui_status']['active']}",
+            f"ollama_core_collaboration: {status['ollama_core_collaboration']['summary']}",
+            f"quantum_memory_body: {status['quantum_memory']['body_label']} allocated={status['quantum_memory']['allocated']} pulses={status['quantum_memory']['pulse_count']} write_head_mb={status['quantum_memory']['write_head_mb']}",
             f"autonomy_level: {status['autonomy']['score']}%",
             f"autonomy_label: {status['autonomy']['label']}",
+            f"autonomy_last_answer_mode: {status['autonomy']['last_answer_mode']['label']}",
             f"pending_evolution_proposals: {status['proposals']['pending_count']}",
             f"recent_knowledge_links: {status['knowledge_links']['count_recent']}",
             f"sandbox_exec_enabled: {status['actions']['sandbox_exec_enabled']}",
+            f"last_shell_feedback: {status['shell']['last_feedback'] or 'none'}",
+            f"last_shell_stdout: {status['shell']['last_stdout_preview'] or ''}",
+            f"last_shell_stderr: {status['shell']['last_stderr_preview'] or ''}",
         ]
         return "\n".join(rows)
 
@@ -248,6 +290,9 @@ class DashboardRuntime:
         status = payload or self.status_payload()
         co_status = status["co_evolution"]["ui_status"]
         autonomy = status["autonomy"]
+        collaboration = status["ollama_core_collaboration"]
+        shell = status["shell"]
+        quantum = status["quantum_memory"]
         moments = co_status.get("help_moments") or []
         moment_rows = [
             f"- {moment.get('summary')}"
@@ -256,11 +301,16 @@ class DashboardRuntime:
         return "\n".join(
             [
                 f"Co-evolution Status: {co_status['label']} [{co_status['indicator']}]",
+                f"Ollama <-> Core Collaboration: {collaboration['summary']}",
+                f"Core recorded: {collaboration.get('core_recording') or 'waiting for next contribution'}",
                 f"Active collaboration: {co_status['active']}",
                 f"Recent co-evolution delta: {co_status.get('recent_delta', 0)}",
                 f"Autonomy Level: {autonomy['score']}% ({autonomy['label']}, {autonomy['trend']})",
+                f"Last answer mode: {autonomy['last_answer_mode']['label']} - {autonomy['last_answer_mode']['summary']}",
                 f"Self-sufficiency phase: {autonomy['phase']}",
                 f"Meaning: {autonomy['summary']}",
+                f"Hands/feet shell: {shell['mode']} in {shell.get('cwd')}; last={shell.get('last_feedback') or 'none'}",
+                f"Quantum memory body: {quantum['body_label']} / band={quantum['frequency_band']} / write_head={quantum['write_head_mb']}MB",
                 "Recent mutual help:",
                 *moment_rows,
             ]
@@ -279,7 +329,113 @@ class DashboardRuntime:
             payload["screenshot"],
             payload["knowledge_feed"],
             self.growth_lines(payload),
+            payload["quantum_memory"]["visualization"],
         )
+
+    def _build_chat_provenance(self, status: dict[str, Any]) -> dict[str, Any]:
+        """Assemble the chat-time provenance trace shown in the UI.
+
+        The trace explains which 11D records the answer was built from, which
+        Hz/mood the body was in, what the quantum body was doing, and whether
+        Ollama was needed or the core answered from memory.
+        """
+
+        events = (status.get("co_evolution") or {}).get("recent_events") or []
+        chat_event: dict[str, Any] | None = next(
+            (event for event in events if event.get("type") == "chat"),
+            None,
+        )
+        prompt_record_ids = [
+            str(item)
+            for item in (chat_event or {}).get("prompt_context_record_ids") or []
+            if str(item).strip()
+        ]
+        record_ids = [
+            str(item)
+            for item in (chat_event or {}).get("record_ids") or []
+            if str(item).strip()
+        ]
+        ollama_core = status.get("ollama_core") or {}
+        autonomy = status.get("autonomy") or {}
+        last_answer_mode = autonomy.get("last_answer_mode") or {}
+        memory_info = (status.get("memory") or {}).get("backend") or {}
+        quantum = status.get("quantum_memory") or {}
+        ollama_used = bool(ollama_core.get("reachable")) and bool(ollama_core.get("last_task"))
+        fallback = bool(last_answer_mode.get("fallback")) or bool(ollama_core.get("fallback"))
+        if last_answer_mode.get("mostly_own_memory"):
+            origin = "11D memory primary, Ollama assist"
+        elif prompt_record_ids:
+            origin = "balanced 11D memory + Ollama"
+        elif ollama_used:
+            origin = "Ollama-led, no records retrieved"
+        else:
+            origin = "core only (no Ollama interaction recorded)"
+        story = (
+            f"Body was at {status.get('current_hz', '?')} Hz / {status.get('vibration_mood', 'unknown')} "
+            f"({quantum.get('frequency_band') or 'baseline_418_432'}), "
+            f"write head {quantum.get('write_head_mb', 0)} MB into the {quantum.get('body_label') or 'quantum body'}. "
+            f"Origin: {origin}. "
+            f"{len(prompt_record_ids)} prompt record(s) retrieved; "
+            f"{len(record_ids)} record(s) stamped this turn."
+        )
+        return {
+            "label": last_answer_mode.get("label") or "Memory + Ollama",
+            "summary": last_answer_mode.get("summary") or story,
+            "story": story,
+            "origin": origin,
+            "ollama_used": ollama_used,
+            "ollama_fallback": fallback,
+            "ollama_model": ollama_core.get("model"),
+            "ollama_latency_seconds": ollama_core.get("latency_seconds"),
+            "memory_backend": memory_info.get("backend"),
+            "memory_collection": memory_info.get("collection"),
+            "memory_records_total": memory_info.get("records"),
+            "prompt_record_ids": prompt_record_ids,
+            "stamped_record_ids": record_ids,
+            "quantum": {
+                "frequency_band": quantum.get("frequency_band"),
+                "frequency_hz": quantum.get("frequency_hz"),
+                "write_head_mb": quantum.get("write_head_mb"),
+                "pulse_count": quantum.get("pulse_count"),
+                "body_label": quantum.get("body_label"),
+            },
+        }
+
+    def _last_answer_mode(self, events: list[dict[str, Any]], interaction: dict[str, Any]) -> dict[str, Any]:
+        chat = next((event for event in events if event.get("type") == "chat"), None)
+        if not chat:
+            return {
+                "label": "No chat answer yet",
+                "summary": "Waiting for a chat turn to measure memory/Ollama balance.",
+                "prompt_record_count": 0,
+                "mostly_own_memory": False,
+            }
+        prompt_records = [item for item in (chat.get("prompt_context_record_ids") or []) if item]
+        status = str(chat.get("status") or "ok").lower()
+        fallback = bool(interaction.get("fallback")) or status == "fallback"
+        if prompt_records and fallback:
+            label = "Mostly 11D memory"
+            mostly = True
+            summary = "Ollama was light/fallback while the core still had retrieved 11D memory context."
+        elif len(prompt_records) >= 2:
+            label = "11D memory-led with Ollama help"
+            mostly = True
+            summary = "The answer used multiple retrieved 11D records and then recorded the exchange."
+        elif prompt_records:
+            label = "Memory-assisted"
+            mostly = False
+            summary = "The answer used one retrieved 11D record plus Ollama reasoning."
+        else:
+            label = "Ollama-led"
+            mostly = False
+            summary = "No retrieved 11D prompt records were visible for the last chat answer."
+        return {
+            "label": label,
+            "summary": summary,
+            "prompt_record_count": len(prompt_records),
+            "mostly_own_memory": mostly,
+            "fallback": fallback,
+        }
 
     async def control_async(self, command: str, topic: str | None = None) -> dict[str, Any]:
         normalized = (command or "").strip().lower().replace("-", "_")
@@ -325,6 +481,7 @@ class DashboardRuntime:
         status = self.status_payload()
         sources = self._sources_from_feed(status["knowledge_feed"])
         message_id = f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}"
+        provenance = self._build_chat_provenance(status)
         response = {
             "ok": True,
             "conversation_id": "local-ui-default",
@@ -335,6 +492,7 @@ class DashboardRuntime:
             "reply": answer,
             "content": answer,
             "sources": sources,
+            "provenance": provenance,
             "actions": [
                 {
                     "id": "browse_more",
@@ -918,36 +1076,36 @@ def create_dashboard(
 
     def start_awake():
         response = runtime.control_sync("start")
-        status, rows, label, image, knowledge, growth = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
+        status, rows, label, image, knowledge, growth, quantum = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth, quantum
 
     def stop_awake():
         response = runtime.control_sync("stop")
-        status, rows, label, image, knowledge, growth = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
+        status, rows, label, image, knowledge, growth, quantum = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth, quantum
 
     def manual_step():
         response = runtime.control_sync("manual_paeu_step")
-        status, rows, label, image, knowledge, growth = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
+        status, rows, label, image, knowledge, growth, quantum = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth, quantum
 
     def creative_spike():
         response = runtime.control_sync("creative_spike")
-        status, rows, label, image, knowledge, growth = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
+        status, rows, label, image, knowledge, growth, quantum = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth, quantum
 
     def clear_queue():
         response = runtime.control_sync("clear_queue")
-        status, rows, label, image, knowledge, growth = refresh_status()
-        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth
+        status, rows, label, image, knowledge, growth, quantum = refresh_status()
+        return f"{response['message']}\n\n{status}", rows, label, image, knowledge, growth, quantum
 
     def chat(message, chat_history):
         response = runtime.chat_sync(message)
         chat_history = chat_history or []
         chat_history.append({"role": "user", "content": message})
         chat_history.append({"role": "assistant", "content": response["answer"]})
-        status, rows, label, image, knowledge, growth = refresh_status()
-        return "", chat_history, status, rows, label, image, knowledge, growth
+        status, rows, label, image, knowledge, growth, quantum = refresh_status()
+        return "", chat_history, status, rows, label, image, knowledge, growth, quantum
 
     with gr.Blocks(title="Resonant Ouroboros Awake Keeper") as demo:
         gr.Markdown("# Resonant Ouroboros Awake Keeper")
@@ -959,9 +1117,14 @@ def create_dashboard(
             clear_button = gr.Button("Clear Queue")
             refresh_button = gr.Button("Refresh")
         hz_label = gr.Textbox(label="Hertz state", interactive=False)
-        growth_box = gr.Textbox(label="Co-evolution Status + Autonomy Level", lines=9, interactive=False)
-        status_box = gr.Textbox(label="Background loop status", lines=12, interactive=False)
+        growth_box = gr.Textbox(label="Ollama <-> Core Collaboration + Autonomy Level", lines=12, interactive=False)
+        status_box = gr.Textbox(label="Background loop status", lines=20, interactive=False)
         hz_table = gr.Dataframe(headers=["seconds_ago", "hz"], label="Hz history", interactive=False)
+        quantum_table = gr.Dataframe(
+            headers=["slot", "amplitude"],
+            label="512MB 11D Quantum Memory - Frequency Movement",
+            interactive=False,
+        )
         knowledge_table = gr.Dataframe(
             headers=["time", "kind", "topic", "title", "source", "record_id", "action", "hz", "mood", "fidelity", "summary"],
             label="Knowledge Incorporation",
@@ -973,7 +1136,7 @@ def create_dashboard(
         chat_input = gr.Textbox(label="Ask Awake Keeper")
         chat_button = gr.Button("Send")
 
-        live_outputs = [status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box]
+        live_outputs = [status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box, quantum_table]
         start_button.click(start_awake, outputs=live_outputs)
         stop_button.click(stop_awake, outputs=live_outputs)
         step_button.click(manual_step, outputs=live_outputs)
@@ -983,12 +1146,12 @@ def create_dashboard(
         chat_button.click(
             chat,
             inputs=[chat_input, chatbot],
-            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box],
+            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box, quantum_table],
         )
         chat_input.submit(
             chat,
             inputs=[chat_input, chatbot],
-            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box],
+            outputs=[chat_input, chatbot, status_box, hz_table, hz_label, screenshot, knowledge_table, growth_box, quantum_table],
         )
         demo.load(refresh_status, outputs=live_outputs)
         refresh_timer = gr.Timer(value=1 / 3)

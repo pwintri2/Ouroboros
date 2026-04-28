@@ -141,6 +141,26 @@ def test_safe_executor_whitelist_is_explicit():
     assert "ls" in SAFE_EXEC_COMMANDS
     assert "cat" in SAFE_EXEC_COMMANDS
     assert "wc" in SAFE_EXEC_COMMANDS
+    assert "date" in SAFE_EXEC_COMMANDS
+    assert "du" in SAFE_EXEC_COMMANDS
+    assert "pytest" in SAFE_EXEC_COMMANDS
     assert "python3" in SAFE_EXEC_COMMANDS
     assert "open" in SAFE_EXEC_COMMANDS
     assert "rm" not in SAFE_EXEC_COMMANDS
+
+
+def test_safe_executor_pytest_is_workspace_bounded(tmp_path):
+    executor = SafeActionExecutor(path=tmp_path / "actions.json")
+    safe = executor.propose(
+        kind="safe_command",
+        payload={"argv": ["pytest", "-q", "tests"]},
+        auto_execute=False,
+    )
+    assert safe["proposal"]["status"] == "pending"
+
+    unsafe = executor.propose(
+        kind="safe_command",
+        payload={"argv": ["pytest", "--basetemp=/tmp/outside", "tests"]},
+        auto_execute=False,
+    )
+    assert unsafe["proposal"]["status"] == "blocked"

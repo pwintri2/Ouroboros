@@ -121,7 +121,13 @@ def test_status_endpoint_exposes_safe_mode_and_controls_contract(tmp_path):
     assert "ui_status" in payload["co_evolution"]
     assert "autonomy" in payload
     assert "ollama_core" in payload
+    assert "ollama_core_collaboration" in payload
+    assert payload["ollama_core_collaboration"]["label"] == "Ollama <-> Core Collaboration"
+    assert "quantum_memory" in payload
+    assert payload["quantum_memory"]["body_label"]
+    assert "shell" in payload
     assert payload["autonomy_level"] == payload["autonomy"]["score"]
+    assert payload["autonomy"]["last_answer_mode"]["label"]
     assert "events" in payload
     assert "proposals" in payload
     assert "knowledge_links" in payload

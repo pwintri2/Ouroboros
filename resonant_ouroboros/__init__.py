@@ -17,4 +17,5 @@ __all__ = [
     "self_model",
     "prompt_context",
     "safe_executor",
+    "quantum_memory",
 ]

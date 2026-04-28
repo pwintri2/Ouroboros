@@ -31,11 +31,14 @@ SAFE_EXEC_COMMANDS = (
     "rg",
     "find",
     "wc",
+    "du",
     "sort",
     "uniq",
     "stat",
+    "date",
     "python",
     "python3",
+    "pytest",
     "open",
 )
 SAFE_MACOS_APPS = ("Safari", "TextEdit", "Preview", "Notes")
@@ -70,6 +73,13 @@ SHELL_METACHARS = {";", "|", "&", ">", "<", "`", "$", "(", ")", "{", "}"}
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _clip_output(value: Any, limit: int = 4000) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)]}..."
 
 
 def default_actions_path() -> Path:
@@ -114,7 +124,8 @@ class SafeActionExecutor:
                 "on",
             }
         if enable_sandbox_exec is None:
-            enable_sandbox_exec = os.getenv("OUROBOROS_ENABLE_SANDBOX_EXEC", "false").strip().lower() in {
+            sandbox_default = "true" if Path("/workspace").exists() else "false"
+            enable_sandbox_exec = os.getenv("OUROBOROS_ENABLE_SANDBOX_EXEC", sandbox_default).strip().lower() in {
                 "1",
                 "true",
                 "yes",
@@ -157,6 +168,8 @@ class SafeActionExecutor:
     def summary(self) -> dict[str, Any]:
         with self._lock:
             actions = list(self._store.get("actions") or [])
+            last_action = self._public_action(actions[-1]) if actions else None
+            last_result = (last_action or {}).get("result") or {}
             return {
                 "pending_count": sum(1 for action in actions if action.get("status") == "pending"),
                 "pending_evolution_proposals": sum(
@@ -180,7 +193,16 @@ class SafeActionExecutor:
                 "sandbox_exec_enabled": self.enable_sandbox_exec,
                 "sandbox_cwd": str(self.sandbox_cwd),
                 "status_label": self._status_label(),
-                "last_action": self._public_action(actions[-1]) if actions else None,
+                "last_action": last_action,
+                "last_command_feedback": last_result.get("feedback") if isinstance(last_result, dict) else None,
+                "last_command_line": (
+                    last_result.get("command_line") or shlex.join(last_result.get("argv") or [])
+                    if isinstance(last_result, dict)
+                    else None
+                ),
+                "last_exit_code": last_result.get("exit_code") if isinstance(last_result, dict) else None,
+                "last_stdout_preview": last_result.get("stdout_preview") if isinstance(last_result, dict) else None,
+                "last_stderr_preview": last_result.get("stderr_preview") if isinstance(last_result, dict) else None,
             }
 
     def list_actions(self, *, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
@@ -209,6 +231,7 @@ class SafeActionExecutor:
             payload = payload or {}
             policy = self.classify(kind=kind, payload=payload)
             now = utc_now()
+            human_message = self._human_message(kind=kind, policy=policy, payload=payload)
             action = {
                 "id": f"act_{now.replace(':', '').replace('-', '')}_{uuid4().hex[:8]}",
                 "kind": compact_text(kind, 80),
@@ -220,12 +243,24 @@ class SafeActionExecutor:
                 "payload": payload,
                 "source": source or {},
                 "safety_reasons": policy.reasons,
+                "human_message": human_message,
                 "created_at": now,
                 "updated_at": now,
                 "approved_at": None,
                 "approved_by": None,
                 "result": None,
             }
+            if policy.classification == "blocked":
+                action["result"] = {
+                    "mode": "blocked",
+                    "message": human_message,
+                    "feedback": human_message,
+                    "stdout": "",
+                    "stderr": "",
+                    "stdout_preview": "",
+                    "stderr_preview": "",
+                    "policy_reasons": list(policy.reasons),
+                }
             approval_token = None
             if policy.classification == "approval_required" and policy.status == "pending":
                 approval_token = f"apr_{uuid4().hex}"
@@ -390,6 +425,8 @@ class SafeActionExecutor:
                 return ActionPolicy("blocked", "high", "blocked", ["Shell metacharacters are not allowed."])
         if executable in {"python", "python3"} and not self._safe_python_args(argv[1:]):
             return ActionPolicy("blocked", "high", "blocked", ["Python is restricted to --version/-V or scripts under /workspace."])
+        if executable == "pytest" and not self._safe_pytest_args(argv[1:]):
+            return ActionPolicy("blocked", "high", "blocked", ["pytest is restricted to /workspace tests and safe read-only options."])
         if executable == "open" and not self._safe_open_args(argv[1:]):
             return ActionPolicy("blocked", "high", "blocked", ["open is restricted to http(s) URLs and safe app names."])
         for token in argv[1:]:
@@ -493,45 +530,77 @@ class SafeActionExecutor:
                 "stderr_preview": f"Sandbox cwd does not exist: {cwd}",
                 "feedback": "Command was not launched because the configured sandbox directory is unavailable.",
             }
-        completed = subprocess.run(
-            argv,
-            cwd=str(cwd),
-            text=True,
-            capture_output=True,
-            timeout=self.timeout_seconds,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=str(cwd),
+                text=True,
+                capture_output=True,
+                timeout=self.timeout_seconds,
+                check=False,
+                env=self._sandbox_env(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+            stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+            return {
+                "mode": "sandbox_exec",
+                "argv": argv,
+                "command_line": shlex.join(argv),
+                "cwd": str(cwd),
+                "exit_code": 124,
+                "stdout": _clip_output(stdout, 4000),
+                "stderr": _clip_output(stderr or f"Command timed out after {self.timeout_seconds:.1f}s", 4000),
+                "stdout_preview": _clip_output(stdout, 700),
+                "stderr_preview": _clip_output(stderr or "Command timed out.", 700),
+                "feedback": "Command timed out; partial stdout/stderr are shown when available.",
+            }
         return {
             "mode": "sandbox_exec",
             "argv": argv,
             "command_line": shlex.join(argv),
             "cwd": str(cwd),
             "exit_code": completed.returncode,
-            "stdout": compact_text(completed.stdout, 4000),
-            "stderr": compact_text(completed.stderr, 4000),
-            "stdout_preview": compact_text(completed.stdout, 700),
-            "stderr_preview": compact_text(completed.stderr, 700),
+            "stdout": _clip_output(completed.stdout, 4000),
+            "stderr": _clip_output(completed.stderr, 4000),
+            "stdout_preview": _clip_output(completed.stdout, 700),
+            "stderr_preview": _clip_output(completed.stderr, 700),
             "feedback": self._result_feedback(completed.returncode, completed.stdout, completed.stderr),
         }
 
     def _run_docker_exec(self, argv: list[str]) -> dict[str, Any]:
         docker_command = self._docker_exec_command(argv)
-        completed = subprocess.run(
-            docker_command,
-            text=True,
-            capture_output=True,
-            timeout=self.timeout_seconds,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                docker_command,
+                text=True,
+                capture_output=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+            stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+            return {
+                "mode": "docker_exec",
+                "command": docker_command,
+                "command_line": shlex.join(docker_command),
+                "exit_code": 124,
+                "stdout": _clip_output(stdout, 4000),
+                "stderr": _clip_output(stderr or f"Command timed out after {self.timeout_seconds:.1f}s", 4000),
+                "stdout_preview": _clip_output(stdout, 700),
+                "stderr_preview": _clip_output(stderr or "Command timed out.", 700),
+                "feedback": "Docker exec command timed out; partial stdout/stderr are shown when available.",
+            }
         return {
             "mode": "docker_exec",
             "command": docker_command,
             "command_line": shlex.join(docker_command),
             "exit_code": completed.returncode,
-            "stdout": compact_text(completed.stdout, 4000),
-            "stderr": compact_text(completed.stderr, 4000),
-            "stdout_preview": compact_text(completed.stdout, 700),
-            "stderr_preview": compact_text(completed.stderr, 700),
+            "stdout": _clip_output(completed.stdout, 4000),
+            "stderr": _clip_output(completed.stderr, 4000),
+            "stdout_preview": _clip_output(completed.stdout, 700),
+            "stderr_preview": _clip_output(completed.stderr, 700),
             "feedback": self._result_feedback(completed.returncode, completed.stdout, completed.stderr),
         }
 
@@ -559,6 +628,23 @@ class SafeActionExecutor:
             return False
         script = args[0]
         return script.endswith(".py") and script.startswith("/workspace/") and self._safe_path(script)
+
+    def _safe_pytest_args(self, args: list[str]) -> bool:
+        blocked_prefixes = ("--basetemp", "--rootdir", "--override-ini", "-c", "-p")
+        for arg in args:
+            if arg.startswith(blocked_prefixes):
+                return False
+            if arg in {"--collect-only", "-q", "-x", "-s", "-vv", "-v"}:
+                continue
+            if arg.startswith("-k") or arg.startswith("--maxfail=") or arg.startswith("--tb="):
+                continue
+            if arg == "tests" or arg.startswith("tests/") or self._looks_like_path(arg):
+                normalized = arg if arg.startswith("/") else f"/workspace/{arg.lstrip('./')}"
+                if not self._safe_path(normalized):
+                    return False
+                continue
+            return False
+        return True
 
     def _safe_open_args(self, args: list[str]) -> bool:
         if not args:
@@ -618,12 +704,109 @@ class SafeActionExecutor:
     def _hash_token(self, token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
+    def _sandbox_env(self) -> dict[str, str]:
+        return {
+            "PATH": os.getenv("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "PYTHONPATH": os.getenv("PYTHONPATH", "/workspace"),
+            "PYTHONUNBUFFERED": "1",
+            "HOME": os.getenv("HOME", "/tmp/wintripai"),
+        }
+
     def _status_label(self) -> str:
         if self.enable_sandbox_exec:
             return f"Sandbox exec enabled in {self.sandbox_cwd}"
         if self.enable_docker_exec:
             return f"Docker exec enabled for {self.container_name}"
         return "Execution disabled; actions are approved and logged with prepared command feedback."
+
+    def _human_message(
+        self,
+        *,
+        kind: str,
+        policy: ActionPolicy,
+        payload: dict[str, Any],
+    ) -> str:
+        """Translate a policy outcome into one short, plain-language sentence.
+
+        The UI surfaces this verbatim under blocked or pending shell actions so
+        the user understands *why* something was blocked or what approval will
+        do, without having to read raw policy reason codes.
+        """
+
+        normalized = (kind or "").strip().lower()
+        argv = self._argv_from_payload(payload) if normalized in {"safe_command"} else []
+        command_text = " ".join(argv[:6]) if argv else ""
+        if policy.classification == "blocked":
+            reason = policy.reasons[0] if policy.reasons else "policy blocked this action"
+            if "not whitelisted" in reason:
+                return (
+                    f"Blocked: '{command_text or kind}' uses a command outside the safe whitelist "
+                    f"({', '.join(SAFE_EXEC_COMMANDS[:6])} ...). "
+                    "Only read-only inspection commands are allowed."
+                )
+            if "Dangerous token" in reason or "Shell metacharacters" in reason:
+                return (
+                    "Blocked: this command would let shell punctuation or a destructive verb "
+                    "(rm, sudo, mv, cp, curl, etc.) reach the sandbox. The executor refuses on principle."
+                )
+            if "Path is outside the safe workspace" in reason:
+                return (
+                    "Blocked: a file path in this command points outside /workspace or at a hidden / "
+                    "credential-looking file. Only paths under /workspace (or /tmp/wintripai/) are allowed."
+                )
+            if "Python is restricted" in reason:
+                return (
+                    "Blocked: python/python3 may only run --version, -V, or a script that lives under "
+                    "/workspace. Inline -c / -m execution is refused."
+                )
+            if "open is restricted" in reason or "Only explicit http(s) URLs" in reason:
+                return (
+                    "Blocked: 'open' may only target an http(s) URL or a whitelisted Mac app "
+                    f"({', '.join(SAFE_MACOS_APPS)}). Anything else is refused."
+                )
+            if "Command payload is empty" in reason:
+                return "Blocked: the proposal had no command to run."
+            if "App is not on the safe app whitelist" in reason:
+                return (
+                    "Blocked: that app is not on the safe whitelist. "
+                    f"Allowed apps: {', '.join(SAFE_MACOS_APPS)}."
+                )
+            if "Unsupported action kind" in reason:
+                return (
+                    f"Blocked: action kind '{compact_text(kind, 40)}' is not recognised by the safe executor. "
+                    "Only the documented kinds (safe_command, evolution_proposal, control, ...) can be approved."
+                )
+            return f"Blocked: {reason}"
+        if policy.classification == "approval_required":
+            if normalized == "safe_command":
+                return (
+                    f"Pending approval: '{command_text}' is whitelisted and path-bounded but will only run "
+                    "after you approve it. It will execute inside the /workspace sandbox."
+                )
+            if normalized in {"evolution_proposal", "safe_evolution_proposal"}:
+                return (
+                    "Pending approval: this is a review-only evolution proposal. Approving it just records "
+                    "the intent in the co-evolution journal - no files change."
+                )
+            if normalized == "apply_code_review":
+                return (
+                    "Pending approval: approving will store the answer's code under audit; nothing is written "
+                    "to your filesystem."
+                )
+            if normalized == "open_url":
+                return (
+                    f"Pending approval: 'open {compact_text(payload.get('url'), 80) or '...'}' will be handed to "
+                    "the sandbox executor only after you approve it."
+                )
+            if normalized == "open_app":
+                return (
+                    f"Pending approval: 'open -a {compact_text(payload.get('app'), 40) or '...'}' will be handed "
+                    "to the sandbox executor only after you approve it."
+                )
+            return "Pending approval: action is whitelisted but waits for your one-time approval."
+        if policy.classification == "auto_safe":
+            return "Auto-safe: a bounded Awake Keeper control command - no shell, no files, no outbound traffic."
+        return "Action recorded by the safe executor."
 
     def _result_feedback(self, exit_code: int, stdout: str, stderr: str) -> str:
         if exit_code == 0:

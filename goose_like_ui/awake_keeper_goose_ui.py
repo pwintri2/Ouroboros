@@ -148,6 +148,9 @@ class GooseLikeApp(ctk.CTk):
             ("Co-evolution", "co_evolution_score"),
             ("Autonomy", "autonomy_level"),
             ("Ollama/Core", "ollama_core_status"),
+            ("Quantum Body", "quantum_body"),
+            ("Frequency Flow", "frequency_flow"),
+            ("Shell Output", "shell_feedback"),
             ("Events", "latest_event"),
             ("Proposals", "pending_proposals"),
             ("Sandbox", "sandbox_status"),
@@ -200,7 +203,7 @@ class GooseLikeApp(ctk.CTk):
 
         main = ctk.CTkFrame(self, fg_color="#101113", corner_radius=0)
         main.grid(row=0, column=1, sticky="nsew")
-        main.grid_rowconfigure(1, weight=1)
+        main.grid_rowconfigure(3, weight=1)
         main.grid_columnconfigure(0, weight=1)
 
         header = ctk.CTkFrame(main, fg_color="#101113", corner_radius=0)
@@ -220,13 +223,16 @@ class GooseLikeApp(ctk.CTk):
         )
         self.activity_label.grid(row=0, column=1, sticky="e")
 
+        self._build_quantum_body_panel(main)
+        self._build_sandbox_activity_panel(main)
+
         self.chat_scroll = ctk.CTkScrollableFrame(main, fg_color="#15171b", corner_radius=8)
-        self.chat_scroll.grid(row=1, column=0, padx=22, pady=(0, 12), sticky="nsew")
+        self.chat_scroll.grid(row=3, column=0, padx=22, pady=(0, 12), sticky="nsew")
         self.chat_scroll.grid_columnconfigure(0, weight=1)
         self.chat_row = 0
 
         bottom = ctk.CTkFrame(main, fg_color="#101113", corner_radius=0)
-        bottom.grid(row=2, column=0, padx=22, pady=(0, 18), sticky="ew")
+        bottom.grid(row=4, column=0, padx=22, pady=(0, 18), sticky="ew")
         bottom.grid_columnconfigure(0, weight=1)
         self.input_box = ctk.CTkTextbox(bottom, height=72, fg_color="#202329", border_width=1, border_color="#303641")
         self.input_box.grid(row=0, column=0, sticky="ew", padx=(0, 10))
@@ -240,6 +246,195 @@ class GooseLikeApp(ctk.CTk):
             fg_color="#2d7ff9",
             command=self._send_chat,
         ).grid(row=0, column=1, sticky="sew")
+
+    def _build_quantum_body_panel(self, parent: ctk.CTkFrame) -> None:
+        """Live strip showing the 11D 512MB quantum body and the frequency cursor."""
+
+        body = ctk.CTkFrame(parent, fg_color="#15171b", corner_radius=8)
+        body.grid(row=1, column=0, padx=22, pady=(0, 10), sticky="ew")
+        body.grid_columnconfigure(0, weight=1)
+        header_row = ctk.CTkFrame(body, fg_color="transparent")
+        header_row.grid(row=0, column=0, padx=14, pady=(10, 4), sticky="ew")
+        header_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header_row,
+            text="11D Quantum Body",
+            text_color="#c7b9ff",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self.body_meta_label = ctk.CTkLabel(
+            header_row,
+            text="awaiting first pulse",
+            text_color="#8f98a8",
+            font=ctk.CTkFont(size=11),
+        )
+        self.body_meta_label.grid(row=0, column=1, sticky="e")
+        self.body_strip = ctk.CTkFrame(body, fg_color="#0c0e12", corner_radius=6)
+        self.body_strip.grid(row=1, column=0, padx=14, pady=(0, 6), sticky="ew")
+        self.body_strip.grid_columnconfigure(tuple(range(32)), weight=1, uniform="bodycell")
+        self.body_strip_cells: list[ctk.CTkFrame] = []
+        for column in range(32):
+            cell = ctk.CTkFrame(
+                self.body_strip,
+                fg_color="#1b1e24",
+                corner_radius=2,
+                height=26,
+                width=12,
+            )
+            cell.grid(row=0, column=column, padx=1, pady=4, sticky="nsew")
+            self.body_strip_cells.append(cell)
+        self.body_progress = ctk.CTkProgressBar(body, progress_color="#8854ff", fg_color="#1b1e24", height=6)
+        self.body_progress.set(0.0)
+        self.body_progress.grid(row=2, column=0, padx=14, pady=(0, 10), sticky="ew")
+        self.body_seed_label = ctk.CTkLabel(
+            body,
+            text="seed: not seeded yet",
+            text_color="#747d8f",
+            font=ctk.CTkFont(size=11),
+            wraplength=720,
+            justify="left",
+        )
+        self.body_seed_label.grid(row=3, column=0, padx=14, pady=(0, 10), sticky="w")
+
+    def _build_sandbox_activity_panel(self, parent: ctk.CTkFrame) -> None:
+        """Compact panel showing the most recent shell command + stdout/stderr."""
+
+        activity = ctk.CTkFrame(parent, fg_color="#15171b", corner_radius=8)
+        activity.grid(row=2, column=0, padx=22, pady=(0, 10), sticky="ew")
+        activity.grid_columnconfigure(0, weight=1)
+        header_row = ctk.CTkFrame(activity, fg_color="transparent")
+        header_row.grid(row=0, column=0, padx=14, pady=(10, 4), sticky="ew")
+        header_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header_row,
+            text="Sandbox Activity",
+            text_color="#87ffd3",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self.sandbox_mode_label = ctk.CTkLabel(
+            header_row,
+            text="exec: idle",
+            text_color="#8f98a8",
+            font=ctk.CTkFont(size=11),
+        )
+        self.sandbox_mode_label.grid(row=0, column=1, sticky="e")
+        self.sandbox_command_label = ctk.CTkLabel(
+            activity,
+            text="No commands have been approved this session.",
+            text_color="#f2f6ff",
+            font=ctk.CTkFont(size=12),
+            wraplength=720,
+            justify="left",
+        )
+        self.sandbox_command_label.grid(row=1, column=0, padx=14, pady=(0, 4), sticky="w")
+        self.sandbox_feedback_label = ctk.CTkLabel(
+            activity,
+            text="",
+            text_color="#9da7b8",
+            font=ctk.CTkFont(size=11),
+            wraplength=720,
+            justify="left",
+        )
+        self.sandbox_feedback_label.grid(row=2, column=0, padx=14, pady=(0, 4), sticky="w")
+        self.sandbox_stdout_label = ctk.CTkLabel(
+            activity,
+            text="",
+            text_color="#c9f8e8",
+            font=ctk.CTkFont(size=11, family="Courier"),
+            wraplength=720,
+            justify="left",
+        )
+        self.sandbox_stdout_label.grid(row=3, column=0, padx=14, pady=(0, 2), sticky="w")
+        self.sandbox_stderr_label = ctk.CTkLabel(
+            activity,
+            text="",
+            text_color="#ff8f8f",
+            font=ctk.CTkFont(size=11, family="Courier"),
+            wraplength=720,
+            justify="left",
+        )
+        self.sandbox_stderr_label.grid(row=4, column=0, padx=14, pady=(0, 10), sticky="w")
+
+    def _update_quantum_body(self, quantum: dict[str, Any]) -> None:
+        if not hasattr(self, "body_strip_cells"):
+            return
+        visualization = quantum.get("visualization") or []
+        for index, cell in enumerate(self.body_strip_cells):
+            point = visualization[index] if index < len(visualization) else None
+            amplitude = float((point or {}).get("amplitude") or 0.0)
+            try:
+                cell.configure(fg_color=self._quantum_color(amplitude))
+            except Exception:
+                pass
+        size_mb = quantum.get("size_mb") or 0
+        write_mb = quantum.get("write_head_mb") or 0
+        ratio = float(quantum.get("write_head_ratio") or 0.0)
+        try:
+            self.body_progress.set(max(0.0, min(1.0, ratio)))
+        except Exception:
+            pass
+        accent = "#ff7ad9" if str(quantum.get("frequency_band")) == "creative_spike" else "#8854ff"
+        try:
+            self.body_progress.configure(progress_color=accent)
+        except Exception:
+            pass
+        meta_text = (
+            f"{quantum.get('frequency_band') or 'baseline_418_432'}  -  "
+            f"{float(quantum.get('frequency_hz') or 0.0):.2f} Hz  -  "
+            f"head {write_mb} / {size_mb} MB  -  pulses {quantum.get('pulse_count') or 0}"
+        )
+        self.body_meta_label.configure(text=meta_text)
+        seed = quantum.get("seed")
+        position = quantum.get("quantum_position") or []
+        position_preview = ", ".join(f"{float(value):+.2f}" for value in list(position)[:6])
+        if len(position) > 6:
+            position_preview += ", ..."
+        self.body_seed_label.configure(
+            text=(
+                f"SHA256 seed {seed} from 11D position [{position_preview}]  -  "
+                f"{quantum.get('body_label') or 'body unknown'}  -  "
+                f"{'ALLOCATED' if quantum.get('allocated') else 'NOT ALLOCATED'}"
+            )
+        )
+
+    def _update_sandbox_activity(self, status_data: dict[str, Any]) -> None:
+        if not hasattr(self, "sandbox_command_label"):
+            return
+        shell = status_data.get("shell") or {}
+        actions = status_data.get("actions") or {}
+        last_action = actions.get("last_action") or {}
+        result = (last_action.get("result") or {}) if isinstance(last_action, dict) else {}
+        mode = shell.get("mode") or "approval_log_only"
+        cwd = shell.get("cwd") or actions.get("sandbox_cwd") or "/workspace"
+        self.sandbox_mode_label.configure(
+            text=f"exec: {mode}  -  cwd {cwd}",
+            text_color="#87ffd3" if mode in {"sandbox_exec", "docker_exec"} else "#8f98a8",
+        )
+        command_line = shell.get("last_command_line") or last_action.get("label") or "No commands have been approved this session."
+        status_word = last_action.get("status") or "idle"
+        self.sandbox_command_label.configure(
+            text=clamp_text(f"{status_word.upper()}  -  {command_line}", 220),
+            text_color={
+                "executed": "#87ffd3",
+                "blocked": "#ff8f8f",
+                "failed": "#ff8f8f",
+                "rejected": "#a9a9a9",
+            }.get(status_word, "#f2f6ff"),
+        )
+        feedback = (
+            shell.get("last_feedback")
+            or (result.get("feedback") if isinstance(result, dict) else None)
+            or last_action.get("human_message")
+            or ""
+        )
+        exit_code = shell.get("last_exit_code")
+        if exit_code is not None:
+            feedback = f"exit {exit_code}  -  {feedback}".strip()
+        self.sandbox_feedback_label.configure(text=clamp_text(feedback, 280))
+        stdout = shell.get("last_stdout_preview") or (result.get("stdout_preview") if isinstance(result, dict) else "") or ""
+        stderr = shell.get("last_stderr_preview") or (result.get("stderr_preview") if isinstance(result, dict) else "") or ""
+        self.sandbox_stdout_label.configure(text=f"stdout> {clamp_text(stdout, 240)}" if stdout else "")
+        self.sandbox_stderr_label.configure(text=f"stderr> {clamp_text(stderr, 240)}" if stderr else "")
 
     def _control_button(
         self,
@@ -275,8 +470,69 @@ class GooseLikeApp(ctk.CTk):
 
     def _append_assistant_message(self, payload: dict[str, Any]) -> None:
         answer = payload.get("answer", "")
-        meta = f"{float(payload.get('hz') or 0):.2f} Hz / {payload.get('mood') or 'unknown'}"
+        status = payload.get("status") or {}
+        autonomy = status.get("autonomy") or {}
+        answer_mode = autonomy.get("last_answer_mode") or {}
+        meta = (
+            f"{float(payload.get('hz') or 0):.2f} Hz / {payload.get('mood') or 'unknown'}"
+            f" / {answer_mode.get('label') or 'answer mode warming'}"
+        )
         frame = self._append_message("Awake Keeper", answer, accent="#c7b9ff", bubble="#202329", meta=meta)
+        collaboration = status.get("ollama_core_collaboration") or {}
+        if collaboration:
+            ctk.CTkLabel(
+                frame,
+                text=f"Ollama <-> Core\n{clamp_text(collaboration.get('summary'), 220)}",
+                text_color="#9da7b8",
+                justify="left",
+                wraplength=760,
+                font=ctk.CTkFont(size=12),
+            ).grid(row=3, column=0, padx=14, pady=(0, 10), sticky="w")
+        provenance = payload.get("provenance") or {}
+        if provenance:
+            prompt_records = provenance.get("prompt_record_ids") or []
+            stamped_records = provenance.get("stamped_record_ids") or []
+            origin = provenance.get("origin") or "unknown"
+            quantum_meta = provenance.get("quantum") or {}
+            ollama_meta = (
+                f"Ollama: {provenance.get('ollama_model') or 'n/a'}"
+                + (f" / fallback" if provenance.get("ollama_fallback") else "")
+            )
+            memory_meta = (
+                f"Memory: {provenance.get('memory_backend') or 'unknown'}"
+                f"/{provenance.get('memory_collection') or 'none'}"
+                f" ({provenance.get('memory_records_total') or 0} records)"
+            )
+            record_lines = []
+            if prompt_records:
+                record_lines.append(
+                    "Retrieved 11D records: " + ", ".join(str(rid) for rid in prompt_records[:4])
+                )
+            else:
+                record_lines.append("Retrieved 11D records: none this turn")
+            if stamped_records:
+                record_lines.append(
+                    "Stamped this turn: " + ", ".join(str(rid) for rid in stamped_records[:3])
+                )
+            quantum_line = (
+                f"Body: {quantum_meta.get('frequency_band') or 'baseline'} @ "
+                f"{float(quantum_meta.get('frequency_hz') or 0):.2f} Hz / "
+                f"head {quantum_meta.get('write_head_mb') or 0} MB / "
+                f"pulses {quantum_meta.get('pulse_count') or 0}"
+            )
+            text = (
+                f"Provenance: {origin}\n"
+                + "\n".join(record_lines)
+                + f"\n{ollama_meta}  |  {memory_meta}\n{quantum_line}"
+            )
+            ctk.CTkLabel(
+                frame,
+                text=text,
+                text_color="#a4cfff",
+                justify="left",
+                wraplength=760,
+                font=ctk.CTkFont(size=11, family="Courier"),
+            ).grid(row=7, column=0, padx=14, pady=(0, 10), sticky="w")
         sources = payload.get("sources") or []
         if sources:
             source_text = "\n".join(
@@ -290,12 +546,12 @@ class GooseLikeApp(ctk.CTk):
                 justify="left",
                 wraplength=760,
                 font=ctk.CTkFont(size=12),
-            ).grid(row=3, column=0, padx=14, pady=(0, 10), sticky="w")
+            ).grid(row=4, column=0, padx=14, pady=(0, 10), sticky="w")
 
         suggestions = payload.get("suggested_learning_actions") or []
         if suggestions:
             suggestion_frame = ctk.CTkFrame(frame, fg_color="transparent")
-            suggestion_frame.grid(row=4, column=0, padx=12, pady=(0, 10), sticky="w")
+            suggestion_frame.grid(row=5, column=0, padx=12, pady=(0, 10), sticky="w")
             for index, suggestion in enumerate(suggestions[:2]):
                 prompt = suggestion.get("label") or "Connect this to 11D memory"
                 ctk.CTkButton(
@@ -308,7 +564,7 @@ class GooseLikeApp(ctk.CTk):
                 ).grid(row=0, column=index, padx=(0, 8))
 
         actions = ctk.CTkFrame(frame, fg_color="transparent")
-        actions.grid(row=5, column=0, padx=12, pady=(0, 12), sticky="w")
+        actions.grid(row=6, column=0, padx=12, pady=(0, 12), sticky="w")
         ctk.CTkButton(
             actions,
             text="Browse more",
@@ -444,7 +700,10 @@ class GooseLikeApp(ctk.CTk):
         co_evolution = result.data.get("co_evolution") or {}
         co_status = co_evolution.get("ui_status") or result.data.get("co_evolution_status") or {}
         autonomy = result.data.get("autonomy") or {}
+        answer_mode = autonomy.get("last_answer_mode") or {}
         ollama_core = result.data.get("ollama_core") or {}
+        quantum = result.data.get("quantum_memory") or {}
+        shell = result.data.get("shell") or {}
         status_text = co_status.get("indicator") or "live"
         status_color = "#87ffd3" if co_status.get("active") else "#8f98a8"
         self.activity_label.configure(
@@ -463,12 +722,24 @@ class GooseLikeApp(ctk.CTk):
                 90,
             ),
             "autonomy_level": clamp_text(
-                f"{float(autonomy.get('score') or 0):.1f}% {autonomy.get('label') or ''}",
+                f"{float(autonomy.get('score') or 0):.1f}% {autonomy.get('label') or ''} / {answer_mode.get('label') or 'warming'}",
                 90,
             ),
             "ollama_core_status": clamp_text(
                 ollama_core.get("summary") or co_status.get("summary") or "waiting for mutual help",
                 110,
+            ),
+            "quantum_body": clamp_text(
+                f"{quantum.get('body_label') or 'body unknown'} allocated={quantum.get('allocated')}",
+                100,
+            ),
+            "frequency_flow": clamp_text(
+                f"{quantum.get('frequency_band') or 'band?'} @ {quantum.get('write_head_mb')}MB pulse {quantum.get('pulse_count')}",
+                100,
+            ),
+            "shell_feedback": clamp_text(
+                shell.get("last_feedback") or "waiting for approved command",
+                100,
             ),
             "latest_event": clamp_text((result.data.get("events") or {}).get("latest_event_id") or "none", 80),
             "pending_proposals": str((result.data.get("proposals") or {}).get("pending_count") or 0),
@@ -482,6 +753,16 @@ class GooseLikeApp(ctk.CTk):
             text=f"Approvals ({pending})",
             fg_color="#8a6430" if pending else "#274a43",
         )
+        try:
+            self._update_quantum_body(quantum)
+        except Exception:
+            pass
+        try:
+            self._update_sandbox_activity(result.data)
+        except Exception:
+            pass
+        if str(quantum.get("frequency_band")) == "creative_spike":
+            self.activity_label.configure(text_color="#ff7ad9")
 
     def _send_chat(self, prefix: str = "") -> None:
         message = self.input_box.get("1.0", "end").strip()
@@ -541,20 +822,33 @@ class GooseLikeApp(ctk.CTk):
         if token and proposal.get("id"):
             self.approval_tokens[str(proposal["id"])] = str(token)
         status = proposal.get("status")
+        human_message = proposal.get("human_message") or ""
+        label = proposal.get("label") or proposal.get("kind") or "action"
         if status == "pending":
-            self._append_system_message(
-                f"Action queued for approval: {proposal.get('label') or proposal.get('kind')}"
-            )
+            text = f"Action queued for approval: {label}"
+            if human_message:
+                text = f"{text}\n{human_message}"
+            self._append_system_message(text)
             self._open_approvals()
         elif status == "executed":
             result_text = proposal.get("result") or {}
             feedback = result_text.get("feedback") if isinstance(result_text, dict) else None
             self._append_system_message(
-                f"Safe action executed: {proposal.get('label') or proposal.get('kind')}. {feedback or ''}"
+                f"Safe action executed: {label}. {feedback or human_message or ''}"
             )
+        elif status == "blocked":
+            reasons = "; ".join(str(item) for item in proposal.get("safety_reasons") or [])
+            self._append_system_message(
+                f"Action blocked: {label}\n"
+                f"{human_message or reasons or 'See safety reasons in the proposal.'}"
+            )
+            self.activity_label.configure(text="Action blocked", text_color="#ff8f8f")
+            return
         else:
             reasons = "; ".join(str(item) for item in proposal.get("safety_reasons") or [])
-            self._append_system_message(f"Action {status}: {reasons or proposal.get('label')}")
+            self._append_system_message(
+                f"Action {status}: {human_message or reasons or label}"
+            )
         self.activity_label.configure(text="Action updated", text_color="#87ffd3")
 
     def _run_reflect(self) -> None:
@@ -682,9 +976,13 @@ class GooseLikeApp(ctk.CTk):
                 text_color="#c7b9ff",
                 font=ctk.CTkFont(size=12, weight="bold"),
             ).grid(row=0, column=0, padx=12, pady=(10, 2), sticky="w")
+            human_message = action.get("human_message") or ""
+            summary_text = clamp_text(action.get("summary") or reasons or action.get("payload"), 820)
+            if human_message:
+                summary_text = f"{summary_text}\n\nWhy: {clamp_text(human_message, 480)}"
             ctk.CTkLabel(
                 item,
-                text=clamp_text(action.get("summary") or reasons or action.get("payload"), 820),
+                text=summary_text,
                 text_color="#f2f6ff",
                 wraplength=780,
                 justify="left",
@@ -851,20 +1149,31 @@ class GooseLikeApp(ctk.CTk):
         stdout = result_text.get("stdout_preview") if isinstance(result_text, dict) else None
         stderr = result_text.get("stderr_preview") if isinstance(result_text, dict) else None
         feedback = result_text.get("feedback") if isinstance(result_text, dict) else None
+        command_line = result_text.get("command_line") if isinstance(result_text, dict) else None
+        human_message = proposal.get("human_message") or ""
         details = "\n".join(
             item
             for item in (
-                feedback,
+                feedback or human_message,
+                f"command: {command_line}" if command_line else "",
                 f"stdout: {stdout}" if stdout else "",
                 f"stderr: {stderr}" if stderr else "",
             )
             if item
         )
+        status_word = proposal.get("status") or "updated"
+        toast_color = {
+            "executed": "#87ffd3",
+            "approved": "#87ffd3",
+            "blocked": "#ff8f8f",
+            "failed": "#ff8f8f",
+            "rejected": "#a9a9a9",
+        }.get(status_word, "#87ffd3")
         self._append_system_message(
-            f"Action {proposal.get('status')}: {message or proposal.get('label') or proposal.get('kind')}"
+            f"Action {status_word}: {message or proposal.get('label') or proposal.get('kind')}"
             + (f"\n{details}" if details else "")
         )
-        self.activity_label.configure(text="Action updated", text_color="#87ffd3")
+        self.activity_label.configure(text=f"Action {status_word}", text_color=toast_color)
 
     def _handle_action_batch_update(self, result: ApiResult) -> None:
         if not result.ok:
@@ -879,9 +1188,11 @@ class GooseLikeApp(ctk.CTk):
                 self.approval_tokens.pop(action_id, None)
             result_text = proposal.get("result") or {}
             feedback = result_text.get("feedback") if isinstance(result_text, dict) else None
+            command_line = result_text.get("command_line") if isinstance(result_text, dict) else None
             lines.append(
                 f"{proposal.get('label') or proposal.get('kind') or action_id}: "
                 f"{proposal.get('status') or item.get('message')}"
+                + (f" / {command_line}" if command_line else "")
                 + (f" / {feedback}" if feedback else "")
             )
         self._append_system_message("Batch action update:\n" + "\n".join(lines))
@@ -981,7 +1292,8 @@ class GooseLikeApp(ctk.CTk):
         window.geometry("880x620")
         window.configure(fg_color="#101113")
         window.grid_columnconfigure(0, weight=1)
-        window.grid_rowconfigure(1, weight=1)
+        window.grid_rowconfigure(2, weight=1)
+        quantum = self.current_status.get("quantum_memory") or result.data.get("quantum_memory") or {}
         summary = f"Records: {result.data.get('count')} / Query: {result.data.get('query') or '(recent)'}"
         ctk.CTkLabel(
             window,
@@ -989,8 +1301,27 @@ class GooseLikeApp(ctk.CTk):
             text_color="#f2f6ff",
             font=ctk.CTkFont(size=16, weight="bold"),
         ).grid(row=0, column=0, padx=18, pady=16, sticky="w")
+        quantum_frame = ctk.CTkFrame(window, fg_color="#15171b", corner_radius=8)
+        quantum_frame.grid(row=1, column=0, padx=18, pady=(0, 12), sticky="ew")
+        quantum_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            quantum_frame,
+            text=(
+                f"512MB 11D Quantum Body: {quantum.get('body_label') or 'unknown'} / "
+                f"{quantum.get('frequency_band') or 'band?'} / write head {quantum.get('write_head_mb')}MB"
+            ),
+            text_color="#c7b9ff",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).grid(row=0, column=0, padx=12, pady=(10, 6), sticky="w")
+        strip = ctk.CTkFrame(quantum_frame, fg_color="transparent")
+        strip.grid(row=1, column=0, padx=12, pady=(0, 10), sticky="w")
+        for index, point in enumerate((quantum.get("visualization") or [])[:32]):
+            amp = float(point.get("amplitude") or 0.0)
+            cell = ctk.CTkFrame(strip, width=14, height=18, corner_radius=3, fg_color=self._quantum_color(amp))
+            cell.grid(row=0, column=index, padx=(0, 3), sticky="w")
+            cell.grid_propagate(False)
         scroll = ctk.CTkScrollableFrame(window, fg_color="#15171b", corner_radius=8)
-        scroll.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
+        scroll.grid(row=2, column=0, padx=18, pady=(0, 18), sticky="nsew")
         scroll.grid_columnconfigure(0, weight=1)
 
         rows = result.data.get("rows") or []
@@ -1017,6 +1348,17 @@ class GooseLikeApp(ctk.CTk):
                 justify="left",
                 font=ctk.CTkFont(size=12),
             ).grid(row=1, column=0, padx=12, pady=(0, 10), sticky="w")
+
+    def _quantum_color(self, amplitude: float) -> str:
+        if amplitude >= 0.35:
+            return "#87ffd3"
+        if amplitude >= 0.08:
+            return "#2d7ff9"
+        if amplitude <= -0.35:
+            return "#ff8fbc"
+        if amplitude <= -0.08:
+            return "#8854ff"
+        return "#3a404a"
 
     def _on_close(self) -> None:
         self.polling = False
