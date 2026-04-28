@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1366 768" role="img" aria-labelledby="title desc">
+  <title id="title">A Digital Guardian Angel</title>
+  <desc id="desc">An English Ouroboros AI digital guardian angel visual with a protected device and calm safety message.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#06111e"/>
+      <stop offset="0.52" stop-color="#0a1722"/>
+      <stop offset="1" stop-color="#050b14"/>
+    </linearGradient>
+    <linearGradient id="mintAmber" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#8cffc8"/>
+      <stop offset="0.55" stop-color="#c8ffcb"/>
+      <stop offset="1" stop-color="#f3b181"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="47%" r="45%">
+      <stop offset="0" stop-color="#9dffd3" stop-opacity="0.34"/>
+      <stop offset="0.48" stop-color="#9dffd3" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#9dffd3" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.55 0 0 0 0 1 0 0 0 0 0.77 0 0 0 0.82 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="textShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#000000" flood-opacity="0.72"/>
+    </filter>
+    <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
+      <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#8fb2c8" stroke-width="1" opacity="0.16"/>
+    </pattern>
+  </defs>
+  <rect width="1366" height="768" fill="url(#bg)"/>
+  <rect width="1366" height="768" fill="url(#grid)"/>
+  <rect width="1366" height="768" fill="url(#halo)"/>
+  <path d="M0 292 C190 354 305 371 468 320 C572 288 657 228 759 240 C895 255 1001 355 1136 337 C1228 324 1296 278 1366 227" fill="none" stroke="#85ffbd" stroke-width="3" opacity="0.20" filter="url(#softGlow)"/>
+  <path d="M0 384 C228 360 356 335 485 366 C637 402 746 481 910 438 C1050 401 1157 328 1366 316" fill="none" stroke="#f3b181" stroke-width="3" opacity="0.18" filter="url(#softGlow)"/>
+  <path d="M367 338 C450 235 571 241 663 133 C690 104 713 104 738 130 C837 234 957 217 1016 323 C1076 431 982 561 826 616 C754 641 721 674 684 673 C645 671 612 641 544 617 C388 563 285 440 367 338 Z" fill="none" stroke="url(#mintAmber)" stroke-width="16" opacity="0.36" filter="url(#softGlow)"/>
+  <path d="M423 328 C480 260 590 258 657 176 C679 151 697 151 720 174 C796 252 908 248 950 329 C1000 426 919 533 795 577 C735 599 712 622 684 622 C655 622 631 599 573 578 C449 533 365 424 423 328 Z" fill="none" stroke="#bfffd4" stroke-width="4" opacity="0.50"/>
+  <g transform="translate(598 207)">
+    <rect width="180" height="354" rx="24" fill="#111b27" stroke="#263647" stroke-width="5"/>
+    <rect x="12" y="12" width="156" height="330" rx="18" fill="#0b1420" stroke="#1a2a39" stroke-width="2"/>
+    <rect x="45" y="117" width="90" height="90" rx="10" fill="#303d48" stroke="#a6f7d1" stroke-width="2" opacity="0.82"/>
+    <rect x="61" y="133" width="58" height="58" rx="6" fill="#495561" stroke="#f2b084" stroke-width="1.5" opacity="0.75"/>
+    <g stroke="#6d7c8a" stroke-width="2" opacity="0.56" fill="none">
+      <path d="M45 117 V89 H26"/>
+      <path d="M65 117 V72 H48"/>
+      <path d="M90 117 V54"/>
+      <path d="M115 117 V72 H132"/>
+      <path d="M135 117 V88 H156"/>
+      <path d="M45 207 V235 H27"/>
+      <path d="M65 207 V258 H48"/>
+      <path d="M90 207 V292"/>
+      <path d="M115 207 V256 H135"/>
+      <path d="M135 207 V235 H156"/>
+    </g>
+    <g fill="#8c9baa" opacity="0.48">
+      <circle cx="26" cy="89" r="4"/>
+      <circle cx="48" cy="72" r="4"/>
+      <circle cx="90" cy="54" r="4"/>
+      <circle cx="132" cy="72" r="4"/>
+      <circle cx="156" cy="88" r="4"/>
+      <circle cx="27" cy="235" r="4"/>
+      <circle cx="48" cy="258" r="4"/>
+      <circle cx="90" cy="292" r="4"/>
+      <circle cx="135" cy="256" r="4"/>
+      <circle cx="156" cy="235" r="4"/>
+    </g>
+  </g>
+  <text x="683" y="409" text-anchor="middle" font-family="Sora, Manrope, Arial, sans-serif" font-size="70" font-weight="800" letter-spacing="1" fill="#f7fbff" filter="url(#textShadow)">A Digital Guardian Angel</text>
+  <text x="683" y="674" text-anchor="middle" font-family="Manrope, Arial, sans-serif" font-size="29" font-weight="500" fill="#ffffff" filter="url(#textShadow)">
+    <tspan x="683" dy="0">Ouroboros AI is a private helper that quietly makes technology safer, calmer,</tspan>
+    <tspan x="683" dy="36">and easier to understand while keeping personal information close to home.</tspan>
+  </text>
+</svg>
