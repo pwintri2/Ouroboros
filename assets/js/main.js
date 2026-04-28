@@ -38,7 +38,9 @@ document.querySelectorAll("[data-year]").forEach((element) => {
   element.textContent = new Date().getFullYear();
 });
 
-const zoomableImages = document.querySelectorAll("img[data-zoomable]");
+const zoomableImages = document.querySelectorAll(
+  "main img:not(.brand-logo), img[data-zoomable]",
+);
 
 if (zoomableImages.length > 0) {
   const labels = {

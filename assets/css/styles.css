@@ -411,6 +411,7 @@ main {
   box-shadow: 0 28px 60px rgba(0, 0, 0, 0.3);
 }
 
+main img:not(.brand-logo),
 img[data-zoomable] {
   cursor: zoom-in;
   transform-origin: center;
@@ -420,6 +421,8 @@ img[data-zoomable] {
     border-color 180ms ease;
 }
 
+main img:not(.brand-logo):hover,
+main img:not(.brand-logo):focus-visible,
 img[data-zoomable]:hover,
 img[data-zoomable]:focus-visible {
   border-color: rgba(152, 255, 203, 0.36);
@@ -997,6 +1000,7 @@ body.has-lightbox {
   .button,
   .site-nav a,
   .site-header,
+  main img:not(.brand-logo),
   img[data-zoomable],
   .reveal {
     transition: none;
@@ -1007,6 +1011,8 @@ body.has-lightbox {
     transform: none;
   }
 
+  main img:not(.brand-logo):hover,
+  main img:not(.brand-logo):focus-visible,
   img[data-zoomable]:hover,
   img[data-zoomable]:focus-visible {
     transform: none;
