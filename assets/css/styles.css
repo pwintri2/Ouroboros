@@ -411,6 +411,90 @@ main {
   box-shadow: 0 28px 60px rgba(0, 0, 0, 0.3);
 }
 
+img[data-zoomable] {
+  cursor: zoom-in;
+  transform-origin: center;
+  transition:
+    transform 180ms ease,
+    filter 180ms ease,
+    border-color 180ms ease;
+}
+
+img[data-zoomable]:hover,
+img[data-zoomable]:focus-visible {
+  border-color: rgba(152, 255, 203, 0.36);
+  filter: brightness(1.06);
+  outline: none;
+  transform: scale(1.045);
+}
+
+body.has-lightbox {
+  overflow: hidden;
+}
+
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  place-items: center;
+  padding: clamp(1rem, 3vw, 2.2rem);
+  background: rgba(2, 7, 12, 0.88);
+  backdrop-filter: blur(18px);
+}
+
+.image-lightbox.is-open {
+  display: grid;
+}
+
+.image-lightbox img {
+  width: auto;
+  max-width: min(94vw, 1440px);
+  max-height: 88vh;
+  border: 1px solid rgba(152, 255, 203, 0.28);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 32px 100px rgba(0, 0, 0, 0.55);
+  cursor: zoom-out;
+}
+
+.image-lightbox-close {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  width: 2.9rem;
+  height: 2.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(5, 11, 20, 0.78);
+  cursor: pointer;
+}
+
+.image-lightbox-close::before,
+.image-lightbox-close::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.2rem;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--text);
+}
+
+.image-lightbox-close::before {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.image-lightbox-close::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.image-lightbox-close:hover,
+.image-lightbox-close:focus-visible {
+  border-color: rgba(152, 255, 203, 0.42);
+  outline: none;
+}
+
 .section-grid,
 .split-panel {
   display: grid;
@@ -913,12 +997,18 @@ main {
   .button,
   .site-nav a,
   .site-header,
+  img[data-zoomable],
   .reveal {
     transition: none;
   }
 
   .js .reveal {
     opacity: 1;
+    transform: none;
+  }
+
+  img[data-zoomable]:hover,
+  img[data-zoomable]:focus-visible {
     transform: none;
   }
 }
