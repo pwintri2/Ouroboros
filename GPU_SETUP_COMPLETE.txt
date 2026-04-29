@@ -1,0 +1,131 @@
+## ✅ NVIDIA GPU Acceleration for WintripAI Fase 3 — COMPLETE
+
+**Status:** Fully operational
+**GPU:** NVIDIA RTX 5060 (8GB) — actively accelerating inference
+**Speedup:** ~60–70x faster responses (~1 sec vs ~60+ sec before)
+**Service:** Host Ollama (systemd) + WintripAI Fase 3 (Docker)
+
+---
+
+## What Was Done
+
+### 1. Installed NVIDIA Container Toolkit
+- `sudo apt-get install nvidia-container-toolkit`
+- `sudo nvidia-ctk runtime configure --runtime=docker`
+- ℹ️ **Note:** Docker Desktop on Linux doesn't support GPU passthrough to containers (VM limitation)
+
+### 2. Enabled GPU for Host Ollama (Primary Solution)
+```bash
+sudo systemctl edit ollama
+# Pasted override with CUDA environment variables:
+# - LD_LIBRARY_PATH (includes CUDA runtime)
+# - OLLAMA_LLM_LIBRARY=cuda_v12
+# - OLLAMA_NUM_PARALLEL=1
+# - OLLAMA_KEEP_ALIVE=10m
+
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+**Result:** ✅ Host Ollama now detects and uses NVIDIA GPU
+
+### 3. Updated WintripAI Docker Compose
+- Reverted `OLLAMA_BASE_URL` to `http://host.docker.internal:11434` (points to GPU-accelerated host Ollama)
+- Fase 3 dashboard runs on port **7861**
+- All models and volumes preserved
+
+---
+
+## Current System State
+
+| Component | Status | Details |
+|-----------|--------|---------|
+| **GPU Driver** | ✅ | 580.126.18, CUDA 13.0 |
+| **Host Ollama** | ✅ GPU | Port 11434, `100% GPU`, 2.4 GB VRAM used |
+| **Ollama Version** | ✅ | 0.21.0, detecting CUDA |
+| **Model** | ✅ | llama3.2:latest (2.4 GB) loaded on GPU |
+| **Fase 3** | ✅ Running | Port 7861, healthy, fast responses |
+| **Response Time** | ✅ | ~1 second per 40 tokens (GPU-accelerated) |
+
+---
+
+## How to Use
+
+### Check GPU Status
+```bash
+nvidia-smi                          # View GPU memory
+ollama ps                           # Check model on GPU
+systemctl status ollama             # Service status
+```
+
+### Chat with Fase 3
+```bash
+curl -fsS http://127.0.0.1:7861/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Your question here"}'
+```
+
+### Monitor GPU During Inference
+```bash
+watch -n 0.5 'nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits'
+```
+In another terminal, trigger a chat request to see GPU utilization spike.
+
+---
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `/etc/systemd/system/ollama.service.d/override.conf` | Ollama CUDA config |
+| `/home/pwintri2/WintripAI/docker-compose.ouroboros.yml` | Fase 3 compose (uses host Ollama) |
+| `/home/pwintri2/WintripAI/GPU_ACCELERATION_REPORT.md` | Detailed technical report |
+| `/home/pwintri2/WintripAI/NVIDIA_SETUP_PROMPT.md` | Gemini CLI reference guide |
+
+---
+
+## Success Metrics
+
+✅ `ollama ps` shows **100% GPU** for loaded model
+✅ `nvidia-smi` shows Ollama process consuming **2430 MiB** GPU memory
+✅ Chat responses complete in **~1 second** (vs ~60+ seconds before)
+✅ Ollama logs confirm **CUDA device detection** and **KV cache on GPU**
+✅ WintripAI Fase 3 is **responsive and functional**
+✅ **No data loss** — all models and volumes preserved
+
+---
+
+## If You Need to Disable GPU
+
+```bash
+sudo systemctl edit ollama
+# Remove all content (leave empty)
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+# Ollama reverts to CPU-only
+```
+
+---
+
+## Next Steps (Optional)
+
+1. **Test with larger models** (if VRAM permits):
+   - `ollama pull mistral:latest` (4 GB, should fit)
+   - `ollama pull llama2:13b` (7 GB, at capacity)
+
+2. **Adjust keep-alive time** in systemd override if needed:
+   - Lower `OLLAMA_KEEP_ALIVE` (e.g., `5m`) to free GPU memory sooner
+   - Higher (e.g., `30m`) for better responsiveness
+
+3. **Monitor long-running sessions**:
+   ```bash
+   watch -n 2 'nvidia-smi && echo "---" && ollama ps'
+   ```
+
+---
+
+**Completed:** 2026-04-27 17:10 UTC+2
+**System:** Pop!_OS 24.04 LTS with NVIDIA RTX 5060
+**Setup:** Host Ollama (GPU-accelerated) + Docker Fase 3 (CPU, fast via network bridge)
+
+🚀 **WintripAI is now GPU-accelerated and fast!**

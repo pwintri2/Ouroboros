@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Awake Keeper Launcher
+Comment=Start Resonant Ouroboros Fase 2 without a terminal
+Exec=/home/pwintri2/WintripAI/start_awake_keeper_launcher.sh
+Path=/home/pwintri2/WintripAI
+Terminal=false
+Categories=Development;Utility;

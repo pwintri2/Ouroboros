@@ -1,0 +1,26 @@
+FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+
+WORKDIR /workspace
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/workspace \
+    BROWSER_HEADLESS=true \
+    OLLAMA_BASE_URL=http://ollama:11434 \
+    OLLAMA_MODEL=llama3.2:latest \
+    OUROBOROS_ENABLE_SANDBOX_EXEC=true \
+    OUROBOROS_SANDBOX_CWD=/workspace \
+    OUROBOROS_QUANTUM_MEMORY_MB=512 \
+    OUROBOROS_MEMORY_BACKEND=chroma \
+    CHROMA_COLLECTION=ouroboros_11d
+
+COPY requirements.ouroboros.txt /tmp/requirements.ouroboros.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements.ouroboros.txt
+
+COPY resonant_ouroboros /workspace/resonant_ouroboros
+COPY ["AGI Kennis.txt", "/workspace/agi_kennis.txt"]
+
+EXPOSE 7860
+
+CMD ["python", "-m", "resonant_ouroboros.main", "dashboard"]
