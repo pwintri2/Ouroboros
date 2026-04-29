@@ -1,7 +1,3 @@
 .env
-/api/chat-handler.php
-# Note: chat-handler.php is ignored if it contains sensitive logic, 
-# but usually we only ignore the config. 
-# Here just .env is critical.
-.env
+# api/chat-handler.php - removed from ignore to allow integration
 *.log
