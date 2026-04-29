@@ -1,0 +1,12 @@
+# Ouroboros Security - Protect sensitive files
+<Files ".env">
+    Order allow,deny
+    Deny from all
+</Files>
+
+# Block directory listing
+Options -Indexes
+
+# Protect /api/ folder from browsing, but allow chat-handler.php
+RewriteEngine On
+RewriteRule ^api/?$ - [F,L]

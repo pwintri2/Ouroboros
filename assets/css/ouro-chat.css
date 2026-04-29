@@ -1,0 +1,170 @@
+/* Ouroboros AI Chat Widget - Styling */
+:root {
+    --ouro-primary: #a8dadc;
+    --ouro-secondary: #457b9d;
+    --ouro-bg: #f1faee;
+    --ouro-text: #1d3557;
+    --ouro-accent: #e63946;
+    --ouro-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
+#ouro-chat-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 10000;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Floating Orb */
+#ouro-chat-trigger {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--ouro-primary), var(--ouro-secondary));
+    box-shadow: var(--ouro-shadow);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    animation: ouro-pulse 3s infinite ease-in-out;
+}
+
+#ouro-chat-trigger:hover {
+    transform: scale(1.1);
+}
+
+#ouro-chat-trigger svg {
+    width: 30px;
+    height: 30px;
+    fill: white;
+}
+
+@keyframes ouro-pulse {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(168, 218, 220, 0.7); }
+    70% { transform: scale(1.05); box-shadow: 0 0 0 15px rgba(168, 218, 220, 0); }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(168, 218, 220, 0); }
+}
+
+/* Chat Window */
+#ouro-chat-window {
+    position: absolute;
+    bottom: 80px;
+    right: 0;
+    width: 350px;
+    height: 500px;
+    background: white;
+    border-radius: 15px;
+    box-shadow: var(--ouro-shadow);
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+#ouro-chat-window.active {
+    display: flex;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* Header */
+.ouro-chat-header {
+    background: var(--ouro-secondary);
+    color: white;
+    padding: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.ouro-chat-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.ouro-close-btn {
+    cursor: pointer;
+    font-size: 1.5rem;
+    line-height: 1;
+}
+
+/* Messages Area */
+#ouro-chat-messages {
+    flex: 1;
+    padding: 15px;
+    overflow-y: auto;
+    background: var(--ouro-bg);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.ouro-message {
+    max-width: 80%;
+    padding: 10px 15px;
+    border-radius: 15px;
+    font-size: 0.95rem;
+    line-height: 1.4;
+}
+
+.ouro-message.user {
+    align-self: flex-end;
+    background: var(--ouro-secondary);
+    color: white;
+    border-bottom-right-radius: 2px;
+}
+
+.ouro-message.bot {
+    align-self: flex-start;
+    background: white;
+    color: var(--ouro-text);
+    border-bottom-left-radius: 2px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+}
+
+/* Input Area */
+.ouro-chat-input-area {
+    padding: 15px;
+    border-top: 1px solid #eee;
+    display: flex;
+    gap: 10px;
+}
+
+#ouro-chat-input {
+    flex: 1;
+    border: 1px solid #ddd;
+    border-radius: 20px;
+    padding: 8px 15px;
+    outline: none;
+    font-size: 0.95rem;
+}
+
+#ouro-chat-input:focus {
+    border-color: var(--ouro-secondary);
+}
+
+#ouro-send-btn {
+    background: var(--ouro-secondary);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 35px;
+    height: 35px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Typing Indicator */
+.typing-indicator {
+    font-style: italic;
+    font-size: 0.8rem;
+    color: #888;
+    margin-bottom: 5px;
+}
