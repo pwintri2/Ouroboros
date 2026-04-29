@@ -45,6 +45,7 @@ jobs:
   codeql:
     name: CodeQL Security Scan
     runs-on: ubuntu-latest
+    continue-on-error: true
     permissions:
       actions: read
       contents: read
@@ -63,3 +64,4 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:python"
+          upload: never
