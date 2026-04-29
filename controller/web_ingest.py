@@ -27,6 +27,11 @@ from bs4 import BeautifulSoup
 # Voeg het root-pad toe aan sys.path voor imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from controller.knowledge_base import KnowledgeBase
+from controller.stream.browser_scrubber import (
+    TEACHABLE_MACHINE_HOST,
+    prepare_browser_ingest,
+    prepare_teachablemachine_ingest,
+)
 
 # =========================
 # Logging
@@ -187,18 +192,56 @@ def fetch_url_text(url: str, timeout: int = 15) -> str:
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()
 
-def ingest_url(url: str, persona: str = "developer", source_group: str = "web_ingest") -> dict:
+def ingest_url(
+    url: str,
+    persona: str = "developer",
+    source_group: str = "web_ingest",
+    approval_phrase: str | None = None,
+) -> dict:
     """Verwerkt een URL en slaat chunks op in ChromaDB met deterministische IDs."""
-    brain = KnowledgeBase()
-
     try:
         text = fetch_url_text(url)
         if not text:
             return {"url": url, "status": "failed", "error": "Geen tekst gevonden"}
 
-        chunks = chunk_text_semantic(text)
         parsed_url = urlparse(url)
         domain = parsed_url.netloc
+        if (parsed_url.hostname or "").lower() == TEACHABLE_MACHINE_HOST:
+            scrubbed = prepare_teachablemachine_ingest(
+                url=url,
+                browser_text=text,
+                approval=approval_phrase,
+                title="Teachable Machine browser ingest",
+            )
+        else:
+            scrubbed = prepare_browser_ingest(
+                url=url,
+                browser_text=text,
+                approval=approval_phrase,
+                title="Web browser ingest",
+                require_teachablemachine=False,
+            )
+
+        if scrubbed.approval_status != "approved":
+            logger.info("Browser ingest wacht op Philip Akkoord: %s", url)
+            return {
+                "url": url,
+                "status": "pending_approval",
+                "approval_required": True,
+                "approval_phrase": scrubbed.approval_phrase,
+                "taint": scrubbed.taint,
+                "source_host": scrubbed.source_host,
+                "diff_hash": scrubbed.diff_hash,
+                "blocked_patterns": list(scrubbed.blocked_patterns),
+                "allowed_actions": list(scrubbed.allowed_actions),
+                "blocked_actions": list(scrubbed.blocked_actions),
+                "diff_view": scrubbed.diff_view,
+            }
+
+        text = scrubbed.scrubbed_text
+        scrub_metadata = scrubbed.metadata()
+        chunks = chunk_text_semantic(text)
+        brain = KnowledgeBase()
         url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
         safe_filename = get_safe_filename_from_url(url)
         
@@ -225,8 +268,9 @@ def ingest_url(url: str, persona: str = "developer", source_group: str = "web_in
                 "chunk_sha256": chunk_sha,
                 "char_count": len(chunk),
                 "sandbox_only": True,
-                "trust_level": "external_web",
+                "trust_level": "external_web_scrubbed_approved",
             }
+            metadata.update(scrub_metadata)
             
             documents.append(chunk)
             metadatas.append(metadata)
@@ -240,8 +284,13 @@ def ingest_url(url: str, persona: str = "developer", source_group: str = "web_in
         logger.exception("Fout bij ingest van %s", url)
         return {"url": url, "status": "failed", "error": str(e)}
 
-def ingest_urls(urls: List[str], persona: str = "developer", source_group: str = "web_ingest") -> List[dict]:
-    return [ingest_url(url, persona, source_group) for url in urls]
+def ingest_urls(
+    urls: List[str],
+    persona: str = "developer",
+    source_group: str = "web_ingest",
+    approval_phrase: str | None = None,
+) -> List[dict]:
+    return [ingest_url(url, persona, source_group, approval_phrase) for url in urls]
 
 # =========================
 # CLI
@@ -249,8 +298,11 @@ def ingest_urls(urls: List[str], persona: str = "developer", source_group: str =
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Wintrip Web Ingest CLI")
     parser.add_argument("--url", help="URL om in te laden")
+    parser.add_argument("--approval", help="Philip-goedkeuring voor DiffView, verwacht: Akkoord")
+    parser.add_argument("--akkoord", action="store_true", help="Gebruik exact de approval phrase 'Akkoord'")
     args = parser.parse_args()
     if args.url:
-        print(ingest_url(args.url))
+        approval = "Akkoord" if args.akkoord else args.approval
+        print(ingest_url(args.url, approval_phrase=approval))
     else:
         parser.print_help()

@@ -31,6 +31,9 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from controller.stream.normalize import NormalizedItem, fingerprint
+from controller.stream.browser_scrubber import TAINT_UNTRUSTED_WEB
+from controller.stream.dreamcycle import DreamCycle
+from controller.stream.metadata_11d import build_11d_metadata
 
 # ---------------------------------------------------------------------------
 # Drempelwaarden (uitbreidbaar via config in toekomstige iteratie)
@@ -92,8 +95,17 @@ class StorageResult:
         in_queue   : True als item boven PROPOSE_THRESHOLD uitkwam
         item_id    : UUID van het item (of None bij fout)
         reason     : leesbare reden voor de beslissing
+        approval_required : True als browser-ingest nog op Philip's Akkoord wacht
     """
-    __slots__ = ("stored", "duplicate", "below_threshold", "in_queue", "item_id", "reason")
+    __slots__ = (
+        "stored",
+        "duplicate",
+        "below_threshold",
+        "in_queue",
+        "item_id",
+        "reason",
+        "approval_required",
+    )
 
     def __init__(
         self,
@@ -103,6 +115,7 @@ class StorageResult:
         in_queue: bool = False,
         item_id: Optional[str] = None,
         reason: str = "",
+        approval_required: bool = False,
     ):
         self.stored = stored
         self.duplicate = duplicate
@@ -110,12 +123,14 @@ class StorageResult:
         self.in_queue = in_queue
         self.item_id = item_id
         self.reason = reason
+        self.approval_required = approval_required
 
     def __repr__(self) -> str:
         return (
             f"StorageResult(stored={self.stored}, duplicate={self.duplicate}, "
             f"below_threshold={self.below_threshold}, in_queue={self.in_queue}, "
-            f"item_id={self.item_id!r}, reason={self.reason!r})"
+            f"item_id={self.item_id!r}, reason={self.reason!r}, "
+            f"approval_required={self.approval_required})"
         )
 
 
@@ -196,6 +211,16 @@ class StreamStorage:
         # Valideer score-range
         resonance_score = max(0.0, min(1.0, float(resonance_score)))
 
+        # Browser-ingest blijft buiten de Hippocampus totdat Philip de DiffView
+        # expliciet goedkeurt met "Akkoord".
+        if item.taint == TAINT_UNTRUSTED_WEB and item.approval_status != "approved":
+            return StorageResult(
+                stored=False,
+                approval_required=True,
+                item_id=item.id,
+                reason="Browser ingest wacht op Philip Akkoord voordat opslag in Hippocampus mag.",
+            )
+
         # --- Stap 1: drempelcheck ---
         if resonance_score < STORE_THRESHOLD:
             return StorageResult(
@@ -218,6 +243,9 @@ class StreamStorage:
         importance = _resonance_to_importance(resonance_score)
         in_queue = resonance_score >= PROPOSE_THRESHOLD
         ingested_at = _utc_now()
+        dream_sample = DreamCycle.from_env().sample(
+            f"{item.published_at}|{item.content_hash}|{item.source_hash}"
+        )
 
         metadata = {
             "type": "stream_item",
@@ -235,7 +263,25 @@ class StreamStorage:
             "stream_item_id": item.id,
             "in_queue": in_queue,
             "published_at": item.published_at,
+            "taint": item.taint,
+            "approval_status": item.approval_status,
+            "diff_hash": item.diff_hash,
+            "source_host": item.source_host,
+            "scrubber_version": item.scrubber_version,
+            "blocked_patterns": item.blocked_patterns,
+            "allowed_actions": item.allowed_actions,
         }
+        metadata.update(dream_sample.metadata())
+        metadata.update(
+            build_11d_metadata(
+                item=item,
+                resonance_score=resonance_score,
+                importance=importance,
+                ingested_at=ingested_at,
+                dream_hz=dream_sample.hz,
+                relative_temporal_position=dream_sample.relative_temporal_position,
+            )
+        )
 
         try:
             self._collection.add(

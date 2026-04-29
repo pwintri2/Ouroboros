@@ -9,7 +9,7 @@
 #
 # Contract:
 #   NormalizedItem(id, title, text, url, published_at, tags, source_type,
-#                  content_hash, source_hash)
+#                  content_hash, source_hash, browser-taint metadata)
 #   normalize(raw: dict) -> NormalizedItem
 #   fingerprint(item: NormalizedItem) -> str
 
@@ -34,6 +34,7 @@ _MAX_TEXT_LEN = 16_384
 _MAX_URL_LEN = 2_048
 _MAX_TAG_LEN = 64
 _MAX_TAGS = 20
+_MAX_META_LEN = 512
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,13 @@ class NormalizedItem:
     source_type: str      # uit ALLOWED_SOURCE_TYPES
     content_hash: str     # sha256(title + text) — dedup sleutel
     source_hash: str      # sha256(url) — provenance sleutel
+    taint: str = "none"   # "untrusted_web" voor browser-ingest
+    approval_status: str = "not_required"
+    diff_hash: str = ""
+    source_host: str = ""
+    scrubber_version: str = ""
+    blocked_patterns: str = ""
+    allowed_actions: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +151,13 @@ def normalize(raw: dict) -> NormalizedItem:
     published_at = _safe_published_at(raw.get("published_at") or raw.get("pubDate") or raw.get("date"))
     tags = _safe_tags(raw.get("tags") or raw.get("categories"))
     source_type = _safe_source_type(raw.get("source_type") or raw.get("type"))
+    taint = _safe_str(raw.get("taint"), _MAX_META_LEN, "none")
+    approval_status = _safe_str(raw.get("approval_status"), _MAX_META_LEN, "not_required")
+    diff_hash = _safe_str(raw.get("diff_hash"), _MAX_META_LEN)
+    source_host = _safe_str(raw.get("source_host") or raw.get("domain"), _MAX_META_LEN)
+    scrubber_version = _safe_str(raw.get("scrubber_version"), _MAX_META_LEN)
+    blocked_patterns = _safe_str(raw.get("blocked_patterns"), _MAX_META_LEN)
+    allowed_actions = _safe_str(raw.get("allowed_actions"), _MAX_META_LEN)
 
     content_hash = _sha256(title + text)
     source_hash = _sha256(url) if url else _sha256("")
@@ -158,6 +173,13 @@ def normalize(raw: dict) -> NormalizedItem:
         source_type=source_type,
         content_hash=content_hash,
         source_hash=source_hash,
+        taint=taint,
+        approval_status=approval_status,
+        diff_hash=diff_hash,
+        source_host=source_host,
+        scrubber_version=scrubber_version,
+        blocked_patterns=blocked_patterns,
+        allowed_actions=allowed_actions,
     )
 
 

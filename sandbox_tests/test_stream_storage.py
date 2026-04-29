@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch, call
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from controller.stream.normalize import normalize
+from controller.stream.browser_scrubber import prepare_browser_ingest
 from controller.stream.storage import (
     StreamStorage,
     StorageResult,
@@ -337,6 +338,62 @@ class TestStoreMetadataContract(unittest.TestCase):
         r2 = self.storage.store(item2, resonance_score=-5.0)
         self.assertTrue(r1.stored)   # 99 → geclamped naar 1.0 → boven threshold
         self.assertFalse(r2.stored)  # -5 → geclamped naar 0.0 → onder threshold
+
+    def test_metadata_bevat_11d_lagen(self):
+        item = _maak_item()
+        self.storage.store(item, resonance_score=0.5)
+        meta = self.col.get(ids=[item.id])["metadatas"][0]
+        for key in (
+            "d1_physical_body",
+            "d2_physical_source",
+            "d3_physical_container",
+            "d4_chronology",
+            "d5_persona_actor",
+            "d6_persona_intent",
+            "d7_persona_relation",
+            "d8_karmic_taint",
+            "d9_resonance_frequency",
+            "d10_resonance_score",
+            "d11_field",
+        ):
+            self.assertIn(key, meta)
+            self.assertTrue(str(meta[key]))
+        self.assertEqual(meta["dimension_count"], 11)
+
+    def test_metadata_dream_hz_in_baseline_band(self):
+        item = _maak_item()
+        self.storage.store(item, resonance_score=0.5)
+        meta = self.col.get(ids=[item.id])["metadatas"][0]
+        self.assertGreaterEqual(float(meta["dream_hz"]), 418.0)
+        self.assertLessEqual(float(meta["dream_hz"]), 432.0)
+
+
+class TestStoreBrowserApprovalGate(unittest.TestCase):
+
+    def setUp(self):
+        self.col = MockCollection()
+        self.storage = StreamStorage(collection=self.col)
+
+    def test_unapproved_browser_ingest_wordt_niet_opgeslagen(self):
+        raw = prepare_browser_ingest("https://example.com/page", "browser text").to_raw_item()
+        item = normalize(raw)
+        result = self.storage.store(item, resonance_score=0.9)
+        self.assertFalse(result.stored)
+        self.assertTrue(result.approval_required)
+        self.assertEqual(self.col.count(), 0)
+
+    def test_approved_browser_ingest_wordt_opgeslagen_met_taint_metadata(self):
+        raw = prepare_browser_ingest(
+            "https://example.com/page",
+            "browser text",
+            approval="Akkoord",
+        ).to_raw_item()
+        item = normalize(raw)
+        result = self.storage.store(item, resonance_score=0.9)
+        self.assertTrue(result.stored)
+        meta = self.col.get(ids=[item.id])["metadatas"][0]
+        self.assertEqual(meta["taint"], "untrusted_web")
+        self.assertEqual(meta["approval_status"], "approved")
 
 
 # ---------------------------------------------------------------------------
