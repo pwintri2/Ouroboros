@@ -35,6 +35,14 @@ REGISTRY_TOOL_NAMES = (
     "self_training_plan",
     "inspect_hippocampus",
     "run_tests",
+    "roo_read_file",
+    "roo_list_files",
+    "roo_search_files",
+    "roo_write_file_preview",
+    "roo_write_file",
+    "roo_apply_patch_preview",
+    "roo_apply_patch",
+    "roo_execute_command",
 )
 
 MENTOR_MISSIONS = {

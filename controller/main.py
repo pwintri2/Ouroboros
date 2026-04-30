@@ -47,9 +47,51 @@ except ImportError:
     from provider_router import route_gemini, route_claude, check_providers
 
 try:
+    from controller.ollama_router import allowed_available_models, ollama_router_status
+except Exception:
+    def allowed_available_models(models=None) -> tuple[str, ...]:
+        return tuple(str(model) for model in (models or ()) if model)
+
+    def ollama_router_status(list_models=None) -> dict[str, Any]:
+        return {
+            "allowed_models": [],
+            "available_models": [],
+            "roles": {},
+            "default_model": "llama3.2:latest",
+        }
+
+try:
+    from controller.ouroboros_status import compose_ouroboros_status
+except Exception:
+    compose_ouroboros_status = None
+
+try:
     from controller.agent_tools import AgentToolRegistry
 except Exception:
     AgentToolRegistry = None
+
+try:
+    from controller.self_training import self_training_step
+except ImportError:
+    self_training_step = None
+
+try:
+    from controller.multi_api_router import MultiAPIRouter
+except ImportError:
+    MultiAPIRouter = None
+
+try:
+    from controller.api_key_store import (
+        delete_provider_api_key,
+        load_provider_api_keys,
+        provider_key_status,
+        save_provider_api_key,
+    )
+except Exception:
+    delete_provider_api_key = None
+    load_provider_api_keys = None
+    provider_key_status = None
+    save_provider_api_key = None
 
 try:
     from controller.api.browser_routes import init_browser_research
@@ -179,6 +221,34 @@ class Query(BaseModel):
 class QueryRequest(Query):
     provider: Optional[str] = None
 
+class CockpitChatRequest(BaseModel):
+    prompt: str
+    provider: Optional[str] = "ollama"
+    model: Optional[str] = None
+    system_prompt: Optional[str] = None
+    history: Optional[List[Dict[str, str]]] = None
+    files: Optional[List[str]] = None
+    include_tools: Optional[bool] = False
+    include_tool_schemas: Optional[bool] = False
+    tools: Optional[Any] = None
+    role: Optional[str] = None
+
+class ProviderApiKeyRequest(BaseModel):
+    provider: str
+    api_key: Optional[str] = None
+    approval: Optional[str] = None
+    delete: Optional[bool] = False
+
+class OuroborosLoopStartRequest(BaseModel):
+    prompt: Optional[str] = None
+    browser_text: Optional[str] = None
+    url: Optional[str] = "https://teachablemachine.withgoogle.com/train"
+    target_hz: Optional[float] = None
+    approval: Optional[str] = None
+    test_selector: Optional[str] = None
+    run_tests: Optional[bool] = False
+    trigger_step: Optional[bool] = True
+
 class PlanExecution(BaseModel):
     plan_text: str
 
@@ -266,8 +336,10 @@ async def health():
 
 @app.get("/models")
 async def get_models():
-    models = ollama.list_models()
-    return {"models": models, "local": models}
+    raw_models = _raw_model_names()
+    models = _safe_model_names(raw_models)
+    ignored = [model for model in raw_models if model not in set(models)]
+    return {"models": models, "local": models, "ignored_disallowed_models": ignored}
 
 @app.post("/keep-alive")
 async def keep_alive():
@@ -320,6 +392,22 @@ async def ouroboros_prompt_understanding(req: PromptUnderstandingRequest):
 @app.post("/api/ouroboros/self-training/step")
 async def ouroboros_self_training_step(req: SelfTrainingStepRequest):
     return _self_training_step_payload(req)
+
+@app.post("/api/ouroboros/loop/start")
+async def ouroboros_loop_start(req: OuroborosLoopStartRequest):
+    return _ouroboros_loop_start_payload(req)
+
+@app.post("/api/ouroboros/loop/pause")
+async def ouroboros_loop_pause():
+    return _ouroboros_loop_control_payload("paused")
+
+@app.post("/api/ouroboros/loop/abort")
+async def ouroboros_loop_abort():
+    return _ouroboros_loop_control_payload("aborted")
+
+@app.get("/api/ouroboros/loop/status")
+async def ouroboros_loop_status():
+    return _ouroboros_loop_status_payload()
 
 @app.post("/api/ouroboros/training/ingest")
 async def ouroboros_training_ingest(req: TrainingIngestRequest):
@@ -383,7 +471,7 @@ async def ask(query: Query):
 
     # We geven de files keurig door aan de router
     response = router.route_request(
-        enriched_prompt, 
+        enriched_prompt,
         model=target_model,
         history=query.history,
         system_prompt=query.system_prompt,
@@ -419,11 +507,11 @@ async def orchestrate_task(request: OrchestrateRequest):
     print(f"\n--- 🧠 REGIEKAMER API ---")
     print(f"Taak: {request.task}")
     print(f"--------------------------\n")
-    
+
     # Voert autonoom een OODA loop uit tot hij op GREEN staat
     # Optionally explicitly pass active model, but orchestrator currently handles it internally
     result = orchestrator.execute_task(request.task, max_iterations=request.max_iterations)
-    
+
     # We returnen direct de status (Success/Failed) plus eventueel final code.
     return result
 
@@ -457,7 +545,7 @@ async def learn_url(request: URLRequest):
 
         # Update digest_text to not break, but ideally use kb singleton
         # the simplest is to just rely on digest_text doing what it does or calling kb.ingest directly
-        # if the file doesn't have an ingest raw text function we will keep digest text logic but default to the right collection 
+        # if the file doesn't have an ingest raw text function we will keep digest text logic but default to the right collection
         metadata = {"url": url}
         from controller.knowledge_base import CHROMA_COLLECTION_NAME
         result = digest_text(text, source_metadata=metadata, collection_name=CHROMA_COLLECTION_NAME)
@@ -508,6 +596,22 @@ async def get_providers():
         result["ollama"] = {"available": False, "models": []}
     return result
 
+@app.get("/api/cockpit/config")
+async def cockpit_config():
+    return _cockpit_config_payload()
+
+@app.post("/api/cockpit/chat")
+async def cockpit_chat(req: CockpitChatRequest):
+    return await _cockpit_chat_payload(req)
+
+@app.get("/api/cockpit/api-keys")
+async def cockpit_api_keys():
+    return _api_key_status_payload()
+
+@app.post("/api/cockpit/api-keys")
+async def cockpit_save_api_key(req: ProviderApiKeyRequest):
+    return _save_api_key_payload(req)
+
 
 def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
     return {
@@ -524,7 +628,340 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
     }
 
 
-def _safe_model_names() -> list[str]:
+APPROVAL_PHRASE = "Akkoord"
+MULTI_API_PROVIDER_MODELS: dict[str, list[str]] = {
+    "openai": ["gpt-4.1", "gpt-4.1-mini"],
+    "anthropic": ["claude-opus-4-6", "claude-sonnet-4-6"],
+    "google": ["gemini-2.5-pro", "gemini-2.0-flash"],
+    "xai": ["grok-3", "grok-3-mini"],
+    "mistral": ["mistral-large-latest", "mistral-small-latest"],
+}
+MULTI_API_KEY_ENV: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "xai": "XAI_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+}
+PROVIDER_ALIASES: dict[str, str] = {
+    "local": "ollama",
+    "ollama": "ollama",
+    "chatgpt": "openai",
+    "claude": "anthropic",
+    "anthropic": "anthropic",
+    "gemini": "google",
+    "google": "google",
+    "grok": "xai",
+    "xai": "xai",
+}
+
+
+def _safe_check_providers() -> dict[str, dict[str, Any]]:
+    try:
+        return check_providers()
+    except Exception as exc:
+        return {"provider_router": {"status": "error", "available": False, "reason": str(exc)}}
+
+
+def _backend_status_payload(models: Optional[list[str]] = None) -> dict[str, Any]:
+    try:
+        memories = kb.collection.count()
+    except Exception:
+        memories = 0
+    return {
+        "status": "online",
+        "agent": "Wintrip",
+        "memories": memories,
+        "training": "online",
+        "models_available": len(models or []),
+        "loop": _loop_summary(),
+    }
+
+
+def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, dict[str, Any]]:
+    models = models or []
+    key_status = _api_key_status_payload().get("providers", {})
+    options: dict[str, dict[str, Any]] = {
+        "ollama": {
+            "provider": "ollama",
+            "label": "Local Ollama",
+            "available": bool(models),
+            "enabled": True,
+            "local_only": True,
+            "models": models,
+            "default_model": _active_base(models),
+            "status": "online" if models else "unavailable",
+        }
+    }
+    for provider, model_options in MULTI_API_PROVIDER_MODELS.items():
+        env_name = MULTI_API_KEY_ENV.get(provider, "")
+        store_status = key_status.get(provider, {})
+        configured = bool(os.getenv(env_name) or store_status.get("configured"))
+        options[provider] = {
+            "provider": provider,
+            "label": provider.title(),
+            "available": bool(MultiAPIRouter is not None and configured),
+            "enabled": bool(MultiAPIRouter is not None and configured),
+            "configured": configured,
+            "key_source": store_status.get("source", "missing"),
+            "masked_key": store_status.get("masked", ""),
+            "local_only": False,
+            "models": model_options,
+            "default_model": model_options[0] if model_options else "",
+            "status": "configured" if configured else "missing_api_key",
+            "router_available": MultiAPIRouter is not None,
+        }
+    for provider, status in _safe_check_providers().items():
+        if provider not in options:
+            options[provider] = dict(status)
+            options[provider].setdefault("provider", provider)
+            options[provider].setdefault("models", status.get("models", []))
+    return options
+
+
+def _cockpit_config_payload() -> dict[str, Any]:
+    raw_models = _raw_model_names()
+    models = _safe_model_names(raw_models)
+    ignored = [model for model in raw_models if model not in set(models)]
+    provider_options = _provider_options_payload(models)
+    return {
+        "status": "online",
+        "backend": _backend_status_payload(models),
+        "providers": provider_options,
+        "provider_options": provider_options,
+        "available_models": {
+            "ollama": models,
+            "local": models,
+            "raw_local": raw_models,
+            "ignored_disallowed_models": ignored,
+            "multi_api": {provider: details.get("models", []) for provider, details in provider_options.items() if provider != "ollama"},
+        },
+        "models": models,
+        "required_approval_phrase": APPROVAL_PHRASE,
+        "approval": {"required_phrase": APPROVAL_PHRASE, "case_sensitive": True},
+        "api_keys": _api_key_status_payload(),
+        "tool_schemas_available": callable(getattr(agent_tools, "get_tool_schemas", None)),
+        "capabilities": {
+            "cockpit_chat": {"method": "POST", "path": "/api/cockpit/chat"},
+            "loop_start": {"method": "POST", "path": "/api/ouroboros/loop/start"},
+            "loop_pause": {"method": "POST", "path": "/api/ouroboros/loop/pause"},
+            "loop_abort": {"method": "POST", "path": "/api/ouroboros/loop/abort"},
+            "loop_status": {"method": "GET", "path": "/api/ouroboros/loop/status"},
+            **_ouroboros_capabilities(),
+        },
+    }
+
+
+def _normalize_cockpit_provider(provider: Optional[str]) -> tuple[str, str]:
+    requested = str(provider or "ollama").strip().lower() or "ollama"
+    return requested, PROVIDER_ALIASES.get(requested, requested)
+
+
+def _default_cockpit_model(provider: str, requested_model: Optional[str] = None) -> str:
+    if requested_model:
+        return requested_model
+    if provider == "ollama":
+        return _active_base(_safe_model_names())
+    options = MULTI_API_PROVIDER_MODELS.get(provider) or []
+    return options[0] if options else ""
+
+
+def _agent_tool_schemas(provider: str = "openai") -> list[dict[str, Any]]:
+    getter = getattr(agent_tools, "get_tool_schemas", None)
+    if not callable(getter):
+        return []
+    try:
+        schemas = getter(provider=provider)
+    except TypeError:
+        schemas = getter()
+    except Exception:
+        return []
+    return list(schemas or [])
+
+
+def _requested_tool_payload(req: CockpitChatRequest, provider: str) -> list[dict[str, Any]]:
+    if isinstance(req.tools, list):
+        return [tool for tool in req.tools if isinstance(tool, dict)]
+    wants_registry_tools = bool(req.include_tools or req.include_tool_schemas or req.tools is True)
+    schema_provider = "openai" if provider in MULTI_API_PROVIDER_MODELS else provider
+    return _agent_tool_schemas(provider=schema_provider) if wants_registry_tools else []
+
+
+def _should_return_tool_schemas(req: CockpitChatRequest) -> bool:
+    return bool(req.include_tools or req.include_tool_schemas or req.tools is True or isinstance(req.tools, list))
+
+
+def _multi_api_router_instance() -> Any:
+    key_map = _stored_api_keys()
+    key_version = tuple(sorted((key, value[-8:]) for key, value in key_map.items()))
+    existing = getattr(app.state, "multi_api_router", None)
+    existing_version = getattr(app.state, "multi_api_router_key_version", None)
+    if existing is not None and callable(getattr(existing, "route_chat", None)) and existing_version == key_version:
+        return existing
+    if MultiAPIRouter is None:
+        return None
+    try:
+        instance = MultiAPIRouter(api_keys=key_map)
+        app.state.multi_api_router = instance
+        app.state.multi_api_router_key_version = key_version
+        return instance
+    except Exception:
+        return None
+
+
+def _stored_api_keys() -> dict[str, str]:
+    if callable(load_provider_api_keys):
+        try:
+            return load_provider_api_keys()
+        except Exception:
+            return {}
+    return {}
+
+
+def _api_key_status_payload() -> dict[str, Any]:
+    if not callable(provider_key_status):
+        return {
+            "status": "unavailable",
+            "providers": {},
+            "error": "controller.api_key_store is niet beschikbaar",
+            "secrets_returned": False,
+        }
+    try:
+        return {
+            "status": "online",
+            "providers": provider_key_status(),
+            "secrets_returned": False,
+            "approval_required": True,
+            "required_approval_phrase": APPROVAL_PHRASE,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "providers": {},
+            "error": str(exc),
+            "secrets_returned": False,
+        }
+
+
+def _save_api_key_payload(req: ProviderApiKeyRequest) -> dict[str, Any]:
+    if (req.approval or "").strip() != APPROVAL_PHRASE:
+        return {
+            "status": "blocked",
+            "provider": req.provider,
+            "stderr": f"API key opslag wacht op exact {APPROVAL_PHRASE}.",
+            "secrets_returned": False,
+        }
+    try:
+        if bool(req.delete):
+            if not callable(delete_provider_api_key):
+                raise RuntimeError("delete_provider_api_key unavailable")
+            provider_status = delete_provider_api_key(req.provider)
+            action = "deleted"
+        else:
+            if not callable(save_provider_api_key):
+                raise RuntimeError("save_provider_api_key unavailable")
+            provider_status = save_provider_api_key(req.provider, req.api_key or "")
+            action = "saved"
+        app.state.multi_api_router = None
+        app.state.multi_api_router_key_version = None
+        return {
+            "status": "success",
+            "action": action,
+            "provider": provider_status.get("provider", req.provider),
+            "key_status": provider_status,
+            "secrets_returned": False,
+            "next_action": "Kies de provider in de cockpit en stuur een testprompt.",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "provider": req.provider,
+            "stderr": str(exc),
+            "secrets_returned": False,
+        }
+
+
+def _disabled_chat_payload(req: CockpitChatRequest, provider: str, model: str, tools: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "status": "disabled",
+        "provider": provider,
+        "model": model,
+        "response": "",
+        "tool_schemas": tools if _should_return_tool_schemas(req) else [],
+        "tool_schema_count": len(tools),
+        "error": "MultiAPIRouter niet beschikbaar; no external API call was made.",
+        "reason": "Externe provider-routing is disabled/unavailable in deze backend.",
+        "local_only": True,
+        "next_action": "Kies provider 'ollama' of configureer MultiAPIRouter met een expliciete API key.",
+    }
+
+
+async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
+    requested_provider, provider = _normalize_cockpit_provider(req.provider)
+    model = _default_cockpit_model(provider, req.model)
+    tools = _requested_tool_payload(req, provider)
+
+    if provider == "ollama":
+        try:
+            response = router.route_request(
+                req.prompt,
+                model=model,
+                history=req.history or [],
+                system_prompt=req.system_prompt,
+                files=req.files,
+            )
+            return {
+                "status": "success",
+                "provider": "ollama",
+                "requested_provider": requested_provider,
+                "model": model,
+                "response": response,
+                "route": "local",
+                "local_only": True,
+                "tool_schemas": tools if _should_return_tool_schemas(req) else [],
+                "tool_schema_count": len(tools),
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "provider": "ollama",
+                "requested_provider": requested_provider,
+                "model": model,
+                "response": "",
+                "route": "local",
+                "local_only": True,
+                "tool_schemas": tools if _should_return_tool_schemas(req) else [],
+                "tool_schema_count": len(tools),
+                "error": str(exc),
+            }
+
+    multi_router = _multi_api_router_instance()
+    if multi_router is None:
+        return _disabled_chat_payload(req, provider, model, tools)
+
+    result = await multi_router.route_chat(
+        provider=provider,
+        model=model,
+        prompt=req.prompt,
+        system_prompt=req.system_prompt,
+        tools=tools or None,
+        history=req.history or [],
+    )
+    if not isinstance(result, dict):
+        result = {"status": "success", "response": str(result)}
+    result.setdefault("status", "success")
+    result.setdefault("response", result.get("message", ""))
+    result["provider"] = result.get("provider") or provider
+    result["requested_provider"] = requested_provider
+    result["model"] = result.get("model") or model
+    result["route"] = "multi_api"
+    result["local_only"] = False
+    result["tool_schemas"] = tools if _should_return_tool_schemas(req) else []
+    result["tool_schema_count"] = len(tools)
+    return result
+
+
+def _raw_model_names() -> list[str]:
     try:
         raw = ollama.list_models() or []
     except Exception:
@@ -538,6 +975,11 @@ def _safe_model_names() -> list[str]:
         if name:
             names.append(str(name))
     return names
+
+
+def _safe_model_names(raw_models: Optional[list[str]] = None) -> list[str]:
+    raw = raw_models if raw_models is not None else _raw_model_names()
+    return list(allowed_available_models(raw))
 
 
 def _active_base(models: Optional[list[str]] = None) -> str:
@@ -575,11 +1017,29 @@ def _ensure_ouroboros_model_state(models: Optional[list[str]] = None) -> dict[st
     return state
 
 
+def _roo_adapter_status_payload(registry_status: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    if isinstance(registry_status, dict) and isinstance(registry_status.get("roo_adapter"), dict):
+        return registry_status["roo_adapter"]
+    state_value = getattr(app.state, "roo_adapter", None)
+    if isinstance(state_value, dict):
+        return state_value
+    try:
+        from controller.roo_tools import roo_tools_status
+
+        return roo_tools_status()
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "available": False,
+            "reason": str(exc),
+            "fake_success": False,
+        }
+
+
 def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     models = _safe_model_names()
     model_state = _ensure_ouroboros_model_state(models)
     active_base = model_state.get("active_base") or _active_base(models)
-    model_online = OUROBOROS_MODEL_NAME in models
     records = _hippocampus_records(limit=3)
     last_tool = getattr(agent_tools, "last_tool_result", None) or {}
     research = getattr(app.state, "ouroboros_browser_research", None) or {
@@ -588,6 +1048,45 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
         "last_url": "",
         "flags": [],
     }
+    router_status = ollama_router_status(list_models=lambda: models)
+    try:
+        registry_status = agent_tools.status()
+    except Exception:
+        registry_status = {}
+    roo_adapter = _roo_adapter_status_payload(registry_status)
+    self_modification = getattr(app.state, "self_modification_pipeline", None)
+    selected_by_role = dict(router_status.get("selected_by_role") or {})
+    role_overrides = {
+        "Developer": selected_by_role.get("self_modification") or selected_by_role.get("code") or "",
+        "Researcher": selected_by_role.get("research") or "",
+        "Critic": selected_by_role.get("critic") or "",
+        "Trainer": selected_by_role.get("default") or "",
+        "Tester": selected_by_role.get("test") or "",
+    }
+    if compose_ouroboros_status is not None:
+        payload = compose_ouroboros_status(
+            model_name=OUROBOROS_MODEL_NAME,
+            available_models=models,
+            active_base=active_base,
+            role_model_overrides=role_overrides,
+            provider_status=check_providers,
+            agent_tools=agent_tools,
+            last_tool_result=last_tool,
+            records=records,
+            geometry_11d=_geometry_11d(records=records),
+            browser_research=research,
+            model_state=model_state,
+            capabilities=_ouroboros_capabilities(),
+            roo_adapter=roo_adapter,
+            self_modification_pipeline=self_modification,
+            training_events=getattr(app.state, "training_events", []),
+            extra={"ollama_router": router_status},
+        )
+        if extra:
+            payload.update(extra)
+        return payload
+
+    model_online = OUROBOROS_MODEL_NAME in models
     payload = {
         "status": "online",
         "model": {
@@ -605,6 +1104,13 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
         "records": records,
         "stdout": str(last_tool.get("stdout", "")),
         "stderr": str(last_tool.get("stderr") or last_tool.get("error") or ""),
+        "ollama_router": router_status,
+        "external_providers": check_providers(),
+        "blocked_external_providers": list(check_providers().keys()),
+        "roo_adapter": roo_adapter or {"status": "unavailable", "available": False},
+        "last_tool_call": last_tool or {"status": "not_run"},
+        "self_modification_pipeline": self_modification or {"status": "not_configured", "approval_required": True},
+        "integrity": {"fake_fine_tune_success": False, "fake_tool_success": False},
         "learned": "Status gelezen: model, research, 11D geometry en Hippocampus records zijn beschikbaar.",
         "mentor": "Backend-first: gebruik Preview Ingest voordat iets in 11D Memory wordt opgeslagen.",
         "next_action": "Create/Refresh Ouroboros Model" if not model_online else "Research Missing Knowledge",
@@ -613,6 +1119,165 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
     if extra:
         payload.update(extra)
     return payload
+
+
+def _loop_summary() -> dict[str, Any]:
+    state = _ensure_ouroboros_loop_state()
+    return {
+        "status": state.get("status", "idle"),
+        "running": bool(state.get("running")),
+        "queued": bool(state.get("queued")),
+        "iteration": int(state.get("iteration", 0) or 0),
+        "last_step_status": (state.get("last_step") or {}).get("status") if isinstance(state.get("last_step"), dict) else None,
+        "updated_at": state.get("updated_at"),
+    }
+
+
+def _ensure_ouroboros_loop_state() -> dict[str, Any]:
+    state = getattr(app.state, "ouroboros_loop", None)
+    if not isinstance(state, dict):
+        state = {
+            "status": "idle",
+            "running": False,
+            "queued": False,
+            "abort_requested": False,
+            "pause_requested": False,
+            "iteration": 0,
+            "prompt": "",
+            "last_step": None,
+            "last_error": "",
+            "started_at": None,
+            "updated_at": None,
+            "paused_at": None,
+            "aborted_at": None,
+        }
+        app.state.ouroboros_loop = state
+    return state
+
+
+def _ouroboros_loop_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    state = dict(_ensure_ouroboros_loop_state())
+    payload = {
+        "status": state.get("status", "idle"),
+        "loop": state,
+        "running": bool(state.get("running")),
+        "queued": bool(state.get("queued")),
+        "iteration": int(state.get("iteration", 0) or 0),
+        "last_step": state.get("last_step"),
+        "required_approval_phrase": APPROVAL_PHRASE,
+        "next_action": state.get("next_action") or "Start Loop",
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _ouroboros_loop_start_payload(req: OuroborosLoopStartRequest) -> dict[str, Any]:
+    state = _ensure_ouroboros_loop_state()
+    now = time.time()
+    prompt = req.prompt or req.browser_text or "Ouroboros self-training loop"
+    if state.get("running"):
+        state.update(
+            {
+                "status": "queued",
+                "queued": True,
+                "queued_prompt": prompt,
+                "updated_at": now,
+                "next_action": "Wacht tot de huidige self-training stap klaar is.",
+            }
+        )
+        return _ouroboros_loop_status_payload({"message": "Loop is al bezig; startverzoek staat queued."})
+
+    state.update(
+        {
+            "status": "running" if req.trigger_step else "queued",
+            "running": bool(req.trigger_step),
+            "queued": not bool(req.trigger_step),
+            "abort_requested": False,
+            "pause_requested": False,
+            "prompt": prompt,
+            "started_at": now,
+            "updated_at": now,
+            "next_action": "Self-training step uitvoeren." if req.trigger_step else "Queued tot de cockpit de volgende stap start.",
+        }
+    )
+    if not req.trigger_step:
+        return _ouroboros_loop_status_payload({"message": "Loop startverzoek staat queued; geen background loop gestart."})
+
+    try:
+        step = _self_training_step_payload(
+            SelfTrainingStepRequest(
+                prompt=prompt,
+                browser_text=req.browser_text,
+                url=req.url,
+                target_hz=req.target_hz,
+                approval=req.approval,
+                test_selector=req.test_selector,
+                run_tests=req.run_tests,
+            )
+        )
+        step_status = str(step.get("status") or "success")
+        if step_status == "blocked":
+            loop_status = "blocked"
+        elif step_status == "error":
+            loop_status = "error"
+        else:
+            loop_status = "completed"
+        state.update(
+            {
+                "status": loop_status,
+                "running": False,
+                "queued": False,
+                "iteration": int(state.get("iteration", 0) or 0) + 1,
+                "last_step": step,
+                "last_error": str(step.get("stderr") or step.get("error") or "") if loop_status == "error" else "",
+                "updated_at": time.time(),
+                "next_action": step.get("next_action") or "Inspect Loop Status",
+            }
+        )
+    except Exception as exc:
+        state.update(
+            {
+                "status": "error",
+                "running": False,
+                "queued": False,
+                "last_error": str(exc),
+                "updated_at": time.time(),
+                "next_action": "Inspect failing self-training step.",
+            }
+        )
+    return _ouroboros_loop_status_payload({"message": "Een enkele self-training stap is uitgevoerd; geen infinite background loop gestart."})
+
+
+def _ouroboros_loop_control_payload(action: str) -> dict[str, Any]:
+    state = _ensure_ouroboros_loop_state()
+    now = time.time()
+    if action == "aborted":
+        state.update(
+            {
+                "status": "aborted",
+                "running": False,
+                "queued": False,
+                "abort_requested": True,
+                "pause_requested": False,
+                "aborted_at": now,
+                "updated_at": now,
+                "next_action": "Start Loop",
+            }
+        )
+    else:
+        state.update(
+            {
+                "status": "paused",
+                "running": False,
+                "queued": False,
+                "pause_requested": True,
+                "paused_at": now,
+                "updated_at": now,
+                "next_action": "Resume via Start Loop",
+            }
+        )
+    return _ouroboros_loop_status_payload()
 
 
 def _ouroboros_create_flow(req: OuroborosModelRequest) -> dict[str, Any]:
@@ -645,7 +1310,7 @@ def _ouroboros_create_flow(req: OuroborosModelRequest) -> dict[str, Any]:
             plan_dict["validation_errors"] = [str(exc)]
 
     execution_result = None
-    approved = (req.approval or "").strip().lower() == "akkoord"
+    approved = (req.approval or "").strip() == APPROVAL_PHRASE
     if bool(req.execute):
         if not approved:
             flags.append("approval_required")
@@ -822,7 +1487,7 @@ def _training_ingest_payload(req: TrainingIngestRequest) -> dict[str, Any]:
             "next_action": "Controleer backend imports.",
         }
     try:
-        approved = (req.approval or "").strip().lower() == "akkoord"
+        approved = (req.approval or "").strip() == APPROVAL_PHRASE
         body = BrowserTrainingRequest(
             url=req.url or "https://teachablemachine.withgoogle.com/train",
             browser_text=req.browser_text,
@@ -1003,6 +1668,42 @@ def _browser_research_payload(req: BrowserResearchRequest) -> dict[str, Any]:
 
 def _self_training_step_payload(req: SelfTrainingStepRequest) -> dict[str, Any]:
     prompt = req.prompt or req.browser_text or "Ouroboros self-training step"
+    approval = (req.approval or "").strip()
+
+    # Als we de echte self_training_step hebben, gebruik die dan!
+    if self_training_step is not None and not (req.run_tests and approval != APPROVAL_PHRASE):
+        try:
+            # We voeren de stap uit via de registry
+            result = self_training_step(
+                philip_opdracht=prompt,
+                registry=agent_tools,
+                approval=approval,
+                action="run_tests" if req.run_tests else None,
+                action_args={"test_selector": req.test_selector} if req.test_selector else None
+            )
+
+            # Verrijk het resultaat met UI-vriendelijke velden indien nodig
+            result["records"] = _hippocampus_records(limit=5)
+            result["geometry_11d"] = _geometry_11d(records=result["records"])
+            if req.run_tests and "test_result" not in result:
+                result["test_result"] = result.get("action_result")
+
+            # Zorg dat de status 'success' is als de reflectie dat zegt
+            if result.get("status") == "blocked" and approval == "Akkoord":
+                # Soms blokkeert een sub-tool maar de loop zelf mag doorgaan als de eind-reflectie positief is
+                pass
+
+            return result
+        except Exception as exc:
+            return {
+                "status": "error",
+                "stderr": str(exc),
+                "learned": "Echte agent-loop faalde.",
+                "mentor": "Check controller/self_training.py voor logicafouten.",
+                "next_action": "Repareer de agent-loop."
+            }
+
+    # Fallback (legacy/passive mode)
     understanding = _prompt_understanding_payload(prompt)
     ingest = None
     if req.browser_text:
@@ -1018,7 +1719,7 @@ def _self_training_step_payload(req: SelfTrainingStepRequest) -> dict[str, Any]:
     records = _hippocampus_records(limit=5)
     test_result = None
     if req.run_tests:
-        if (req.approval or "").strip().lower() == "akkoord":
+        if approval == APPROVAL_PHRASE:
             test_result = agent_tools.run_tool(
                 "run_tests",
                 {
@@ -1031,8 +1732,8 @@ def _self_training_step_payload(req: SelfTrainingStepRequest) -> dict[str, Any]:
                 "tool_name": "run_tests",
                 "status": "blocked",
                 "stdout": "",
-                "stderr": "Run Tests wacht op Akkoord.",
-                "error": "Run Tests wacht op Akkoord.",
+                "stderr": f"Run Tests wacht op {APPROVAL_PHRASE}.",
+                "error": f"Run Tests wacht op {APPROVAL_PHRASE}.",
             }
     stdout_parts = [understanding.get("stdout", "")]
     if ingest:
@@ -1055,7 +1756,7 @@ def _self_training_step_payload(req: SelfTrainingStepRequest) -> dict[str, Any]:
         "stdout": "\n".join(part for part in stdout_parts if part),
         "stderr": "\n".join(part for part in stderr_parts if part),
         "learned": "Self-training stap heeft promptbegrip, optionele ingest en records samengebracht.",
-        "mentor": "Volgende stap blijft klein: inspecteer resultaat of geef Akkoord voor opslag/tests.",
+        "mentor": f"Volgende stap blijft klein: inspecteer resultaat of geef {APPROVAL_PHRASE} voor opslag/tests.",
         "next_action": "Inspect Hippocampus" if ingest and ingest.get("stored") else "Preview Ingest",
     }
 

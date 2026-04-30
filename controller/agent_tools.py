@@ -40,6 +40,16 @@ REGISTERED_TOOLS: tuple[str, ...] = (
     "self_training_plan",
     "inspect_hippocampus",
     "run_tests",
+    "roo_read_file",
+    "roo_list_files",
+    "roo_search_files",
+    "roo_write_file_preview",
+    "roo_write_file",
+    "roo_apply_patch_preview",
+    "roo_apply_patch",
+    "roo_execute_command",
+    "roo_attempt_completion",
+    "roo_ask_followup_question",
 )
 
 DEFAULT_TEST_SELECTOR = "sandbox_tests.test_agent_tools sandbox_tests.test_self_training_loop"
@@ -126,6 +136,8 @@ class AgentToolRegistry:
                     str(args.get("test_selector") or DEFAULT_TEST_SELECTOR),
                     str(args.get("approval") or ""),
                 )
+            elif tool_name.startswith("roo_"):
+                result = self.roo_tool(tool_name, args)
             else:
                 result = _tool_result(tool_name, "error", stderr="Registry dispatch invariant failed.")
         except Exception as exc:
@@ -147,7 +159,105 @@ class AgentToolRegistry:
             "status": "online",
             "available_tools": list(REGISTERED_TOOLS),
             "last_tool_result": self.last_tool_result,
+            "roo_adapter": self._roo_status(),
             "autonomy": self._autonomy_for(self.last_tool_result or {}),
+        }
+
+    def get_tool_schemas(self, provider: str = "openai") -> list[dict[str, Any]]:
+        """Return function calling schemas for registered tools."""
+
+        # Roo-tools are high priority for the new cockpit
+        schemas = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "roo_read_file",
+                    "description": "Leest de inhoud van een bestand in de workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Pad relatief aan /workspace."},
+                            "offset": {"type": "integer", "description": "Start byte."},
+                            "limit": {"type": "integer", "description": "Maximum bytes om te lezen."}
+                        },
+                        "required": ["path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "roo_write_file",
+                    "description": "Schrijft of overschrijft een bestand in de workspace. VEREIST PHILIP AKKOORD.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Pad relatief aan /workspace."},
+                            "content": {"type": "string", "description": "De volledige nieuwe inhoud."},
+                            "approval": {"type": "string", "description": "Moet 'Akkoord' bevatten voor echte schrijfactie."}
+                        },
+                        "required": ["path", "content", "approval"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "roo_execute_command",
+                    "description": "Voert een veilig shell-commando uit in de /workspace sandbox. VEREIST PHILIP AKKOORD.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string", "description": "Het commando, bijv. 'ls -la' of 'pytest'."},
+                            "approval": {"type": "string", "description": "Moet 'Akkoord' bevatten."}
+                        },
+                        "required": ["command", "approval"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "roo_attempt_completion",
+                    "description": "Signaleert dat de taak voltooid is of een mijlpaal is bereikt.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "result": {"type": "string", "description": "Samenvatting van wat er gedaan is."},
+                            "command": {"type": "string", "description": "Optioneel commando om resultaat te verifiëren."}
+                        },
+                        "required": ["result"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_search",
+                    "description": "Zoekt in de 11D Hippocampus naar relevante eerdere kennis en code.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "De zoekterm."},
+                            "limit": {"type": "integer", "description": "Aantal resultaten (max 12)."}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
+        ]
+
+        if provider == "anthropic":
+            return [self._to_anthropic_schema(s) for s in schemas]
+
+        return schemas
+
+    def _to_anthropic_schema(self, openai_schema: dict[str, Any]) -> dict[str, Any]:
+        fn = openai_schema.get("function", {})
+        return {
+            "name": fn.get("name"),
+            "description": fn.get("description"),
+            "input_schema": fn.get("parameters")
         }
 
     def memory_search(self, query: str, limit: int = 5) -> dict[str, Any]:
@@ -563,6 +673,81 @@ class AgentToolRegistry:
             next_action="Fix failing tests or reflect on the passing validation.",
         )
 
+    def roo_tool(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        from controller import roo_tools
+
+        if tool_name == "roo_read_file":
+            return roo_tools.read_file(
+                path=str(args.get("path") or ""),
+                offset=_int_or_none(args.get("offset")),
+                limit=_int_or_none(args.get("limit")),
+            )
+        if tool_name == "roo_list_files":
+            return roo_tools.list_files(
+                path=str(args.get("path") or "."),
+                recursive=bool(args.get("recursive")),
+                limit=_int(args.get("limit"), default=200),
+            )
+        if tool_name == "roo_search_files":
+            return roo_tools.search_files(
+                path=str(args.get("path") or "."),
+                regex=str(args.get("regex") or args.get("pattern") or ""),
+                file_pattern=(str(args.get("file_pattern")) if args.get("file_pattern") else None),
+                limit=_int(args.get("limit"), default=100),
+            )
+        if tool_name == "roo_write_file_preview":
+            return roo_tools.write_file_preview(
+                path=str(args.get("path") or ""),
+                content=str(args.get("content") or ""),
+            )
+        if tool_name == "roo_write_file":
+            return roo_tools.write_file(
+                path=str(args.get("path") or ""),
+                content=str(args.get("content") or ""),
+                approval=str(args.get("approval") or ""),
+            )
+        if tool_name == "roo_apply_patch_preview":
+            return roo_tools.apply_patch_preview(patch=str(args.get("patch") or ""))
+        if tool_name == "roo_apply_patch":
+            return roo_tools.apply_patch(
+                patch=str(args.get("patch") or ""),
+                approval=str(args.get("approval") or ""),
+            )
+        if tool_name == "roo_execute_command":
+            return roo_tools.execute_command(
+                command=str(args.get("command") or ""),
+                approval=str(args.get("approval") or ""),
+                timeout=_int(args.get("timeout"), default=20),
+            )
+        if tool_name == "roo_attempt_completion":
+            return roo_tools.attempt_completion(
+                result=str(args.get("result") or ""),
+                command=(str(args.get("command")) if args.get("command") else None),
+            )
+        if tool_name == "roo_ask_followup_question":
+            return roo_tools.ask_followup_question(
+                question=str(args.get("question") or ""),
+            )
+        return _tool_result(
+            tool_name,
+            "error",
+            stderr=f"Unknown Roo adapter tool: {tool_name}",
+            source="roo_tools.local_adapter",
+        )
+
+    def _roo_status(self) -> dict[str, Any]:
+        try:
+            from controller.roo_tools import roo_tools_status
+
+            return roo_tools_status()
+        except Exception as exc:
+            return {
+                "status": "unavailable",
+                "available": False,
+                "reason": str(exc),
+                "fake_success": False,
+            }
+
     def _request(self) -> Any:
         if self.app is None:
             state = SimpleNamespace(training_storage=self.storage, training_events=[])
@@ -631,6 +816,8 @@ class AgentToolRegistry:
             return {"level": "high", "label": "High: local memory and planning first", "memory_first": True}
         if tool in {"scrub_browser_content", "training_ingest", "safe_shell", "run_tests"}:
             return {"level": "medium", "label": "Medium: approval-gated local action", "memory_first": True}
+        if str(tool or "").startswith("roo_"):
+            return {"level": "medium", "label": "Medium: Roo adapter under workspace/approval gates", "memory_first": True}
         if tool in {"browser_research", "chatgpt_browser_ask"}:
             return {"level": "guarded", "label": "Guarded: external/browser perimeter", "memory_first": True}
         return {"level": "unknown", "label": "No registered tool result yet", "memory_first": False}
@@ -1061,6 +1248,15 @@ def _float_or_none(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 
