@@ -1,13 +1,100 @@
 # Ouroboros Cockpit + Roo/Trainer Handoff
 
 Datum: 2026-04-30
-Branch: `codex/ouroboros-cockpit-roo-trainer-20260430`
+Laatste snapshotbranch: `codex/wintripai-roo-ui-core-snapshot-20260501-0030`
+Oorspronkelijke cockpitbranch: `codex/ouroboros-cockpit-roo-trainer-20260430`
 Repo: `/home/pwintri2/WintripAI`
 
 ## Status
 
 De primaire UI is nu de native Tauri/React cockpit in `ouroboros_cockpit/`.
 De oude `WintripAI_IDE.html` blijft legacy en mag niet opnieuw de hoofdinterface worden.
+
+## Werkbasis En Bestandslocaties
+
+Werk altijd vanuit:
+
+```text
+/home/pwintri2/WintripAI
+```
+
+Canonieke projectdelen:
+
+```text
+/home/pwintri2/WintripAI/ouroboros_cockpit/     primaire mooie Tauri/React UI
+/home/pwintri2/WintripAI/controller/            FastAPI backend, tools, routers, trainer adapters
+/home/pwintri2/WintripAI/sandbox_tests/         backend/unit/sandbox tests
+/home/pwintri2/WintripAI/resonant_ouroboros/    Fase 1/Awake Keeper modules
+/home/pwintri2/WintripAI/Modelfile.ouroboros    lokale Ollama modelidentiteit
+/home/pwintri2/WintripAI/wintrip_brain/         lokale ChromaDB state; niet committen
+/home/pwintri2/WintripAI/.secrets/              lokale API keys; nooit committen
+```
+
+Externe bronmappen voor de volgende bouwfase:
+
+```text
+/home/pwintri2/Roo       Roo Code bron voor tool/mode/task lifecycle inventaris
+/home/pwintri2/litgpt    LitGPT bron en CLI/tutorials voor LoRA/QLoRA jobs
+/home/pwintri2/unsloth   Unsloth bron voor snelle SFT/LoRA/GGUF/Ollama export
+```
+
+Eerst te bouwen/configureren bestanden in `controller/`:
+
+```text
+controller/roo_manifest.py
+controller/project_context.py
+controller/trainer_jobs.py
+controller/training_dataset_builder.py
+controller/litgpt_adapter.py
+controller/unsloth_adapter.py
+controller/model_artifacts.py
+```
+
+De cockpit-uitbreiding hoort in:
+
+```text
+ouroboros_cockpit/src/App.tsx
+ouroboros_cockpit/src/styles.css
+```
+
+Behoud de bestaande React/Tauri cockpit als hoofd-UI. De visuele layout, providerkeuze, statusstrip, terminal, approval-paneel, 11D memory en API-key beheer moeten intact blijven. Voeg alleen nieuwe Roo/Trainer panels toe rond de bestaande structuur; vervang de cockpit niet door `WintripAI_IDE.html` of een losse webpagina.
+
+## Docker-First En Deploy-Gate
+
+- Ontwikkel en test eerst Docker-contained of via de bestaande safe shell perimeter.
+- Nieuwe trainer-commando's moeten via `controller/safe_shell.py`, Docker exec, of een expliciet job-runner pad in `/workspace` lopen.
+- Installeer geen persistente packages op de host als default route.
+- Draai geen `docker compose up`, deployment, langdurige trainer-job, Ollama model create, of public service start zonder expliciete toestemming.
+- De vereiste toestemmingstekst voor deploy blijft exact:
+
+```text
+JA, deploy nu
+```
+
+- Voor die toestemming mag alleen worden voorbereid: code, config, tests, Dockerfile/compose wijzigingen, dry-runs, command previews en job previews.
+
+## Pipeline Configuratie
+
+De Roo/LitGPT/Unsloth pipeline moet job-based en eerlijk geconfigureerd worden:
+
+```text
+draft -> approved -> dataset_ready -> training -> validating -> exporting -> ollama_create -> online
+```
+
+Foutpad:
+
+```text
+failed
+```
+
+Statusregels:
+
+- `self_modification_pipeline.status=configured` pas zetten nadat Roo manifest, context engine, preview/apply/test flow en endpoints bestaan.
+- `fine_tune.status=success` of `completed` pas zetten na een echte LitGPT of Unsloth job met artifact registratie.
+- `model.online=true` pas zetten nadat Ollama inventory het model echt rapporteert.
+- Datasetbouw mag alleen uit goedgekeurde 11D records of expliciete snapshots met exact `Akkoord`.
+- Browserdata blijft `UNTRUSTED` tot scrubbed, previewed en goedgekeurd.
+- ChromaDB binary state, model weights, GGUFs, LoRA artifacts en secrets horen niet in commits; registreer alleen metadata en relatieve artifact paths.
 
 Runtime:
 
