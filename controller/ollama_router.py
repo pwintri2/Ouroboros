@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterable
 
 
 ALLOWED_OLLAMA_MODELS: tuple[str, ...] = (
+    "ouroboros",
     "deepseek-coder:latest",
     "llama2-uncensored:latest",
     "devstral:latest",
@@ -28,6 +29,7 @@ ALLOWED_OLLAMA_MODELS: tuple[str, ...] = (
 _ALLOWED_MODEL_SET = frozenset(ALLOWED_OLLAMA_MODELS)
 
 MODEL_ALIASES: dict[str, str] = {
+    "ouroboros:latest": "ouroboros",
     "deepseek-coder": "deepseek-coder:latest",
     "llama2-uncensored": "llama2-uncensored:latest",
     "devstral": "devstral:latest",
@@ -70,7 +72,7 @@ ROLE_MODEL_PREFERENCES: dict[str, tuple[str, ...]] = {
     "code": CODE_MODEL_PREFERENCES,
     "architecture": ("devstral:latest", "gemma4:latest"),
     "reasoning": ("devstral:latest", "gemma4:latest"),
-    "quick": ("phi3:latest", "llama3:8b"),
+    "quick": QUICK_MODEL_PREFERENCES,
     "routing": ("phi3:latest", "llama3:8b"),
     "internal": QUICK_MODEL_PREFERENCES,
     "critic": CRITIC_MODEL_PREFERENCES,

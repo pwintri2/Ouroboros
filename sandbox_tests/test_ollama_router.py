@@ -15,6 +15,7 @@ from controller.ollama_router import (
 
 
 EXPECTED_ALLOWLIST = (
+    "ouroboros",
     "deepseek-coder:latest",
     "llama2-uncensored:latest",
     "devstral:latest",
@@ -44,6 +45,7 @@ class TestOllamaRouter(unittest.TestCase):
     def test_filters_disallowed_models_from_availability(self):
         models = [
             "qwen2.5:latest",
+            {"name": "ouroboros:latest"},
             {"name": "mistral:latest"},
             {"model": "phi4:latest"},
             {"id": "llama3.2:latest"},
@@ -52,7 +54,7 @@ class TestOllamaRouter(unittest.TestCase):
 
         self.assertEqual(
             allowed_available_models(models),
-            ("mistral:latest", "llama3.2:latest"),
+            ("ouroboros", "mistral:latest", "llama3.2:latest"),
         )
 
     def test_code_role_prefers_deepseek_then_codellama_then_devstral(self):

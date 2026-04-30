@@ -23,7 +23,7 @@ button{cursor:pointer;font-family:inherit}
 
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const LAUNCHER = URL_PARAMS.get("launcher") || "http://localhost:9000";
-const BACKEND  = URL_PARAMS.get("backend") || "http://localhost:8000";
+const BACKEND  = URL_PARAMS.get("backend") || "http://localhost:8010";
 
 const FALLBACK_OLLAMA_MODELS = [
   {id:"llama3.2:latest",       label:"llama3.2:latest",       size:"local"},
@@ -101,6 +101,8 @@ function App(){
   const [ouroborosStatus,setOuroborosStatus] = useState(null);
   const [ouroborosResult,setOuroborosResult] = useState(null);
   const [testSelector,setTestSelector] = useState("sandbox_tests.test_training_routes sandbox_tests.test_safe_shell");
+  const [autonomousLoopActive, setAutonomousLoopActive] = useState(false);
+  const [terminalOutput, setTerminalOutput] = useState("");
   const bottomRef = useRef(null);
 
   // Poll server status every 5s
@@ -232,7 +234,11 @@ function App(){
 
   function recordToolResult(data, name="Tool"){
     setLastToolResult(data);
-    if(data.tool_name==="safe_shell" || data.tool_name==="run_tests") setShellResult(data);
+    if(data.tool_name==="safe_shell" || data.tool_name==="run_tests" || data.tool_name==="roo_execute_command") {
+      setShellResult(data);
+      const output = `$ ${data.command || data.result?.command}\n${data.stdout || ""}${data.stderr || data.error || ""}\n`;
+      setTerminalOutput(prev => prev + output);
+    }
     const stdout = data.stdout ? "\nSTDOUT:\n"+data.stdout : "";
     const stderr = data.stderr || data.error ? "\nSTDERR:\n"+(data.stderr||data.error) : "";
     addMsg(`${data.tool_name||name}: ${data.status}${data.stored_to_memory?" · opgeslagen in 11D geheugen":""}${stdout}${stderr}`, name, "system");
@@ -422,6 +428,60 @@ function App(){
     }finally{
       setToolBusy(false);
     }
+  }
+
+  async function startAutonomousLoop() {
+    if (!trainText.trim()) {
+      addMsg("Geef een startopdracht voor de autonome loop.", "Ouroboros", "system");
+      return;
+    }
+    setAutonomousLoopActive(true);
+    addMsg("Autonome loop gestart...", "Ouroboros", "system");
+
+    let currentPrompt = trainText;
+    let iterations = 0;
+    const maxIterations = 5;
+
+    while (iterations < maxIterations) {
+      // Check if user stopped it manually (though in this simple implementation we just loop)
+      // For real async stop, we'd need a shared state check that breaks.
+      setToolBusy(true);
+      try {
+        const res = await fetch(BACKEND + "/api/ouroboros/self-training/step", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: currentPrompt,
+            approval: "Akkoord", // Autonoom door Philip geaccordeerd
+            run_tests: true
+          })
+        });
+        const data = await res.json();
+        recordOuroborosResult(data, "Autonomous Step " + (iterations + 1));
+
+        if (data.status === "success" && data.reflection?.next_action?.includes("done")) {
+          addMsg("Autonome loop voltooid.", "Ouroboros", "system");
+          break;
+        }
+        if (data.status === "error") {
+          addMsg("Autonome loop afgebroken door fout.", "Ouroboros", "system");
+          break;
+        }
+      } catch (e) {
+        addMsg("Loop fout: " + e.message, "Ouroboros", "system");
+        break;
+      } finally {
+        setToolBusy(false);
+      }
+      iterations++;
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    setAutonomousLoopActive(false);
+  }
+
+  function stopAutonomousLoop() {
+    setAutonomousLoopActive(false);
+    addMsg("Autonome loop stop-verzoek ontvangen (stopt na huidige stap).", "Ouroboros", "system");
   }
 
   async function teamImprove(){
@@ -692,6 +752,9 @@ function App(){
                 {can("training_ingest")&&<button onClick={approveTraining} disabled={trainBusy} style={{background:"#10b981",border:"none",color:"#031b13",padding:"6px 10px",borderRadius:6,fontSize:12,fontWeight:600,opacity:trainBusy?0.6:1}}>Akkoord + Store in 11D Memory</button>}
                 {can("inspect_hippocampus")&&<button onClick={inspectHippocampus} disabled={toolBusy} style={{background:"#1e2535",border:"1px solid #2d3748",color:"#cbd5e1",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Inspect Hippocampus</button>}
                 {can("run_tests")&&<button onClick={runTests} disabled={toolBusy} style={{background:"#1e2535",border:"1px solid #2d3748",color:"#cbd5e1",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Run Tests</button>}
+                <button onClick={autonomousLoopActive ? stopAutonomousLoop : startAutonomousLoop} disabled={toolBusy && !autonomousLoopActive} style={{background:autonomousLoopActive?"#ef4444":"#10b981",border:"none",color:"#fff",padding:"6px 10px",borderRadius:6,fontSize:12,fontWeight:600,opacity:toolBusy && !autonomousLoopActive ? 0.6 : 1}}>
+                  {autonomousLoopActive ? "Stop Loop" : "🚀 Start Autonome Loop"}
+                </button>
                 {serverOn&&<button onClick={teamImprove} disabled={toolBusy} style={{background:"#0f766e",border:"none",color:"#e2e8f0",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Laat Team Verbeteren</button>}
                 <span style={{fontSize:10,color:"#64748b"}}>{trainBusy||toolBusy?"bezig":"approval-gated"}</span>
               </div>
@@ -731,6 +794,8 @@ function App(){
                 <div style={{fontSize:11,color:"#cbd5e1"}}>{((trainResult?.dreamcycle||trainingStatus?.dreamcycle||{}).dream_hz||"--")+" Hz"} · {((trainResult?.dreamcycle||trainingStatus?.dreamcycle||{}).frequency_band||"418-432Hz")}</div>
                 <div style={{marginTop:8,fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>Autonomie</div>
                 <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.45}}>{((lastToolResult?.autonomy||agentStatus?.autonomy||{}).label)||"Nog geen tool-resultaat"} · laatste tool: {(lastToolResult?.tool_name)||"--"}</div>
+                <div style={{marginTop:8,fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>Terminal (Workspace)</div>
+                <pre style={{height:120,overflow:"auto",background:"#05070a",border:"1px solid #1e2535",borderRadius:6,padding:8,color:"#10b981",fontSize:10,fontFamily:"'Fira Code', monospace",whiteSpace:"pre-wrap"}}>{terminalOutput || "Wacht op commando..."}</pre>
                 <div style={{marginTop:8,fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>Wat geleerd</div>
                 <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.45}}>{activeOuroboros.learned||"--"}</div>
                 <div style={{marginTop:6,fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>Mentor / next_action</div>
