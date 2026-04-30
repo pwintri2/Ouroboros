@@ -21,21 +21,16 @@ button{cursor:pointer;font-family:inherit}
 <div id="root"></div>
 <script type="text/babel">
 
-const LAUNCHER = "http://localhost:9000";
-const BACKEND  = "http://localhost:8000";
+const URL_PARAMS = new URLSearchParams(window.location.search);
+const LAUNCHER = URL_PARAMS.get("launcher") || "http://localhost:9000";
+const BACKEND  = URL_PARAMS.get("backend") || "http://localhost:8000";
 
-const OLLAMA_MODELS = [
-  {id:"qwen2.5-coder:3b",  label:"qwen2.5-coder:3b",  size:"1.9 GB"},
-  {id:"qwen2.5-coder:7b",  label:"qwen2.5-coder:7b",  size:"4.7 GB"},
-  {id:"phi4:latest",       label:"phi4:latest",        size:"9.1 GB"},
-  {id:"llama3.1:latest",   label:"llama3.1:latest",    size:"4.9 GB"},
-  {id:"nomic-embed-text:latest",label:"nomic-embed-text",size:"274 MB"},
-  {id:"gemma2:latest",     label:"gemma2:latest",      size:"5.4 GB"},
-  {id:"gemma2:2b",         label:"gemma2:2b",          size:"1.6 GB"},
-  {id:"qwen2.5:latest",    label:"qwen2.5:latest",     size:"4.7 GB"},
-  {id:"phi3:latest",       label:"phi3:latest",        size:"2.2 GB"},
-  {id:"llama3:latest",     label:"llama3:latest",      size:"4.7 GB"},
-  {id:"gpt-oss:120b-cloud",label:"gpt-oss:120b-cloud", size:"cloud"},
+const FALLBACK_OLLAMA_MODELS = [
+  {id:"llama3.2:latest",       label:"llama3.2:latest",       size:"local"},
+  {id:"llama3:latest",         label:"llama3:latest",         size:"local"},
+  {id:"mistral:latest",        label:"mistral:latest",        size:"local"},
+  {id:"phi3:latest",           label:"phi3:latest",           size:"local"},
+  {id:"deepseek-coder:latest", label:"deepseek-coder:latest", size:"local"},
 ];
 
 const GROK_MODELS = [
@@ -77,25 +72,56 @@ function Dot({on}){
 
 function App(){
   const [provider,setProvider]   = useState("ollama");
-  const [model,setModel]         = useState("qwen2.5-coder:7b");
+  const [model,setModel]         = useState("llama3.2:latest");
+  const [ollamaModels,setOllamaModels] = useState(FALLBACK_OLLAMA_MODELS);
   const [modelOpen,setModelOpen] = useState(false);
   const [team,setTeam]           = useState({dev:true,crit:false,test:false});
-  const [msgs,setMsgs]           = useState([{role:"system",name:"WintripAI",content:"Waakbewustzijn geactiveerd. Controleer of launcher.py draait op poort 9000.",ts:"--:--"}]);
+  const [msgs,setMsgs]           = useState([{role:"system",name:"WintripAI",content:"Waakbewustzijn geactiveerd. Backend wordt gecontroleerd.",ts:"--:--"}]);
   const [input,setInput]         = useState("");
   const [statusOpen,setStatusOpen] = useState(true);
   const [filesOpen,setFilesOpen] = useState(false);
   const [serverOn,setServerOn]   = useState(false);
   const [serverLoading,setServerLoading] = useState(false);
   const [chromaCount,setChromaCount] = useState(133);
+  const [trainingOpen,setTrainingOpen] = useState(true);
+  const [trainUrl,setTrainUrl] = useState("https://teachablemachine.withgoogle.com/train");
+  const [trainText,setTrainText] = useState("Plak hier wat je wilt trainen. Bijvoorbeeld: Wintrip AI leert een veilige browser-snapshot herkennen via de 11D Hippocampus en DreamCycle 418-432 Hz.");
+  const [trainApproval,setTrainApproval] = useState("");
+  const [trainBusy,setTrainBusy] = useState(false);
+  const [trainResult,setTrainResult] = useState(null);
+  const [trainingStatus,setTrainingStatus] = useState(null);
+  const [targetHz,setTargetHz] = useState(422);
+  const [shellCommand,setShellCommand] = useState("ls");
+  const [shellApproval,setShellApproval] = useState("");
+  const [shellBusy,setShellBusy] = useState(false);
+  const [shellResult,setShellResult] = useState(null);
+  const [toolBusy,setToolBusy] = useState(false);
+  const [lastToolResult,setLastToolResult] = useState(null);
+  const [agentStatus,setAgentStatus] = useState(null);
+  const [ouroborosStatus,setOuroborosStatus] = useState(null);
+  const [ouroborosResult,setOuroborosResult] = useState(null);
+  const [testSelector,setTestSelector] = useState("sandbox_tests.test_training_routes sandbox_tests.test_safe_shell");
   const bottomRef = useRef(null);
 
   // Poll server status every 5s
   useEffect(()=>{
     const check = () => {
-      fetch(LAUNCHER+"/server/status")
+      fetch(BACKEND+"/health")
         .then(r=>r.json())
-        .then(d=>setServerOn(d.running))
-        .catch(()=>setServerOn(false));
+        .then(d=>{
+          setServerOn(true);
+          if(d.memories!==undefined) setChromaCount(d.memories);
+          loadTrainingStatus();
+          loadOuroborosStatus();
+          loadOllamaModels();
+          loadAgentStatus();
+        })
+        .catch(()=>{
+          fetch(LAUNCHER+"/server/status")
+            .then(r=>r.json())
+            .then(d=>setServerOn(d.running))
+            .catch(()=>setServerOn(false));
+        });
     };
     check();
     const t = setInterval(check,5000);
@@ -110,6 +136,10 @@ function App(){
   };
 
   function toggleServer(){
+    if(serverOn){
+      addMsg("Deze UI draait nu direct in Docker. Stoppen kan met: docker stop wintrip-standalone-ui", "WintripAI", "system");
+      return;
+    }
     setServerLoading(true);
     const ep = serverOn?"stop":"start";
     fetch(LAUNCHER+"/server/"+ep,{method:"POST"})
@@ -124,7 +154,7 @@ function App(){
       })
       .catch(()=>{
         setServerLoading(false);
-        addMsg("Launcher niet bereikbaar op poort 9000. Start: python3 launcher.py");
+        addMsg("Launcher niet bereikbaar op poort 9000. Start via: python3 launcher.py of gebruik de Docker-container.", "WintripAI", "system");
       });
   }
 
@@ -132,10 +162,332 @@ function App(){
     setProvider(pid);
     setModelOpen(false);
     if(pid==="grok") setModel("grok-3");
-    else if(pid==="ollama") setModel("qwen2.5-coder:7b");
+    else if(pid==="ollama") setModel((ollamaModels[0]||FALLBACK_OLLAMA_MODELS[0]).id);
   }
 
   function toggleTeam(id){ setTeam(prev=>({...prev,[id]:!prev[id]})); }
+
+  async function loadTrainingStatus(){
+    try{
+      const res = await fetch(BACKEND+"/training/status");
+      const data = await res.json();
+      setTrainingStatus(data);
+      if(data.collection_count!==undefined) setChromaCount(data.collection_count);
+    }catch(e){}
+  }
+
+  async function loadOllamaModels(){
+    try{
+      const res = await fetch(BACKEND+"/models");
+      const data = await res.json();
+      const names = Array.from(new Set((data.local||data.models||[]).filter(Boolean)));
+      if(!names.length) return;
+      const mapped = names.map(name=>({id:name,label:name,size:"local"}));
+      setOllamaModels(mapped);
+      setModel(current => names.includes(current) ? current : names[0]);
+    }catch(e){}
+  }
+
+  async function loadAgentStatus(){
+    try{
+      const res = await fetch(BACKEND+"/agent/status");
+      const data = await res.json();
+      setAgentStatus(data);
+      if(data.last_tool_result) setLastToolResult(data.last_tool_result);
+    }catch(e){}
+  }
+
+  async function loadOuroborosStatus(){
+    try{
+      const res = await fetch(BACKEND+"/api/ouroboros/status");
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Ouroboros status niet beschikbaar");
+      setOuroborosStatus(data);
+      if(data.records?.total_count!==undefined) setChromaCount(data.records.total_count);
+    }catch(e){
+      setOuroborosStatus(null);
+    }
+  }
+
+  function can(key){
+    return !!(serverOn && ouroborosStatus?.capabilities && ouroborosStatus.capabilities[key]);
+  }
+
+  function recordOuroborosResult(data,name="Ouroboros"){
+    setOuroborosResult(data);
+    if(data.records?.total_count!==undefined) setChromaCount(data.records.total_count);
+    if(data.ingest) setTrainResult(data.ingest);
+    else if(data.diff_view || data.metadata_11d) setTrainResult(data);
+    setLastToolResult({
+      tool_name:name,
+      status:data.status||"success",
+      stdout:data.stdout||"",
+      stderr:data.stderr||"",
+      error:data.stderr||"",
+      stored_to_memory:!!data.stored
+    });
+    addMsg(`${name}: ${data.status||"success"} · ${data.next_action||""}`, name, "system");
+    loadOuroborosStatus();
+  }
+
+  function recordToolResult(data, name="Tool"){
+    setLastToolResult(data);
+    if(data.tool_name==="safe_shell" || data.tool_name==="run_tests") setShellResult(data);
+    const stdout = data.stdout ? "\nSTDOUT:\n"+data.stdout : "";
+    const stderr = data.stderr || data.error ? "\nSTDERR:\n"+(data.stderr||data.error) : "";
+    addMsg(`${data.tool_name||name}: ${data.status}${data.stored_to_memory?" · opgeslagen in 11D geheugen":""}${stdout}${stderr}`, name, "system");
+    loadTrainingStatus();
+    loadAgentStatus();
+    loadOuroborosStatus();
+  }
+
+  async function runAgentTool(tool_name,args={},name="Tool"){
+    setToolBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/agent/tool",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({tool_name,args})
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Tool-call mislukt");
+      recordToolResult(data,name);
+      return data;
+    }catch(e){
+      addMsg("Tool-call fout: "+e.message, name, "system");
+      return null;
+    }finally{
+      setToolBusy(false);
+    }
+  }
+
+  async function createOuroborosModel(){
+    setToolBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/api/ouroboros/model/create-flow",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          base_model:model,
+          force_refresh:true,
+          approval:trainApproval,
+          execute:trainApproval.trim().toLowerCase()==="akkoord"
+        })
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Create-flow mislukt");
+      setOuroborosStatus(data);
+      recordOuroborosResult(data,"Create/Refresh Ouroboros Model");
+    }catch(e){
+      addMsg("Ouroboros create-flow fout: "+e.message, "Ouroboros", "system");
+    }finally{
+      setToolBusy(false);
+    }
+  }
+
+  async function researchMissingKnowledge(){
+    setToolBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/api/ouroboros/research/browser",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({query:trainText.slice(0,700),url:trainUrl,target_hz:targetHz,limit:5,approval:trainApproval})
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Research mislukt");
+      recordOuroborosResult(data,"Research Missing Knowledge");
+    }catch(e){
+      addMsg("Research fout: "+e.message, "Research", "system");
+    }finally{
+      setToolBusy(false);
+    }
+  }
+
+  async function askChatGPTBrowser(){
+    setToolBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/api/ouroboros/chatgpt/browser",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({prompt:trainText,approval:shellApproval||trainApproval})
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"ChatGPT browser-call mislukt");
+      recordOuroborosResult(data,"Ask ChatGPT in Browser");
+    }catch(e){
+      addMsg("ChatGPT browser fout: "+e.message, "Browser", "system");
+    }finally{
+      setToolBusy(false);
+    }
+  }
+
+  async function previewTraining(){
+    if(!trainText.trim()){
+      addMsg("Trainingtekst ontbreekt.", "WintripAI", "system");
+      return;
+    }
+    setTrainBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/api/ouroboros/training/ingest",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({url:trainUrl,browser_text:trainText,title:"Standalone UI training snapshot",target_hz:targetHz})
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Preview mislukt");
+      recordOuroborosResult(data,"Preview Ingest");
+    }catch(e){
+      addMsg("Training preview fout: "+e.message, "Training", "system");
+    }finally{
+      setTrainBusy(false);
+    }
+  }
+
+  async function approveTraining(){
+    if(trainApproval.trim().toLowerCase()!=="akkoord"){
+      addMsg("Typ eerst exact Akkoord om browserdata naar de Hippocampus te trainen.", "Training", "system");
+      return;
+    }
+    setTrainBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/api/ouroboros/training/ingest",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({url:trainUrl,browser_text:trainText,title:"Standalone UI training snapshot",approval:trainApproval,target_hz:targetHz})
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Opslag mislukt");
+      recordOuroborosResult(data,"Akkoord + Store in 11D Memory");
+    }catch(e){
+      addMsg("Training opslag fout: "+e.message, "Training", "system");
+    }finally{
+      setTrainBusy(false);
+    }
+  }
+
+  async function runSandboxShell(){
+    if(!shellCommand.trim()){
+      addMsg("Geen sandbox-commando ingevuld.", "Sandbox", "system");
+      return;
+    }
+    setShellBusy(true);
+    try{
+      await runAgentTool("safe_shell",{command:shellCommand,approval:shellApproval},"Sandbox");
+    }catch(e){
+      addMsg("Sandbox shell fout: "+e.message, "Sandbox", "system");
+    }finally{
+      setShellBusy(false);
+    }
+  }
+
+  async function runTests(){
+    await runAgentTool("run_tests",{test_selector:testSelector,approval:shellApproval},"Tests");
+  }
+
+  async function inspectHippocampus(){
+    setToolBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/api/ouroboros/hippocampus/inspect",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({limit:7})
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Inspectie mislukt");
+      recordOuroborosResult(data,"Inspect Hippocampus");
+    }catch(e){
+      addMsg("Hippocampus inspectie fout: "+e.message, "Hippocampus", "system");
+    }finally{
+      setToolBusy(false);
+    }
+  }
+
+  async function runTrainCycle(){
+    if(!trainText.trim()){
+      addMsg("Trainingtekst ontbreekt.", "Train Cycle", "system");
+      return;
+    }
+    setToolBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/api/ouroboros/self-training/step",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({prompt:trainText,browser_text:trainText,target_hz:targetHz,approval:trainApproval,url:trainUrl,test_selector:testSelector,run_tests:false})
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Self-training mislukt");
+      recordOuroborosResult(data,"Self-Training Step");
+    }catch(e){
+      addMsg("Self-training fout: "+e.message, "Self-Training", "system");
+    }finally{
+      setToolBusy(false);
+    }
+  }
+
+  async function teamImprove(){
+    setToolBusy(true);
+    try{
+      const res = await fetch(BACKEND+"/team/discuss",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          task:"Inspecteer de huidige Ouroboros-training, gebruik echte tools waar passend, en geef de volgende concrete verbetering. Geen fictieve commando's.",
+          message:"Inspecteer de huidige Ouroboros-training, gebruik echte tools waar passend, en geef de volgende concrete verbetering. Geen fictieve commando's.",
+          model,
+          members:activeNames.map(n=>n.toLowerCase()),
+          training_context:currentTrainingContext()
+        })
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail||"Team-call mislukt");
+      Object.entries(data).forEach(([role,value])=>{
+        const member = IT_TEAM.find(m=>m.name.toLowerCase()===role.toLowerCase()) || {name:role,color:"#7c3aed"};
+        const content = typeof value==="string" ? value : (value?.content || JSON.stringify(value,null,2));
+        const ts2 = new Date().toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"});
+        setMsgs(prev=>[...prev,{role:"assistant",name:member.name,content,ts:ts2}]);
+      });
+      if(data["Tool Calls"]) setLastToolResult({tool_name:"team_tools",status:"success",stdout:data["Tool Calls"],stored_to_memory:false});
+      loadAgentStatus();
+    }catch(e){
+      addMsg("Team verbeteren fout: "+e.message, "Vergadertafel", "system");
+    }finally{
+      setToolBusy(false);
+    }
+  }
+
+  function currentTrainingContext(){
+    const source = trainResult || trainingStatus || {};
+    const dream = source.dreamcycle || {};
+    const meta = source.metadata_11d || {};
+    const oo = ouroborosResult || ouroborosStatus || {};
+    const ooModel = oo.model || {};
+    return [
+      "Ouroboros core training active.",
+      "Goal: train de 11D Hippocampus, DreamCycle 418-432 Hz, veilige browser-scrubbing en zelfprogrammering.",
+      "Available UI actions: frequency buttons, Preview, Akkoord + Train, sandbox command + Akkoord.",
+      "Allowed shell examples: ls, find ., grep, cat, head, tail, wc, python -m unittest.",
+      "Ouroboros model status: "+(ooModel.status||"unknown")+" / active base: "+(ooModel.active_base||model),
+      "Browser research status: "+((oo.browser_research||{}).status||"idle"),
+      "Next action: "+(oo.next_action||"unknown"),
+      "Current training text: "+trainText.slice(0,900),
+      "Selected UI frequency: "+targetHz+" Hz.",
+      "Last DreamCycle frequency: "+(dream.dream_hz||"--")+" Hz.",
+      "Last approval status: "+(source.approval_status||"pending"),
+      "Last 11D relation: "+(meta.d7_persona_relation||"wintrip_ouroboros_stream"),
+      "Last tool: "+((lastToolResult||{}).tool_name||"none")+" / "+((lastToolResult||{}).status||"none"),
+      "Autonomy: "+(((lastToolResult||agentStatus?.last_tool_result||{}).autonomy||agentStatus?.autonomy||{}).label||"unknown"),
+    ].join("\n");
+  }
+
+  function FrequencyBars({samples}){
+    const rows = samples && samples.length ? samples : [];
+    return <div style={{display:"flex",alignItems:"flex-end",gap:3,height:46,padding:"4px 0"}}>
+      {rows.map((s,i)=>{
+        const h = Math.max(8,Math.min(44,8+((s.hz-418)/14)*36));
+        return <div key={i} title={s.hz+" Hz"} style={{width:10,height:h,background:s.hz<425?"#10b981":"#60a5fa",borderRadius:2,opacity:0.9}}/>;
+      })}
+    </div>;
+  }
 
   async function sendMsg(){
     if(!input.trim()) return;
@@ -160,7 +512,7 @@ function App(){
       // Gebruik /team/discuss als er teamleden actief zijn, anders /ask
       const endpoint = active.length ? "/team/discuss" : "/ask";
       const body = active.length
-        ? { message: text, model, members: active.map(m=>m.name.toLowerCase()) }
+        ? { task: text, message: text, model, members: active.map(m=>m.name.toLowerCase()), training_context: currentTrainingContext() }
         : { prompt: text, model };
 
       const res = await fetch(BACKEND+endpoint,{
@@ -177,6 +529,13 @@ function App(){
           const ts2 = new Date().toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"});
           setMsgs(prev=>[...prev,{role:"assistant",name:member.name,content:d.content,ts:ts2}]);
         });
+      } else if(active.length && data && typeof data==="object" && !data.response && !data.detail){
+        Object.entries(data).forEach(([role,value])=>{
+          const member = IT_TEAM.find(m=>m.name.toLowerCase()===role.toLowerCase()) || {name:role,color:"#7c3aed"};
+          const content = typeof value==="string" ? value : (value?.content || JSON.stringify(value,null,2));
+          const ts2 = new Date().toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"});
+          setMsgs(prev=>[...prev,{role:"assistant",name:member.name,content,ts:ts2}]);
+        });
       } else {
         const reply = data.response || data.message || data.result || JSON.stringify(data);
         addMsg(reply, respondents[0].name, "assistant");
@@ -188,10 +547,16 @@ function App(){
 
   function onKey(e){ if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMsg();} }
 
-  const models = provider==="grok"?GROK_MODELS:OLLAMA_MODELS;
+  const models = provider==="grok"?GROK_MODELS:ollamaModels;
   const showPicker = provider==="ollama"||provider==="grok";
   const activeNames = IT_TEAM.filter(m=>team[m.id]).map(m=>m.name);
   const prov = PROVIDERS.find(p=>p.id===provider);
+  const activeOuroboros = ouroborosResult || ouroborosStatus || {};
+  const modelState = activeOuroboros.model || ouroborosStatus?.model || {};
+  const researchState = activeOuroboros.browser_research || ouroborosStatus?.browser_research || {};
+  const geometry11d = activeOuroboros.geometry_11d || ouroborosStatus?.geometry_11d || {};
+  const recordState = activeOuroboros.records || ouroborosStatus?.records || {};
+  const activeFlags = activeOuroboros.flags || trainResult?.blocked_patterns || trainResult?.missing_11d_layers || [];
 
   return (
     <div style={{display:"flex",height:"100vh",background:"#0f1117",color:"#e2e8f0",overflow:"hidden"}}>
@@ -249,8 +614,9 @@ function App(){
         {/* Topbar */}
         <div style={{padding:"9px 14px",borderBottom:"1px solid #1e2535",display:"flex",alignItems:"center",justifyContent:"space-between",background:"#151821",flexShrink:0,gap:10,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <span style={{fontWeight:500,fontSize:14,color:"#e2e8f0"}}>Waakbewustzijn</span>
-            <span style={{fontSize:10,color:"#374151",background:"#1e2535",padding:"2px 7px",borderRadius:4}}>Phase 6.3</span>
+            <span style={{fontWeight:500,fontSize:14,color:"#e2e8f0"}}>Ouroboros Trainingscockpit</span>
+            <span style={{fontSize:10,color:"#10b981",background:"rgba(16,185,129,0.1)",padding:"2px 7px",borderRadius:4}}>Ollama ↔ Core</span>
+            <span style={{fontSize:10,color:"#64748b",background:"#1e2535",padding:"2px 7px",borderRadius:4}}>{ollamaModels.length} lokale modellen</span>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
             {PROVIDERS.map(p=>{
@@ -282,8 +648,111 @@ function App(){
                 )}
               </div>
             )}
+            <button onClick={()=>setTrainingOpen(p=>!p)} style={{padding:"4px 9px",borderRadius:5,border:"1px solid "+(trainingOpen?"#10b98155":"#2d3748"),background:trainingOpen?"#10b98118":"transparent",color:trainingOpen?"#10b981":"#4b5563",fontSize:11,fontWeight:500}}>
+              Training
+            </button>
           </div>
         </div>
+
+        {/* Training */}
+        {trainingOpen&&(
+          <div style={{borderBottom:"1px solid #1e2535",background:"#111827",padding:"10px 14px",display:"grid",gridTemplateColumns:"minmax(280px,0.9fr) minmax(320px,1.1fr)",gap:12,flexShrink:0,maxHeight:330,overflow:"auto"}}>
+            <div style={{display:"flex",flexDirection:"column",gap:8,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                <div>
+                  <div style={{fontSize:12,fontWeight:600,color:"#e2e8f0"}}>Ouroboros Training</div>
+                  <div style={{fontSize:10,color:"#64748b"}}>Browser snapshot → Scrubber → Akkoord → Hippocampus</div>
+                </div>
+                <span style={{fontSize:10,color:"#10b981",background:"rgba(16,185,129,0.1)",border:"1px solid #10b98133",borderRadius:999,padding:"2px 7px"}}>{chromaCount} memories</span>
+              </div>
+              <input value={trainUrl} onChange={e=>setTrainUrl(e.target.value)} style={{width:"100%",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:"7px 9px",color:"#cbd5e1",fontSize:12}}/>
+              <textarea value={trainText} onChange={e=>setTrainText(e.target.value)} rows={5} style={{width:"100%",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:"8px 9px",color:"#e2e8f0",fontSize:12,lineHeight:1.45,resize:"vertical"}}/>
+              <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"7px 8px"}}>
+                <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>Frequentie</span>
+                {[418,421,426,432].map(hz=>(
+                  <button key={hz} onClick={()=>setTargetHz(hz)} style={{background:targetHz===hz?"#10b981":"#1e2535",border:"1px solid "+(targetHz===hz?"#10b981":"#2d3748"),color:targetHz===hz?"#031b13":"#cbd5e1",padding:"4px 8px",borderRadius:5,fontSize:11,fontWeight:600}}>{hz} Hz</button>
+                ))}
+                <button onClick={()=>setTargetHz(hz=>Math.min(432,Math.round((hz+1)*1000)/1000))} style={{background:"#1e2535",border:"1px solid #2d3748",color:"#93c5fd",padding:"4px 8px",borderRadius:5,fontSize:11}}>Verhoog Hz</button>
+                <button onClick={()=>setTargetHz(432)} style={{background:"rgba(96,165,250,0.12)",border:"1px solid #60a5fa55",color:"#93c5fd",padding:"4px 8px",borderRadius:5,fontSize:11,fontWeight:600}}>Creative Spike 432 Hz</button>
+                <span style={{marginLeft:"auto",fontSize:11,color:"#10b981",fontVariantNumeric:"tabular-nums"}}>{Number(targetHz).toFixed(3)} Hz</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
+                <input value={shellCommand} onChange={e=>setShellCommand(e.target.value)} placeholder="Sandbox command: ls, find ., python -m unittest" style={{flex:"1 1 190px",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontSize:12}}/>
+                <input value={shellApproval} onChange={e=>setShellApproval(e.target.value)} placeholder="Akkoord" style={{width:92,background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontSize:12}}/>
+                {can("safe_shell")&&<button onClick={runSandboxShell} disabled={shellBusy||toolBusy} style={{background:"#334155",border:"1px solid #475569",color:"#e2e8f0",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:(shellBusy||toolBusy)?0.6:1}}>Safe Shell</button>}
+              </div>
+              <input value={testSelector} onChange={e=>setTestSelector(e.target.value)} placeholder="python -m unittest selector" style={{width:"100%",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:"6px 8px",color:"#cbd5e1",fontSize:11}}/>
+              <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
+                {can("create_or_refresh_model")&&<button onClick={createOuroborosModel} disabled={toolBusy} style={{background:"#1e2535",border:"1px solid #2d3748",color:"#cbd5e1",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Create/Refresh Ouroboros Model</button>}
+                {can("browser_research")&&<button onClick={researchMissingKnowledge} disabled={toolBusy} style={{background:"#0f766e",border:"none",color:"#e2e8f0",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Research Missing Knowledge</button>}
+                {can("ask_chatgpt_browser")&&<button onClick={askChatGPTBrowser} disabled={toolBusy} style={{background:"#1e2535",border:"1px solid #2d3748",color:"#93c5fd",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Ask ChatGPT in Browser</button>}
+                {can("self_training_step")&&<button onClick={runTrainCycle} disabled={toolBusy} style={{background:"#7c3aed",border:"none",color:"#fff",padding:"6px 10px",borderRadius:6,fontSize:12,fontWeight:600,opacity:toolBusy?0.6:1}}>Self-Training Step</button>}
+                {can("training_ingest")&&<button onClick={previewTraining} disabled={trainBusy} style={{background:"#2563eb",border:"none",color:"#fff",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:trainBusy?0.6:1}}>Preview Ingest</button>}
+                <input value={trainApproval} onChange={e=>setTrainApproval(e.target.value)} placeholder="Akkoord" style={{width:110,background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontSize:12}}/>
+                {can("training_ingest")&&<button onClick={approveTraining} disabled={trainBusy} style={{background:"#10b981",border:"none",color:"#031b13",padding:"6px 10px",borderRadius:6,fontSize:12,fontWeight:600,opacity:trainBusy?0.6:1}}>Akkoord + Store in 11D Memory</button>}
+                {can("inspect_hippocampus")&&<button onClick={inspectHippocampus} disabled={toolBusy} style={{background:"#1e2535",border:"1px solid #2d3748",color:"#cbd5e1",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Inspect Hippocampus</button>}
+                {can("run_tests")&&<button onClick={runTests} disabled={toolBusy} style={{background:"#1e2535",border:"1px solid #2d3748",color:"#cbd5e1",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Run Tests</button>}
+                {serverOn&&<button onClick={teamImprove} disabled={toolBusy} style={{background:"#0f766e",border:"none",color:"#e2e8f0",padding:"6px 10px",borderRadius:6,fontSize:12,opacity:toolBusy?0.6:1}}>Laat Team Verbeteren</button>}
+                <span style={{fontSize:10,color:"#64748b"}}>{trainBusy||toolBusy?"bezig":"approval-gated"}</span>
+              </div>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,minWidth:0}}>
+              <div style={{gridColumn:"1 / -1",display:"grid",gridTemplateColumns:"repeat(4,minmax(120px,1fr))",gap:7}}>
+                <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"6px 8px"}}>
+                  <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Ouroboros model</div>
+                  <div style={{fontSize:11,color:modelState.online?"#10b981":"#ef4444"}}>{modelState.status||"offline"} · {modelState.active_base||model}</div>
+                </div>
+                <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"6px 8px"}}>
+                  <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Browser research</div>
+                  <div style={{fontSize:11,color:"#cbd5e1"}}>{researchState.status||"idle"} · {(researchState.flags||[]).join(", ")||"geen flags"}</div>
+                </div>
+                <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"6px 8px"}}>
+                  <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>11D bol</div>
+                  <div style={{fontSize:11,color:"#cbd5e1"}}>V {geometry11d.volume||"--"} · A {(geometry11d.oppervlakte||geometry11d.surface_area)||"--"}</div>
+                </div>
+                <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"6px 8px"}}>
+                  <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Records</div>
+                  <div style={{fontSize:11,color:"#cbd5e1"}}>{recordState.total_count??chromaCount} totaal · {recordState.training_collection_count??"--"} training</div>
+                </div>
+              </div>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:5}}>Pipeline</div>
+                {(trainResult?.pipeline||[]).map((p,i)=>(
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",borderBottom:"1px solid #1e253544"}}>
+                    <span style={{width:52,fontSize:10,color:"#93c5fd"}}>{p.step}</span>
+                    <span style={{flex:1,fontSize:11,color:"#cbd5e1",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.label}</span>
+                    <span style={{fontSize:10,color:"#10b981",maxWidth:120,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.value}</span>
+                  </div>
+                ))}
+                {!trainResult&&<div style={{fontSize:12,color:"#64748b",lineHeight:1.5}}>Klik Preview om te zien wat er getraind zou worden.</div>}
+                <div style={{marginTop:8,fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>DreamCycle 418-432 Hz</div>
+                <FrequencyBars samples={(trainResult?.dreamcycle||trainingStatus?.dreamcycle||{}).samples}/>
+                <div style={{fontSize:11,color:"#cbd5e1"}}>{((trainResult?.dreamcycle||trainingStatus?.dreamcycle||{}).dream_hz||"--")+" Hz"} · {((trainResult?.dreamcycle||trainingStatus?.dreamcycle||{}).frequency_band||"418-432Hz")}</div>
+                <div style={{marginTop:8,fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>Autonomie</div>
+                <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.45}}>{((lastToolResult?.autonomy||agentStatus?.autonomy||{}).label)||"Nog geen tool-resultaat"} · laatste tool: {(lastToolResult?.tool_name)||"--"}</div>
+                <div style={{marginTop:8,fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>Wat geleerd</div>
+                <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.45}}>{activeOuroboros.learned||"--"}</div>
+                <div style={{marginTop:6,fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.07em"}}>Mentor / next_action</div>
+                <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.45}}>{activeOuroboros.mentor||"--"} · {activeOuroboros.next_action||"--"}</div>
+              </div>
+
+              <div style={{minWidth:0}}>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:7}}>
+                  <span style={{fontSize:10,color:"#fbbf24",background:"rgba(251,191,36,0.1)",border:"1px solid #fbbf2433",borderRadius:999,padding:"2px 7px"}}>{trainResult?.taint||"untrusted_web"}</span>
+                  <span style={{fontSize:10,color:trainResult?.approval_status==="approved"?"#10b981":"#f59e0b",background:"#0f1117",border:"1px solid #2d3748",borderRadius:999,padding:"2px 7px"}}>{trainResult?.approval_status||"pending"}</span>
+                  <span style={{fontSize:10,color:"#93c5fd",background:"#0f1117",border:"1px solid #2d3748",borderRadius:999,padding:"2px 7px"}}>{trainResult?.metadata_11d?.dimension_count||11}D</span>
+                  <span style={{fontSize:10,color:activeFlags.length?"#fbbf24":"#10b981",background:"#0f1117",border:"1px solid #2d3748",borderRadius:999,padding:"2px 7px"}}>{activeFlags.length?activeFlags.join(", "):"flags: schoon"}</span>
+                </div>
+                <pre style={{height:92,overflow:"auto",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:8,color:"#94a3b8",fontSize:10,lineHeight:1.35,whiteSpace:"pre-wrap"}}>{trainResult?.diff_view||"DiffView verschijnt hier na Preview."}</pre>
+                <pre style={{height:92,overflow:"auto",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:8,color:"#94a3b8",fontSize:10,lineHeight:1.35,whiteSpace:"pre-wrap",marginTop:7}}>{trainResult?JSON.stringify(trainResult.metadata_11d,null,2):"11D metadata verschijnt hier."}</pre>
+                {shellResult&&<pre style={{height:64,overflow:"auto",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:8,color:shellResult.status==="success"?"#a7f3d0":"#fecaca",fontSize:10,lineHeight:1.35,whiteSpace:"pre-wrap",marginTop:7}}>{`$ ${shellResult.command||shellResult.result?.command||shellCommand}\n${shellResult.stdout||shellResult.stderr||shellResult.error||"(geen output)"}`}</pre>}
+                {(activeOuroboros.stdout||activeOuroboros.stderr)&&<pre style={{height:72,overflow:"auto",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:8,color:activeOuroboros.stderr?"#fecaca":"#a7f3d0",fontSize:10,lineHeight:1.35,whiteSpace:"pre-wrap",marginTop:7}}>{`STDOUT\n${activeOuroboros.stdout||"(leeg)"}\n\nSTDERR\n${activeOuroboros.stderr||"(leeg)"}`}</pre>}
+                {lastToolResult&&<pre style={{height:78,overflow:"auto",background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:8,color:lastToolResult.status==="success"?"#a7f3d0":"#fecaca",fontSize:10,lineHeight:1.35,whiteSpace:"pre-wrap",marginTop:7}}>{JSON.stringify({tool:lastToolResult.tool_name,status:lastToolResult.status,stored_to_memory:lastToolResult.stored_to_memory,stdout:lastToolResult.stdout,error:lastToolResult.error},null,2)}</pre>}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Chat */}
         <div style={{flex:1,overflowY:"auto",padding:"18px 18px 8px",display:"flex",flexDirection:"column",gap:14}} onClick={()=>setModelOpen(false)}>
@@ -318,9 +787,14 @@ function App(){
           {statusOpen&&(
             <div style={{display:"flex",flexWrap:"wrap"}}>
               {[
-                {label:"main.py (FastAPI)",key:"api",   on:serverOn,     detail:"Port 8000"},
+                {label:"main.py (FastAPI)",key:"api",   on:serverOn,     detail:BACKEND.replace(/^https?:\/\//,"")},
+                {label:"Ouroboros Model",   key:"ouro",  on:!!modelState.online,detail:modelState.active_base||"offline"},
+                {label:"Browser Research",  key:"research",on:researchState.status&&researchState.status!=="idle",detail:researchState.status||"idle"},
                 {label:"ChromaDB",         key:"chroma",on:true,         detail:chromaCount+" memories"},
-                {label:"Docker Sandbox",   key:"docker",on:false,        detail:"OODA loop"},
+                {label:"Ollama ↔ Core",    key:"ollama",on:serverOn&&ollamaModels.length>0,detail:model},
+                {label:"11D Bol",          key:"sphere",on:!!geometry11d.volume,detail:"V "+(geometry11d.volume||"--")},
+                {label:"Docker Sandbox",   key:"docker",on:serverOn,     detail:"approval-gated"},
+                {label:"Autonomie",        key:"autonomy",on:!!lastToolResult,detail:((lastToolResult?.autonomy||agentStatus?.autonomy||{}).level)||"pending"},
               ].map(s=>(
                 <div key={s.key} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 14px",flex:"1 1 33%",minWidth:130}}>
                   <Dot on={s.on}/>
@@ -353,7 +827,7 @@ function App(){
             <button onClick={sendMsg} style={{background:"#3b82f6",border:"none",color:"#fff",padding:"5px 9px",borderRadius:6,fontSize:13,opacity:input.trim()?1:0.4}}>➤</button>
           </div>
           <div style={{textAlign:"center",marginTop:5,fontSize:10,color:"#2d3748"}}>
-            {prov?prov.label:""} · {model} · {serverOn?"localhost:8000 online":"server offline"}
+            {prov?prov.label:""} · {model} · {serverOn?BACKEND.replace(/^https?:\/\//,"")+" online":"server offline"}
           </div>
         </div>
       </div>

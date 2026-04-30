@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 WintripAI Launcher
-Pad: /Users/philip/WintripAI/launcher.py
-Start: cd /Users/philip/WintripAI && .venv/bin/python launcher.py
+Start: cd /home/pwintri2/WintripAI && python3 launcher.py
 """
 
 import subprocess, sys, os, signal, time
 
-VENV_PYTHON  = "/Users/philip/WintripAI/.venv/bin/python"
-WINTRIP_ROOT = "/Users/philip/WintripAI"
+WINTRIP_ROOT = os.path.dirname(os.path.abspath(__file__))
+VENV_PYTHON = os.path.join(WINTRIP_ROOT, ".venv", "bin", "python")
+if not os.path.exists(VENV_PYTHON):
+    VENV_PYTHON = sys.executable
 BACKEND_PORT = 8000
 LAUNCHER_PORT = 9000
 

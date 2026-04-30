@@ -33,6 +33,7 @@ from typing import Any, Optional
 from controller.stream.normalize import NormalizedItem, fingerprint
 from controller.stream.browser_scrubber import TAINT_UNTRUSTED_WEB
 from controller.stream.dreamcycle import DreamCycle
+from controller.stream.geometry_11d import measure_geometry_11d
 from controller.stream.metadata_11d import build_11d_metadata
 
 # ---------------------------------------------------------------------------
@@ -272,6 +273,16 @@ class StreamStorage:
             "allowed_actions": item.allowed_actions,
         }
         metadata.update(dream_sample.metadata())
+        geometry_11d = measure_geometry_11d(dream_sample.hz)
+        metadata.update(
+            {
+                "geometry_11d_available": True,
+                "geometry_11d_radius": float(geometry_11d["radius"]),
+                "geometry_11d_volume": float(geometry_11d["volume"]),
+                "geometry_11d_oppervlakte": float(geometry_11d["oppervlakte"]),
+                "geometry_11d_source": "controller.stream.geometry_11d.measure_geometry_11d",
+            }
+        )
         metadata.update(
             build_11d_metadata(
                 item=item,

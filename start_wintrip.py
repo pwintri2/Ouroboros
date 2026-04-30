@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 WintripAI — Alles-in-één starter
-Pad:   /Users/philip/WintripAI/start_wintrip.py
-Start: cd /Users/philip/WintripAI && .venv/bin/python start_wintrip.py
+Start: cd /home/pwintri2/WintripAI && python3 start_wintrip.py
 
 Dit script:
   1. Start controller/main.py op poort 8000
@@ -14,9 +13,11 @@ Dit script:
 import subprocess, sys, os, time, signal, threading, webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-VENV_PYTHON  = os.path.join(os.path.dirname(__file__), ".venv", "bin", "python")
-CONTROLLER   = os.path.join(os.path.dirname(__file__), "controller")
-WINTRIP_ROOT = os.path.dirname(__file__)
+WINTRIP_ROOT = os.path.dirname(os.path.abspath(__file__))
+VENV_PYTHON  = os.path.join(WINTRIP_ROOT, ".venv", "bin", "python")
+if not os.path.exists(VENV_PYTHON):
+    VENV_PYTHON = sys.executable
+CONTROLLER   = os.path.join(WINTRIP_ROOT, "controller")
 BACKEND_PORT = 8000
 IDE_PORT     = 3000
 IDE_FILE     = "WintripAI_IDE.html"
@@ -297,10 +298,15 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 # ── IDE HTTP handler ─────────────────────────────────────────────────────────
 class IDEHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
+        ide_path = os.path.join(WINTRIP_ROOT, IDE_FILE)
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(IDE_HTML.encode("utf-8"))
+        if os.path.exists(ide_path):
+            with open(ide_path, "rb") as f:
+                self.wfile.write(f.read())
+        else:
+            self.wfile.write(IDE_HTML.encode("utf-8"))
     def log_message(self, *args):
         pass  # stil houden
 

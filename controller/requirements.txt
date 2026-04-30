@@ -9,3 +9,5 @@ python-docx
 beautifulsoup4
 sqlalchemy
 duckduckgo-search
+docker
+playwright
