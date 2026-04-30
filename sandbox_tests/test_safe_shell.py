@@ -24,6 +24,11 @@ class TestSafeShell(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertFalse(result["approved"])
 
+    def test_approval_phrase_is_exact(self):
+        result = run_safe_shell("pwd", approval="akkoord")
+        self.assertEqual(result["status"], "blocked")
+        self.assertFalse(result["approved"])
+
     def test_runs_safe_command_in_workspace(self):
         result = run_safe_shell("pwd", approval="Akkoord")
         self.assertEqual(result["status"], "success")

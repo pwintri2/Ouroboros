@@ -164,6 +164,7 @@ def self_training_step(
     plan = build_self_training_plan(prompt, understanding=understanding, memory_result=memory_result)
     trace.append({"phase": "plan", "plan": plan})
 
+    # Execute the action. If in autonomous mode (approval="Akkoord"), we can run more tools.
     action_result = _run_approval_gated_action(
         registry=registry,
         prompt=prompt,
@@ -174,7 +175,22 @@ def self_training_step(
     )
     trace.append({"phase": "approval_gated_action", "tool_result": action_result})
 
+    # Reflection: store success in 11D Hippocampus
     reflection = _reflect(prompt, trace, action_result)
+
+    if action_result.get("status") == "success" and not action_result.get("stored_to_memory"):
+        # Autonoom opslaan van de geleerde les/wijziging
+        store_result = registry.run_tool(
+            "training_ingest",
+            {
+                "text": f"Ouroboros Self-Training Success: {prompt}\nTool: {action_result.get('tool_name')}\nOutput: {action_result.get('stdout', '')[:2000]}",
+                "approval": approval,
+                "title": f"Self-training result: {action_result.get('tool_name')}"
+            }
+        )
+        reflection["stored_to_memory"] = bool(store_result.get("stored_to_memory"))
+        trace.append({"phase": "autonomous_storage", "tool_result": store_result})
+
     trace.append({"phase": "reflect", "reflection": reflection})
 
     return {
@@ -258,6 +274,9 @@ def _run_approval_gated_action(
 
 def _reflect(prompt: str, trace: list[dict[str, Any]], action_result: dict[str, Any]) -> dict[str, Any]:
     action_status = action_result.get("status")
+    tool_name = action_result.get("tool_name")
+    stdout = str(action_result.get("stdout") or "")
+
     stored = bool(action_result.get("stored_to_memory"))
     blocked = action_status == "blocked" or any(
         entry.get("tool_result", {}).get("status") == "blocked" for entry in trace if isinstance(entry.get("tool_result"), dict)
@@ -265,12 +284,18 @@ def _reflect(prompt: str, trace: list[dict[str, Any]], action_result: dict[str, 
     error = action_status == "error" or any(
         entry.get("tool_result", {}).get("status") == "error" for entry in trace if isinstance(entry.get("tool_result"), dict)
     )
+
+    is_done = tool_name == "roo_attempt_completion" or "task complete" in stdout.lower()
+
     if error:
         status = "error"
         next_action = "Inspect failing tool stderr before retrying the self-training step."
     elif blocked:
         status = "blocked"
         next_action = "Ask Philip for Akkoord before external research or storage."
+    elif is_done:
+        status = "success"
+        next_action = "done: Task completed successfully."
     else:
         status = "success"
         next_action = "Use the learned context in the answer and run tests when code behavior changed."

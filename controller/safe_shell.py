@@ -46,7 +46,7 @@ def workspace_root() -> Path:
 
 def run_safe_shell(command: str, approval: str = "", timeout: int = 20) -> dict[str, Any]:
     started = time.time()
-    if approval.strip().lower() != "akkoord":
+    if approval.strip() != "Akkoord":
         return {
             "status": "blocked",
             "approved": False,
