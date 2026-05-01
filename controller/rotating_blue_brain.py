@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,21 @@ def dependencies_ready() -> bool:
     return all(_dependency_map().values())
 
 
+def detect_cpu_clock_hz() -> float:
+    """Best-effort CPU clock probe used to drive virtual 11D rotation cadence."""
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        try:
+            for line in cpuinfo.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.lower().startswith("cpu mhz") and ":" in line:
+                    mhz = float(line.split(":", 1)[1].strip())
+                    if mhz > 0:
+                        return mhz * 1_000_000.0
+        except Exception:
+            pass
+    return 1_000_000_000.0
+
+
 def generate_rotation_matrix(dim: int = 11, random_state: int | None = None) -> Any:
     """Generate a proper orthogonal rotation matrix using NumPy QR decomposition."""
     if dim < 2:
@@ -79,6 +95,42 @@ def apply_rotation(X: Any, rotation_matrix: Any) -> Any:
     if r_array.shape != (x_array.shape[1], x_array.shape[1]):
         raise ValueError("rotation_matrix must be square and match X feature count")
     return x_array @ r_array
+
+
+def advance_rotation_clock(
+    rotation_matrix: Any | None,
+    start_index: int,
+    rotation_count: int,
+    dim: int = 11,
+) -> Any:
+    """Advance an orthogonal matrix with fast deterministic Givens rotations."""
+    import numpy as np
+
+    if rotation_count < 1:
+        return _matrix_from_state(rotation_matrix, dim)
+    matrix = _matrix_from_state(rotation_matrix, dim)
+    base_angle = (2 * np.pi) / 4096.0
+    for offset in range(int(rotation_count)):
+        tick = int(start_index) + offset
+        axis_a = tick % dim
+        axis_b = (tick * 7 + 3) % dim
+        if axis_a == axis_b:
+            axis_b = (axis_b + 1) % dim
+        angle = base_angle * (1.0 + ((tick % 17) / 64.0))
+        c_value = float(np.cos(angle))
+        s_value = float(np.sin(angle))
+        col_a = matrix[:, axis_a].copy()
+        col_b = matrix[:, axis_b].copy()
+        matrix[:, axis_a] = c_value * col_a - s_value * col_b
+        matrix[:, axis_b] = s_value * col_a + c_value * col_b
+
+    q_matrix, r_matrix = np.linalg.qr(matrix)
+    signs = np.sign(np.diag(r_matrix))
+    signs[signs == 0] = 1
+    q_matrix = q_matrix * signs
+    if np.linalg.det(q_matrix) < 0:
+        q_matrix[:, 0] *= -1
+    return q_matrix
 
 
 class TrainingObserver:
@@ -224,6 +276,7 @@ def save_rotating_state(state: dict[str, Any]) -> None:
 
 def get_rotating_status() -> dict[str, Any]:
     state = load_rotating_state()
+    cpu_clock_hz = detect_cpu_clock_hz()
     state.update(
         {
             "dependencies": _dependency_map(),
@@ -233,6 +286,9 @@ def get_rotating_status() -> dict[str, Any]:
             "output_dir": str(rotating_output_dir()),
             "feature_count": len(E_TYPES),
             "features": list(E_TYPES),
+            "cpu_clock_hz": cpu_clock_hz,
+            "cpu_clock_ghz": round(cpu_clock_hz / 1_000_000_000.0, 4),
+            "target_rotation_hz": _target_rotation_hz(state, cpu_clock_hz),
         }
     )
     return state
@@ -248,8 +304,26 @@ def start_rotating_training(approval: str, config: dict[str, Any] | None = None)
         state["enabled"] = True
         state["status"] = "running"
         state["n_samples"] = _clamp_int(config.get("n_samples", state.get("n_samples", 1000)), 100, 200_000)
-        state["interval_seconds"] = _clamp_int(config.get("interval_seconds", state.get("interval_seconds", 120)), 10, 86_400)
-        state["max_rotations"] = _clamp_int(config.get("max_rotations", state.get("max_rotations", 0)), 0, 1_000_000)
+        state["interval_seconds"] = _clamp_float(config.get("interval_seconds", state.get("interval_seconds", 120)), 0.0, 86_400.0)
+        state["cpu_clock_mode"] = bool(config.get("cpu_clock_mode", state.get("cpu_clock_mode", False)))
+        state["clock_divisor"] = _clamp_int(config.get("clock_divisor", state.get("clock_divisor", 100_000)), 1, 1_000_000_000)
+        state["max_rotation_hz"] = _clamp_int(config.get("max_rotation_hz", state.get("max_rotation_hz", 20_000)), 1, 2_000_000)
+        state["train_every_rotations"] = _clamp_int(
+            config.get("train_every_rotations", state.get("train_every_rotations", 10_000)),
+            1,
+            10_000_000,
+        )
+        state["clock_burst_seconds"] = _clamp_float(
+            config.get("clock_burst_seconds", state.get("clock_burst_seconds", 0.05)),
+            0.001,
+            1.0,
+        )
+        state["min_worker_sleep_seconds"] = _clamp_float(
+            config.get("min_worker_sleep_seconds", state.get("min_worker_sleep_seconds", 0.005)),
+            0.0,
+            1.0,
+        )
+        state["max_rotations"] = _clamp_int(config.get("max_rotations", state.get("max_rotations", 0)), 0, 1_000_000_000)
         state["target_accuracy"] = _clamp_float(config.get("target_accuracy", state.get("target_accuracy", 0.9)), 0.0, 1.0)
         state["target_f1"] = _clamp_float(config.get("target_f1", state.get("target_f1", 0.9)), 0.0, 1.0)
         state["hyperparams"] = _normalize_hyperparams({**state.get("hyperparams", {}), **(config.get("hyperparams") or {})})
@@ -301,7 +375,10 @@ def run_rotation_tick(force: bool = False) -> dict[str, Any]:
         random_state = int(snapshot.get("hyperparams", {}).get("random_state", 42)) + rotation_index
         n_samples = int(snapshot.get("n_samples") or 1000)
         X, y = generate_dataset(n_samples=n_samples, n_features=len(E_TYPES), random_state=random_state)
-        rotation_matrix = generate_rotation_matrix(dim=len(E_TYPES), random_state=random_state + 10_000)
+        if snapshot.get("cpu_clock_mode") and snapshot.get("last_rotation_matrix"):
+            rotation_matrix = _matrix_from_state(snapshot.get("last_rotation_matrix"), len(E_TYPES))
+        else:
+            rotation_matrix = generate_rotation_matrix(dim=len(E_TYPES), random_state=random_state + 10_000)
         X_rotated = apply_rotation(X, rotation_matrix)
         model, metrics = train_rotated_model(
             X_rotated,
@@ -334,6 +411,8 @@ def run_rotation_tick(force: bool = False) -> dict[str, Any]:
         state = load_rotating_state()
         state["status"] = "running" if state.get("enabled") else "dataset_ready"
         state["rotation_count"] = rotation_index
+        state["training_rotation_count"] = int(state.get("training_rotation_count") or 0) + 1
+        state["last_training_rotation_count"] = rotation_index
         state["last_tick_at"] = datetime.utcnow().isoformat()
         state["last_error"] = ""
         state["last_metrics"] = metrics
@@ -361,6 +440,72 @@ def run_rotation_tick(force: bool = False) -> dict[str, Any]:
             "metrics": metrics,
             "observer_event": observed["event"],
             "best_model_path": state.get("best_model_path"),
+            "state": state,
+        }
+
+
+def run_clock_rotation_burst(force: bool = False) -> dict[str, Any]:
+    """Run one lightweight CPU-clock-derived rotation burst without model training."""
+    with _STATE_LOCK:
+        state = load_rotating_state()
+        if not force and not state.get("enabled"):
+            state["status"] = "stopped"
+            save_rotating_state(state)
+            return {"status": "idle", "reason": "Rotating Blue Brain trainer is stopped.", "state": state}
+        snapshot = dict(state)
+
+    if not dependencies_ready():
+        return {"status": "error", "reason": "Rotating Blue Brain dependencies are missing.", "dependencies": _dependency_map()}
+
+    cpu_clock_hz = detect_cpu_clock_hz()
+    target_hz = _target_rotation_hz(snapshot, cpu_clock_hz)
+    burst_seconds = _clamp_float(snapshot.get("clock_burst_seconds", 0.05), 0.001, 1.0)
+    burst_size = _clamp_int(round(target_hz * burst_seconds), 1, 100_000)
+    start_index = int(snapshot.get("rotation_count") or 0)
+    started = time.perf_counter()
+    try:
+        rotation_matrix = advance_rotation_clock(
+            snapshot.get("last_rotation_matrix"),
+            start_index=start_index,
+            rotation_count=burst_size,
+            dim=len(E_TYPES),
+        )
+    except Exception as exc:
+        with _STATE_LOCK:
+            state = load_rotating_state()
+            state["status"] = "error"
+            state["last_error"] = f"Clock rotation burst failed: {exc}"
+            _event(state, "clock_burst_error", state["last_error"])
+            save_rotating_state(state)
+        return {"status": "error", "reason": f"Clock rotation burst failed: {exc}"}
+
+    elapsed = max(time.perf_counter() - started, 0.000001)
+    measured_hz = burst_size / elapsed
+    with _STATE_LOCK:
+        state = load_rotating_state()
+        state["status"] = "running" if state.get("enabled") else "dataset_ready"
+        state["rotation_count"] = int(state.get("rotation_count") or 0) + burst_size
+        state["last_rotation_matrix"] = _rounded_matrix(rotation_matrix)
+        state["last_clock_at"] = datetime.utcnow().isoformat()
+        state["cpu_clock_hz"] = cpu_clock_hz
+        state["target_rotation_hz"] = target_hz
+        state["clock_rotation_hz"] = round(float(measured_hz), 3)
+        state["clock_last_burst_size"] = burst_size
+        state["last_error"] = ""
+        max_rotations = int(state.get("max_rotations") or 0)
+        if state.get("enabled") and max_rotations > 0 and state["rotation_count"] >= max_rotations:
+            state["enabled"] = False
+            state["status"] = "completed"
+            _event(state, "rotating_completed", f"Reached max_rotations={max_rotations}.")
+            _WORKER_STOP.set()
+        save_rotating_state(state)
+        return {
+            "status": "success",
+            "burst_size": burst_size,
+            "rotation_count": state["rotation_count"],
+            "cpu_clock_hz": cpu_clock_hz,
+            "target_rotation_hz": target_hz,
+            "clock_rotation_hz": state["clock_rotation_hz"],
             "state": state,
         }
 
@@ -401,9 +546,22 @@ def _worker_loop() -> None:
         if not state.get("enabled"):
             _WORKER_STOP.wait(5)
             continue
-        run_rotation_tick(force=True)
-        state = load_rotating_state()
-        _WORKER_STOP.wait(int(state.get("interval_seconds") or 120))
+        if state.get("cpu_clock_mode"):
+            burst = run_clock_rotation_burst(force=True)
+            state = load_rotating_state()
+            rotations_since_training = int(state.get("rotation_count") or 0) - int(state.get("last_training_rotation_count") or 0)
+            if burst.get("status") == "success" and rotations_since_training >= int(state.get("train_every_rotations") or 10_000):
+                run_rotation_tick(force=True)
+                state = load_rotating_state()
+            target_hz = float(state.get("target_rotation_hz") or _target_rotation_hz(state, detect_cpu_clock_hz()))
+            burst_size = int(state.get("clock_last_burst_size") or 1)
+            target_sleep = max(0.0, (burst_size / max(target_hz, 1.0)) - 0.001)
+            sleep_seconds = max(float(state.get("min_worker_sleep_seconds") or 0.0), target_sleep)
+            _WORKER_STOP.wait(min(sleep_seconds, 1.0))
+        else:
+            run_rotation_tick(force=True)
+            state = load_rotating_state()
+            _WORKER_STOP.wait(float(state.get("interval_seconds") or 120.0))
 
 
 def _default_state() -> dict[str, Any]:
@@ -412,10 +570,21 @@ def _default_state() -> dict[str, Any]:
         "status": "idle",
         "n_samples": 1000,
         "interval_seconds": 120,
+        "cpu_clock_mode": False,
+        "clock_divisor": 100_000,
+        "max_rotation_hz": 20_000,
+        "target_rotation_hz": 0.0,
+        "clock_rotation_hz": 0.0,
+        "clock_last_burst_size": 0,
+        "clock_burst_seconds": 0.05,
+        "min_worker_sleep_seconds": 0.005,
+        "train_every_rotations": 10_000,
         "max_rotations": 0,
         "target_accuracy": 0.9,
         "target_f1": 0.9,
         "rotation_count": 0,
+        "training_rotation_count": 0,
+        "last_training_rotation_count": 0,
         "hyperparams": _normalize_hyperparams({}),
         "best_score": 0.0,
         "best_accuracy": 0.0,
@@ -440,7 +609,7 @@ def _normalize_hyperparams(value: dict[str, Any] | None) -> dict[str, Any]:
         "test_size": 0.2,
         "n_jobs": -1,
     }
-    if value:
+    if value is not None:
         params.update(value)
     params["n_estimators"] = _clamp_int(params.get("n_estimators", 120), 10, 2000)
     max_depth = params.get("max_depth", 12)
@@ -470,6 +639,23 @@ def _save_best_artifacts(model: Any, metrics: dict[str, Any], rotation_matrix: A
     joblib.dump(payload, model_path)
     metrics_path.write_text(json.dumps(_jsonable(payload | {"model": "<joblib-payload>"}), indent=2, sort_keys=True), encoding="utf-8")
     return {"model_path": str(model_path), "metrics_path": str(metrics_path)}
+
+
+def _matrix_from_state(value: Any, dim: int) -> Any:
+    import numpy as np
+
+    if value:
+        matrix = np.asarray(value, dtype=float)
+        if matrix.shape == (dim, dim):
+            return matrix
+    return np.eye(dim)
+
+
+def _target_rotation_hz(state: dict[str, Any], cpu_clock_hz: float | None = None) -> float:
+    clock_hz = float(cpu_clock_hz if cpu_clock_hz is not None else detect_cpu_clock_hz())
+    divisor = max(1, int(state.get("clock_divisor") or 100_000))
+    cap = max(1, int(state.get("max_rotation_hz") or 20_000))
+    return float(min(clock_hz / divisor, cap))
 
 
 def _rounded_matrix(matrix: Any, digits: int = 6) -> list[list[float]]:

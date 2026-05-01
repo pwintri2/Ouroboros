@@ -863,8 +863,12 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   const [rotatingSamples, setRotatingSamples] = useState(1000);
   const [rotatingEstimators, setRotatingEstimators] = useState(120);
   const [rotatingDepth, setRotatingDepth] = useState(12);
-  const [rotatingInterval, setRotatingInterval] = useState(120);
+  const [rotatingInterval, setRotatingInterval] = useState(0);
   const [rotatingMax, setRotatingMax] = useState(0);
+  const [rotatingClockMode, setRotatingClockMode] = useState(true);
+  const [rotatingMaxHz, setRotatingMaxHz] = useState(20000);
+  const [rotatingClockDivisor, setRotatingClockDivisor] = useState(100000);
+  const [rotatingTrainEvery, setRotatingTrainEvery] = useState(10000);
   const [codexFunctions, setCodexFunctions] = useState<any[]>([]);
   const [selectedCodexFunction, setSelectedCodexFunction] = useState("");
   const [codexArgs, setCodexArgs] = useState("[]");
@@ -877,6 +881,11 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   const [codexAgentExecute, setCodexAgentExecute] = useState(true);
   const [codexAgentStatus, setCodexAgentStatus] = useState<any>(null);
   const [codexAgentResult, setCodexAgentResult] = useState<any>(null);
+  const [codeneuronQuery, setCodeneuronQuery] = useState("mechanism mpi soa");
+  const [codeneuronSearch, setCodeneuronSearch] = useState<any>(null);
+  const [pocketMap, setPocketMap] = useState<any>(null);
+  const [machineStatus, setMachineStatus] = useState<any>(null);
+  const [independenceStatus, setIndependenceStatus] = useState<any>(null);
   const isBlueBrain = method === "blue_brain";
   const continuousMethods = [
     continuousLitgpt ? "litgpt" : "",
@@ -886,6 +895,8 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   useEffect(() => {
     loadCodexFunctions()
       .catch((error: unknown) => console.error("Failed to load Codex functions:", error));
+    loadKnowledgeStatus()
+      .catch((error: unknown) => console.error("Failed to load knowledge status:", error));
   }, [api]);
 
   async function loadCodexFunctions() {
@@ -910,6 +921,18 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
     const data = await api("/trainer/codex/agent/status");
     setCodexAgentStatus(data);
     return data;
+  }
+
+  async function loadKnowledgeStatus() {
+    const [pocketData, machineData, independenceData] = await Promise.all([
+      api("/trainer/codeneuron/pocket-map"),
+      api("/trainer/local-machine/status"),
+      api("/trainer/independence/status"),
+    ]);
+    setPocketMap(pocketData);
+    setMachineStatus(machineData);
+    setIndependenceStatus(independenceData);
+    return { pocketData, machineData, independenceData };
   }
 
   function recordTrainerAction(title: string, data: any) {
@@ -1044,6 +1067,11 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           n_samples: rotatingSamples,
           interval_seconds: rotatingInterval,
           max_rotations: rotatingMax,
+          cpu_clock_mode: rotatingClockMode,
+          max_rotation_hz: rotatingMaxHz,
+          clock_divisor: rotatingClockDivisor,
+          train_every_rotations: rotatingTrainEvery,
+          clock_burst_seconds: 0.05,
           n_estimators: rotatingEstimators,
           max_depth: rotatingDepth,
           run_immediately: false,
@@ -1143,6 +1171,58 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
     }
   }
 
+  async function indexCodeNeuron() {
+    try {
+      const data = await api("/trainer/codeneuron/index", {
+        method: "POST",
+        body: JSON.stringify({ max_files: 1500, max_bytes_per_file: 50000 }),
+      });
+      recordTrainerAction("CodeNeuron Index", data);
+      await loadKnowledgeStatus();
+      await refresh();
+    } catch (error) {
+      recordTrainerError("CodeNeuron Index", error);
+      console.error("Failed to index CodeNeuron:", error);
+    }
+  }
+
+  async function searchCodeNeuron() {
+    try {
+      const data = await api(`/trainer/codeneuron/search?q=${encodeURIComponent(codeneuronQuery)}&limit=12`);
+      setCodeneuronSearch(data);
+      recordTrainerAction("CodeNeuron Search", data);
+    } catch (error) {
+      recordTrainerError("CodeNeuron Search", error);
+      console.error("Failed to search CodeNeuron:", error);
+    }
+  }
+
+  async function snapshotLocalMachine() {
+    try {
+      const data = await api("/trainer/local-machine/snapshot", {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+      });
+      recordTrainerAction("Local Machine Snapshot", data);
+      await loadKnowledgeStatus();
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Local Machine Snapshot", error);
+      console.error("Failed to snapshot local machine:", error);
+    }
+  }
+
+  async function loadIndependenceStatus() {
+    try {
+      const data = await api("/trainer/independence/status");
+      setIndependenceStatus(data);
+      recordTrainerAction("Independence Refresh", data);
+    } catch (error) {
+      recordTrainerError("Independence Refresh", error);
+      console.error("Failed to load independence status:", error);
+    }
+  }
+
   async function previewDataset() {
     try {
       const data = await api("/trainer/dataset/preview", { method: "POST", body: JSON.stringify({ max_records: 10 }) });
@@ -1166,6 +1246,8 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
         <Metric label="New Records" value={trainerStatus?.continuous?.new_records_available ?? 0} />
         <Metric label="Rotating" value={trainerStatus?.rotating_blue?.status ?? "--"} tone={trainerStatus?.rotating_blue?.enabled ? "good" : "warn"} />
         <Metric label="Codex" value={trainerStatus?.codex_registry?.callable_count ?? 0} />
+        <Metric label="CodeNeuron" value={trainerStatus?.codeneuron?.status ?? "--"} tone={trainerStatus?.codeneuron?.indexed ? "good" : "warn"} />
+        <Metric label="Independence" value={Number(independenceStatus?.independence_score ?? trainerStatus?.independence?.independence_score ?? 0).toFixed(2)} tone={(independenceStatus?.external_model_needed ?? trainerStatus?.independence?.external_model_needed) ? "warn" : "good"} />
       </div>
       
       <PanelHeader title="Create Job" small />
@@ -1261,8 +1343,15 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           <Metric label="Accuracy" value={trainerStatus?.rotating_blue?.last_metrics?.accuracy ? Number(trainerStatus.rotating_blue.last_metrics.accuracy).toFixed(4) : "--"} />
           <Metric label="Macro F1" value={trainerStatus?.rotating_blue?.last_metrics?.macro_f1 ? Number(trainerStatus.rotating_blue.last_metrics.macro_f1).toFixed(4) : "--"} />
           <Metric label="Best" value={trainerStatus?.rotating_blue?.best_accuracy ? Number(trainerStatus.rotating_blue.best_accuracy).toFixed(4) : "--"} />
+          <Metric label="Clock Hz" value={trainerStatus?.rotating_blue?.clock_rotation_hz ? Math.round(Number(trainerStatus.rotating_blue.clock_rotation_hz)).toLocaleString() : "--"} tone={trainerStatus?.rotating_blue?.cpu_clock_mode ? "good" : undefined} />
+          <Metric label="CPU GHz" value={trainerStatus?.rotating_blue?.cpu_clock_ghz ? Number(trainerStatus.rotating_blue.cpu_clock_ghz).toFixed(2) : "--"} />
+          <Metric label="Train Ticks" value={trainerStatus?.rotating_blue?.training_rotation_count ?? 0} />
         </div>
         <div className="rotating-controls">
+          <label className="check-row">
+            <input type="checkbox" checked={rotatingClockMode} onChange={(e) => setRotatingClockMode(e.target.checked)} />
+            CPU Clock
+          </label>
           <label>
             Samples
             <input type="number" min={100} max={200000} value={rotatingSamples} onChange={(e) => setRotatingSamples(Number(e.target.value))} />
@@ -1277,11 +1366,23 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           </label>
           <label>
             Interval
-            <input type="number" min={10} max={86400} value={rotatingInterval} onChange={(e) => setRotatingInterval(Number(e.target.value))} />
+            <input type="number" min={0} max={86400} value={rotatingInterval} onChange={(e) => setRotatingInterval(Number(e.target.value))} disabled={rotatingClockMode} />
+          </label>
+          <label>
+            Hz Cap
+            <input type="number" min={1} max={2000000} value={rotatingMaxHz} onChange={(e) => setRotatingMaxHz(Number(e.target.value))} disabled={!rotatingClockMode} />
+          </label>
+          <label>
+            Clock Div
+            <input type="number" min={1} max={1000000000} value={rotatingClockDivisor} onChange={(e) => setRotatingClockDivisor(Number(e.target.value))} disabled={!rotatingClockMode} />
+          </label>
+          <label>
+            Train Every
+            <input type="number" min={1} max={10000000} value={rotatingTrainEvery} onChange={(e) => setRotatingTrainEvery(Number(e.target.value))} disabled={!rotatingClockMode} />
           </label>
           <label>
             Max
-            <input type="number" min={0} max={1000000} value={rotatingMax} onChange={(e) => setRotatingMax(Number(e.target.value))} />
+            <input type="number" min={0} max={1000000000} value={rotatingMax} onChange={(e) => setRotatingMax(Number(e.target.value))} />
           </label>
           <button onClick={startRotatingBlue} disabled={!approvalReady}>
             <Play size={15} /> Start
@@ -1294,6 +1395,94 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           </button>
         </div>
         <ProjectionPlot points={trainerStatus?.rotating_blue?.last_projection ?? []} />
+      </div>
+
+      <PanelHeader title="CodeNeuron 11D Pocket" small />
+      <div className="codeneuron-panel">
+        <div className="trainer-status">
+          <Metric label="Status" value={trainerStatus?.codeneuron?.status ?? "--"} tone={trainerStatus?.codeneuron?.indexed ? "good" : "warn"} />
+          <Metric label="Files" value={trainerStatus?.codeneuron?.file_count ?? 0} />
+          <Metric label="Lines" value={trainerStatus?.codeneuron?.total_lines ?? 0} />
+          <Metric label="Dims" value={pocketMap?.dimension_count ?? 11} />
+        </div>
+        <div className="codeneuron-controls">
+          <button onClick={indexCodeNeuron}>
+            <Database size={15} /> Index
+          </button>
+          <label>
+            Search
+            <input value={codeneuronQuery} onChange={(e) => setCodeneuronQuery(e.target.value)} />
+          </label>
+          <button onClick={searchCodeNeuron}>
+            <RefreshCw size={15} /> Search
+          </button>
+          <button onClick={loadKnowledgeStatus}>
+            <Layers size={15} /> Map
+          </button>
+        </div>
+        <div className="pocket-map">
+          {(pocketMap?.dimensions ?? []).slice(0, 11).map((dimension: any) => (
+            <div className="pocket-card" key={dimension.id}>
+              <div>
+                <strong>{dimension.index}. {dimension.title}</strong>
+                <span>{dimension.e_type}</span>
+              </div>
+              <p>{dimension.summary}</p>
+              <small>{dimension.source_count ?? 0} CodeNeuron sources</small>
+            </div>
+          ))}
+        </div>
+        {codeneuronSearch?.results?.length > 0 && (
+          <div className="codeneuron-results">
+            {codeneuronSearch.results.map((result: any) => (
+              <div key={result.path}>
+                <strong>{result.path}</strong>
+                <span>{result.subsystem} · score {result.score}</span>
+                <p>{result.summary}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <PanelHeader title="Curriculum + Machine + Independence" small />
+      <div className="knowledge-panel">
+        <div className="trainer-status">
+          <Metric label="Curriculum Records" value={trainerStatus?.curriculum?.record_count ?? 0} />
+          <Metric label="Machine" value={machineStatus?.status ?? trainerStatus?.local_machine?.status ?? "--"} tone={(machineStatus?.has_snapshot ?? trainerStatus?.local_machine?.has_snapshot) ? "good" : "warn"} />
+          <Metric label="Scope" value={machineStatus?.environment?.scope ?? trainerStatus?.local_machine?.environment?.scope ?? "--"} />
+          <Metric label="Label" value={independenceStatus?.label ?? trainerStatus?.independence?.label ?? "--"} />
+          <Metric label="External Needed" value={String(independenceStatus?.external_model_needed ?? trainerStatus?.independence?.external_model_needed ?? true)} tone={(independenceStatus?.external_model_needed ?? trainerStatus?.independence?.external_model_needed ?? true) ? "warn" : "good"} />
+        </div>
+        <div className="knowledge-controls">
+          <button onClick={snapshotLocalMachine} disabled={!approvalReady}>
+            <Cpu size={15} /> Snapshot
+          </button>
+          <button onClick={loadIndependenceStatus}>
+            <ShieldCheck size={15} /> Score
+          </button>
+        </div>
+        <div className="curriculum-grid">
+          {(trainerStatus?.curriculum?.curricula ?? []).map((curriculum: any) => (
+            <div key={curriculum.id}>
+              <strong>{curriculum.label}</strong>
+              <span>{trainerStatus?.curriculum?.label_counts?.[curriculum.id] ?? 0} records</span>
+            </div>
+          ))}
+        </div>
+        <div className="independence-meter">
+          <div style={{ width: `${Math.max(2, Math.min(100, Number((independenceStatus?.independence_score ?? trainerStatus?.independence?.independence_score ?? 0) * 100)))}%` }} />
+        </div>
+        {(independenceStatus?.recommendations ?? trainerStatus?.independence?.recommendations ?? []).length > 0 && (
+          <div className="codex-monitor">
+            {(independenceStatus?.recommendations ?? trainerStatus?.independence?.recommendations ?? []).slice(0, 5).map((item: string) => (
+              <div className="warn" key={item}>
+                <strong>Gap</strong>
+                <span>{item}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <PanelHeader title="Codex Registry" small />

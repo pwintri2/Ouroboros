@@ -15,6 +15,8 @@ from typing import Any
 
 import chromadb
 
+from controller.training_curriculum import classify_record, coverage_from_records
+
 
 def chroma_path() -> Path:
     """Path to the ChromaDB persistent storage."""
@@ -136,6 +138,7 @@ def build_dataset(
         "total_approved": len(records),
         "included_count": included_count,
         "skipped_untrusted": len(records) - included_count,
+        "curriculum_coverage": coverage_from_records(records),
         "created_at": datetime.utcnow().isoformat(),
     }
 
@@ -193,6 +196,7 @@ def _build_chat_entry(document: str, metadata: dict[str, Any], include_system: b
     # Add 11D geometry metadata
     entry = {
         "messages": messages,
+        "curriculum": classify_record(document, metadata),
         "metadata_11d": {
             "dimension_count": metadata.get("dimension_count", 11),
             "dream_hz": metadata.get("dream_hz", 418.0),
@@ -227,6 +231,7 @@ def _build_completion_entry(document: str, metadata: dict[str, Any]) -> dict[str
     entry = {
         "prompt": prompt,
         "completion": completion,
+        "curriculum": classify_record(document, metadata),
         "metadata_11d": {
             "dimension_count": metadata.get("dimension_count", 11),
             "dream_hz": metadata.get("dream_hz", 418.0),
@@ -252,6 +257,7 @@ def _build_text_entry(document: str, metadata: dict[str, Any]) -> dict[str, Any]
 
     return {
         "text": document.strip(),
+        "curriculum": classify_record(document, metadata),
         "metadata_11d": {
             "dimension_count": metadata.get("dimension_count", 11),
             "dream_hz": metadata.get("dream_hz", 418.0),
@@ -275,6 +281,7 @@ def preview_dataset(max_records: int = 10) -> dict[str, Any]:
     preview = {
         "total_approved_available": count_approved_records(),
         "preview_count": len(records),
+        "curriculum_coverage": coverage_from_records(records),
         "records": [],
     }
     
@@ -288,6 +295,7 @@ def preview_dataset(max_records: int = 10) -> dict[str, Any]:
             "taint": meta.get("d8_karmic_taint", ""),
             "dream_hz": meta.get("dream_hz", 0.0),
             "resonance_score": meta.get("resonance_score", 0.0),
+            "curriculum": classify_record(record["document"], meta),
             "document_preview": record["document"][:200] + "..." if len(record["document"]) > 200 else record["document"],
         })
     

@@ -469,7 +469,9 @@ label {
 .continuous-controls,
 .rotating-controls,
 .codex-controls,
-.codex-agent-controls {
+.codex-agent-controls,
+.codeneuron-controls,
+.knowledge-controls {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -479,14 +481,21 @@ label {
 .continuous-controls,
 .rotating-blue-panel,
 .codex-controls,
-.codex-agent-controls {
+.codex-agent-controls,
+.codeneuron-panel,
+.knowledge-panel {
   margin-bottom: 12px;
 }
 
 .continuous-controls label:not(.check-row),
 .rotating-controls label,
-.codex-controls label {
+.codex-controls label,
+.codeneuron-controls label {
   width: 132px;
+}
+
+.codeneuron-controls label {
+  min-width: 280px;
 }
 
 .codex-controls label:first-child {
@@ -594,6 +603,78 @@ label {
 
 .codex-monitor .warn strong {
   color: #f2c94c;
+}
+
+.pocket-map,
+.curriculum-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.pocket-card,
+.curriculum-grid > div,
+.codeneuron-results > div {
+  padding: 10px;
+  border: 1px solid #1d2634;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.pocket-card > div,
+.curriculum-grid > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.pocket-card strong,
+.curriculum-grid strong,
+.codeneuron-results strong {
+  font-size: 13px;
+}
+
+.pocket-card span,
+.pocket-card small,
+.curriculum-grid span,
+.codeneuron-results span {
+  color: #91a3b8;
+  font-size: 12px;
+}
+
+.pocket-card p,
+.codeneuron-results p {
+  color: #b7c5d6;
+  font-size: 12px;
+  margin: 8px 0 0;
+  line-height: 1.4;
+}
+
+.codeneuron-results {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.codeneuron-results > div {
+  display: grid;
+  gap: 5px;
+}
+
+.independence-meter {
+  height: 10px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0d1420;
+  border: 1px solid #1d2634;
+  margin: 8px 0 12px;
+}
+
+.independence-meter > div {
+  height: 100%;
+  background: linear-gradient(90deg, #f2c94c, #40c4aa);
 }
 
 .job-list {

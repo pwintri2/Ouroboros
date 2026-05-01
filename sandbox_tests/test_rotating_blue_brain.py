@@ -27,7 +27,7 @@ class TestRotatingBlueBrain(unittest.TestCase):
         import numpy as np
 
         from controller.blue_brain_adapter import generate_dataset
-        from controller.rotating_blue_brain import apply_rotation, generate_rotation_matrix
+        from controller.rotating_blue_brain import advance_rotation_clock, apply_rotation, generate_rotation_matrix
 
         X, _ = generate_dataset(n_samples=120, n_features=11, random_state=11)
         rotation = generate_rotation_matrix(dim=11, random_state=11)
@@ -38,12 +38,17 @@ class TestRotatingBlueBrain(unittest.TestCase):
         rotated = apply_rotation(X, rotation)
         self.assertEqual(rotated.shape, X.shape)
 
+        clock_rotation = advance_rotation_clock(None, start_index=0, rotation_count=128, dim=11)
+        self.assertEqual(clock_rotation.shape, (11, 11))
+        self.assertTrue(np.allclose(clock_rotation.T @ clock_rotation, np.eye(11), atol=1e-8))
+
     def test_training_returns_metrics_and_artifact_tick(self):
         from controller.blue_brain_adapter import generate_dataset
         from controller.rotating_blue_brain import (
             apply_rotation,
             generate_rotation_matrix,
             load_rotating_state,
+            run_clock_rotation_burst,
             run_rotation_tick,
             save_rotating_state,
             train_rotated_model,
@@ -70,6 +75,10 @@ class TestRotatingBlueBrain(unittest.TestCase):
                 state["n_samples"] = 320
                 state["hyperparams"] = {"n_estimators": 25, "max_depth": 6, "random_state": 19, "test_size": 0.2}
                 save_rotating_state(state)
+                burst = run_clock_rotation_burst(force=True)
+                self.assertEqual(burst["status"], "success")
+                self.assertGreaterEqual(burst["rotation_count"], 1)
+
                 result = run_rotation_tick(force=True)
                 self.assertEqual(result["status"], "success")
                 self.assertTrue(Path(result["state"]["best_model_path"]).exists())

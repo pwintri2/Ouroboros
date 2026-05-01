@@ -1,5 +1,5 @@
 # Handover Report: Trainer Pipeline Integration
-**Date**: 2026-05-01  
+**Date**: 2026-05-01
 **Branch**: `trainer-pipeline-integration`  
 **Commit**: 2550e1a
 
@@ -152,3 +152,102 @@ Integrated LitGPT and Unsloth training capabilities into the Ouroboros Cockpit U
 - Jobs require approval before training can start
 - Dataset must be built and approved before training
 - Model artifacts can be exported to Ollama for deployment
+
+---
+
+## Addendum: CodeNeuron, 11D Pocket and Independence Update
+**Date**: 2026-05-01
+**Branch**: `feature/codex-agent-codeneuron-independence-20260501`
+
+### Summary
+The Trainer tab has grown from a trainer/job surface into a live Ouroboros learning cockpit. It now includes a read-only CodeNeuron/CoreNEURON knowledge index, a visible 11D pocket map, six curriculum tracks, a local machine profiler, an independence score, Codex agent/registry panels, and a faster Blue Brain Rotating loop.
+
+### New Backend Modules
+- `controller/codeneuron_adapter.py`
+  - Read-only scanner for `/home/pwintri2/CodeNeuron` or `/codeneuron` in Docker.
+  - Indexes `docs/`, `coreneuron/`, `tests/`, and `CMake/`.
+  - Writes compact runtime state to `.secrets/codeneuron_index.json`.
+- `controller/codeneuron_ontology.py`
+  - Defines the canonical 11D pocket dimensions.
+  - Maps CodeNeuron source evidence to e-type/11D concepts.
+- `controller/training_curriculum.py`
+  - Adds curriculum labels: `general`, `programming`, `local_machine`, `operating_systems`, `codeneuron`, `ouroboros_self`.
+  - Dataset exports now include curriculum metadata.
+- `controller/local_machine_profile.py`
+  - Approval-gated read-only snapshot of OS/runtime/hardware/tooling.
+  - Current Docker snapshots honestly report `environment.scope=docker_container`.
+- `controller/ouroboros_independence.py`
+  - Computes `independence_score` and labels from local inference, tool use, code ability, learning loop, self-extension, validation, recovery and knowledge coverage.
+
+### Rotating Blue Brain Update
+The 11D rotation loop now has CPU-clock mode:
+- `cpu_clock_mode=true` decouples lightweight orthogonal pocket rotations from heavy RandomForest training.
+- Rotation cadence is derived from CPU clock as `cpu_clock_hz / clock_divisor`, then capped by `max_rotation_hz`.
+- Live local setting after validation:
+  - `max_rotation_hz=20000`
+  - `clock_divisor=100000`
+  - `train_every_rotations=10000`
+- This makes the 11D pocket feel live while keeping model training bounded.
+
+### New API Endpoints
+- `GET /trainer/codeneuron/status`
+- `POST /trainer/codeneuron/index`
+- `GET /trainer/codeneuron/pocket-map`
+- `GET /trainer/codeneuron/search?q=...`
+- `GET /trainer/curriculum/status`
+- `GET /trainer/local-machine/status`
+- `POST /trainer/local-machine/snapshot`
+- `GET /trainer/independence/status`
+
+### UI Additions
+The React Trainer tab now shows:
+- CodeNeuron index/search status.
+- 11D Pocket Map cards with source counts.
+- Curriculum coverage.
+- Local machine profile scope/status.
+- Independence score and external-model-needed indicator.
+- Capability gaps/recommendations.
+- CPU Clock controls for Blue Brain Rotating: `CPU Clock`, `Hz Cap`, `Clock Div`, `Train Every`.
+
+### Live Docker Evidence
+- Backend: `http://localhost:8010`
+- React dev server: `http://localhost:1420`
+- Docker container: `wintrip-standalone-ui`
+- CodeNeuron mount: `/codeneuron` read-only.
+- Real index observed: 191 files, 30,537 lines, all 11 pocket dimensions matched.
+- Independence score observed: `0.8412`, label `mostly_independent`, `external_model_needed=true`.
+
+### Validation
+Run in Docker:
+
+```bash
+python -m unittest \
+  sandbox_tests.test_codeneuron_adapter \
+  sandbox_tests.test_training_curriculum \
+  sandbox_tests.test_local_machine_profile \
+  sandbox_tests.test_ouroboros_independence
+```
+
+Result: OK.
+
+```bash
+python -m unittest \
+  sandbox_tests.test_trainer_pipeline_blue_brain \
+  sandbox_tests.test_rotating_blue_brain \
+  sandbox_tests.test_codex_registry \
+  sandbox_tests.test_codex_agent
+```
+
+Result: OK.
+
+```bash
+python -m unittest sandbox_tests.test_tauri_backend_routes
+```
+
+Result: OK.
+
+```bash
+npm --prefix ouroboros_cockpit run build
+```
+
+Result: OK.

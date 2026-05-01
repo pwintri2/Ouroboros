@@ -15,8 +15,15 @@ from controller.codex_agent import (
     get_codex_agent_status,
     record_frontend_event,
 )
+from controller.codeneuron_adapter import (
+    get_codeneuron_pocket_map,
+    get_codeneuron_status,
+    index_codeneuron,
+    search_codeneuron,
+)
 from controller.codex_registry import call_codex_function, get_codex_monitor, get_codex_registry_status, list_codex_functions
 from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights
+from controller.local_machine_profile import get_local_machine_status, snapshot_local_machine
 from controller.model_artifacts import (
     get_artifacts_summary,
     list_artifacts,
@@ -24,6 +31,7 @@ from controller.model_artifacts import (
     register_artifact,
     update_model_online_status,
 )
+from controller.ouroboros_independence import compute_independence_score
 from controller.project_context import get_context_summary, get_file_tree, get_changed_files
 from controller.roo_manifest import get_roo_status, get_tool_schema, list_all_modes, list_all_tools
 from controller.roo_tools import (
@@ -57,6 +65,7 @@ from controller.trainer_jobs import (
     update_job_state,
 )
 from controller.training_dataset_builder import build_dataset, count_approved_records, preview_dataset
+from controller.training_curriculum import curriculum_status, list_curricula
 from controller.trainer_continuous import (
     get_continuous_status,
     notify_browser_training_record,
@@ -130,6 +139,11 @@ class ApprovalRequest(BaseModel):
     approval: str = Field(..., min_length=1)
 
 
+class CodeNeuronIndexRequest(BaseModel):
+    max_files: int = Field(default=1500, ge=1, le=10000)
+    max_bytes_per_file: int = Field(default=50000, ge=1024, le=250000)
+
+
 class ContinuousStartRequest(BaseModel):
     approval: str = Field(..., min_length=1)
     methods: list[TrainerMethod] = Field(default_factory=lambda: [TrainerMethod.LITGPT, TrainerMethod.UNSLOOTH])
@@ -158,8 +172,13 @@ class TrainerBrowserIngestRequest(BrowserTrainingRequest):
 class RotatingBlueStartRequest(BaseModel):
     approval: str = Field(..., min_length=1)
     n_samples: int = Field(default=1000, ge=100, le=200000)
-    interval_seconds: int = Field(default=120, ge=10, le=86400)
-    max_rotations: int = Field(default=0, ge=0, le=1000000)
+    interval_seconds: float = Field(default=120, ge=0, le=86400)
+    max_rotations: int = Field(default=0, ge=0, le=1000000000)
+    cpu_clock_mode: bool = Field(default=False)
+    clock_divisor: int = Field(default=100000, ge=1, le=1000000000)
+    max_rotation_hz: int = Field(default=20000, ge=1, le=2000000)
+    train_every_rotations: int = Field(default=10000, ge=1, le=10000000)
+    clock_burst_seconds: float = Field(default=0.05, ge=0.001, le=1.0)
     n_estimators: int = Field(default=120, ge=10, le=2000)
     max_depth: int | None = Field(default=12, ge=1, le=100)
     random_state: int = Field(default=42, ge=0, le=1000000)
@@ -214,6 +233,10 @@ async def trainer_pipeline_status() -> dict[str, Any]:
         "rotating_blue": get_rotating_status(),
         "codex_registry": get_codex_registry_status(),
         "codex_agent": get_codex_agent_status(),
+        "codeneuron": get_codeneuron_status(),
+        "curriculum": curriculum_status(),
+        "local_machine": get_local_machine_status(),
+        "independence": compute_independence_score(),
         "continuous": get_continuous_status(),
         "artifacts": artifacts_summary,
         "approved_dataset_records": approved_count,
@@ -318,6 +341,11 @@ async def trainer_rotating_blue_start(request: RotatingBlueStartRequest) -> dict
             "n_samples": request.n_samples,
             "interval_seconds": request.interval_seconds,
             "max_rotations": request.max_rotations,
+            "cpu_clock_mode": request.cpu_clock_mode,
+            "clock_divisor": request.clock_divisor,
+            "max_rotation_hz": request.max_rotation_hz,
+            "train_every_rotations": request.train_every_rotations,
+            "clock_burst_seconds": request.clock_burst_seconds,
             "target_accuracy": request.target_accuracy,
             "target_f1": request.target_f1,
             "run_immediately": request.run_immediately,
@@ -349,6 +377,59 @@ async def trainer_rotating_blue_tick(request: RotatingBlueTickRequest) -> dict[s
     if request.approval != "Akkoord":
         raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
     return run_rotation_tick(force=request.force)
+
+
+@trainer_pipeline_router.get("/codeneuron/status")
+async def trainer_codeneuron_status() -> dict[str, Any]:
+    """Get read-only CodeNeuron index status."""
+    return get_codeneuron_status()
+
+
+@trainer_pipeline_router.post("/codeneuron/index")
+async def trainer_codeneuron_index(request: CodeNeuronIndexRequest) -> dict[str, Any]:
+    """Build a compact read-only CodeNeuron index."""
+    return index_codeneuron(max_files=request.max_files, max_bytes_per_file=request.max_bytes_per_file)
+
+
+@trainer_pipeline_router.get("/codeneuron/pocket-map")
+async def trainer_codeneuron_pocket_map() -> dict[str, Any]:
+    """Get the 11D pocket map enriched with CodeNeuron sources."""
+    return get_codeneuron_pocket_map()
+
+
+@trainer_pipeline_router.get("/codeneuron/search")
+async def trainer_codeneuron_search(q: str, limit: int = 20) -> dict[str, Any]:
+    """Search the compact CodeNeuron index."""
+    return search_codeneuron(q, limit=limit)
+
+
+@trainer_pipeline_router.get("/curriculum/status")
+async def trainer_curriculum_status() -> dict[str, Any]:
+    """Get training curriculum labels and coverage."""
+    status = curriculum_status()
+    status["available_curricula"] = list_curricula().get("curricula", [])
+    return status
+
+
+@trainer_pipeline_router.get("/local-machine/status")
+async def trainer_local_machine_status() -> dict[str, Any]:
+    """Get local machine profile status."""
+    return get_local_machine_status()
+
+
+@trainer_pipeline_router.post("/local-machine/snapshot")
+async def trainer_local_machine_snapshot(request: ApprovalRequest) -> dict[str, Any]:
+    """Capture a read-only local machine snapshot (requires approval)."""
+    result = snapshot_local_machine(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.get("/independence/status")
+async def trainer_independence_status() -> dict[str, Any]:
+    """Get the current Ouroboros independence score."""
+    return compute_independence_score()
 
 
 @trainer_pipeline_router.get("/codex/functions")
