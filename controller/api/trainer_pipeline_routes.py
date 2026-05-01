@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from controller.blue_brain_adapter import get_blue_brain_status, run_blue_brain_training, setup_blue_brain_env
 from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights
 from controller.model_artifacts import (
     get_artifacts_summary,
@@ -43,7 +44,21 @@ from controller.trainer_jobs import (
     update_job_state,
 )
 from controller.training_dataset_builder import build_dataset, count_approved_records, preview_dataset
+from controller.trainer_continuous import (
+    get_continuous_status,
+    notify_browser_training_record,
+    run_continuous_tick,
+    start_continuous_training,
+    stop_continuous_training,
+)
 from controller.unsloth_adapter import export_to_gguf, generate_modelfile, get_unsloth_status, run_unsloth_sft_training
+from controller.api.training_routes import (
+    BrowserTrainingRequest,
+    _preview_payload,
+    _remember_event,
+    _safe_total_count,
+    _store_training_snapshot,
+)
 
 
 trainer_pipeline_router = APIRouter(prefix="/trainer", tags=["trainer-pipeline"])
@@ -66,6 +81,10 @@ class CreateJobRequest(BaseModel):
     batch_size: int = Field(default=4, ge=1, le=32)
     epochs: int = Field(default=3, ge=1, le=50)
     description: str = Field(default="", max_length=1024)
+    blue_samples: int = Field(default=10_000, ge=100, le=200_000)
+    blue_estimators: int = Field(default=300, ge=10, le=2_000)
+    blue_max_depth: int | None = Field(default=12, ge=1, le=100)
+    blue_random_state: int = Field(default=42, ge=0, le=1_000_000)
 
 
 class UpdateJobStateRequest(BaseModel):
@@ -89,9 +108,38 @@ class StartTrainingRequest(BaseModel):
 
 class BuildDatasetRequest(BaseModel):
     output_path: str = Field(..., min_length=1)
-    format: str = Field(default="chat", pattern="^(chat|completion)$")
+    format: str = Field(default="chat", pattern="^(chat|completion|text)$")
     max_records: int = Field(default=1000, ge=1, le=10000)
     include_system_prompt: bool = Field(default=True)
+
+
+class ApprovalRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+
+
+class ContinuousStartRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    methods: list[TrainerMethod] = Field(default_factory=lambda: [TrainerMethod.LITGPT, TrainerMethod.UNSLOOTH])
+    interval_seconds: int = Field(default=300, ge=30, le=86400)
+    execute_training: bool = Field(default=False)
+    litgpt_base_model: str = Field(default="llama3.2:latest", min_length=1, max_length=256)
+    unsloth_base_model: str = Field(default="unsloth/tinyllama-bnb-4bit", min_length=1, max_length=256)
+    max_records: int = Field(default=1000, ge=1, le=10000)
+    run_immediately: bool = Field(default=False)
+
+
+class ContinuousTickRequest(BaseModel):
+    approval: str = Field(default="", max_length=64)
+    force: bool = Field(default=False)
+    execute_training: bool = Field(default=False)
+    methods: list[TrainerMethod] | None = Field(default=None)
+
+
+class TrainerBrowserIngestRequest(BrowserTrainingRequest):
+    notify_continuous: bool = Field(default=True)
+    trigger_tick: bool = Field(default=False)
+    execute_training: bool = Field(default=False)
+    methods: list[TrainerMethod] | None = Field(default=None)
 
 
 @trainer_pipeline_router.get("/status")
@@ -100,6 +148,7 @@ async def trainer_pipeline_status() -> dict[str, Any]:
     pipeline_status = get_pipeline_status()
     litgpt_status = get_litgpt_status()
     unsloth_status = get_unsloth_status()
+    blue_brain_status = get_blue_brain_status()
     artifacts_summary = get_artifacts_summary()
     approved_count = count_approved_records()
     
@@ -107,6 +156,8 @@ async def trainer_pipeline_status() -> dict[str, Any]:
         "pipeline": pipeline_status,
         "litgpt": litgpt_status,
         "unsloth": unsloth_status,
+        "blue_brain": blue_brain_status,
+        "continuous": get_continuous_status(),
         "artifacts": artifacts_summary,
         "approved_dataset_records": approved_count,
     }
@@ -125,8 +176,125 @@ async def create_trainer_job(request: CreateJobRequest) -> dict[str, Any]:
         batch_size=request.batch_size,
         epochs=request.epochs,
         description=request.description,
+        extra_training_params={
+            "blue_samples": request.blue_samples,
+            "blue_estimators": request.blue_estimators,
+            "blue_max_depth": request.blue_max_depth,
+            "blue_random_state": request.blue_random_state,
+            "blue_cycles": request.epochs,
+        } if request.method == TrainerMethod.BLUE_BRAIN else None,
     )
     return job
+
+
+@trainer_pipeline_router.post("/blue-brain/setup")
+async def setup_blue_brain(request: ApprovalRequest) -> dict[str, Any]:
+    """Set up the dedicated Blue Brain trainer venv (requires approval)."""
+    if request.approval != "Akkoord":
+        raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
+    return setup_blue_brain_env()
+
+
+@trainer_pipeline_router.get("/continuous/status")
+async def trainer_continuous_status() -> dict[str, Any]:
+    """Get LitGPT/Unsloth continuous trainer status."""
+    return get_continuous_status()
+
+
+@trainer_pipeline_router.post("/continuous/start")
+async def trainer_continuous_start(request: ContinuousStartRequest) -> dict[str, Any]:
+    """Start the continuous LitGPT/Unsloth trainer loop (requires approval)."""
+    methods = [method.value for method in request.methods if method.value in {TrainerMethod.LITGPT.value, TrainerMethod.UNSLOOTH.value}]
+    result = start_continuous_training(
+        approval=request.approval,
+        methods=methods,
+        interval_seconds=request.interval_seconds,
+        execute_training=request.execute_training,
+        base_models={
+            TrainerMethod.LITGPT.value: request.litgpt_base_model,
+            TrainerMethod.UNSLOOTH.value: request.unsloth_base_model,
+        },
+        max_records=request.max_records,
+        run_immediately=request.run_immediately,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/continuous/stop")
+async def trainer_continuous_stop(request: ApprovalRequest) -> dict[str, Any]:
+    """Stop the continuous LitGPT/Unsloth trainer loop (requires approval)."""
+    result = stop_continuous_training(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/continuous/tick")
+async def trainer_continuous_tick(request: ContinuousTickRequest) -> dict[str, Any]:
+    """Run one bounded continuous-trainer tick."""
+    methods = [method.value for method in request.methods] if request.methods else None
+    result = run_continuous_tick(
+        approval=request.approval,
+        force=request.force,
+        execute_training=request.execute_training,
+        methods=methods,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/browser/ingest")
+async def trainer_browser_ingest(request_body: TrainerBrowserIngestRequest, request: Request) -> dict[str, Any]:
+    """Receive browser training data, store approved snapshots, and notify the continuous trainer."""
+    try:
+        approved = request_body.approval == "Akkoord"
+        payload = _preview_payload(request_body, approval=request_body.approval if approved else None, request=request)
+        if payload["approval_status"] != "approved":
+            _remember_event(request, "trainer_browser_ingest_preview", payload)
+            return {
+                "status": "preview",
+                "stored": False,
+                "approval_required": True,
+                "ingest": payload,
+                "continuous": get_continuous_status(),
+            }
+
+        stored = _store_training_snapshot(payload)
+        payload.update(
+            {
+                "stored": stored["stored"],
+                "approval_required": False,
+                "item_id": stored["item_id"],
+                "reason": stored["reason"],
+                "storage_target": stored["storage_target"],
+                "collection_count": _safe_total_count(request.app.state.training_storage),
+            }
+        )
+        _remember_event(request, "trainer_browser_ingest_stored", payload)
+        continuous = None
+        if request_body.notify_continuous:
+            continuous = notify_browser_training_record(item_id=stored.get("item_id"), source_url=payload.get("source_url"))
+        tick = None
+        if request_body.trigger_tick:
+            methods = [method.value for method in request_body.methods] if request_body.methods else None
+            tick = run_continuous_tick(
+                approval=request_body.approval or "",
+                force=True,
+                execute_training=request_body.execute_training,
+                methods=methods,
+            )
+        return {
+            "status": "stored",
+            "stored": bool(stored["stored"]),
+            "ingest": payload,
+            "continuous": continuous or get_continuous_status(),
+            "tick": tick,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @trainer_pipeline_router.get("/jobs")
@@ -216,6 +384,17 @@ async def start_training(request: StartTrainingRequest) -> dict[str, Any]:
             learning_rate=job["training_params"]["learning_rate"],
             batch_size=job["training_params"]["batch_size"],
             epochs=job["training_params"]["epochs"],
+        )
+    elif method == TrainerMethod.BLUE_BRAIN.value:
+        training_params = job.get("training_params", {})
+        result = run_blue_brain_training(
+            job_id=request.job_id,
+            n_samples=int(training_params.get("blue_samples", 10_000)),
+            n_features=11,
+            n_estimators=int(training_params.get("blue_estimators", 300)),
+            max_depth=training_params.get("blue_max_depth", 12),
+            random_state=int(training_params.get("blue_random_state", 42)),
+            cycles=int(training_params.get("blue_cycles", training_params.get("epochs", 1))),
         )
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported training method: {method}")

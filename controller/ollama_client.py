@@ -33,7 +33,8 @@ Je draait 100% lokaal via Ollama op de machine van de gebruiker.
 
 class OllamaClient:
     def __init__(self, model=None, base_url="http://localhost:11434/api"):
-        host = os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL") or base_url
+        configured_host = os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL")
+        host = configured_host or _discover_ollama_base_url(base_url)
         self.base_url = host.rstrip("/")
         if self.base_url.endswith("/api"):
             self.base_url = self.base_url[:-4]
@@ -84,3 +85,29 @@ class OllamaClient:
             return response.json().get("message", {}).get("content", "")
         except Exception as e:
             return f"LOKALE OLLAMA ERROR ({target_model}): {str(e)}"
+
+
+def _discover_ollama_base_url(default_url: str) -> str:
+    """Find a reachable local Ollama endpoint from host or Docker runtime."""
+    candidates = [
+        default_url,
+        "http://host.docker.internal:11434/api",
+        "http://172.17.0.1:11434/api",
+        "http://localhost:11436/api",
+        "http://host.docker.internal:11436/api",
+        "http://172.17.0.1:11436/api",
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        base = str(candidate or "").rstrip("/")
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        root = base[:-4] if base.endswith("/api") else base
+        try:
+            response = requests.get(f"{root}/api/tags", timeout=1.5)
+            if response.ok:
+                return root
+        except Exception:
+            continue
+    return default_url

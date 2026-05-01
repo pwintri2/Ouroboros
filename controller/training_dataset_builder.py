@@ -18,17 +18,21 @@ import chromadb
 
 def chroma_path() -> Path:
     """Path to the ChromaDB persistent storage."""
+    configured_db_path = os.getenv("WINTRIP_DB_PATH")
+    if configured_db_path:
+        return Path(configured_db_path).resolve()
     workspace = Path(os.getenv("WINTRIP_WORKSPACE") or os.getenv("WORKSPACE_ROOT") or "/workspace")
     if not workspace.exists():
         workspace = Path(os.getenv("WINTRIP_PROJECT_ROOT") or Path.cwd())
-    return (workspace / "controller" / "wintrip_brain").resolve()
+    return (workspace / "wintrip_brain").resolve()
 
 
 def get_training_collection() -> chromadb.Collection | None:
     """Get the ChromaDB training collection."""
     try:
         client = chromadb.PersistentClient(path=str(chroma_path()))
-        collection = client.get_or_create_collection(name="wintrip_training")
+        collection_name = os.getenv("WINTRIP_TRAINING_COLLECTION", "wintrip_training_11d")
+        collection = client.get_or_create_collection(name=collection_name)
         return collection
     except Exception:
         return None
@@ -104,13 +108,15 @@ def build_dataset(
         
         # Skip browser data unless explicitly approved and scrubbed
         source_type = meta.get("source_type", "")
-        taint = meta.get("d8_karmic_taint", "")
+        taint = meta.get("taint") or meta.get("d8_karmic_taint", "")
         if "browser" in source_type.lower() and "untrusted" in taint.lower():
             continue
         
         # Build entry based on format
         if format == "chat":
             entry = _build_chat_entry(doc, meta, include_system_prompt)
+        elif format == "text":
+            entry = _build_text_entry(doc, meta)
         else:
             entry = _build_completion_entry(doc, meta)
         
@@ -237,6 +243,29 @@ def _build_completion_entry(document: str, metadata: dict[str, Any]) -> dict[str
     }
     
     return entry
+
+
+def _build_text_entry(document: str, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a plain SFT text entry for trainers that expect dataset_text_field='text'."""
+    if not document or not document.strip():
+        return None
+
+    return {
+        "text": document.strip(),
+        "metadata_11d": {
+            "dimension_count": metadata.get("dimension_count", 11),
+            "dream_hz": metadata.get("dream_hz", 418.0),
+            "radius": metadata.get("radius", metadata.get("geometry_11d_radius", 0.0)),
+            "volume": metadata.get("volume", metadata.get("geometry_11d_volume", 0.0)),
+            "surface_area": metadata.get("surface_area", metadata.get("geometry_11d_oppervlakte", 0.0)),
+            "resonance_score": metadata.get("resonance_score", 0.0),
+            "source": metadata.get("source", ""),
+            "source_type": metadata.get("source_type", ""),
+            "approval_status": metadata.get("approval_status", ""),
+            "content_hash": metadata.get("content_hash", ""),
+            "type": metadata.get("type", ""),
+        },
+    }
 
 
 def preview_dataset(max_records: int = 10) -> dict[str, Any]:

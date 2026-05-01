@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import {
+  Activity,
   Bot,
   BrainCircuit,
   CheckCircle2,
@@ -14,6 +15,7 @@ import {
   Layers,
   Pause,
   Play,
+  Rocket,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -714,11 +716,11 @@ export default function App() {
         )}
 
         {activeTab === "trainer" && (
-          <TrainerPanel api={api} backend={backend} trainerStatus={trainerStatus} trainerJobs={trainerJobs} approval={approval} approvalReady={approvalReady} refresh={refresh} />
+          <TrainerPanel api={api} trainerStatus={trainerStatus} trainerJobs={trainerJobs} approval={approval} approvalReady={approvalReady} refresh={refresh} />
         )}
 
         {activeTab === "context" && (
-          <ContextPanel api={api} backend={backend} contextData={contextData} refresh={refresh} />
+          <ContextPanel api={api} contextData={contextData} />
         )}
 
         {activeTab === "main" && (
@@ -846,20 +848,113 @@ function EventItem({ event }: { event: OperationEvent }) {
   );
 }
 
-function TrainerPanel({ api, backend, trainerStatus, trainerJobs, approval, approvalReady, refresh }: { api: any; backend: string; trainerStatus: any; trainerJobs: any[]; approval: string; approvalReady: boolean; refresh: () => Promise<void> }) {
+function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady, refresh }: { api: any; trainerStatus: any; trainerJobs: any[]; approval: string; approvalReady: boolean; refresh: () => Promise<void> }) {
   const [baseModel, setBaseModel] = useState("llama3.2:latest");
   const [method, setMethod] = useState("litgpt");
   const [datasetPreview, setDatasetPreview] = useState<any>(null);
+  const [blueSamples, setBlueSamples] = useState(10000);
+  const [blueEstimators, setBlueEstimators] = useState(300);
+  const [blueMaxDepth, setBlueMaxDepth] = useState(12);
+  const [blueCycles, setBlueCycles] = useState(3);
+  const [continuousLitgpt, setContinuousLitgpt] = useState(true);
+  const [continuousUnsloth, setContinuousUnsloth] = useState(true);
+  const [continuousInterval, setContinuousInterval] = useState(300);
+  const [continuousExecute, setContinuousExecute] = useState(false);
+  const isBlueBrain = method === "blue_brain";
+  const continuousMethods = [
+    continuousLitgpt ? "litgpt" : "",
+    continuousUnsloth ? "unsloth" : "",
+  ].filter(Boolean);
 
   async function createJob() {
     try {
       await api("/trainer/jobs", {
         method: "POST",
-        body: JSON.stringify({ base_model: baseModel, method }),
+        body: JSON.stringify({
+          base_model: isBlueBrain ? baseModel || "blue-brain-random-forest" : baseModel,
+          method,
+          epochs: isBlueBrain ? blueCycles : 3,
+          blue_samples: blueSamples,
+          blue_estimators: blueEstimators,
+          blue_max_depth: blueMaxDepth,
+        }),
       });
       await refresh();
     } catch (error) {
       console.error("Failed to create job:", error);
+    }
+  }
+
+  async function setupBlueBrain() {
+    try {
+      await api("/trainer/blue-brain/setup", {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+      });
+      await refresh();
+    } catch (error) {
+      console.error("Failed to setup Blue Brain:", error);
+    }
+  }
+
+  async function startJob(jobId: string) {
+    try {
+      await api("/trainer/training/start", {
+        method: "POST",
+        body: JSON.stringify({ job_id: jobId, approval }),
+      });
+      await refresh();
+    } catch (error) {
+      console.error("Failed to start trainer job:", error);
+    }
+  }
+
+  async function startContinuous() {
+    try {
+      await api("/trainer/continuous/start", {
+        method: "POST",
+        body: JSON.stringify({
+          approval,
+          methods: continuousMethods,
+          interval_seconds: continuousInterval,
+          execute_training: continuousExecute,
+          run_immediately: false,
+          litgpt_base_model: baseModel || "llama3.2:latest",
+          unsloth_base_model: baseModel || "unsloth/tinyllama-bnb-4bit",
+        }),
+      });
+      await refresh();
+    } catch (error) {
+      console.error("Failed to start continuous trainer:", error);
+    }
+  }
+
+  async function stopContinuous() {
+    try {
+      await api("/trainer/continuous/stop", {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+      });
+      await refresh();
+    } catch (error) {
+      console.error("Failed to stop continuous trainer:", error);
+    }
+  }
+
+  async function tickContinuous() {
+    try {
+      await api("/trainer/continuous/tick", {
+        method: "POST",
+        body: JSON.stringify({
+          approval,
+          force: true,
+          execute_training: continuousExecute,
+          methods: continuousMethods,
+        }),
+      });
+      await refresh();
+    } catch (error) {
+      console.error("Failed to tick continuous trainer:", error);
     }
   }
 
@@ -878,8 +973,12 @@ function TrainerPanel({ api, backend, trainerStatus, trainerJobs, approval, appr
       <div className="trainer-status">
         <Metric label="LitGPT" value={trainerStatus?.litgpt?.status ?? "--"} tone={trainerStatus?.litgpt?.status === "online" ? "good" : "warn"} />
         <Metric label="Unsloth" value={trainerStatus?.unsloth?.status ?? "--"} tone={trainerStatus?.unsloth?.status === "online" ? "good" : "warn"} />
+        <Metric label="Blue Brain" value={trainerStatus?.blue_brain?.status ?? "--"} tone={trainerStatus?.blue_brain?.status === "online" ? "good" : "warn"} />
         <Metric label="Approved Records" value={trainerStatus?.approved_dataset_records ?? 0} />
         <Metric label="Total Jobs" value={trainerStatus?.pipeline?.total_jobs ?? 0} />
+        <Metric label="Artifacts" value={trainerStatus?.artifacts?.total_artifacts ?? 0} />
+        <Metric label="Continuous" value={trainerStatus?.continuous?.status ?? "--"} tone={trainerStatus?.continuous?.enabled ? "good" : "warn"} />
+        <Metric label="New Records" value={trainerStatus?.continuous?.new_records_available ?? 0} />
       </div>
       
       <PanelHeader title="Create Job" small />
@@ -893,10 +992,67 @@ function TrainerPanel({ api, backend, trainerStatus, trainerJobs, approval, appr
           <select value={method} onChange={(e) => setMethod(e.target.value)}>
             <option value="litgpt">LitGPT</option>
             <option value="unsloth">Unsloth</option>
+            <option value="blue_brain">Blue Brain</option>
           </select>
         </label>
+        {isBlueBrain && (
+          <div className="blue-brain-grid">
+            <label>
+              Samples
+              <input type="number" min={100} max={200000} value={blueSamples} onChange={(e) => setBlueSamples(Number(e.target.value))} />
+            </label>
+            <label>
+              Trees
+              <input type="number" min={10} max={2000} value={blueEstimators} onChange={(e) => setBlueEstimators(Number(e.target.value))} />
+            </label>
+            <label>
+              Depth
+              <input type="number" min={1} max={100} value={blueMaxDepth} onChange={(e) => setBlueMaxDepth(Number(e.target.value))} />
+            </label>
+            <label>
+              Cycles
+              <input type="number" min={1} max={50} value={blueCycles} onChange={(e) => setBlueCycles(Number(e.target.value))} />
+            </label>
+          </div>
+        )}
+        {isBlueBrain && (
+          <div className="trainer-actions">
+            <button onClick={setupBlueBrain} disabled={!approvalReady}>
+              <Activity size={15} /> Setup Blue
+            </button>
+          </div>
+        )}
         <button onClick={createJob} disabled={!approvalReady}>
-          Create Job
+          <BrainCircuit size={15} /> Create Job
+        </button>
+      </div>
+
+      <PanelHeader title="Continuous" small />
+      <div className="continuous-controls">
+        <label className="check-row">
+          <input type="checkbox" checked={continuousLitgpt} onChange={(e) => setContinuousLitgpt(e.target.checked)} />
+          LitGPT
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={continuousUnsloth} onChange={(e) => setContinuousUnsloth(e.target.checked)} />
+          Unsloth
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={continuousExecute} onChange={(e) => setContinuousExecute(e.target.checked)} />
+          Train
+        </label>
+        <label>
+          Interval
+          <input type="number" min={30} max={86400} value={continuousInterval} onChange={(e) => setContinuousInterval(Number(e.target.value))} />
+        </label>
+        <button onClick={startContinuous} disabled={!approvalReady || continuousMethods.length === 0}>
+          <Play size={15} /> Start
+        </button>
+        <button onClick={tickContinuous} disabled={continuousMethods.length === 0 || (continuousExecute && !approvalReady)}>
+          <RefreshCw size={15} /> Tick
+        </button>
+        <button onClick={stopContinuous} disabled={!approvalReady}>
+          <Pause size={15} /> Stop
         </button>
       </div>
 
@@ -915,6 +1071,17 @@ function TrainerPanel({ api, backend, trainerStatus, trainerJobs, approval, appr
                 <span>{job.base_model}</span>
                 <span>{job.method}</span>
               </div>
+              {job.exported_artifacts?.blue_brain_model?.metadata?.accuracy && (
+                <div>
+                  <span>accuracy</span>
+                  <strong>{Number(job.exported_artifacts.blue_brain_model.metadata.accuracy).toFixed(4)}</strong>
+                </div>
+              )}
+              <div className="job-actions">
+                <button onClick={() => startJob(job.job_id)} disabled={!approvalReady || ["training", "online"].includes(job.state)}>
+                  <Rocket size={15} /> Start
+                </button>
+              </div>
             </div>
           ))
         )}
@@ -929,7 +1096,7 @@ function TrainerPanel({ api, backend, trainerStatus, trainerJobs, approval, appr
   );
 }
 
-function ContextPanel({ api, backend, contextData, refresh }: { api: any; backend: string; contextData: any; refresh: () => Promise<void> }) {
+function ContextPanel({ api, contextData }: { api: any; contextData: any }) {
   const [fileTree, setFileTree] = useState<any>(null);
   const [changedFiles, setChangedFiles] = useState<any>(null);
 

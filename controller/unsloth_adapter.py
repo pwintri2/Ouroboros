@@ -211,9 +211,30 @@ print("Training completed successfully!")
     # Update job state to training
     update_job_state(job_id, JobState.TRAINING, f"Starting Unsloth SFT training: {base_model}")
     
-    # Run via safe_shell (requires approval)
-    command = f"{python_path} {script_path}"
-    result = run_safe_shell(command, approval="Akkoord", timeout=3600)
+    try:
+        proc = subprocess.run(
+            [python_path, str(script_path)],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+        result = {
+            "status": "success" if proc.returncode == 0 else "error",
+            "stdout": proc.stdout[-12000:],
+            "stderr": proc.stderr[-12000:],
+            "exit_code": proc.returncode,
+        }
+    except subprocess.TimeoutExpired as exc:
+        result = {
+            "status": "timeout",
+            "stdout": (exc.stdout or "")[-12000:] if isinstance(exc.stdout, str) else "",
+            "stderr": (exc.stderr or "")[-12000:] if isinstance(exc.stderr, str) else "",
+            "exit_code": None,
+            "reason": "Unsloth training timeout",
+        }
+    except Exception as exc:
+        result = {"status": "error", "stdout": "", "stderr": str(exc), "exit_code": None, "reason": str(exc)}
     
     # Clean up script
     try:
@@ -228,7 +249,7 @@ print("Training completed successfully!")
             update_job_state(
                 job_id,
                 JobState.VALIDATING,
-                f"Training completed. LoRA checkpoint: {{lora_dir}}",
+                f"Training completed. LoRA checkpoint: {lora_dir}",
             )
             return {
                 "status": "success",
@@ -247,7 +268,7 @@ print("Training completed successfully!")
         update_job_state(
             job_id,
             JobState.FAILED,
-            f"Training failed: {{result.get('reason', 'Unknown error')}}",
+            f"Training failed: {result.get('reason', 'Unknown error')}",
             error=result.get("stderr", result.get("reason", "")),
         )
         return {

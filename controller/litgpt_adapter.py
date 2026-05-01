@@ -98,6 +98,16 @@ def get_litgpt_command() -> str:
     return "litgpt"
 
 
+def get_litgpt_args() -> list[str]:
+    """Get LitGPT invocation args for the explicit trainer job runner."""
+    python_path = LITGPT_VENV_PATH / "bin" / "python"
+    main_path = LITGPT_SOURCE_PATH / "litgpt" / "__main__.py"
+
+    if python_path.exists() and main_path.exists():
+        return [str(python_path), "-m", "litgpt"]
+    return ["litgpt"]
+
+
 def run_litgpt_lora_finetune(
     job_id: str,
     base_model: str,
@@ -141,11 +151,9 @@ def run_litgpt_lora_finetune(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     
-    # Build command
-    litgpt_cmd = get_litgpt_command()
-    
+    # Build command for the explicit Docker-contained job runner.
     cmd_parts = [
-        litgpt_cmd,
+        *get_litgpt_args(),
         "finetune_lora",
         base_model,
         "--data", "JSON",
@@ -163,13 +171,33 @@ def run_litgpt_lora_finetune(
     if quantize:
         cmd_parts.extend(["--quantize", quantize])
     
-    command = " ".join(cmd_parts)
-    
     # Update job state to training
     update_job_state(job_id, JobState.TRAINING, f"Starting LitGPT LoRA fine-tuning: {base_model}")
-    
-    # Run via safe_shell (requires approval)
-    result = run_safe_shell(command, approval="Akkoord", timeout=3600)
+
+    try:
+        proc = subprocess.run(
+            cmd_parts,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+        result = {
+            "status": "success" if proc.returncode == 0 else "error",
+            "stdout": proc.stdout[-12000:],
+            "stderr": proc.stderr[-12000:],
+            "exit_code": proc.returncode,
+        }
+    except subprocess.TimeoutExpired as exc:
+        result = {
+            "status": "timeout",
+            "stdout": (exc.stdout or "")[-12000:] if isinstance(exc.stdout, str) else "",
+            "stderr": (exc.stderr or "")[-12000:] if isinstance(exc.stderr, str) else "",
+            "exit_code": None,
+            "reason": "LitGPT training timeout",
+        }
+    except Exception as exc:
+        result = {"status": "error", "stdout": "", "stderr": str(exc), "exit_code": None, "reason": str(exc)}
     
     if result["status"] == "success":
         # Find the final checkpoint

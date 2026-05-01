@@ -84,6 +84,13 @@ async def approve_browser_training(request_body: BrowserTrainingRequest, request
             }
         )
         _remember_event(request, "stored" if stored["stored"] else "not_stored", payload)
+        if stored["stored"]:
+            try:
+                from controller.trainer_continuous import notify_browser_training_record
+
+                notify_browser_training_record(item_id=stored.get("item_id"), source_url=payload.get("source_url"))
+            except Exception:
+                pass
         return payload
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

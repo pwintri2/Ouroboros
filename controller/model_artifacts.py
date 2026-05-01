@@ -25,6 +25,8 @@ class ArtifactType(str, Enum):
     GGUF_MODEL = "gguf_model"
     MODELFILE = "modelfile"
     MERGED_CHECKPOINT = "merged_checkpoint"
+    BLUE_BRAIN_MODEL = "blue_brain_model"
+    METRICS = "metrics"
 
 
 def artifacts_registry_path() -> Path:

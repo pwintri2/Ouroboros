@@ -35,6 +35,7 @@ class TrainerMethod(str, Enum):
 
     LITGPT = "litgpt"
     UNSLOOTH = "unsloth"
+    BLUE_BRAIN = "blue_brain"
 
 
 def trainer_jobs_path() -> Path:
@@ -83,10 +84,18 @@ def create_job(
     batch_size: int = 4,
     epochs: int = 3,
     description: str = "",
+    extra_training_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a new trainer job in draft state."""
     job_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
+    training_params = {
+        "learning_rate": learning_rate,
+        "batch_size": batch_size,
+        "epochs": epochs,
+    }
+    if extra_training_params:
+        training_params.update(extra_training_params)
     job: dict[str, Any] = {
         "job_id": job_id,
         "state": JobState.DRAFT.value,
@@ -97,11 +106,7 @@ def create_job(
             "alpha": lora_alpha,
             "dropout": lora_dropout,
         },
-        "training_params": {
-            "learning_rate": learning_rate,
-            "batch_size": batch_size,
-            "epochs": epochs,
-        },
+        "training_params": training_params,
         "description": description,
         "created_at": now,
         "updated_at": now,
@@ -212,6 +217,19 @@ def set_ollama_model(job_id: str, model_name: str) -> dict[str, Any] | None:
     
     job["ollama_model_name"] = model_name
     job["ollama_created_at"] = datetime.utcnow().isoformat()
+    job["updated_at"] = datetime.utcnow().isoformat()
+    save_jobs(data)
+    return job
+
+
+def set_validation_passed(job_id: str, validation_passed: bool = True) -> dict[str, Any] | None:
+    """Set the validation flag for a trainer job."""
+    data = load_jobs()
+    job = data["jobs"].get(job_id)
+    if not job:
+        return None
+
+    job["validation_passed"] = bool(validation_passed)
     job["updated_at"] = datetime.utcnow().isoformat()
     save_jobs(data)
     return job

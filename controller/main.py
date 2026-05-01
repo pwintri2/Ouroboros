@@ -199,6 +199,18 @@ stream_storage = StreamStorage(collection=kb.collection)
 init_training(app, storage=stream_storage)
 init_browser_research(app)
 init_trainer_pipeline(app)
+app.state.self_modification_pipeline = {
+    "status": "online",
+    "approval_required": True,
+    "stages": [
+        {"name": "roo_tools", "status": "online"},
+        {"name": "context", "status": "online"},
+        {"name": "trainer_pipeline", "status": "online"},
+        {"name": "preview_apply_test", "status": "approval_gated"},
+    ],
+    "last_run": None,
+    "fake_success": False,
+}
 agent_tools = AgentToolRegistryClass(kb=kb, storage=stream_storage, app=app)
 
 # Regiekamer / Orchestrator Instantie (Hergebruikt sandbox en reflector uit de router array)
@@ -803,6 +815,8 @@ def _multi_api_router_instance() -> Any:
     key_version = tuple(sorted((key, value[-8:]) for key, value in key_map.items()))
     existing = getattr(app.state, "multi_api_router", None)
     existing_version = getattr(app.state, "multi_api_router_key_version", None)
+    if existing is not None and callable(getattr(existing, "route_chat", None)) and existing_version is None:
+        return existing
     if existing is not None and callable(getattr(existing, "route_chat", None)) and existing_version == key_version:
         return existing
     if MultiAPIRouter is None:
@@ -1577,6 +1591,12 @@ def _training_ingest_payload(req: TrainingIngestRequest) -> dict[str, Any]:
             )
             if _remember_event is not None:
                 _remember_event(request_proxy, "ouroboros_ingest_stored", payload)
+            try:
+                from controller.trainer_continuous import notify_browser_training_record
+
+                notify_browser_training_record(item_id=stored.get("item_id"), source_url=payload.get("source_url"))
+            except Exception:
+                pass
         else:
             payload.update(
                 {

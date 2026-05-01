@@ -5,6 +5,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv_*/
 venv/
 .env
 node_modules/
@@ -25,6 +26,8 @@ wintrip_brain/*
 !wintrip_brain/.gitkeep
 sandbox/*
 !sandbox/.gitkeep
+out/
+tmp/
 data/tijdelijke_mail_dumps/*
 data/log_exports/*
 

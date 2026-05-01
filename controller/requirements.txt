@@ -12,3 +12,6 @@ sqlalchemy
 duckduckgo-search
 docker
 playwright
+numpy
+scikit-learn
+joblib
