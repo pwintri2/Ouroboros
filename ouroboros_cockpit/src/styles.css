@@ -468,6 +468,7 @@ label {
 .job-actions,
 .continuous-controls,
 .rotating-controls,
+.streaming-controls,
 .codex-controls,
 .codex-agent-controls,
 .codeneuron-controls,
@@ -480,6 +481,7 @@ label {
 
 .continuous-controls,
 .rotating-blue-panel,
+.streaming-consciousness-panel,
 .codex-controls,
 .codex-agent-controls,
 .codeneuron-panel,
@@ -489,6 +491,7 @@ label {
 
 .continuous-controls label:not(.check-row),
 .rotating-controls label,
+.streaming-controls label,
 .codex-controls label,
 .codeneuron-controls label {
   width: 132px;

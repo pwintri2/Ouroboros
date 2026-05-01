@@ -189,6 +189,32 @@ The 11D rotation loop now has CPU-clock mode:
   - `train_every_rotations=10000`
 - This makes the 11D pocket feel live while keeping model training bounded.
 
+### Streaming Consciousness 11D Update
+The prototype `/home/pwintri2/Downloads/streaming_consciousness_11d_pocket.py` has been incorporated as `controller/streaming_consciousness_adapter.py`.
+
+It runs as a bounded trainer-pipeline component:
+- Electrical layer: membrane potentials, injected currents and spike-like reset dynamics.
+- Digital layer: binary consciousness buffer using packed 11D/electrical/timestamp state.
+- Network layer: DHCP self-configuration plus TCP/HTTP-like packet flow.
+- Dataset export: 17 features (`11D + electrical + digital + network`) for later trainer use.
+
+New endpoints:
+- `GET /trainer/streaming-consciousness/status`
+- `POST /trainer/streaming-consciousness/start`
+- `POST /trainer/streaming-consciousness/stop`
+- `POST /trainer/streaming-consciousness/tick`
+- `POST /trainer/streaming-consciousness/export-dataset`
+
+The React Trainer tab now includes a Streaming Consciousness 11D panel showing steps, steps/s, DHCP/IP state, average membrane voltage, byte count, packet count and a compact 2D projection.
+
+Live local configuration after integration:
+- `steps_per_tick=25`
+- `interval_seconds=0.2`
+- `n_samples=8000`
+- DHCP observed: `BOUND`
+- State file: `.secrets/streaming_consciousness_11d.json`
+- Dataset exports: `out/streaming_consciousness/`
+
 ### New API Endpoints
 - `GET /trainer/codeneuron/status`
 - `POST /trainer/codeneuron/index`
@@ -198,6 +224,11 @@ The 11D rotation loop now has CPU-clock mode:
 - `GET /trainer/local-machine/status`
 - `POST /trainer/local-machine/snapshot`
 - `GET /trainer/independence/status`
+- `GET /trainer/streaming-consciousness/status`
+- `POST /trainer/streaming-consciousness/start`
+- `POST /trainer/streaming-consciousness/stop`
+- `POST /trainer/streaming-consciousness/tick`
+- `POST /trainer/streaming-consciousness/export-dataset`
 
 ### UI Additions
 The React Trainer tab now shows:
@@ -232,6 +263,7 @@ Result: OK.
 
 ```bash
 python -m unittest \
+  sandbox_tests.test_streaming_consciousness_adapter \
   sandbox_tests.test_trainer_pipeline_blue_brain \
   sandbox_tests.test_rotating_blue_brain \
   sandbox_tests.test_codex_registry \

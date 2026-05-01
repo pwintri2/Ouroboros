@@ -52,6 +52,13 @@ from controller.rotating_blue_brain import (
     start_rotating_training,
     stop_rotating_training,
 )
+from controller.streaming_consciousness_adapter import (
+    export_streaming_dataset,
+    get_streaming_status,
+    run_streaming_tick,
+    start_streaming_consciousness,
+    stop_streaming_consciousness,
+)
 from controller.trainer_jobs import (
     JobState,
     TrainerMethod,
@@ -193,6 +200,29 @@ class RotatingBlueTickRequest(BaseModel):
     force: bool = Field(default=True)
 
 
+class StreamingConsciousnessStartRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    n_samples: int = Field(default=8000, ge=100, le=200000)
+    seed: int = Field(default=42, ge=0, le=1000000)
+    interval_seconds: float = Field(default=0.2, ge=0.01, le=3600)
+    steps_per_tick: int = Field(default=25, ge=1, le=5000)
+    max_steps: int = Field(default=0, ge=0, le=100000000)
+    run_immediately: bool = Field(default=False)
+    reset: bool = Field(default=False)
+
+
+class StreamingConsciousnessTickRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    force: bool = Field(default=True)
+    steps: int | None = Field(default=None, ge=1, le=5000)
+
+
+class StreamingConsciousnessExportRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    n_samples: int = Field(default=1000, ge=1, le=100000)
+    path: str | None = Field(default=None, max_length=1024)
+
+
 class CodexCallRequest(BaseModel):
     approval: str = Field(..., min_length=1)
     function: str = Field(..., min_length=1, max_length=256)
@@ -231,6 +261,7 @@ async def trainer_pipeline_status() -> dict[str, Any]:
         "unsloth": unsloth_status,
         "blue_brain": blue_brain_status,
         "rotating_blue": get_rotating_status(),
+        "streaming_consciousness": get_streaming_status(),
         "codex_registry": get_codex_registry_status(),
         "codex_agent": get_codex_agent_status(),
         "codeneuron": get_codeneuron_status(),
@@ -377,6 +408,60 @@ async def trainer_rotating_blue_tick(request: RotatingBlueTickRequest) -> dict[s
     if request.approval != "Akkoord":
         raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
     return run_rotation_tick(force=request.force)
+
+
+@trainer_pipeline_router.get("/streaming-consciousness/status")
+async def trainer_streaming_consciousness_status() -> dict[str, Any]:
+    """Get the Streaming Consciousness 11D runtime status."""
+    return get_streaming_status()
+
+
+@trainer_pipeline_router.post("/streaming-consciousness/start")
+async def trainer_streaming_consciousness_start(request: StreamingConsciousnessStartRequest) -> dict[str, Any]:
+    """Start the bounded Streaming Consciousness 11D loop (requires approval)."""
+    result = start_streaming_consciousness(
+        approval=request.approval,
+        config={
+            "n_samples": request.n_samples,
+            "seed": request.seed,
+            "interval_seconds": request.interval_seconds,
+            "steps_per_tick": request.steps_per_tick,
+            "max_steps": request.max_steps,
+            "run_immediately": request.run_immediately,
+            "reset": request.reset,
+        },
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/streaming-consciousness/stop")
+async def trainer_streaming_consciousness_stop(request: ApprovalRequest) -> dict[str, Any]:
+    """Stop the Streaming Consciousness 11D loop (requires approval)."""
+    result = stop_streaming_consciousness(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/streaming-consciousness/tick")
+async def trainer_streaming_consciousness_tick(request: StreamingConsciousnessTickRequest) -> dict[str, Any]:
+    """Run one bounded Streaming Consciousness tick (requires approval)."""
+    if request.approval != "Akkoord":
+        raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
+    return run_streaming_tick(force=request.force, steps=request.steps)
+
+
+@trainer_pipeline_router.post("/streaming-consciousness/export-dataset")
+async def trainer_streaming_consciousness_export(request: StreamingConsciousnessExportRequest) -> dict[str, Any]:
+    """Export a 17-feature Streaming Consciousness dataset (requires approval)."""
+    result = export_streaming_dataset(approval=request.approval, n_samples=request.n_samples, path=request.path)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @trainer_pipeline_router.get("/codeneuron/status")

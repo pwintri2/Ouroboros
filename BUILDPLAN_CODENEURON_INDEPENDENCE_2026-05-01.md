@@ -139,6 +139,13 @@ Rotating Blue Brain update:
 - Training is sampled every `train_every_rotations`, so the pocket can spin fast while model updates remain bounded.
 - Live Docker configuration after the update: `cpu_clock_mode=true`, `max_rotation_hz=20000`, `clock_divisor=100000`, `train_every_rotations=10000`.
 
+Streaming Consciousness 11D update:
+- Incorporated `/home/pwintri2/Downloads/streaming_consciousness_11d_pocket.py` as `controller/streaming_consciousness_adapter.py`.
+- Adds a bounded runtime loop for electrical membrane state, digital byte-stream encoding and DHCP/TCP-like network flow.
+- Exposes live status, tick, start/stop and 17-feature dataset export endpoints.
+- Trainer UI now has a Streaming Consciousness 11D panel with steps, DHCP/IP, voltage, bytes, packets and projection sample.
+- Live Docker configuration after the update: `steps_per_tick=25`, `interval_seconds=0.2`, `n_samples=8000`, with DHCP reaching `BOUND`.
+
 Docker validation on 2026-05-01:
 
 ```bash

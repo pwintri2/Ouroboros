@@ -30,12 +30,24 @@ CURRICULA: list[dict[str, Any]] = [
     {
         "id": "codeneuron",
         "label": "CodeNeuron / 11D",
-        "keywords": ["codeneuron", "coreneuron", "neuron", "nmodl", "mechanism", "mpi", "soa", "11d", "e-type"],
+        "keywords": ["codeneuron", "coreneuron", "neuron", "nmodl", "mechanism", "mpi", "soa", "11d", "e-type", "membrane"],
     },
     {
         "id": "ouroboros_self",
         "label": "Ouroboros self",
-        "keywords": ["ouroboros", "wintrip", "trainer", "codex", "self-extension", "self training", "capability gap"],
+        "keywords": [
+            "ouroboros",
+            "wintrip",
+            "trainer",
+            "codex",
+            "self-extension",
+            "self training",
+            "capability gap",
+            "streaming consciousness",
+            "dhcp",
+            "tcp",
+            "byte-stream",
+        ],
     },
 ]
 

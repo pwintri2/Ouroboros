@@ -869,6 +869,9 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   const [rotatingMaxHz, setRotatingMaxHz] = useState(20000);
   const [rotatingClockDivisor, setRotatingClockDivisor] = useState(100000);
   const [rotatingTrainEvery, setRotatingTrainEvery] = useState(10000);
+  const [streamingSteps, setStreamingSteps] = useState(25);
+  const [streamingInterval, setStreamingInterval] = useState(0.2);
+  const [streamingExportSamples, setStreamingExportSamples] = useState(1000);
   const [codexFunctions, setCodexFunctions] = useState<any[]>([]);
   const [selectedCodexFunction, setSelectedCodexFunction] = useState("");
   const [codexArgs, setCodexArgs] = useState("[]");
@@ -1113,6 +1116,68 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
     }
   }
 
+  async function startStreamingConsciousness() {
+    try {
+      const data = await api("/trainer/streaming-consciousness/start", {
+        method: "POST",
+        body: JSON.stringify({
+          approval,
+          n_samples: 8000,
+          interval_seconds: streamingInterval,
+          steps_per_tick: streamingSteps,
+          run_immediately: true,
+        }),
+      });
+      recordTrainerAction("Streaming Consciousness Start", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Streaming Consciousness Start", error);
+      console.error("Failed to start Streaming Consciousness:", error);
+    }
+  }
+
+  async function stopStreamingConsciousness() {
+    try {
+      const data = await api("/trainer/streaming-consciousness/stop", {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+      });
+      recordTrainerAction("Streaming Consciousness Stop", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Streaming Consciousness Stop", error);
+      console.error("Failed to stop Streaming Consciousness:", error);
+    }
+  }
+
+  async function tickStreamingConsciousness() {
+    try {
+      const data = await api("/trainer/streaming-consciousness/tick", {
+        method: "POST",
+        body: JSON.stringify({ approval, force: true, steps: streamingSteps }),
+      });
+      recordTrainerAction("Streaming Consciousness Tick", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Streaming Consciousness Tick", error);
+      console.error("Failed to tick Streaming Consciousness:", error);
+    }
+  }
+
+  async function exportStreamingDataset() {
+    try {
+      const data = await api("/trainer/streaming-consciousness/export-dataset", {
+        method: "POST",
+        body: JSON.stringify({ approval, n_samples: streamingExportSamples }),
+      });
+      recordTrainerAction("Streaming Dataset Export", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Streaming Dataset Export", error);
+      console.error("Failed to export Streaming Consciousness dataset:", error);
+    }
+  }
+
   async function callCodexFunction() {
     try {
       const parsedArgs = JSON.parse(codexArgs || "[]");
@@ -1245,6 +1310,7 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
         <Metric label="Continuous" value={trainerStatus?.continuous?.status ?? "--"} tone={trainerStatus?.continuous?.enabled ? "good" : "warn"} />
         <Metric label="New Records" value={trainerStatus?.continuous?.new_records_available ?? 0} />
         <Metric label="Rotating" value={trainerStatus?.rotating_blue?.status ?? "--"} tone={trainerStatus?.rotating_blue?.enabled ? "good" : "warn"} />
+        <Metric label="Stream 11D" value={trainerStatus?.streaming_consciousness?.status ?? "--"} tone={trainerStatus?.streaming_consciousness?.enabled ? "good" : "warn"} />
         <Metric label="Codex" value={trainerStatus?.codex_registry?.callable_count ?? 0} />
         <Metric label="CodeNeuron" value={trainerStatus?.codeneuron?.status ?? "--"} tone={trainerStatus?.codeneuron?.indexed ? "good" : "warn"} />
         <Metric label="Independence" value={Number(independenceStatus?.independence_score ?? trainerStatus?.independence?.independence_score ?? 0).toFixed(2)} tone={(independenceStatus?.external_model_needed ?? trainerStatus?.independence?.external_model_needed) ? "warn" : "good"} />
@@ -1395,6 +1461,47 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           </button>
         </div>
         <ProjectionPlot points={trainerStatus?.rotating_blue?.last_projection ?? []} />
+      </div>
+
+      <PanelHeader title="Streaming Consciousness 11D" small />
+      <div className="streaming-consciousness-panel">
+        <div className="trainer-status">
+          <Metric label="Status" value={trainerStatus?.streaming_consciousness?.status ?? "--"} tone={trainerStatus?.streaming_consciousness?.enabled ? "good" : "warn"} />
+          <Metric label="Steps" value={trainerStatus?.streaming_consciousness?.step_count ?? 0} />
+          <Metric label="Steps/s" value={trainerStatus?.streaming_consciousness?.steps_per_second ? Number(trainerStatus.streaming_consciousness.steps_per_second).toFixed(1) : "--"} />
+          <Metric label="DHCP" value={trainerStatus?.streaming_consciousness?.last_event?.network?.dhcp ?? "--"} />
+          <Metric label="IP" value={trainerStatus?.streaming_consciousness?.last_event?.network?.local_ip ?? "--"} />
+          <Metric label="V avg" value={trainerStatus?.streaming_consciousness?.last_event?.elec?.v_avg ? `${Number(trainerStatus.streaming_consciousness.last_event.elec.v_avg).toFixed(1)}mV` : "--"} />
+          <Metric label="Bytes" value={trainerStatus?.streaming_consciousness?.latest_state?.total_bytes ?? 0} />
+          <Metric label="Packets" value={trainerStatus?.streaming_consciousness?.last_event?.network?.total_received ?? 0} />
+        </div>
+        <div className="streaming-controls">
+          <label>
+            Steps/tick
+            <input type="number" min={1} max={5000} value={streamingSteps} onChange={(e) => setStreamingSteps(Number(e.target.value))} />
+          </label>
+          <label>
+            Interval
+            <input type="number" min={0.01} max={3600} step={0.01} value={streamingInterval} onChange={(e) => setStreamingInterval(Number(e.target.value))} />
+          </label>
+          <label>
+            Export
+            <input type="number" min={1} max={100000} value={streamingExportSamples} onChange={(e) => setStreamingExportSamples(Number(e.target.value))} />
+          </label>
+          <button onClick={startStreamingConsciousness} disabled={!approvalReady}>
+            <Play size={15} /> Start
+          </button>
+          <button onClick={tickStreamingConsciousness} disabled={!approvalReady}>
+            <RefreshCw size={15} /> Tick
+          </button>
+          <button onClick={stopStreamingConsciousness} disabled={!approvalReady}>
+            <Pause size={15} /> Stop
+          </button>
+          <button onClick={exportStreamingDataset} disabled={!approvalReady}>
+            <Database size={15} /> Export
+          </button>
+        </div>
+        <ProjectionPlot points={trainerStatus?.streaming_consciousness?.last_projection ?? []} />
       </div>
 
       <PanelHeader title="CodeNeuron 11D Pocket" small />

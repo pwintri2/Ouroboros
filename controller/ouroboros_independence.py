@@ -112,10 +112,12 @@ def _code_ability_signal() -> dict[str, Any]:
 def _learning_loop_signal() -> dict[str, Any]:
     try:
         from controller.rotating_blue_brain import get_rotating_status
+        from controller.streaming_consciousness_adapter import get_streaming_status
         from controller.trainer_continuous import get_continuous_status
         from controller.training_dataset_builder import count_approved_records
 
         rotating = get_rotating_status()
+        streaming = get_streaming_status()
         continuous = get_continuous_status()
         approved = count_approved_records()
         score = 0.15
@@ -125,11 +127,14 @@ def _learning_loop_signal() -> dict[str, Any]:
             score += 0.25
         if int(rotating.get("rotation_count") or 0) > 0:
             score += 0.2
+        if int(streaming.get("step_count") or 0) > 0:
+            score += 0.1
         return {
             "score": min(1.0, score),
             "approved_records": approved,
             "continuous": continuous.get("status"),
             "rotations": rotating.get("rotation_count", 0),
+            "streaming_steps": streaming.get("step_count", 0),
             "gap": "" if score >= 0.65 else "Learning loop needs more approved data and repeated validation ticks.",
         }
     except Exception as exc:
