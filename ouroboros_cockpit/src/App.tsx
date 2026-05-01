@@ -860,15 +860,80 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   const [continuousUnsloth, setContinuousUnsloth] = useState(true);
   const [continuousInterval, setContinuousInterval] = useState(300);
   const [continuousExecute, setContinuousExecute] = useState(false);
+  const [rotatingSamples, setRotatingSamples] = useState(1000);
+  const [rotatingEstimators, setRotatingEstimators] = useState(120);
+  const [rotatingDepth, setRotatingDepth] = useState(12);
+  const [rotatingInterval, setRotatingInterval] = useState(120);
+  const [rotatingMax, setRotatingMax] = useState(0);
+  const [codexFunctions, setCodexFunctions] = useState<any[]>([]);
+  const [selectedCodexFunction, setSelectedCodexFunction] = useState("");
+  const [codexArgs, setCodexArgs] = useState("[]");
+  const [codexKwargs, setCodexKwargs] = useState("{}");
+  const [codexResult, setCodexResult] = useState<any>(null);
+  const [codexMonitor, setCodexMonitor] = useState<any>(null);
+  const [trainerActionResult, setTrainerActionResult] = useState<any>(null);
+  const [codexAgentPrompt, setCodexAgentPrompt] = useState("Open een browser naar https://example.com");
+  const [codexAgentAutoExtend, setCodexAgentAutoExtend] = useState(true);
+  const [codexAgentExecute, setCodexAgentExecute] = useState(true);
+  const [codexAgentStatus, setCodexAgentStatus] = useState<any>(null);
+  const [codexAgentResult, setCodexAgentResult] = useState<any>(null);
   const isBlueBrain = method === "blue_brain";
   const continuousMethods = [
     continuousLitgpt ? "litgpt" : "",
     continuousUnsloth ? "unsloth" : "",
   ].filter(Boolean);
 
+  useEffect(() => {
+    loadCodexFunctions()
+      .catch((error: unknown) => console.error("Failed to load Codex functions:", error));
+  }, [api]);
+
+  async function loadCodexFunctions() {
+    const [functionsData, monitorData] = await Promise.all([
+      api("/trainer/codex/functions"),
+      api("/trainer/codex/monitor"),
+    ]);
+    const functions = functionsData?.functions ?? [];
+    setCodexFunctions(functions);
+    setCodexMonitor(monitorData);
+    setSelectedCodexFunction((current) => current || functions[0]?.name || "");
+    setCodexArgs((current) => current === "[]" && functions[0]?.signature?.includes("content:") ? "[\"# Demo\\n\\n## Live Codex\"]" : current);
+    setTrainerActionResult({
+      title: "Codex Registry Refresh",
+      at: new Date().toLocaleTimeString(),
+      status: functionsData?.status ?? "--",
+      data: { functions: functionsData, monitor: monitorData },
+    });
+  }
+
+  async function loadCodexAgentStatus() {
+    const data = await api("/trainer/codex/agent/status");
+    setCodexAgentStatus(data);
+    return data;
+  }
+
+  function recordTrainerAction(title: string, data: any) {
+    setTrainerActionResult({
+      title,
+      at: new Date().toLocaleTimeString(),
+      status: data?.status ?? data?.state ?? "success",
+      data,
+    });
+  }
+
+  function recordTrainerError(title: string, error: unknown) {
+    const data = { status: "error", reason: error instanceof Error ? error.message : String(error) };
+    setTrainerActionResult({
+      title,
+      at: new Date().toLocaleTimeString(),
+      status: "error",
+      data,
+    });
+  }
+
   async function createJob() {
     try {
-      await api("/trainer/jobs", {
+      const data = await api("/trainer/jobs", {
         method: "POST",
         body: JSON.stringify({
           base_model: isBlueBrain ? baseModel || "blue-brain-random-forest" : baseModel,
@@ -879,39 +944,45 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           blue_max_depth: blueMaxDepth,
         }),
       });
+      recordTrainerAction("Create Job", data);
       await refresh();
     } catch (error) {
+      recordTrainerError("Create Job", error);
       console.error("Failed to create job:", error);
     }
   }
 
   async function setupBlueBrain() {
     try {
-      await api("/trainer/blue-brain/setup", {
+      const data = await api("/trainer/blue-brain/setup", {
         method: "POST",
         body: JSON.stringify({ approval }),
       });
+      recordTrainerAction("Setup Blue", data);
       await refresh();
     } catch (error) {
+      recordTrainerError("Setup Blue", error);
       console.error("Failed to setup Blue Brain:", error);
     }
   }
 
   async function startJob(jobId: string) {
     try {
-      await api("/trainer/training/start", {
+      const data = await api("/trainer/training/start", {
         method: "POST",
         body: JSON.stringify({ job_id: jobId, approval }),
       });
+      recordTrainerAction("Start Job", data);
       await refresh();
     } catch (error) {
+      recordTrainerError("Start Job", error);
       console.error("Failed to start trainer job:", error);
     }
   }
 
   async function startContinuous() {
     try {
-      await api("/trainer/continuous/start", {
+      const data = await api("/trainer/continuous/start", {
         method: "POST",
         body: JSON.stringify({
           approval,
@@ -923,27 +994,31 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           unsloth_base_model: baseModel || "unsloth/tinyllama-bnb-4bit",
         }),
       });
+      recordTrainerAction("Continuous Start", data);
       await refresh();
     } catch (error) {
+      recordTrainerError("Continuous Start", error);
       console.error("Failed to start continuous trainer:", error);
     }
   }
 
   async function stopContinuous() {
     try {
-      await api("/trainer/continuous/stop", {
+      const data = await api("/trainer/continuous/stop", {
         method: "POST",
         body: JSON.stringify({ approval }),
       });
+      recordTrainerAction("Continuous Stop", data);
       await refresh();
     } catch (error) {
+      recordTrainerError("Continuous Stop", error);
       console.error("Failed to stop continuous trainer:", error);
     }
   }
 
   async function tickContinuous() {
     try {
-      await api("/trainer/continuous/tick", {
+      const data = await api("/trainer/continuous/tick", {
         method: "POST",
         body: JSON.stringify({
           approval,
@@ -952,9 +1027,119 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           methods: continuousMethods,
         }),
       });
+      recordTrainerAction("Continuous Tick", data);
       await refresh();
     } catch (error) {
+      recordTrainerError("Continuous Tick", error);
       console.error("Failed to tick continuous trainer:", error);
+    }
+  }
+
+  async function startRotatingBlue() {
+    try {
+      const data = await api("/trainer/rotating-blue/start", {
+        method: "POST",
+        body: JSON.stringify({
+          approval,
+          n_samples: rotatingSamples,
+          interval_seconds: rotatingInterval,
+          max_rotations: rotatingMax,
+          n_estimators: rotatingEstimators,
+          max_depth: rotatingDepth,
+          run_immediately: false,
+        }),
+      });
+      recordTrainerAction("Rotating Blue Start", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Rotating Blue Start", error);
+      console.error("Failed to start rotating Blue Brain:", error);
+    }
+  }
+
+  async function stopRotatingBlue() {
+    try {
+      const data = await api("/trainer/rotating-blue/stop", {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+      });
+      recordTrainerAction("Rotating Blue Stop", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Rotating Blue Stop", error);
+      console.error("Failed to stop rotating Blue Brain:", error);
+    }
+  }
+
+  async function tickRotatingBlue() {
+    try {
+      const data = await api("/trainer/rotating-blue/tick", {
+        method: "POST",
+        body: JSON.stringify({ approval, force: true }),
+      });
+      recordTrainerAction("Rotating Blue Tick", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Rotating Blue Tick", error);
+      console.error("Failed to tick rotating Blue Brain:", error);
+    }
+  }
+
+  async function callCodexFunction() {
+    try {
+      const parsedArgs = JSON.parse(codexArgs || "[]");
+      const parsedKwargs = JSON.parse(codexKwargs || "{}");
+      const data = await api("/trainer/codex/call", {
+        method: "POST",
+        body: JSON.stringify({
+          approval,
+          function: selectedCodexFunction,
+          args: Array.isArray(parsedArgs) ? parsedArgs : [parsedArgs],
+          kwargs: parsedKwargs && typeof parsedKwargs === "object" && !Array.isArray(parsedKwargs) ? parsedKwargs : {},
+        }),
+      });
+      setCodexResult(data);
+      recordTrainerAction("Codex Function Call", data);
+      await loadCodexFunctions();
+    } catch (error) {
+      const data = { status: "error", reason: error instanceof Error ? error.message : String(error) };
+      setCodexResult(data);
+      recordTrainerError("Codex Function Call", error);
+      await loadCodexFunctions().catch(() => undefined);
+      console.error("Failed to call Codex function:", error);
+    }
+  }
+
+  async function runCodexAgent() {
+    try {
+      const data = await api("/trainer/codex/agent/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          message: codexAgentPrompt,
+          approval,
+          auto_extend: codexAgentAutoExtend,
+          execute: codexAgentExecute,
+        }),
+      });
+      setCodexAgentResult(data);
+      recordTrainerAction("Codex Agent", data);
+      if (data?.frontend_action?.type === "open_url" && data.frontend_action.url) {
+        const opened = window.open(data.frontend_action.url, data.frontend_action.target ?? "_blank", "noopener,noreferrer");
+        await api("/trainer/codex/agent/frontend-event", {
+          method: "POST",
+          body: JSON.stringify({
+            action_id: data.frontend_action.action_id,
+            status: opened ? "opened" : "blocked_by_browser",
+            detail: opened ? "window.open returned a Window handle" : "Browser blocked the popup or no window handle was returned",
+            payload: { url: data.frontend_action.url },
+          }),
+        });
+      }
+      await loadCodexAgentStatus();
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Codex Agent", error);
+      console.error("Failed to run Codex Agent:", error);
     }
   }
 
@@ -979,6 +1164,8 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
         <Metric label="Artifacts" value={trainerStatus?.artifacts?.total_artifacts ?? 0} />
         <Metric label="Continuous" value={trainerStatus?.continuous?.status ?? "--"} tone={trainerStatus?.continuous?.enabled ? "good" : "warn"} />
         <Metric label="New Records" value={trainerStatus?.continuous?.new_records_available ?? 0} />
+        <Metric label="Rotating" value={trainerStatus?.rotating_blue?.status ?? "--"} tone={trainerStatus?.rotating_blue?.enabled ? "good" : "warn"} />
+        <Metric label="Codex" value={trainerStatus?.codex_registry?.callable_count ?? 0} />
       </div>
       
       <PanelHeader title="Create Job" small />
@@ -1022,10 +1209,20 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
             </button>
           </div>
         )}
-        <button onClick={createJob} disabled={!approvalReady}>
+        <button onClick={createJob}>
           <BrainCircuit size={15} /> Create Job
         </button>
       </div>
+
+      {trainerActionResult && (
+        <div className={`trainer-action-result ${trainerActionResult.status === "error" ? "warn" : "good"}`}>
+          <div>
+            <strong>{trainerActionResult.title}</strong>
+            <span>{trainerActionResult.at}</span>
+          </div>
+          <pre>{JSON.stringify(trainerActionResult.data, null, 2)}</pre>
+        </div>
+      )}
 
       <PanelHeader title="Continuous" small />
       <div className="continuous-controls">
@@ -1055,6 +1252,142 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           <Pause size={15} /> Stop
         </button>
       </div>
+
+      <PanelHeader title="Blue Brain Rotating" small />
+      <div className="rotating-blue-panel">
+        <div className="trainer-status">
+          <Metric label="Status" value={trainerStatus?.rotating_blue?.status ?? "--"} tone={trainerStatus?.rotating_blue?.enabled ? "good" : "warn"} />
+          <Metric label="Rotations" value={trainerStatus?.rotating_blue?.rotation_count ?? 0} />
+          <Metric label="Accuracy" value={trainerStatus?.rotating_blue?.last_metrics?.accuracy ? Number(trainerStatus.rotating_blue.last_metrics.accuracy).toFixed(4) : "--"} />
+          <Metric label="Macro F1" value={trainerStatus?.rotating_blue?.last_metrics?.macro_f1 ? Number(trainerStatus.rotating_blue.last_metrics.macro_f1).toFixed(4) : "--"} />
+          <Metric label="Best" value={trainerStatus?.rotating_blue?.best_accuracy ? Number(trainerStatus.rotating_blue.best_accuracy).toFixed(4) : "--"} />
+        </div>
+        <div className="rotating-controls">
+          <label>
+            Samples
+            <input type="number" min={100} max={200000} value={rotatingSamples} onChange={(e) => setRotatingSamples(Number(e.target.value))} />
+          </label>
+          <label>
+            Trees
+            <input type="number" min={10} max={2000} value={rotatingEstimators} onChange={(e) => setRotatingEstimators(Number(e.target.value))} />
+          </label>
+          <label>
+            Depth
+            <input type="number" min={1} max={100} value={rotatingDepth} onChange={(e) => setRotatingDepth(Number(e.target.value))} />
+          </label>
+          <label>
+            Interval
+            <input type="number" min={10} max={86400} value={rotatingInterval} onChange={(e) => setRotatingInterval(Number(e.target.value))} />
+          </label>
+          <label>
+            Max
+            <input type="number" min={0} max={1000000} value={rotatingMax} onChange={(e) => setRotatingMax(Number(e.target.value))} />
+          </label>
+          <button onClick={startRotatingBlue} disabled={!approvalReady}>
+            <Play size={15} /> Start
+          </button>
+          <button onClick={tickRotatingBlue} disabled={!approvalReady}>
+            <RefreshCw size={15} /> Tick
+          </button>
+          <button onClick={stopRotatingBlue} disabled={!approvalReady}>
+            <Pause size={15} /> Stop
+          </button>
+        </div>
+        <ProjectionPlot points={trainerStatus?.rotating_blue?.last_projection ?? []} />
+      </div>
+
+      <PanelHeader title="Codex Registry" small />
+      <div className="trainer-status">
+        <Metric label="Callable" value={String(codexFunctions.length)} tone={codexFunctions.length > 0 ? "good" : "warn"} />
+        <Metric label="Calls" value={codexMonitor?.total_calls ?? trainerStatus?.codex_registry?.monitor?.total_calls ?? 0} />
+        <Metric label="Success" value={codexMonitor?.success_calls ?? trainerStatus?.codex_registry?.monitor?.success_calls ?? 0} tone="good" />
+        <Metric label="Errors" value={codexMonitor?.error_calls ?? trainerStatus?.codex_registry?.monitor?.error_calls ?? 0} tone={(codexMonitor?.error_calls ?? trainerStatus?.codex_registry?.monitor?.error_calls ?? 0) ? "warn" : undefined} />
+      </div>
+      <div className="codex-controls">
+        <label>
+          Function
+          <select value={selectedCodexFunction} onChange={(e) => setSelectedCodexFunction(e.target.value)}>
+            {codexFunctions.length === 0 ? (
+              <option value="">No callable functions</option>
+            ) : (
+              codexFunctions.map((fn: any) => (
+                <option value={fn.name} key={fn.name}>
+                  {fn.name}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
+        <label>
+          Args
+          <input value={codexArgs} onChange={(e) => setCodexArgs(e.target.value)} />
+        </label>
+        <label>
+          Kwargs
+          <input value={codexKwargs} onChange={(e) => setCodexKwargs(e.target.value)} />
+        </label>
+        <button onClick={callCodexFunction} disabled={!approvalReady || !selectedCodexFunction}>
+          <TerminalSquare size={15} /> Call
+        </button>
+        <button onClick={loadCodexFunctions}>
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </div>
+      <div className="codex-list">
+        {codexFunctions.slice(0, 8).map((fn: any) => (
+          <span title={fn.signature} key={fn.name}>{fn.function}</span>
+        ))}
+      </div>
+      {(codexMonitor?.recent_calls ?? trainerStatus?.codex_registry?.monitor?.recent_calls ?? []).length > 0 && (
+        <div className="codex-monitor">
+          {(codexMonitor?.recent_calls ?? trainerStatus?.codex_registry?.monitor?.recent_calls ?? []).slice(0, 5).map((call: any) => (
+            <div className={call.status === "success" ? "good" : "warn"} key={`${call.timestamp}-${call.function}`}>
+              <strong>{call.function}</strong>
+              <span>{call.status} · {call.duration_ms}ms · {call.timestamp}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {codexResult && <pre className="dataset-preview">{JSON.stringify(codexResult, null, 2)}</pre>}
+
+      <PanelHeader title="Codex Agent" small />
+      <div className="trainer-status">
+        <Metric label="Agent" value={codexAgentStatus?.status ?? trainerStatus?.codex_agent?.status ?? "--"} tone={(codexAgentStatus?.status ?? trainerStatus?.codex_agent?.status) === "online" ? "good" : "warn"} />
+        <Metric label="Memory" value={codexAgentStatus?.memory_count ?? trainerStatus?.codex_agent?.memory_count ?? 0} />
+        <Metric label="Gaps" value={codexAgentStatus?.capability_gap_count ?? trainerStatus?.codex_agent?.capability_gap_count ?? 0} />
+        <Metric label="Fake" value={String(codexAgentStatus?.fake_success ?? trainerStatus?.codex_agent?.fake_success ?? false)} tone={(codexAgentStatus?.fake_success ?? trainerStatus?.codex_agent?.fake_success) ? "warn" : "good"} />
+      </div>
+      <div className="codex-agent-controls">
+        <label>
+          Agent Prompt
+          <textarea value={codexAgentPrompt} onChange={(e) => setCodexAgentPrompt(e.target.value)} rows={3} />
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={codexAgentExecute} onChange={(e) => setCodexAgentExecute(e.target.checked)} />
+          Execute
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={codexAgentAutoExtend} onChange={(e) => setCodexAgentAutoExtend(e.target.checked)} />
+          Auto-gap
+        </label>
+        <button onClick={runCodexAgent}>
+          <Bot size={15} /> Agent Run
+        </button>
+        <button onClick={loadCodexAgentStatus}>
+          <RefreshCw size={15} /> Status
+        </button>
+      </div>
+      {codexAgentResult && <pre className="dataset-preview">{JSON.stringify(codexAgentResult, null, 2)}</pre>}
+      {(codexAgentStatus?.recent_events ?? trainerStatus?.codex_agent?.recent_events ?? []).length > 0 && (
+        <div className="codex-monitor">
+          {(codexAgentStatus?.recent_events ?? trainerStatus?.codex_agent?.recent_events ?? []).slice(0, 5).map((event: any) => (
+            <div className={event.status === "success" || event.status === "opened" || event.status === "requires_frontend" ? "good" : "warn"} key={`${event.timestamp}-${event.action_id}`}>
+              <strong>{event.tool}</strong>
+              <span>{event.status} · {event.timestamp}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <PanelHeader title="Jobs" small />
       <div className="job-list">
@@ -1093,6 +1426,37 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
         <pre className="dataset-preview">{JSON.stringify(datasetPreview, null, 2)}</pre>
       )}
     </section>
+  );
+}
+
+function ProjectionPlot({ points }: { points: any[] }) {
+  const width = 420;
+  const height = 180;
+  const safePoints = Array.isArray(points) ? points.slice(0, 100) : [];
+  const xs = safePoints.map((point) => Number(point.x));
+  const ys = safePoints.map((point) => Number(point.y));
+  const minX = xs.length ? Math.min(...xs) : -1;
+  const maxX = xs.length ? Math.max(...xs) : 1;
+  const minY = ys.length ? Math.min(...ys) : -1;
+  const maxY = ys.length ? Math.max(...ys) : 1;
+  const scaleX = (value: number) => 18 + ((value - minX) / Math.max(maxX - minX, 0.0001)) * (width - 36);
+  const scaleY = (value: number) => height - 18 - ((value - minY) / Math.max(maxY - minY, 0.0001)) * (height - 36);
+
+  return (
+    <div className="projection-plot">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Blue Brain 2D projection">
+        <rect x="0" y="0" width={width} height={height} rx="6" />
+        {safePoints.map((point, index) => (
+          <circle
+            key={`${point.x}-${point.y}-${index}`}
+            cx={scaleX(Number(point.x))}
+            cy={scaleY(Number(point.y))}
+            r="3"
+            className={Number(point.label) === 1 ? "sync" : "async"}
+          />
+        ))}
+      </svg>
+    </div>
   );
 }
 

@@ -9,6 +9,13 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from controller.blue_brain_adapter import get_blue_brain_status, run_blue_brain_training, setup_blue_brain_env
+from controller.codex_agent import (
+    codex_agent_chat,
+    get_codex_agent_memory,
+    get_codex_agent_status,
+    record_frontend_event,
+)
+from controller.codex_registry import call_codex_function, get_codex_monitor, get_codex_registry_status, list_codex_functions
 from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights
 from controller.model_artifacts import (
     get_artifacts_summary,
@@ -30,6 +37,12 @@ from controller.roo_tools import (
     search_files,
     write_file,
     write_file_preview,
+)
+from controller.rotating_blue_brain import (
+    get_rotating_status,
+    run_rotation_tick,
+    start_rotating_training,
+    stop_rotating_training,
 )
 from controller.trainer_jobs import (
     JobState,
@@ -142,6 +155,47 @@ class TrainerBrowserIngestRequest(BrowserTrainingRequest):
     methods: list[TrainerMethod] | None = Field(default=None)
 
 
+class RotatingBlueStartRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    n_samples: int = Field(default=1000, ge=100, le=200000)
+    interval_seconds: int = Field(default=120, ge=10, le=86400)
+    max_rotations: int = Field(default=0, ge=0, le=1000000)
+    n_estimators: int = Field(default=120, ge=10, le=2000)
+    max_depth: int | None = Field(default=12, ge=1, le=100)
+    random_state: int = Field(default=42, ge=0, le=1000000)
+    test_size: float = Field(default=0.2, ge=0.05, le=0.5)
+    target_accuracy: float = Field(default=0.9, ge=0.0, le=1.0)
+    target_f1: float = Field(default=0.9, ge=0.0, le=1.0)
+    run_immediately: bool = Field(default=False)
+
+
+class RotatingBlueTickRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    force: bool = Field(default=True)
+
+
+class CodexCallRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    function: str = Field(..., min_length=1, max_length=256)
+    args: list[Any] = Field(default_factory=list)
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int = Field(default=5, ge=1, le=30)
+
+
+class CodexAgentChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+    approval: str = Field(default="", max_length=64)
+    auto_extend: bool = Field(default=False)
+    execute: bool = Field(default=True)
+
+
+class CodexFrontendEventRequest(BaseModel):
+    action_id: str = Field(..., min_length=1, max_length=128)
+    status: str = Field(..., min_length=1, max_length=64)
+    detail: str = Field(default="", max_length=2048)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 @trainer_pipeline_router.get("/status")
 async def trainer_pipeline_status() -> dict[str, Any]:
     """Get overall trainer pipeline status."""
@@ -157,6 +211,9 @@ async def trainer_pipeline_status() -> dict[str, Any]:
         "litgpt": litgpt_status,
         "unsloth": unsloth_status,
         "blue_brain": blue_brain_status,
+        "rotating_blue": get_rotating_status(),
+        "codex_registry": get_codex_registry_status(),
+        "codex_agent": get_codex_agent_status(),
         "continuous": get_continuous_status(),
         "artifacts": artifacts_summary,
         "approved_dataset_records": approved_count,
@@ -244,6 +301,116 @@ async def trainer_continuous_tick(request: ContinuousTickRequest) -> dict[str, A
     if result.get("status") == "blocked":
         raise HTTPException(status_code=403, detail=result.get("reason"))
     return result
+
+
+@trainer_pipeline_router.get("/rotating-blue/status")
+async def trainer_rotating_blue_status() -> dict[str, Any]:
+    """Get the rotating 11D Blue Brain trainer status."""
+    return get_rotating_status()
+
+
+@trainer_pipeline_router.post("/rotating-blue/start")
+async def trainer_rotating_blue_start(request: RotatingBlueStartRequest) -> dict[str, Any]:
+    """Start the rotating 11D Blue Brain trainer loop (requires approval)."""
+    result = start_rotating_training(
+        approval=request.approval,
+        config={
+            "n_samples": request.n_samples,
+            "interval_seconds": request.interval_seconds,
+            "max_rotations": request.max_rotations,
+            "target_accuracy": request.target_accuracy,
+            "target_f1": request.target_f1,
+            "run_immediately": request.run_immediately,
+            "hyperparams": {
+                "n_estimators": request.n_estimators,
+                "max_depth": request.max_depth,
+                "random_state": request.random_state,
+                "test_size": request.test_size,
+            },
+        },
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/rotating-blue/stop")
+async def trainer_rotating_blue_stop(request: ApprovalRequest) -> dict[str, Any]:
+    """Stop the rotating 11D Blue Brain trainer loop (requires approval)."""
+    result = stop_rotating_training(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/rotating-blue/tick")
+async def trainer_rotating_blue_tick(request: RotatingBlueTickRequest) -> dict[str, Any]:
+    """Run one bounded rotating Blue Brain tick (requires approval)."""
+    if request.approval != "Akkoord":
+        raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
+    return run_rotation_tick(force=request.force)
+
+
+@trainer_pipeline_router.get("/codex/functions")
+async def trainer_codex_functions() -> dict[str, Any]:
+    """List safely callable Codex functions discovered without importing modules."""
+    return list_codex_functions()
+
+
+@trainer_pipeline_router.get("/codex/monitor")
+async def trainer_codex_monitor() -> dict[str, Any]:
+    """Get recent Codex registry call activity."""
+    return get_codex_monitor()
+
+
+@trainer_pipeline_router.post("/codex/call")
+async def trainer_codex_call(request: CodexCallRequest) -> dict[str, Any]:
+    """Call a safe registered Codex function (requires approval)."""
+    if request.approval != "Akkoord":
+        raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
+    result = call_codex_function(
+        request.function,
+        args=request.args,
+        kwargs=request.kwargs,
+        timeout_seconds=request.timeout_seconds,
+    )
+    if result.get("status") in {"error", "timeout"}:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@trainer_pipeline_router.get("/codex/agent/status")
+async def trainer_codex_agent_status() -> dict[str, Any]:
+    """Get Codex Agent memory, tool and backlog status."""
+    return get_codex_agent_status()
+
+
+@trainer_pipeline_router.get("/codex/agent/memory")
+async def trainer_codex_agent_memory(limit: int = 20) -> dict[str, Any]:
+    """Get recent Codex Agent memory and conversation entries."""
+    return get_codex_agent_memory(limit=limit)
+
+
+@trainer_pipeline_router.post("/codex/agent/chat")
+async def trainer_codex_agent_chat(request: CodexAgentChatRequest) -> dict[str, Any]:
+    """Run one bounded Codex Agent turn."""
+    return codex_agent_chat(
+        message=request.message,
+        approval=request.approval,
+        auto_extend=request.auto_extend,
+        execute=request.execute,
+    )
+
+
+@trainer_pipeline_router.post("/codex/agent/frontend-event")
+async def trainer_codex_agent_frontend_event(request: CodexFrontendEventRequest) -> dict[str, Any]:
+    """Record a frontend-side action such as window.open completion."""
+    return record_frontend_event(
+        action_id=request.action_id,
+        status=request.status,
+        detail=request.detail,
+        payload=request.payload,
+    )
 
 
 @trainer_pipeline_router.post("/browser/ingest")
