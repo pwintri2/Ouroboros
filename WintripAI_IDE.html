@@ -103,6 +103,10 @@ function App(){
   const [testSelector,setTestSelector] = useState("sandbox_tests.test_training_routes sandbox_tests.test_safe_shell");
   const [autonomousLoopActive, setAutonomousLoopActive] = useState(false);
   const [terminalOutput, setTerminalOutput] = useState("");
+  const [activeTab, setActiveTab] = useState("main");
+  const [trainerStatus, setTrainerStatus] = useState(null);
+  const [trainerJobs, setTrainerJobs] = useState([]);
+  const [contextData, setContextData] = useState(null);
   const bottomRef = useRef(null);
 
   // Poll server status every 5s
@@ -129,6 +133,26 @@ function App(){
     const t = setInterval(check,5000);
     return ()=>clearInterval(t);
   },[]);
+
+  // Fetch trainer/context data when tab changes
+  useEffect(()=>{
+    if(activeTab==="trainer"){
+      fetch(BACKEND+"/trainer/status")
+        .then(r=>r.json())
+        .then(setTrainerStatus)
+        .catch(()=>{});
+      fetch(BACKEND+"/trainer/jobs")
+        .then(r=>r.json())
+        .then(d=>setTrainerJobs(d.jobs||[]))
+        .catch(()=>{});
+    }
+    if(activeTab==="context"){
+      fetch(BACKEND+"/context/summary")
+        .then(r=>r.json())
+        .then(setContextData)
+        .catch(()=>{});
+    }
+  },[activeTab]);
 
   useEffect(()=>{ bottomRef.current&&bottomRef.current.scrollIntoView({behavior:"smooth"}); },[msgs]);
 
@@ -678,6 +702,17 @@ function App(){
             <span style={{fontSize:10,color:"#10b981",background:"rgba(16,185,129,0.1)",padding:"2px 7px",borderRadius:4}}>Ollama ↔ Core</span>
             <span style={{fontSize:10,color:"#64748b",background:"#1e2535",padding:"2px 7px",borderRadius:4}}>{ollamaModels.length} lokale modellen</span>
           </div>
+          <div style={{display:"flex",alignItems:"center",gap:5}}>
+            <button onClick={()=>setActiveTab("main")} style={{padding:"4px 9px",borderRadius:5,border:"1px solid "+(activeTab==="main"?"#10b98155":"#2d3748"),background:activeTab==="main"?"#10b98118":"transparent",color:activeTab==="main"?"#10b981":"#4b5563",fontSize:11,fontWeight:500}}>
+              Main
+            </button>
+            <button onClick={()=>setActiveTab("trainer")} style={{padding:"4px 9px",borderRadius:5,border:"1px solid "+(activeTab==="trainer"?"#10b98155":"#2d3748"),background:activeTab==="trainer"?"#10b98118":"transparent",color:activeTab==="trainer"?"#10b981":"#4b5563",fontSize:11,fontWeight:500}}>
+              Trainer
+            </button>
+            <button onClick={()=>setActiveTab("context")} style={{padding:"4px 9px",borderRadius:5,border:"1px solid "+(activeTab==="context"?"#10b98155":"#2d3748"),background:activeTab==="context"?"#10b98118":"transparent",color:activeTab==="context"?"#10b981":"#4b5563",fontSize:11,fontWeight:500}}>
+              Context
+            </button>
+          </div>
           <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
             {PROVIDERS.map(p=>{
               const on=provider===p.id;
@@ -715,7 +750,7 @@ function App(){
         </div>
 
         {/* Training */}
-        {trainingOpen&&(
+        {activeTab==="main" && trainingOpen&&(
           <div style={{borderBottom:"1px solid #1e2535",background:"#111827",padding:"10px 14px",display:"grid",gridTemplateColumns:"minmax(280px,0.9fr) minmax(320px,1.1fr)",gap:12,flexShrink:0,maxHeight:330,overflow:"auto"}}>
             <div style={{display:"flex",flexDirection:"column",gap:8,minWidth:0}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
@@ -819,29 +854,84 @@ function App(){
           </div>
         )}
 
-        {/* Chat */}
-        <div style={{flex:1,overflowY:"auto",padding:"18px 18px 8px",display:"flex",flexDirection:"column",gap:14}} onClick={()=>setModelOpen(false)}>
-          {msgs.map((m,i)=>{
-            const isUser=m.role==="user";
-            const tm=IT_TEAM.find(t=>t.name===m.name);
-            const color=tm?tm.color:(isUser?"#60a5fa":"#7c3aed");
-            return(
-              <div key={i} style={{display:"flex",gap:9,alignItems:"flex-start",flexDirection:isUser?"row-reverse":"row"}}>
-                {!isUser&&<Avatar name={m.name} color={color} size={26}/>}
-                <div style={{display:"flex",flexDirection:"column",maxWidth:"78%",gap:3,alignItems:isUser?"flex-end":"flex-start"}}>
-                  <span style={{fontSize:10,color:"#374151"}}>
-                    {!isUser&&<span style={{color,fontWeight:500}}>{m.name}{" · "}</span>}{m.ts}
-                  </span>
-                  <div style={{background:isUser?"#1e3a5f":"#1e2535",borderRadius:8,padding:"7px 11px",lineHeight:1.65,fontSize:13,color:"#e2e8f0",wordBreak:"break-word",whiteSpace:"pre-wrap"}}>
-                    {m.content}
-                  </div>
-                </div>
-                {isUser&&<Avatar name="PH" color="#1e3a5f" size={26}/>}
+        {/* Trainer Panel */}
+        {activeTab==="trainer" && (
+          <div style={{padding:"14px",background:"#111827",flex:1,overflow:"auto"}}>
+            <div style={{fontSize:14,fontWeight:600,color:"#e2e8f0",marginBottom:12}}>Trainer Pipeline</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:16}}>
+              <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"8px"}}>
+                <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>LitGPT</div>
+                <div style={{fontSize:11,color:trainerStatus?.litgpt?.status==="online"?"#10b981":"#ef4444"}}>{trainerStatus?.litgpt?.status||"--"}</div>
               </div>
-            );
-          })}
-          <div ref={bottomRef}/>
-        </div>
+              <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"8px"}}>
+                <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Unsloth</div>
+                <div style={{fontSize:11,color:trainerStatus?.unsloth?.status==="online"?"#10b981":"#ef4444"}}>{trainerStatus?.unsloth?.status||"--"}</div>
+              </div>
+              <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"8px"}}>
+                <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Approved Records</div>
+                <div style={{fontSize:11,color:"#cbd5e1"}}>{trainerStatus?.approved_dataset_records||0}</div>
+              </div>
+              <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"8px"}}>
+                <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Total Jobs</div>
+                <div style={{fontSize:11,color:"#cbd5e1"}}>{trainerStatus?.pipeline?.total_jobs||0}</div>
+              </div>
+            </div>
+            <div style={{fontSize:12,fontWeight:600,color:"#e2e8f0",marginBottom:8}}>Jobs</div>
+            {trainerJobs.length===0?<div style={{fontSize:11,color:"#64748b"}}>No jobs yet.</div>:trainerJobs.map((job)=>(
+              <div key={job.job_id} style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"8px",marginBottom:6}}>
+                <div style={{fontSize:11,color:"#cbd5e1"}}>{job.job_id.slice(0,8)} · {job.state} · {job.base_model} · {job.method}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Context Panel */}
+        {activeTab==="context" && (
+          <div style={{padding:"14px",background:"#111827",flex:1,overflow:"auto"}}>
+            <div style={{fontSize:14,fontWeight:600,color:"#e2e8f0",marginBottom:12}}>Project Context</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
+              <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"8px"}}>
+                <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Total Files</div>
+                <div style={{fontSize:11,color:"#cbd5e1"}}>{contextData?.structure?.total_files||"--"}</div>
+              </div>
+              <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"8px"}}>
+                <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Changed Files</div>
+                <div style={{fontSize:11,color:"#cbd5e1"}}>{contextData?.changed_files?.count||"--"}</div>
+              </div>
+              <div style={{background:"#0f1117",border:"1px solid #1e2535",borderRadius:6,padding:"8px"}}>
+                <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase"}}>Test Files</div>
+                <div style={{fontSize:11,color:"#cbd5e1"}}>{contextData?.test_files?.count||"--"}</div>
+              </div>
+            </div>
+            <pre style={{background:"#0f1117",border:"1px solid #2d3748",borderRadius:6,padding:8,color:"#94a3b8",fontSize:10,lineHeight:1.35,whiteSpace:"pre-wrap"}}>{JSON.stringify(contextData,null,2)||"No context data yet."}</pre>
+          </div>
+        )}
+
+        {/* Chat */}
+        {activeTab==="main" && (
+          <div style={{flex:1,overflowY:"auto",padding:"18px 18px 8px",display:"flex",flexDirection:"column",gap:14}} onClick={()=>setModelOpen(false)}>
+            {msgs.map((m,i)=>{
+              const isUser=m.role==="user";
+              const tm=IT_TEAM.find(t=>t.name===m.name);
+              const color=tm?tm.color:(isUser?"#60a5fa":"#7c3aed");
+              return(
+                <div key={i} style={{display:"flex",gap:9,alignItems:"flex-start",flexDirection:isUser?"row-reverse":"row"}}>
+                  {!isUser&&<Avatar name={m.name} color={color} size={26}/>}
+                  <div style={{display:"flex",flexDirection:"column",maxWidth:"78%",gap:3,alignItems:isUser?"flex-end":"flex-start"}}>
+                    <span style={{fontSize:10,color:"#374151"}}>
+                      {!isUser&&<span style={{color,fontWeight:500}}>{m.name}{" · "}</span>}{m.ts}
+                    </span>
+                    <div style={{background:isUser?"#1e3a5f":"#1e2535",borderRadius:8,padding:"7px 11px",lineHeight:1.65,fontSize:13,color:"#e2e8f0",wordBreak:"break-word",whiteSpace:"pre-wrap"}}>
+                      {m.content}
+                    </div>
+                  </div>
+                  {isUser&&<Avatar name="PH" color="#1e3a5f" size={26}/>}
+                </div>
+              );
+            })}
+            <div ref={bottomRef}/>
+          </div>
+        )}
 
         {/* Status */}
         <div style={{background:"#151821",borderTop:"1px solid #1e2535",flexShrink:0}}>

@@ -9,7 +9,9 @@ import {
   CircleStop,
   Cpu,
   Database,
+  FolderTree,
   Hammer,
+  Layers,
   Pause,
   Play,
   RefreshCw,
@@ -216,6 +218,10 @@ export default function App() {
   const [events, setEvents] = useState<OperationEvent[]>([]);
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const [activeTab, setActiveTab] = useState<"main" | "trainer" | "context">("main");
+  const [trainerStatus, setTrainerStatus] = useState<any>(null);
+  const [trainerJobs, setTrainerJobs] = useState<any[]>([]);
+  const [contextData, setContextData] = useState<any>(null);
   const terminalHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -284,7 +290,28 @@ export default function App() {
     } catch {
       setLoop((previous) => ({ ...previous, status: previous.status || "idle" }));
     }
-  }, [api]);
+    // Refresh trainer and context data if on those tabs
+    if (activeTab === "trainer") {
+      try {
+        const [trainerData, jobsData] = await Promise.all([
+          api<any>("/trainer/status"),
+          api<any>("/trainer/jobs"),
+        ]);
+        setTrainerStatus(trainerData);
+        setTrainerJobs(jobsData.jobs || []);
+      } catch {
+        // Trainer endpoints may not be available yet
+      }
+    }
+    if (activeTab === "context") {
+      try {
+        const contextData = await api<any>("/context/summary");
+        setContextData(contextData);
+      } catch {
+        // Context endpoints may not be available yet
+      }
+    }
+  }, [api, activeTab]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -321,6 +348,22 @@ export default function App() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [backend]);
+
+  useEffect(() => {
+    if (activeTab === "trainer") {
+      api<any>("/trainer/status")
+        .then((trainerData) => setTrainerStatus(trainerData))
+        .catch(() => undefined);
+      api<any>("/trainer/jobs")
+        .then((jobsData) => setTrainerJobs(jobsData.jobs || []))
+        .catch(() => undefined);
+    }
+    if (activeTab === "context") {
+      api<any>("/context/summary")
+        .then((contextData) => setContextData(contextData))
+        .catch(() => undefined);
+    }
+  }, [activeTab, api]);
 
   useEffect(() => {
     if (providerInitialized.current || providerChoices.length === 0) return;
@@ -482,6 +525,18 @@ export default function App() {
           </div>
         </div>
 
+        <div className="tab-nav">
+          <button className={activeTab === "main" ? "active" : ""} onClick={() => setActiveTab("main")}>
+            <Cpu size={16} /> Main
+          </button>
+          <button className={activeTab === "trainer" ? "active" : ""} onClick={() => setActiveTab("trainer")}>
+            <Layers size={16} /> Trainer
+          </button>
+          <button className={activeTab === "context" ? "active" : ""} onClick={() => setActiveTab("context")}>
+            <FolderTree size={16} /> Context
+          </button>
+        </div>
+
         <label>
           Motor
           <select value={provider} onChange={(event) => onProviderChange(event.target.value)}>
@@ -571,104 +626,116 @@ export default function App() {
           </button>
         </section>
 
-        <section className="cockpit-grid">
-          <section className="panel primary-panel">
-            <PanelHeader title="Mission Control" />
-            <div className="action-summary">
-              <div>
-                <span>Next</span>
-                <strong>{status.next_action ?? createFlow?.next_action ?? "Ready"}</strong>
-              </div>
-              <div>
-                <span>Base</span>
-                <strong>{status.model?.active_base ?? model}</strong>
-              </div>
-              <div>
-                <span>Iteration</span>
-                <strong>{loop.iteration ?? 0}</strong>
-              </div>
-            </div>
-            <div className="feed">
-              {events.length === 0 ? (
-                <div className="empty-state">Nog geen cockpitactie in deze sessie. Kies een lokale motor en start een concrete stap.</div>
-              ) : (
-                events.map((event) => <EventItem event={event} key={event.id} />)
-              )}
-            </div>
-          </section>
-
-          <section className="panel">
-            <PanelHeader title="Runtime" />
-            <div className="fact-list">
-              <Fact label="Ouroboros model" value={status.model?.name ?? "ouroboros"} state={status.model?.status} />
-              <Fact label="Create flow" value={createFlow?.status ?? "idle"} state={createFlow?.created ? "created" : "pending"} />
-              <Fact label="Local models" value={`${status.ollama?.count ?? status.model?.available_bases?.length ?? 0}`} />
-              <Fact label="Roo tools" value={`${toolCount}`} state={status.roo_adapter?.status} />
-              <Fact label="Main memory" value={`${records.main_collection_count ?? 0}`} />
-              <Fact label="Training memory" value={`${records.training_collection_count ?? 0}`} />
-            </div>
-            <PanelHeader title="API Keys" small />
-            <div className="key-list">
-              {externalProviderChoices.map((item) => {
-                const key = apiKeyStatus[item.id];
-                const configured = !!key?.configured || !!item.enabled;
-                return (
-                  <div className="key-row" key={item.id}>
-                    <div>
-                      <strong>{item.label}</strong>
-                      <span>{configured ? `${key?.source ?? item.keySource ?? "configured"} ${key?.masked ?? item.maskedKey ?? ""}` : "missing key"}</span>
-                    </div>
-                    <input
-                      type="password"
-                      value={apiKeyInputs[item.id] ?? ""}
-                      onChange={(event) => setApiKeyInputs((previous) => ({ ...previous, [item.id]: event.target.value }))}
-                      placeholder={configured ? "replace key" : "paste key"}
-                    />
-                    <button onClick={() => saveApiKey(item.id)} disabled={busy || !approvalReady || !(apiKeyInputs[item.id] ?? "").trim()}>
-                      Save
-                    </button>
-                    <button onClick={() => deleteApiKey(item.id)} disabled={busy || !approvalReady || !configured}>
-                      Clear
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <details>
-              <summary>Raw status</summary>
-              <pre>{JSON.stringify(status, null, 2)}</pre>
-            </details>
-          </section>
-
-          <section className="panel">
-            <PanelHeader title="Agent Roles" />
-            <div className="role-list">
-              {roleEntries.length ? roleEntries.map(([role, details]) => (
-                <div className="role-row" key={role}>
-                  <span>{role}</span>
-                  <strong>{details.model ?? "--"}</strong>
-                  {details.available ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+        {activeTab === "main" && (
+          <section className="cockpit-grid">
+            <section className="panel primary-panel">
+              <PanelHeader title="Mission Control" />
+              <div className="action-summary">
+                <div>
+                  <span>Next</span>
+                  <strong>{status.next_action ?? createFlow?.next_action ?? "Ready"}</strong>
                 </div>
-              )) : <div className="empty-state">Rolrouter nog niet beschikbaar.</div>}
-            </div>
-            <PanelHeader title="Last Response" small />
-            <pre className="response-box">{chatOutput || summarizeResult(loopResult) || "Nog geen response."}</pre>
-          </section>
-        </section>
+                <div>
+                  <span>Base</span>
+                  <strong>{status.model?.active_base ?? model}</strong>
+                </div>
+                <div>
+                  <span>Iteration</span>
+                  <strong>{loop.iteration ?? 0}</strong>
+                </div>
+              </div>
+              <div className="feed">
+                {events.length === 0 ? (
+                  <div className="empty-state">Nog geen cockpitactie in deze sessie. Kies een lokale motor en start een concrete stap.</div>
+                ) : (
+                  events.map((event) => <EventItem event={event} key={event.id} />)
+                )}
+              </div>
+            </section>
 
-        <section className="terminal-panel">
-          <div className="terminal-bar">
-            <TerminalSquare size={16} />
-            <input value={command} onChange={(event) => setCommand(event.target.value)} onKeyDown={(event) => {
-              if (event.key === "Enter") runCommand();
-            }} />
-            <input className="test-selector" value={testSelector} onChange={(event) => setTestSelector(event.target.value)} />
-            <button onClick={runCommand} disabled={busy || !command.trim() || !approvalReady}>
-              Run
-            </button>
-          </div>
-          <div className="terminal-host" ref={terminalHost} />
-        </section>
+            <section className="panel">
+              <PanelHeader title="Runtime" />
+              <div className="fact-list">
+                <Fact label="Ouroboros model" value={status.model?.name ?? "ouroboros"} state={status.model?.status} />
+                <Fact label="Create flow" value={createFlow?.status ?? "idle"} state={createFlow?.created ? "created" : "pending"} />
+                <Fact label="Local models" value={`${status.ollama?.count ?? status.model?.available_bases?.length ?? 0}`} />
+                <Fact label="Roo tools" value={`${toolCount}`} state={status.roo_adapter?.status} />
+                <Fact label="Main memory" value={`${records.main_collection_count ?? 0}`} />
+                <Fact label="Training memory" value={`${records.training_collection_count ?? 0}`} />
+              </div>
+              <PanelHeader title="API Keys" small />
+              <div className="key-list">
+                {externalProviderChoices.map((item) => {
+                  const key = apiKeyStatus[item.id];
+                  const configured = !!key?.configured || !!item.enabled;
+                  return (
+                    <div className="key-row" key={item.id}>
+                      <div>
+                        <strong>{item.label}</strong>
+                        <span>{configured ? `${key?.source ?? item.keySource ?? "configured"} ${key?.masked ?? item.maskedKey ?? ""}` : "missing key"}</span>
+                      </div>
+                      <input
+                        type="password"
+                        value={apiKeyInputs[item.id] ?? ""}
+                        onChange={(event) => setApiKeyInputs((previous) => ({ ...previous, [item.id]: event.target.value }))}
+                        placeholder={configured ? "replace key" : "paste key"}
+                      />
+                      <button onClick={() => saveApiKey(item.id)} disabled={busy || !approvalReady || !(apiKeyInputs[item.id] ?? "").trim()}>
+                        Save
+                      </button>
+                      <button onClick={() => deleteApiKey(item.id)} disabled={busy || !approvalReady || !configured}>
+                        Clear
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <details>
+                <summary>Raw status</summary>
+                <pre>{JSON.stringify(status, null, 2)}</pre>
+              </details>
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="Agent Roles" />
+              <div className="role-list">
+                {roleEntries.length ? roleEntries.map(([role, details]) => (
+                  <div className="role-row" key={role}>
+                    <span>{role}</span>
+                    <strong>{details.model ?? "--"}</strong>
+                    {details.available ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                  </div>
+                )) : <div className="empty-state">Rolrouter nog niet beschikbaar.</div>}
+              </div>
+              <PanelHeader title="Last Response" small />
+              <pre className="response-box">{chatOutput || summarizeResult(loopResult) || "Nog geen response."}</pre>
+            </section>
+          </section>
+        )}
+
+        {activeTab === "trainer" && (
+          <TrainerPanel api={api} backend={backend} trainerStatus={trainerStatus} trainerJobs={trainerJobs} approval={approval} approvalReady={approvalReady} refresh={refresh} />
+        )}
+
+        {activeTab === "context" && (
+          <ContextPanel api={api} backend={backend} contextData={contextData} refresh={refresh} />
+        )}
+
+        {activeTab === "main" && (
+          <section className="terminal-panel">
+            <div className="terminal-bar">
+              <TerminalSquare size={16} />
+              <input value={command} onChange={(event) => setCommand(event.target.value)} onKeyDown={(event) => {
+                if (event.key === "Enter") runCommand();
+              }} />
+              <input className="test-selector" value={testSelector} onChange={(event) => setTestSelector(event.target.value)} />
+              <button onClick={runCommand} disabled={busy || !command.trim() || !approvalReady}>
+                Run
+              </button>
+            </div>
+            <div className="terminal-host" ref={terminalHost} />
+          </section>
+        )}
       </section>
     </main>
   );
@@ -776,5 +843,134 @@ function EventItem({ event }: { event: OperationEvent }) {
         <pre>{JSON.stringify(event.raw, null, 2)}</pre>
       </details>
     </article>
+  );
+}
+
+function TrainerPanel({ api, backend, trainerStatus, trainerJobs, approval, approvalReady, refresh }: { api: any; backend: string; trainerStatus: any; trainerJobs: any[]; approval: string; approvalReady: boolean; refresh: () => Promise<void> }) {
+  const [baseModel, setBaseModel] = useState("llama3.2:latest");
+  const [method, setMethod] = useState("litgpt");
+  const [datasetPreview, setDatasetPreview] = useState<any>(null);
+
+  async function createJob() {
+    try {
+      await api("/trainer/jobs", {
+        method: "POST",
+        body: JSON.stringify({ base_model: baseModel, method }),
+      });
+      await refresh();
+    } catch (error) {
+      console.error("Failed to create job:", error);
+    }
+  }
+
+  async function previewDataset() {
+    try {
+      const data = await api("/trainer/dataset/preview", { method: "POST", body: JSON.stringify({ max_records: 10 }) });
+      setDatasetPreview(data);
+    } catch (error) {
+      console.error("Failed to preview dataset:", error);
+    }
+  }
+
+  return (
+    <section className="panel trainer-panel" style={{ gridColumn: "1 / -1", minHeight: "400px" }}>
+      <PanelHeader title="Trainer Pipeline" />
+      <div className="trainer-status">
+        <Metric label="LitGPT" value={trainerStatus?.litgpt?.status ?? "--"} tone={trainerStatus?.litgpt?.status === "online" ? "good" : "warn"} />
+        <Metric label="Unsloth" value={trainerStatus?.unsloth?.status ?? "--"} tone={trainerStatus?.unsloth?.status === "online" ? "good" : "warn"} />
+        <Metric label="Approved Records" value={trainerStatus?.approved_dataset_records ?? 0} />
+        <Metric label="Total Jobs" value={trainerStatus?.pipeline?.total_jobs ?? 0} />
+      </div>
+      
+      <PanelHeader title="Create Job" small />
+      <div className="trainer-form">
+        <label>
+          Base Model
+          <input value={baseModel} onChange={(e) => setBaseModel(e.target.value)} placeholder="llama3.2:latest" />
+        </label>
+        <label>
+          Method
+          <select value={method} onChange={(e) => setMethod(e.target.value)}>
+            <option value="litgpt">LitGPT</option>
+            <option value="unsloth">Unsloth</option>
+          </select>
+        </label>
+        <button onClick={createJob} disabled={!approvalReady}>
+          Create Job
+        </button>
+      </div>
+
+      <PanelHeader title="Jobs" small />
+      <div className="job-list">
+        {trainerJobs.length === 0 ? (
+          <div className="empty-state">No jobs yet. Create one above.</div>
+        ) : (
+          trainerJobs.map((job: any) => (
+            <div className="job-item" key={job.job_id}>
+              <div>
+                <strong>{job.job_id.slice(0, 8)}</strong>
+                <span>{job.state}</span>
+              </div>
+              <div>
+                <span>{job.base_model}</span>
+                <span>{job.method}</span>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <PanelHeader title="Dataset" small />
+      <button onClick={previewDataset}>Preview Dataset</button>
+      {datasetPreview && (
+        <pre className="dataset-preview">{JSON.stringify(datasetPreview, null, 2)}</pre>
+      )}
+    </section>
+  );
+}
+
+function ContextPanel({ api, backend, contextData, refresh }: { api: any; backend: string; contextData: any; refresh: () => Promise<void> }) {
+  const [fileTree, setFileTree] = useState<any>(null);
+  const [changedFiles, setChangedFiles] = useState<any>(null);
+
+  async function loadFileTree() {
+    try {
+      const data = await api("/context/file_tree?max_depth=2&limit=100");
+      setFileTree(data);
+    } catch (error) {
+      console.error("Failed to load file tree:", error);
+    }
+  }
+
+  async function loadChangedFiles() {
+    try {
+      const data = await api("/context/changed_files?limit=20");
+      setChangedFiles(data);
+    } catch (error) {
+      console.error("Failed to load changed files:", error);
+    }
+  }
+
+  return (
+    <section className="panel context-panel" style={{ gridColumn: "1 / -1", minHeight: "400px" }}>
+      <PanelHeader title="Project Context" />
+      <div className="context-summary">
+        <Fact label="Total Files" value={contextData?.structure?.total_files ?? "--"} />
+        <Fact label="Changed Files" value={contextData?.changed_files?.count ?? "--"} />
+        <Fact label="Test Files" value={contextData?.test_files?.count ?? "--"} />
+      </div>
+
+      <PanelHeader title="File Tree" small />
+      <button onClick={loadFileTree}>Load File Tree</button>
+      {fileTree && (
+        <pre className="file-tree">{JSON.stringify(fileTree, null, 2)}</pre>
+      )}
+
+      <PanelHeader title="Changed Files" small />
+      <button onClick={loadChangedFiles}>Load Changed Files</button>
+      {changedFiles && (
+        <pre className="changed-files">{JSON.stringify(changedFiles, null, 2)}</pre>
+      )}
+    </section>
   );
 }

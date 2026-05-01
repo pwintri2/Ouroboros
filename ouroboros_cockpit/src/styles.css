@@ -427,3 +427,79 @@ label {
   padding: 8px;
   background: #07100d;
 }
+
+.tab-nav {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.tab-nav button {
+  min-height: 36px;
+  font-size: 13px;
+}
+
+.tab-nav button.active {
+  border-color: #40c4aa;
+  background: #19283b;
+}
+
+.trainer-status {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.trainer-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.job-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.job-item {
+  padding: 10px;
+  border: 1px solid #1d2634;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.job-item div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.job-item strong {
+  font-size: 13px;
+}
+
+.job-item span {
+  color: #91a3b8;
+  font-size: 12px;
+}
+
+.dataset-preview,
+.file-tree,
+.changed-files {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid #1d2634;
+  border-radius: 7px;
+  background: #0d1420;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.context-summary {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}

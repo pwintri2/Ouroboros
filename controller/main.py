@@ -129,6 +129,12 @@ except Exception:
         app.state.training_events = []
 
 try:
+    from controller.api.trainer_pipeline_routes import init_trainer_pipeline
+except Exception:
+    def init_trainer_pipeline(app: Any) -> None:
+        app.state.trainer_pipeline_routes_unavailable = True
+
+try:
     from controller.safe_shell import run_safe_shell
 except Exception:
     def run_safe_shell(command: str, approval: str = "", timeout: int = 20) -> dict[str, Any]:
@@ -192,6 +198,7 @@ mail_executor = MailExecutor()
 stream_storage = StreamStorage(collection=kb.collection)
 init_training(app, storage=stream_storage)
 init_browser_research(app)
+init_trainer_pipeline(app)
 agent_tools = AgentToolRegistryClass(kb=kb, storage=stream_storage, app=app)
 
 # Regiekamer / Orchestrator Instantie (Hergebruikt sandbox en reflector uit de router array)
