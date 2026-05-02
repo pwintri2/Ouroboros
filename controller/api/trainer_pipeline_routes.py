@@ -31,12 +31,14 @@ from controller.agentic_crawler import (
 )
 from controller.ecosystem_knowledge_ingest import get_ecosystem_knowledge_status, ingest_ecosystem_knowledge
 from controller.ecosystem_status import get_ecosystem_status
-from controller.google_workspace_adapter import get_google_workspace_status
+from controller.google_workspace_adapter import GoogleWorkspaceAdapter, get_google_workspace_status
+from controller.host_program_inventory import get_host_program_inventory_status, scan_host_program_inventory
 from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights
 from controller.local_machine_profile import get_local_machine_status, snapshot_local_machine
-from controller.microsoft_graph_adapter import get_microsoft_graph_status
+from controller.microsoft_graph_adapter import MicrosoftGraphAdapter, get_microsoft_graph_status
 from controller.popos_diagnostics_adapter import get_popos_diagnostics_status, run_popos_diagnostics
-from controller.sharepoint_pnp_adapter import get_sharepoint_status
+from controller.rclone_drive_adapter import RcloneDriveAdapter, get_rclone_drive_status
+from controller.sharepoint_pnp_adapter import SharePointPnPAdapter, get_sharepoint_status
 from controller.knowledge_acquisition import (
     get_knowledge_acquisition_status,
     index_knowledge_list,
@@ -297,6 +299,43 @@ class CrossServiceProposalRequest(BaseModel):
     target_service: str = Field(default="sharepoint", max_length=64)
 
 
+class HostProgramInventoryRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    max_desktop_apps: int = Field(default=1000, ge=1, le=5000)
+    max_packages: int = Field(default=8000, ge=1, le=50000)
+    max_path_binaries: int = Field(default=3000, ge=1, le=20000)
+
+
+class GoogleDriveFilesRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    page_size: int = Field(default=25, ge=1, le=100)
+
+
+class RcloneDriveFilesRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    remote: str = Field(default="", max_length=128)
+    path: str = Field(default="", max_length=1024)
+    max_items: int = Field(default=100, ge=1, le=1000)
+    max_depth: int = Field(default=1, ge=1, le=5)
+
+
+class GoogleCalendarEventsRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    calendar_id: str = Field(default="primary", min_length=1, max_length=256)
+    max_results: int = Field(default=20, ge=1, le=100)
+
+
+class GoogleGmailSearchRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1, max_length=512)
+    max_results: int = Field(default=10, ge=1, le=50)
+
+
+class MicrosoftSitesRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    search: str = Field(default="*", min_length=1, max_length=128)
+
+
 class CodexFrontendEventRequest(BaseModel):
     action_id: str = Field(..., min_length=1, max_length=128)
     status: str = Field(..., min_length=1, max_length=64)
@@ -330,6 +369,7 @@ async def trainer_pipeline_status() -> dict[str, Any]:
         "microsoft_graph": get_microsoft_graph_status(),
         "sharepoint": get_sharepoint_status(),
         "agentic_crawler": get_agentic_crawler_status(),
+        "program_inventory": get_host_program_inventory_status(),
         "ecosystem_knowledge": get_ecosystem_knowledge_status(),
         "curriculum": curriculum_status(),
         "knowledge_acquisition": get_knowledge_acquisition_status(),
@@ -613,16 +653,135 @@ async def trainer_google_status() -> dict[str, Any]:
     return get_google_workspace_status()
 
 
+@trainer_pipeline_router.post("/google/drive/files")
+async def trainer_google_drive_files(request: GoogleDriveFilesRequest) -> dict[str, Any]:
+    """List Google Drive files through the local token adapter."""
+    result = GoogleWorkspaceAdapter().list_drive_files(approval=request.approval, page_size=request.page_size)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.get("/rclone/status")
+async def trainer_rclone_status() -> dict[str, Any]:
+    """Get rclone Drive bridge status without returning tokens."""
+    return get_rclone_drive_status()
+
+
+@trainer_pipeline_router.post("/rclone/drive/files")
+async def trainer_rclone_drive_files(request: RcloneDriveFilesRequest) -> dict[str, Any]:
+    """List Google Drive files through the existing human-authenticated rclone remote."""
+    result = RcloneDriveAdapter().list_drive_files(
+        approval=request.approval,
+        remote=request.remote,
+        path=request.path,
+        max_items=request.max_items,
+        max_depth=request.max_depth,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/google/calendar/events")
+async def trainer_google_calendar_events(request: GoogleCalendarEventsRequest) -> dict[str, Any]:
+    """List Google Calendar events through the local token adapter."""
+    result = GoogleWorkspaceAdapter().get_calendar_events(
+        approval=request.approval,
+        calendar_id=request.calendar_id,
+        max_results=request.max_results,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/google/gmail/search")
+async def trainer_google_gmail_search(request: GoogleGmailSearchRequest) -> dict[str, Any]:
+    """Search Gmail through the local token adapter."""
+    result = GoogleWorkspaceAdapter().search_gmail(
+        query=request.query,
+        approval=request.approval,
+        max_results=request.max_results,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/google/gcp/projects")
+async def trainer_google_gcp_projects(request: ApprovalRequest) -> dict[str, Any]:
+    """List GCP projects through the local token adapter."""
+    result = GoogleWorkspaceAdapter().gcp_list_projects(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
 @trainer_pipeline_router.get("/microsoft/status")
 async def trainer_microsoft_status() -> dict[str, Any]:
     """Get Microsoft Graph adapter status."""
     return get_microsoft_graph_status()
 
 
+@trainer_pipeline_router.post("/microsoft/me")
+async def trainer_microsoft_me(request: ApprovalRequest) -> dict[str, Any]:
+    """Read /me through the local Microsoft Graph token adapter."""
+    result = MicrosoftGraphAdapter().get_me(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/microsoft/teams")
+async def trainer_microsoft_teams(request: ApprovalRequest) -> dict[str, Any]:
+    """List joined Teams through the local Microsoft Graph token adapter."""
+    result = MicrosoftGraphAdapter().list_teams(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/microsoft/sharepoint/sites")
+async def trainer_microsoft_sharepoint_sites(request: MicrosoftSitesRequest) -> dict[str, Any]:
+    """Search SharePoint sites through Microsoft Graph."""
+    result = MicrosoftGraphAdapter().get_sharepoint_sites(approval=request.approval, search=request.search)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/microsoft/onedrive/files")
+async def trainer_microsoft_onedrive_files(request: ApprovalRequest) -> dict[str, Any]:
+    """List OneDrive root files through Microsoft Graph."""
+    result = MicrosoftGraphAdapter().list_onedrive_files(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/microsoft/calendar")
+async def trainer_microsoft_calendar(request: ApprovalRequest) -> dict[str, Any]:
+    """List Microsoft calendar events through Graph."""
+    result = MicrosoftGraphAdapter().get_calendar(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
 @trainer_pipeline_router.get("/sharepoint/status")
 async def trainer_sharepoint_status() -> dict[str, Any]:
     """Get SharePoint adapter status."""
     return get_sharepoint_status()
+
+
+@trainer_pipeline_router.post("/sharepoint/sites")
+async def trainer_sharepoint_sites(request: ApprovalRequest) -> dict[str, Any]:
+    """List SharePoint site collections through the SharePoint adapter."""
+    result = SharePointPnPAdapter().list_site_collections(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
 
 
 @trainer_pipeline_router.get("/crawler/status")
@@ -669,6 +828,26 @@ async def trainer_crawler_settings(request: ApprovalRequest) -> dict[str, Any]:
 async def trainer_crawler_cross_service(request: CrossServiceProposalRequest) -> dict[str, Any]:
     """Create a cross-service action proposal without executing writes."""
     return propose_cross_service_action(findings=request.findings, target_service=request.target_service)
+
+
+@trainer_pipeline_router.get("/host-programs/status")
+async def trainer_host_programs_status() -> dict[str, Any]:
+    """Get the latest host/container program inventory status."""
+    return get_host_program_inventory_status()
+
+
+@trainer_pipeline_router.post("/host-programs/scan")
+async def trainer_host_programs_scan(request: HostProgramInventoryRequest) -> dict[str, Any]:
+    """Run an approval-gated program inventory in the current runtime scope."""
+    result = scan_host_program_inventory(
+        approval=request.approval,
+        max_desktop_apps=request.max_desktop_apps,
+        max_packages=request.max_packages,
+        max_path_binaries=request.max_path_binaries,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
 
 
 @trainer_pipeline_router.post("/knowledge/index-list")

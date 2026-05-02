@@ -27,15 +27,18 @@ def get_ecosystem_status() -> dict[str, Any]:
     adapters: dict[str, Any] = {}
     adapters["popos"] = _safe_status("controller.popos_diagnostics_adapter", "get_popos_diagnostics_status")
     adapters["google"] = _safe_status("controller.google_workspace_adapter", "get_google_workspace_status")
+    adapters["rclone_drive"] = _safe_status("controller.rclone_drive_adapter", "get_rclone_drive_status")
     adapters["microsoft"] = _safe_status("controller.microsoft_graph_adapter", "get_microsoft_graph_status")
     adapters["sharepoint"] = _safe_status("controller.sharepoint_pnp_adapter", "get_sharepoint_status")
     crawler = _safe_status("controller.agentic_crawler", "get_agentic_crawler_status")
+    programs = _safe_status("controller.host_program_inventory", "get_host_program_inventory_status")
     knowledge = _safe_status("controller.ecosystem_knowledge_ingest", "get_ecosystem_knowledge_status")
     health_values = [str(value.get("status", "unknown")) for value in adapters.values() if isinstance(value, dict)]
     return {
         "status": "ready" if health_values else "unavailable",
         "ecosystem_adapters": adapters,
         "crawl_stats": crawler,
+        "program_inventory": programs,
         "ecosystem_knowledge": knowledge,
         "healthy_adapter_count": sum(1 for value in adapters.values() if str(value.get("status")) in {"ready", "connected"}),
         "approval_required": True,
