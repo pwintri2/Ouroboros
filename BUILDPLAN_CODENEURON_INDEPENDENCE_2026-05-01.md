@@ -174,6 +174,13 @@ Streaming Consciousness 11D update:
 - Trainer UI now has a Streaming Consciousness 11D panel with steps, DHCP/IP, voltage, bytes, packets and projection sample.
 - Live Docker configuration after the update: `steps_per_tick=25`, `interval_seconds=0.2`, `n_samples=8000`, with DHCP reaching `BOUND`.
 
+Quantum 11D collapse update:
+- Incorporated the mathematical core from `Quantum.py` into `controller/streaming_consciousness_adapter.py`.
+- Uses NumPy-only complex matrices, not Qiskit/Cirq or physical quantum SDKs.
+- Defines Pauli `sigma_x`, `sigma_z`, B0/B1 phase operators, tensor product helper and Born expectation helper.
+- Every streaming 11D event now passes through `trigger_quantum_collapse()` before being returned/exported.
+- The event includes `quantum.expectation`, operator metadata and `sdk=none_numpy_classical` for auditability.
+
 Docker validation on 2026-05-01:
 
 ```bash

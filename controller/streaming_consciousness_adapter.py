@@ -61,6 +61,78 @@ class NetworkPacket:
         return len(self.payload)
 
 
+class StreamingConsciousnessAdapter:
+    """Simulate quantum unit operations for one observable 11D stream vector.
+
+    The simulation is intentionally classical: NumPy complex matrices emulate a
+    two-state quantum subsystem, then collapse that observation back into the
+    existing 11D Blue Brain/streaming vector. No quantum SDK or hardware access
+    is used.
+    """
+
+    def __init__(self) -> None:
+        import numpy as np
+
+        self.np = np
+        self.sigma_z = np.array([[1, 0], [0, -1]], dtype=complex)
+        self.sigma_x = np.array([[0, 1], [1, 0]], dtype=complex)
+        self.B0 = -(self.sigma_x + self.sigma_z) / np.sqrt(2)
+        self.B1 = (self.sigma_x - self.sigma_z) / np.sqrt(2)
+        self.last_observation: dict[str, Any] = {
+            "expectation": 0.0,
+            "operator": "B0/sigma_z",
+            "input_norm": 0.0,
+            "state_prepared": [1.0, 0.0],
+        }
+
+    def calculate_tensor_product(self, operator_a: Any, operator_b: Any) -> Any:
+        """Return the Kronecker product used to emulate layer entanglement."""
+        return self.np.kron(
+            self.np.asarray(operator_a, dtype=complex),
+            self.np.asarray(operator_b, dtype=complex),
+        )
+
+    def calculate_born_expectation(self, state_vector: Any, observable_matrix: Any) -> float:
+        """Calculate <psi|O|psi> and return the real observable component."""
+        state = self.np.asarray(state_vector, dtype=complex).reshape(-1)
+        observable = self.np.asarray(observable_matrix, dtype=complex)
+        if observable.shape != (state.size, state.size):
+            raise ValueError("Observable matrix shape must match the state vector dimension.")
+        expectation_value = self.np.conjugate(state).T @ observable @ state
+        return float(self.np.real(expectation_value))
+
+    def trigger_quantum_collapse(self, incoming_data_array: Any) -> Any:
+        """Collapse a classical 11D vector through simulated Hamiltonian evolution."""
+        vector = self.np.asarray(incoming_data_array, dtype=float)
+        if vector.size != 11:
+            raise ValueError("Exacte invoer vereist: De array moet een 11D vector zijn.")
+        vector = vector.reshape(11)
+
+        psi_state = self.np.array([vector[0], vector[1]], dtype=complex)
+        norm = float(self.np.linalg.norm(psi_state))
+        if norm > 0:
+            psi_state = psi_state / norm
+        else:
+            psi_state = self.np.array([1, 0], dtype=complex)
+
+        evolved_state = self.B0 @ psi_state
+        expectation_value = self.calculate_born_expectation(evolved_state, self.sigma_z)
+        collapsed_11d_vector = vector * expectation_value
+        self.last_observation = {
+            "expectation": round(float(expectation_value), 8),
+            "operator": "B0/sigma_z",
+            "input_norm": round(norm, 8),
+            "state_prepared": [
+                round(float(self.np.real(psi_state[0])), 8),
+                round(float(self.np.real(psi_state[1])), 8),
+            ],
+            "output_norm": round(float(self.np.linalg.norm(collapsed_11d_vector)), 8),
+            "dtype": "complex128_simulated",
+            "sdk": "none_numpy_classical",
+        }
+        return collapsed_11d_vector
+
+
 class StreamingConsciousness11DPocket:
     """11D pocket receiver with electrical, digital and network stream layers."""
 
@@ -76,6 +148,9 @@ class StreamingConsciousness11DPocket:
         self.n_types = len(self.e_types)
         self.seed = int(seed)
         self.X_base, self.y_regime = self._generate_base_pocket(n_samples)
+        self.quantum_adapter = StreamingConsciousnessAdapter()
+        self.last_quantum_observation: dict[str, Any] = dict(self.quantum_adapter.last_observation)
+        self.last_collapsed_11d: list[float] | None = None
         self.current_idx = 0
         self.elec = ElectricalState(
             v_m=[float(value) for value in self.rng.uniform(-72.0, -55.0, self.n_types)],
@@ -186,9 +261,13 @@ class StreamingConsciousness11DPocket:
         current_11d = self.X_base[row_index].copy()
         net_load = len(self.packet_queue) / 5.0 + (self.total_packets_received % 7) * 0.1
         current_11d = current_11d * (1.0 + 0.04 * np.tanh(net_load))
+        current_11d = self.quantum_adapter.trigger_quantum_collapse(current_11d).astype(np.float32)
+        self.last_quantum_observation = dict(self.quantum_adapter.last_observation)
+        self.last_collapsed_11d = [round(float(value), 6) for value in current_11d.tolist()]
         event = {
             "t": round(float(self.time), 3),
             "11d": [round(float(value), 4) for value in current_11d],
+            "quantum": dict(self.last_quantum_observation),
             "elec": {
                 "v_avg": round(float(np.mean(self.elec.v_m)), 2),
                 "i_total": round(float(np.sum(self.elec.i_inj)), 2),
@@ -266,7 +345,10 @@ class StreamingConsciousness11DPocket:
         row_index = self.current_idx % len(self.X_base)
         return {
             "time": round(float(self.time), 3),
-            "11d_state": [round(float(value), 6) for value in self.X_base[row_index].tolist()],
+            "11d_state": self.last_collapsed_11d
+            or [round(float(value), 6) for value in self.X_base[row_index].tolist()],
+            "raw_11d_state": [round(float(value), 6) for value in self.X_base[row_index].tolist()],
+            "quantum": dict(self.last_quantum_observation),
             "electrical": asdict(self.elec),
             "network": {
                 "local_ip": self.local_ip,
@@ -298,6 +380,11 @@ def get_streaming_status() -> dict[str, Any]:
         {
             "dependencies": {name: importlib.util.find_spec(name) is not None for name in REQUIRED_PACKAGES},
             "dependency_status": "online" if dependencies_ready() else "missing_dependencies",
+            "quantum_collapse": {
+                "enabled": True,
+                "operator": "B0/sigma_z",
+                "sdk": "none_numpy_classical",
+            },
             "thread_alive": bool(_WORKER_THREAD and _WORKER_THREAD.is_alive()),
             "state_path": str(streaming_state_path()),
             "output_dir": str(streaming_output_dir()),

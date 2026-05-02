@@ -60,10 +60,13 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         self.assertEqual(tick["steps"], 7)
         self.assertIn("11d", tick["last_event"])
         self.assertEqual(len(tick["last_event"]["11d"]), 11)
+        self.assertIn("quantum", tick["last_event"])
+        self.assertIn("expectation", tick["last_event"]["quantum"])
 
         status = get_streaming_status()
         self.assertGreaterEqual(status["step_count"], 12)
         self.assertEqual(status["fake_success"], False)
+        self.assertEqual(status["quantum_collapse"]["sdk"], "none_numpy_classical")
 
         exported = export_streaming_dataset("Akkoord", n_samples=12)
         self.assertEqual(exported["status"], "success")
@@ -72,6 +75,30 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
 
         stopped = stop_streaming_consciousness("Akkoord")
         self.assertEqual(stopped["status"], "stopped")
+
+    def test_quantum_collapse_math_helpers(self):
+        import numpy as np
+
+        from controller.streaming_consciousness_adapter import StreamingConsciousnessAdapter
+
+        adapter = StreamingConsciousnessAdapter()
+        self.assertEqual(adapter.sigma_z.dtype, np.dtype(complex))
+        self.assertEqual(adapter.sigma_x.dtype, np.dtype(complex))
+
+        tensor = adapter.calculate_tensor_product(adapter.sigma_x, adapter.sigma_z)
+        self.assertEqual(tensor.shape, (4, 4))
+
+        expectation = adapter.calculate_born_expectation(np.array([1, 0], dtype=complex), adapter.sigma_z)
+        self.assertAlmostEqual(expectation, 1.0, places=7)
+
+        vector = np.array([1.0, 1.0, 0.5, 0.25, -0.2, 0.1, 0.3, 0.4, -0.5, 0.6, 0.7])
+        collapsed = adapter.trigger_quantum_collapse(vector)
+        self.assertEqual(collapsed.shape, (11,))
+        self.assertTrue(np.allclose(collapsed, vector, atol=1e-7))
+        self.assertAlmostEqual(adapter.last_observation["expectation"], 1.0, places=7)
+
+        with self.assertRaises(ValueError):
+            adapter.trigger_quantum_collapse(np.zeros(10))
 
 
 @unittest.skipIf(FastAPI is None or TestClient is None, MISSING_FASTAPI)
@@ -91,6 +118,7 @@ class TestStreamingConsciousnessRoutes(unittest.TestCase):
                 status = client.get("/trainer/streaming-consciousness/status")
                 self.assertEqual(status.status_code, 200)
                 self.assertIn("feature_count", status.json())
+                self.assertEqual(status.json()["quantum_collapse"]["enabled"], True)
 
                 blocked = client.post("/trainer/streaming-consciousness/start", json={"approval": "nee"})
                 self.assertEqual(blocked.status_code, 403)

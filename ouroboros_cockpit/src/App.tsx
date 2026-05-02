@@ -1515,6 +1515,7 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           <Metric label="DHCP" value={trainerStatus?.streaming_consciousness?.last_event?.network?.dhcp ?? "--"} />
           <Metric label="IP" value={trainerStatus?.streaming_consciousness?.last_event?.network?.local_ip ?? "--"} />
           <Metric label="V avg" value={trainerStatus?.streaming_consciousness?.last_event?.elec?.v_avg ? `${Number(trainerStatus.streaming_consciousness.last_event.elec.v_avg).toFixed(1)}mV` : "--"} />
+          <Metric label="Quantum" value={trainerStatus?.streaming_consciousness?.last_event?.quantum?.expectation !== undefined ? Number(trainerStatus.streaming_consciousness.last_event.quantum.expectation).toFixed(4) : "--"} tone={trainerStatus?.streaming_consciousness?.quantum_collapse?.enabled ? "good" : undefined} />
           <Metric label="Bytes" value={trainerStatus?.streaming_consciousness?.latest_state?.total_bytes ?? 0} />
           <Metric label="Packets" value={trainerStatus?.streaming_consciousness?.last_event?.network?.total_received ?? 0} />
         </div>
