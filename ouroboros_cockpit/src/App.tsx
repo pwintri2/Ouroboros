@@ -1358,6 +1358,18 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
         <Metric label="Knowledge" value={trainerStatus?.knowledge_acquisition?.total_records ?? knowledgeAcquisition?.total_records ?? 0} tone={(trainerStatus?.knowledge_acquisition?.total_records ?? knowledgeAcquisition?.total_records ?? 0) > 0 ? "good" : "warn"} />
         <Metric label="Independence" value={Number(independenceStatus?.independence_score ?? trainerStatus?.independence?.independence_score ?? 0).toFixed(2)} tone={(independenceStatus?.external_model_needed ?? trainerStatus?.independence?.external_model_needed) ? "warn" : "good"} />
       </div>
+
+      <PanelHeader title="Ecosystem Status" small />
+      <div className="trainer-status">
+        <Metric label="Pop!_OS" value={trainerStatus?.ecosystem?.ecosystem_adapters?.popos?.status ?? trainerStatus?.popos_diagnostics?.status ?? "--"} tone={trainerStatus?.popos_diagnostics?.status === "ready" ? "good" : "warn"} />
+        <Metric label="Google" value={trainerStatus?.ecosystem?.ecosystem_adapters?.google?.status ?? trainerStatus?.google_workspace?.status ?? "--"} tone={(trainerStatus?.google_workspace?.status === "connected") ? "good" : "warn"} />
+        <Metric label="Microsoft" value={trainerStatus?.ecosystem?.ecosystem_adapters?.microsoft?.status ?? trainerStatus?.microsoft_graph?.status ?? "--"} tone={(trainerStatus?.microsoft_graph?.status === "connected") ? "good" : "warn"} />
+        <Metric label="SharePoint" value={trainerStatus?.ecosystem?.ecosystem_adapters?.sharepoint?.status ?? trainerStatus?.sharepoint?.status ?? "--"} tone={(trainerStatus?.sharepoint?.status === "ready") ? "good" : "warn"} />
+        <Metric label="Crawler" value={trainerStatus?.agentic_crawler?.status ?? trainerStatus?.ecosystem?.crawl_stats?.status ?? "--"} tone={(trainerStatus?.agentic_crawler?.indexed_files ?? 0) > 0 ? "good" : "warn"} />
+        <Metric label="Indexed Files" value={trainerStatus?.agentic_crawler?.indexed_files ?? trainerStatus?.ecosystem?.crawl_stats?.indexed_files ?? 0} />
+        <Metric label="Ecosystem Topics" value={trainerStatus?.ecosystem_knowledge?.topic_count ?? trainerStatus?.ecosystem?.ecosystem_knowledge?.topic_count ?? 0} />
+        <Metric label="11D Overlay" value={trainerStatus?.streaming_consciousness?.ecosystem_overlay?.status ?? "--"} tone={trainerStatus?.streaming_consciousness?.ecosystem_overlay?.status === "available" ? "good" : "warn"} />
+      </div>
       
       <PanelHeader title="Create Job" small />
       <div className="trainer-form">

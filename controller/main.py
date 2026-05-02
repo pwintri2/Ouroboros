@@ -1085,6 +1085,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
         "Tester": selected_by_role.get("test") or "",
     }
     if compose_ouroboros_status is not None:
+        ecosystem_extra = _ecosystem_status_extra()
         payload = compose_ouroboros_status(
             model_name=OUROBOROS_MODEL_NAME,
             available_models=models,
@@ -1101,7 +1102,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
             roo_adapter=roo_adapter,
             self_modification_pipeline=self_modification,
             training_events=getattr(app.state, "training_events", []),
-            extra={"ollama_router": router_status},
+            extra={"ollama_router": router_status, **ecosystem_extra},
         )
         if extra:
             payload.update(extra)
@@ -1136,10 +1137,30 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
         "mentor": "Backend-first: gebruik Preview Ingest voordat iets in 11D Memory wordt opgeslagen.",
         "next_action": "Create/Refresh Ouroboros Model" if not model_online else "Research Missing Knowledge",
         "capabilities": _ouroboros_capabilities(),
+        **_ecosystem_status_extra(),
     }
     if extra:
         payload.update(extra)
     return payload
+
+
+def _ecosystem_status_extra() -> dict[str, Any]:
+    """Attach ecosystem adapter status without triggering live API calls."""
+    try:
+        from controller.ecosystem_status import get_ecosystem_status
+
+        ecosystem = get_ecosystem_status()
+        return {
+            "ecosystem_adapters": ecosystem.get("ecosystem_adapters", {}),
+            "crawl_stats": ecosystem.get("crawl_stats", {}),
+            "ecosystem_knowledge": ecosystem.get("ecosystem_knowledge", {}),
+        }
+    except Exception as exc:
+        return {
+            "ecosystem_adapters": {},
+            "crawl_stats": {"status": "unavailable", "reason": str(exc), "fake_success": False},
+            "ecosystem_knowledge": {"status": "unavailable", "reason": str(exc), "fake_success": False},
+        }
 
 
 def _loop_summary() -> dict[str, Any]:

@@ -22,8 +22,21 @@ from controller.codeneuron_adapter import (
     search_codeneuron,
 )
 from controller.codex_registry import call_codex_function, get_codex_monitor, get_codex_registry_status, list_codex_functions
+from controller.agentic_crawler import (
+    crawl_filesystem,
+    crawl_settings,
+    crawl_system_logs,
+    get_agentic_crawler_status,
+    propose_cross_service_action,
+)
+from controller.ecosystem_knowledge_ingest import get_ecosystem_knowledge_status, ingest_ecosystem_knowledge
+from controller.ecosystem_status import get_ecosystem_status
+from controller.google_workspace_adapter import get_google_workspace_status
 from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights
 from controller.local_machine_profile import get_local_machine_status, snapshot_local_machine
+from controller.microsoft_graph_adapter import get_microsoft_graph_status
+from controller.popos_diagnostics_adapter import get_popos_diagnostics_status, run_popos_diagnostics
+from controller.sharepoint_pnp_adapter import get_sharepoint_status
 from controller.knowledge_acquisition import (
     get_knowledge_acquisition_status,
     index_knowledge_list,
@@ -256,6 +269,34 @@ class KnowledgeTickRequest(BaseModel):
     model: str = Field(default="gemma4:latest", min_length=1, max_length=256)
 
 
+class EcosystemKnowledgeIngestRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    path: str | None = Field(default=None, max_length=2048)
+    max_topics: int = Field(default=500, ge=1, le=5000)
+
+
+class PopOSDiagnosticsRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    commands: list[str] | None = Field(default=None)
+
+
+class CrawlerFilesystemRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    paths: list[str] | None = Field(default=None)
+    max_files: int = Field(default=200, ge=1, le=5000)
+    include_content: bool = Field(default=False)
+
+
+class CrawlerLogRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    max_lines: int = Field(default=200, ge=1, le=1000)
+
+
+class CrossServiceProposalRequest(BaseModel):
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    target_service: str = Field(default="sharepoint", max_length=64)
+
+
 class CodexFrontendEventRequest(BaseModel):
     action_id: str = Field(..., min_length=1, max_length=128)
     status: str = Field(..., min_length=1, max_length=64)
@@ -283,6 +324,13 @@ async def trainer_pipeline_status() -> dict[str, Any]:
         "codex_registry": get_codex_registry_status(),
         "codex_agent": get_codex_agent_status(),
         "codeneuron": get_codeneuron_status(),
+        "ecosystem": get_ecosystem_status(),
+        "popos_diagnostics": get_popos_diagnostics_status(),
+        "google_workspace": get_google_workspace_status(),
+        "microsoft_graph": get_microsoft_graph_status(),
+        "sharepoint": get_sharepoint_status(),
+        "agentic_crawler": get_agentic_crawler_status(),
+        "ecosystem_knowledge": get_ecosystem_knowledge_status(),
         "curriculum": curriculum_status(),
         "knowledge_acquisition": get_knowledge_acquisition_status(),
         "local_machine": get_local_machine_status(),
@@ -519,6 +567,108 @@ async def trainer_curriculum_status() -> dict[str, Any]:
 async def trainer_knowledge_status() -> dict[str, Any]:
     """Get traceable knowledge-acquisition status."""
     return get_knowledge_acquisition_status()
+
+
+@trainer_pipeline_router.get("/ecosystem/status")
+async def trainer_ecosystem_status() -> dict[str, Any]:
+    """Get Pop!_OS/cloud/crawler ecosystem status."""
+    return get_ecosystem_status()
+
+
+@trainer_pipeline_router.get("/ecosystem/knowledge/status")
+async def trainer_ecosystem_knowledge_status() -> dict[str, Any]:
+    """Get ecosystem knowledge-list ingestion status."""
+    return get_ecosystem_knowledge_status()
+
+
+@trainer_pipeline_router.post("/ecosystem/knowledge/ingest")
+async def trainer_ecosystem_knowledge_ingest(request: EcosystemKnowledgeIngestRequest) -> dict[str, Any]:
+    """Parse OUROBOROS_KENNIS_LIJST.md into ecosystem 11D records."""
+    result = ingest_ecosystem_knowledge(approval=request.approval, path=request.path, max_topics=request.max_topics)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@trainer_pipeline_router.get("/popos/status")
+async def trainer_popos_status() -> dict[str, Any]:
+    """Get Pop!_OS diagnostics adapter status."""
+    return get_popos_diagnostics_status()
+
+
+@trainer_pipeline_router.post("/popos/diagnostics")
+async def trainer_popos_diagnostics(request: PopOSDiagnosticsRequest) -> dict[str, Any]:
+    """Run approval-gated read-only Pop!_OS/Linux diagnostics."""
+    result = run_popos_diagnostics(approval=request.approval, command_keys=request.commands)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.get("/google/status")
+async def trainer_google_status() -> dict[str, Any]:
+    """Get Google Workspace adapter status."""
+    return get_google_workspace_status()
+
+
+@trainer_pipeline_router.get("/microsoft/status")
+async def trainer_microsoft_status() -> dict[str, Any]:
+    """Get Microsoft Graph adapter status."""
+    return get_microsoft_graph_status()
+
+
+@trainer_pipeline_router.get("/sharepoint/status")
+async def trainer_sharepoint_status() -> dict[str, Any]:
+    """Get SharePoint adapter status."""
+    return get_sharepoint_status()
+
+
+@trainer_pipeline_router.get("/crawler/status")
+async def trainer_crawler_status() -> dict[str, Any]:
+    """Get agentic crawler status."""
+    return get_agentic_crawler_status()
+
+
+@trainer_pipeline_router.post("/crawler/filesystem")
+async def trainer_crawler_filesystem(request: CrawlerFilesystemRequest) -> dict[str, Any]:
+    """Run approval-gated local filesystem crawl."""
+    result = crawl_filesystem(
+        paths=request.paths,
+        approval=request.approval,
+        max_files=request.max_files,
+        include_content=request.include_content,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@trainer_pipeline_router.post("/crawler/system-logs")
+async def trainer_crawler_system_logs(request: CrawlerLogRequest) -> dict[str, Any]:
+    """Run approval-gated system log crawl."""
+    result = crawl_system_logs(approval=request.approval, max_lines=request.max_lines)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/crawler/settings")
+async def trainer_crawler_settings(request: ApprovalRequest) -> dict[str, Any]:
+    """Run approval-gated settings crawl."""
+    result = crawl_settings(approval=request.approval)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/crawler/propose-cross-service")
+async def trainer_crawler_cross_service(request: CrossServiceProposalRequest) -> dict[str, Any]:
+    """Create a cross-service action proposal without executing writes."""
+    return propose_cross_service_action(findings=request.findings, target_service=request.target_service)
 
 
 @trainer_pipeline_router.post("/knowledge/index-list")

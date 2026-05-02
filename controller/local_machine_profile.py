@@ -1,4 +1,11 @@
-"""Read-only local machine profiler for Ouroboros training memory."""
+"""Read-only local machine profiler for Ouroboros training memory.
+
+Why this change:
+    The deep ecosystem buildplan needs the existing profiler to expose
+    Pop!_OS-specific context such as COSMIC hints, recovery partition status
+    and System76 hardware detection while preserving the approval-gated,
+    read-only snapshot contract.
+"""
 
 from __future__ import annotations
 
@@ -35,6 +42,7 @@ def get_local_machine_status() -> dict[str, Any]:
         "toolchains": snapshot.get("toolchains", {}),
         "docker": snapshot.get("docker", {}),
         "ollama": snapshot.get("ollama", {}),
+        "popos": snapshot.get("popos", _popos_info()),
         "fake_success": False,
     }
 
@@ -54,6 +62,7 @@ def snapshot_local_machine(approval: str = "") -> dict[str, Any]:
         "toolchains": _toolchain_info(),
         "docker": _docker_info(),
         "ollama": _ollama_info(),
+        "popos": _popos_info(),
         "ports": _ports_info(),
         "duration_seconds": 0.0,
         "fake_success": False,
@@ -168,6 +177,50 @@ def _ports_info() -> dict[str, Any]:
     return {"listeners": ss}
 
 
+def _popos_info() -> dict[str, Any]:
+    """Return Pop!_OS-specific metrics without pretending Docker is the host."""
+    os_release = _os_info().get("os_release", {})
+    desktop_text = " ".join([os.getenv("XDG_CURRENT_DESKTOP", ""), os.getenv("DESKTOP_SESSION", "")]).lower()
+    vendor = _read_first_existing(
+        Path("/sys/class/dmi/id/sys_vendor"),
+        Path("/sys/devices/virtual/dmi/id/sys_vendor"),
+    )
+    product = _read_first_existing(
+        Path("/sys/class/dmi/id/product_name"),
+        Path("/sys/devices/virtual/dmi/id/product_name"),
+    )
+    lsblk = _run_if_available("lsblk", ["lsblk", "-J", "-o", "NAME,TYPE,LABEL,MOUNTPOINTS"])
+    lsblk_text = f"{lsblk.get('stdout', '')} {lsblk.get('stderr', '')}".lower()
+    system76_text = f"{vendor} {product}".lower()
+    return {
+        "is_popos": (os_release.get("ID") == "pop") or ("pop!_os" in str(os_release.get("NAME", "")).lower()),
+        "os_release_id": os_release.get("ID", ""),
+        "cosmic": {
+            "session_mentions_cosmic": "cosmic" in desktop_text,
+            "cosmic_session_binary": shutil.which("cosmic-session") is not None,
+            "cosmic_settings_binary": shutil.which("cosmic-settings") is not None,
+        },
+        "recovery_partition": {
+            "checked": lsblk.get("status") != "missing",
+            "detected": "recovery" in lsblk_text or "pop-recovery" in lsblk_text,
+            "source": "lsblk",
+        },
+        "system76": {
+            "vendor": vendor,
+            "product": product,
+            "detected": "system76" in system76_text,
+            "system76_power_binary": shutil.which("system76-power") is not None,
+        },
+        "power_profile": _run_if_available("powerprofilesctl", ["powerprofilesctl", "get"]),
+        "firmware_tools": {
+            "fwupdmgr": _run_if_available("fwupdmgr", ["fwupdmgr", "--version"]),
+            "system76_firmware": _run_if_available("system76-firmware", ["system76-firmware", "--version"]),
+        },
+        "scope_note": _environment_scope()["note"],
+        "fake_success": False,
+    }
+
+
 def _run_if_available(binary: str, command: list[str]) -> dict[str, Any]:
     if shutil.which(binary) is None:
         return {"status": "missing", "command": command, "stdout": "", "stderr": ""}
@@ -205,6 +258,16 @@ def _read_key_value_file(path: Path) -> dict[str, str]:
             key, value = line.split(":", 1)
             result[key.strip()] = value.strip()
     return result
+
+
+def _read_first_existing(*paths: Path) -> str:
+    for path in paths:
+        try:
+            if path.exists():
+                return path.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception:
+            continue
+    return ""
 
 
 def _save_snapshot(snapshot: dict[str, Any]) -> None:

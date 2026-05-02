@@ -26,7 +26,7 @@ from controller.training_curriculum import classify_record
 
 APPROVAL_PHRASE = "Akkoord"
 DEFAULT_KNOWLEDGE_LIST_PATH = "/home/pwintri2/Downloads/OUROBOROS_KENNIS_LIJST.md"
-DEFAULT_GEMMA_MODEL = "gemma4:latest"
+DEFAULT_GEMMA_MODEL = os.getenv("WINTRIP_KNOWLEDGE_MODEL") or os.getenv("WINTRIP_GEMMA_GUARD_MODEL") or "gemma4:latest"
 MAX_TOPIC_TEXT = 1200
 MAX_RECORD_CHARS = 16_000
 

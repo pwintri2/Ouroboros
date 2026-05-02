@@ -3,6 +3,11 @@
 This incorporates the local prototype from Downloads into the trainer pipeline
 as a bounded, observable runtime component: electrical dynamics, a byte stream,
 and DHCP/TCP-like packet flow modulate the existing 11D Blue Brain pocket.
+
+Why this change:
+    The deep ecosystem buildplan adds OS/cloud/crawler overlays to the live 11D
+    pocket. The overlay is exposed in status without changing the existing
+    dataset feature contract.
 """
 
 from __future__ import annotations
@@ -390,6 +395,7 @@ def get_streaming_status() -> dict[str, Any]:
             "output_dir": str(streaming_output_dir()),
             "feature_count": len(E_TYPES),
             "features": list(E_TYPES),
+            "ecosystem_overlay": _ecosystem_overlay_status(),
             "fake_success": False,
         }
     )
@@ -560,8 +566,49 @@ def _default_state() -> dict[str, Any]:
         "recent_events": [],
         "last_dataset_path": None,
         "last_dataset_samples": 0,
+        "ecosystem_overlay": {},
         "events": [],
     }
+
+
+def _ecosystem_overlay_status() -> dict[str, Any]:
+    """Best-effort OS/cloud/crawler overlay; absent systems are not marked green."""
+    overlay: dict[str, Any] = {"status": "available", "layers": {}, "fake_success": False}
+    try:
+        from controller.popos_diagnostics_adapter import get_popos_diagnostics_status
+
+        popos = get_popos_diagnostics_status()
+        overlay["layers"]["os_state"] = {
+            "status": popos.get("status"),
+            "last_run_at": popos.get("last_run_at"),
+            "summary": popos.get("latest_summary", {}),
+        }
+    except Exception as exc:
+        overlay["layers"]["os_state"] = {"status": "unavailable", "reason": str(exc)}
+    try:
+        from controller.agentic_crawler import get_agentic_crawler_status
+
+        crawler = get_agentic_crawler_status()
+        overlay["layers"]["crawler_state"] = {
+            "status": crawler.get("status"),
+            "indexed_files": crawler.get("indexed_files", 0),
+            "last_crawl_at": crawler.get("last_crawl_at"),
+        }
+    except Exception as exc:
+        overlay["layers"]["crawler_state"] = {"status": "unavailable", "reason": str(exc)}
+    try:
+        from controller.google_workspace_adapter import get_google_workspace_status
+        from controller.microsoft_graph_adapter import get_microsoft_graph_status
+        from controller.sharepoint_pnp_adapter import get_sharepoint_status
+
+        overlay["layers"]["cloud_state"] = {
+            "google": get_google_workspace_status().get("status"),
+            "microsoft": get_microsoft_graph_status().get("status"),
+            "sharepoint": get_sharepoint_status().get("status"),
+        }
+    except Exception as exc:
+        overlay["layers"]["cloud_state"] = {"status": "unavailable", "reason": str(exc)}
+    return overlay
 
 
 def _load_state() -> dict[str, Any]:

@@ -30,5 +30,9 @@ out/
 tmp/
 data/tijdelijke_mail_dumps/*
 data/log_exports/*
+artifacts/backend_sandbox_allow.log
+artifacts/crawler/
+artifacts/ecosystem_knowledge/
+artifacts/popos_diagnostics_output/
 
 .aider*
