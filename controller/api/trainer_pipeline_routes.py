@@ -24,6 +24,11 @@ from controller.codeneuron_adapter import (
 from controller.codex_registry import call_codex_function, get_codex_monitor, get_codex_registry_status, list_codex_functions
 from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights
 from controller.local_machine_profile import get_local_machine_status, snapshot_local_machine
+from controller.knowledge_acquisition import (
+    get_knowledge_acquisition_status,
+    index_knowledge_list,
+    run_knowledge_tick,
+)
 from controller.model_artifacts import (
     get_artifacts_summary,
     list_artifacts,
@@ -238,6 +243,19 @@ class CodexAgentChatRequest(BaseModel):
     execute: bool = Field(default=True)
 
 
+class KnowledgeIndexRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    path: str | None = Field(default=None, max_length=1024)
+
+
+class KnowledgeTickRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    mode: str = Field(default="both", pattern="^(both|gemma|browser)$")
+    max_topics: int = Field(default=3, ge=1, le=10)
+    start_index: int | None = Field(default=None, ge=0)
+    model: str = Field(default="gemma4:latest", min_length=1, max_length=256)
+
+
 class CodexFrontendEventRequest(BaseModel):
     action_id: str = Field(..., min_length=1, max_length=128)
     status: str = Field(..., min_length=1, max_length=64)
@@ -266,6 +284,7 @@ async def trainer_pipeline_status() -> dict[str, Any]:
         "codex_agent": get_codex_agent_status(),
         "codeneuron": get_codeneuron_status(),
         "curriculum": curriculum_status(),
+        "knowledge_acquisition": get_knowledge_acquisition_status(),
         "local_machine": get_local_machine_status(),
         "independence": compute_independence_score(),
         "continuous": get_continuous_status(),
@@ -494,6 +513,38 @@ async def trainer_curriculum_status() -> dict[str, Any]:
     status = curriculum_status()
     status["available_curricula"] = list_curricula().get("curricula", [])
     return status
+
+
+@trainer_pipeline_router.get("/knowledge/status")
+async def trainer_knowledge_status() -> dict[str, Any]:
+    """Get traceable knowledge-acquisition status."""
+    return get_knowledge_acquisition_status()
+
+
+@trainer_pipeline_router.post("/knowledge/index-list")
+async def trainer_knowledge_index_list(request: KnowledgeIndexRequest) -> dict[str, Any]:
+    """Index the local Ouroboros knowledge list into a bounded acquisition plan."""
+    result = index_knowledge_list(approval=request.approval, path=request.path)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/knowledge/tick")
+async def trainer_knowledge_tick(request: KnowledgeTickRequest) -> dict[str, Any]:
+    """Run one bounded Gemma/browser knowledge-acquisition tick."""
+    result = run_knowledge_tick(
+        approval=request.approval,
+        mode=request.mode,
+        max_topics=request.max_topics,
+        start_index=request.start_index,
+        model=request.model,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @trainer_pipeline_router.get("/local-machine/status")

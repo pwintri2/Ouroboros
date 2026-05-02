@@ -889,6 +889,10 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   const [pocketMap, setPocketMap] = useState<any>(null);
   const [machineStatus, setMachineStatus] = useState<any>(null);
   const [independenceStatus, setIndependenceStatus] = useState<any>(null);
+  const [knowledgeAcquisition, setKnowledgeAcquisition] = useState<any>(null);
+  const [knowledgeMode, setKnowledgeMode] = useState("both");
+  const [knowledgeMaxTopics, setKnowledgeMaxTopics] = useState(2);
+  const [knowledgeModel, setKnowledgeModel] = useState("gemma4:latest");
   const isBlueBrain = method === "blue_brain";
   const continuousMethods = [
     continuousLitgpt ? "litgpt" : "",
@@ -927,15 +931,17 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   }
 
   async function loadKnowledgeStatus() {
-    const [pocketData, machineData, independenceData] = await Promise.all([
+    const [pocketData, machineData, independenceData, acquisitionData] = await Promise.all([
       api("/trainer/codeneuron/pocket-map"),
       api("/trainer/local-machine/status"),
       api("/trainer/independence/status"),
+      api("/trainer/knowledge/status"),
     ]);
     setPocketMap(pocketData);
     setMachineStatus(machineData);
     setIndependenceStatus(independenceData);
-    return { pocketData, machineData, independenceData };
+    setKnowledgeAcquisition(acquisitionData);
+    return { pocketData, machineData, independenceData, acquisitionData };
   }
 
   function recordTrainerAction(title: string, data: any) {
@@ -1288,6 +1294,42 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
     }
   }
 
+  async function indexKnowledgeList() {
+    try {
+      const data = await api("/trainer/knowledge/index-list", {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+      });
+      recordTrainerAction("Knowledge List Index", data);
+      await loadKnowledgeStatus();
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Knowledge List Index", error);
+      console.error("Failed to index knowledge list:", error);
+    }
+  }
+
+  async function tickKnowledgeAcquisition() {
+    try {
+      const data = await api("/trainer/knowledge/tick", {
+        method: "POST",
+        body: JSON.stringify({
+          approval,
+          mode: knowledgeMode,
+          max_topics: knowledgeMaxTopics,
+          model: knowledgeModel,
+        }),
+      });
+      recordTrainerAction("Knowledge Acquisition Tick", data);
+      setKnowledgeAcquisition(data?.state ?? data);
+      await loadKnowledgeStatus();
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Knowledge Acquisition Tick", error);
+      console.error("Failed to run knowledge acquisition:", error);
+    }
+  }
+
   async function previewDataset() {
     try {
       const data = await api("/trainer/dataset/preview", { method: "POST", body: JSON.stringify({ max_records: 10 }) });
@@ -1313,6 +1355,7 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
         <Metric label="Stream 11D" value={trainerStatus?.streaming_consciousness?.status ?? "--"} tone={trainerStatus?.streaming_consciousness?.enabled ? "good" : "warn"} />
         <Metric label="Codex" value={trainerStatus?.codex_registry?.callable_count ?? 0} />
         <Metric label="CodeNeuron" value={trainerStatus?.codeneuron?.status ?? "--"} tone={trainerStatus?.codeneuron?.indexed ? "good" : "warn"} />
+        <Metric label="Knowledge" value={trainerStatus?.knowledge_acquisition?.total_records ?? knowledgeAcquisition?.total_records ?? 0} tone={(trainerStatus?.knowledge_acquisition?.total_records ?? knowledgeAcquisition?.total_records ?? 0) > 0 ? "good" : "warn"} />
         <Metric label="Independence" value={Number(independenceStatus?.independence_score ?? trainerStatus?.independence?.independence_score ?? 0).toFixed(2)} tone={(independenceStatus?.external_model_needed ?? trainerStatus?.independence?.external_model_needed) ? "warn" : "good"} />
       </div>
       
@@ -1569,6 +1612,46 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
             <ShieldCheck size={15} /> Score
           </button>
         </div>
+        <div className="trainer-status">
+          <Metric label="Knowledge List" value={knowledgeAcquisition?.status ?? trainerStatus?.knowledge_acquisition?.status ?? "--"} tone={(knowledgeAcquisition?.topic_count ?? trainerStatus?.knowledge_acquisition?.topic_count ?? 0) > 0 ? "good" : "warn"} />
+          <Metric label="Topics" value={knowledgeAcquisition?.topic_count ?? trainerStatus?.knowledge_acquisition?.topic_count ?? 0} />
+          <Metric label="Gemma" value={knowledgeAcquisition?.gemma_completed ?? trainerStatus?.knowledge_acquisition?.gemma_completed ?? 0} />
+          <Metric label="Browser" value={knowledgeAcquisition?.browser_completed ?? trainerStatus?.knowledge_acquisition?.browser_completed ?? 0} />
+        </div>
+        <div className="knowledge-controls">
+          <label>
+            Mode
+            <select value={knowledgeMode} onChange={(e) => setKnowledgeMode(e.target.value)}>
+              <option value="both">Gemma + Browser</option>
+              <option value="gemma">Gemma</option>
+              <option value="browser">Browser</option>
+            </select>
+          </label>
+          <label>
+            Max
+            <input type="number" min={1} max={10} value={knowledgeMaxTopics} onChange={(e) => setKnowledgeMaxTopics(Number(e.target.value))} />
+          </label>
+          <label>
+            Model
+            <input value={knowledgeModel} onChange={(e) => setKnowledgeModel(e.target.value)} />
+          </label>
+          <button onClick={indexKnowledgeList} disabled={!approvalReady}>
+            <Database size={15} /> Index List
+          </button>
+          <button onClick={tickKnowledgeAcquisition} disabled={!approvalReady}>
+            <RefreshCw size={15} /> Acquire
+          </button>
+        </div>
+        {(knowledgeAcquisition?.recent_records ?? trainerStatus?.knowledge_acquisition?.recent_records ?? []).length > 0 && (
+          <div className="codex-monitor">
+            {(knowledgeAcquisition?.recent_records ?? trainerStatus?.knowledge_acquisition?.recent_records ?? []).slice(-5).reverse().map((record: any) => (
+              <div className={record.status === "success" ? "good" : "warn"} key={`${record.topic_id}-${record.source_type}-${record.timestamp}`}>
+                <strong>{record.source_type}</strong>
+                <span>{record.topic_title} · {record.curriculum_primary} · {record.chars ?? 0} chars</span>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="curriculum-grid">
           {(trainerStatus?.curriculum?.curricula ?? []).map((curriculum: any) => (
             <div key={curriculum.id}>

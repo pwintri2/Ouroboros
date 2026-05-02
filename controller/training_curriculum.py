@@ -23,9 +23,39 @@ CURRICULA: list[dict[str, Any]] = [
         "keywords": ["pop!_os", "pop os", "docker", "ollama", "nvidia", "gpu", "cpu", "ram", "port", "service", "local machine"],
     },
     {
+        "id": "popos",
+        "label": "Pop!_OS laptop",
+        "keywords": ["pop!_os", "pop os", "system76", "cosmic", "wayland", "x11", "fwupd", "power profiles", "s2idle", "luks"],
+    },
+    {
+        "id": "linux_internals",
+        "label": "Linux internals",
+        "keywords": ["systemd", "cgroups", "namespace", "seccomp", "ebpf", "oom killer", "kswapd", "vfs", "inode", "netfilter", "dkms"],
+    },
+    {
         "id": "operating_systems",
         "label": "Operating systems",
         "keywords": ["linux", "filesystem", "process", "memory", "kernel", "networking", "driver", "container", "sandbox"],
+    },
+    {
+        "id": "google_workspace",
+        "label": "Google Workspace",
+        "keywords": ["google", "gmail", "google drive", "shared drives", "docs", "sheets", "calendar", "workspace", "gcp", "apps script"],
+    },
+    {
+        "id": "microsoft_365",
+        "label": "Microsoft 365",
+        "keywords": ["microsoft", "microsoft 365", "office 365", "entra", "azure", "teams", "onedrive", "graph", "power platform", "windows"],
+    },
+    {
+        "id": "sharepoint",
+        "label": "SharePoint",
+        "keywords": ["sharepoint", "site collection", "document library", "list", "content type", "permission", "spfx", "pnp", "purview"],
+    },
+    {
+        "id": "agentic_tooling",
+        "label": "Agentic tooling",
+        "keywords": ["agentic", "tool use", "browser calls", "approval gates", "self-extension", "capability gap", "long-term memory", "frontend_open_browser"],
     },
     {
         "id": "codeneuron",

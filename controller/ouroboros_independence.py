@@ -190,25 +190,35 @@ def _knowledge_coverage_signal() -> dict[str, Any]:
         "general": 0.0,
         "programming": 0.0,
         "local_machine": 0.0,
+        "popos": 0.0,
+        "linux_internals": 0.0,
         "operating_systems": 0.0,
+        "google_workspace": 0.0,
+        "microsoft_365": 0.0,
+        "sharepoint": 0.0,
+        "agentic_tooling": 0.0,
         "codeneuron": 0.0,
         "ouroboros_self": 0.0,
     }
     try:
         from controller.codeneuron_adapter import get_codeneuron_status
         from controller.local_machine_profile import get_local_machine_status
-        from controller.training_curriculum import curriculum_status
+        from controller.training_curriculum import curriculum_status, list_curricula
 
         curriculum = curriculum_status()
         ratios = curriculum.get("coverage_ratio") or {}
+        dynamic_keys = [item.get("id") for item in list_curricula().get("curricula", []) if item.get("id")]
+        for key in dynamic_keys:
+            coverage.setdefault(str(key), 0.0)
         for key in coverage:
             coverage[key] = min(1.0, float(ratios.get(key, 0.0)) * 4)
         if get_codeneuron_status().get("indexed"):
             coverage["codeneuron"] = max(coverage["codeneuron"], 0.7)
         if get_local_machine_status().get("has_snapshot"):
             coverage["local_machine"] = max(coverage["local_machine"], 0.75)
+            coverage["popos"] = max(coverage.get("popos", 0.0), 0.45)
         score = sum(coverage.values()) / len(coverage)
-        return {"score": score, "coverage": coverage, "gap": "" if score >= 0.65 else "Knowledge coverage is still uneven across the six curricula."}
+        return {"score": score, "coverage": coverage, "gap": "" if score >= 0.65 else "Knowledge coverage is still uneven across the Ouroboros curricula."}
     except Exception as exc:
         return {"score": 0.1, "coverage": coverage, "gap": f"Knowledge coverage probe failed: {exc}"}
 

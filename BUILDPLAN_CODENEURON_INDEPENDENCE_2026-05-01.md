@@ -36,12 +36,36 @@ Split learning into visible curriculum tracks:
 - `general`: approved general knowledge and summaries
 - `programming`: Python, TypeScript, C++, CMake, shell, SQL, repo-specific coding
 - `local_machine`: Pop!_OS, hardware, software, Docker, Ollama, toolchains
+- `popos`: System76/Pop!_OS desktop, power, firmware and user-space specifics
+- `linux_internals`: systemd, cgroups, namespaces, seccomp, eBPF, VFS and kernel diagnostics
 - `operating_systems`: Linux fundamentals, process model, filesystems, memory, networking, containers
+- `google_workspace`: Google Account, Gmail, Drive, Calendar, Workspace and GCP/API concepts
+- `microsoft_365`: Windows, Microsoft 365, Entra ID, Azure, Graph and Power Platform
+- `sharepoint`: SharePoint architecture, permissions, content management, Graph, PnP and migration
+- `agentic_tooling`: browser calls, approval gates, self-extension, tool use and long-term memory
 - `codeneuron`: CoreNEURON concepts mapped into the 11D pocket
 - `ouroboros_self`: self-extension, tool use, memory and local autonomy
 
 Planned module:
 - `controller/training_curriculum.py`
+
+## 2B. Knowledge Acquisition From Local List
+Use `/home/pwintri2/Downloads/OUROBOROS_KENNIS_LIJST.md` as a traceable acquisition plan.
+
+Implemented module:
+- `controller/knowledge_acquisition.py`
+
+Capabilities:
+- Parses the Markdown file into sections and topics.
+- Runs bounded local Gemma/Ollama distillation per topic. This is not a literal extraction of model weights or every latent fact from Gemma; it is topic-by-topic teachable output from `gemma4:latest`.
+- Runs bounded browser-call research through the existing Playwright perimeter, one page per topic, no result-click crawling and no bulk scraping.
+- Stores approved records in `wintrip_training_11d` with source, source type, approval status, model/browser evidence and curriculum labels.
+- Writes runtime state to `.secrets/knowledge_acquisition.json`.
+
+API endpoints:
+- `GET /trainer/knowledge/status`
+- `POST /trainer/knowledge/index-list`
+- `POST /trainer/knowledge/tick`
 
 ## 3. Local Machine Profiler
 Add a read-only profiler that records:
@@ -111,7 +135,8 @@ Implemented on `feature/codex-agent-codeneuron-independence-20260501`.
 Backend modules added:
 - `controller/codeneuron_adapter.py`: read-only CodeNeuron scanner and compact JSON index.
 - `controller/codeneuron_ontology.py`: canonical 11D pocket map and source matching.
-- `controller/training_curriculum.py`: six curriculum labels and coverage scoring.
+- `controller/training_curriculum.py`: expanded curriculum labels and coverage scoring.
+- `controller/knowledge_acquisition.py`: OUROBOROS_KENNIS_LIJST topic planner, Gemma distillation, browser-call acquisition and approved Chroma training storage.
 - `controller/local_machine_profile.py`: approval-gated read-only runtime snapshot.
 - `controller/ouroboros_independence.py`: transparent independence score with signal breakdown.
 
@@ -121,6 +146,9 @@ Trainer API endpoints added:
 - `GET /trainer/codeneuron/pocket-map`
 - `GET /trainer/codeneuron/search?q=...`
 - `GET /trainer/curriculum/status`
+- `GET /trainer/knowledge/status`
+- `POST /trainer/knowledge/index-list`
+- `POST /trainer/knowledge/tick`
 - `GET /trainer/local-machine/status`
 - `POST /trainer/local-machine/snapshot`
 - `GET /trainer/independence/status`

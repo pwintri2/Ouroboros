@@ -171,8 +171,14 @@ The Trainer tab has grown from a trainer/job surface into a live Ouroboros learn
   - Defines the canonical 11D pocket dimensions.
   - Maps CodeNeuron source evidence to e-type/11D concepts.
 - `controller/training_curriculum.py`
-  - Adds curriculum labels: `general`, `programming`, `local_machine`, `operating_systems`, `codeneuron`, `ouroboros_self`.
+  - Adds curriculum labels: `general`, `programming`, `local_machine`, `popos`, `linux_internals`, `operating_systems`, `google_workspace`, `microsoft_365`, `sharepoint`, `agentic_tooling`, `codeneuron`, `ouroboros_self`.
   - Dataset exports now include curriculum metadata.
+- `controller/knowledge_acquisition.py`
+  - Parses `/home/pwintri2/Downloads/OUROBOROS_KENNIS_LIJST.md` into a bounded topic plan.
+  - Distills topic knowledge from local Ollama/Gemma (`gemma4:latest` by default) into approved training records.
+  - Uses browser calls through the existing Playwright perimeter for one-page-per-topic research; no bulk scraping or fake browser evidence.
+  - Stores records in `wintrip_training_11d` with source, approval, model/browser evidence and curriculum labels.
+  - Writes runtime state to `.secrets/knowledge_acquisition.json`.
 - `controller/local_machine_profile.py`
   - Approval-gated read-only snapshot of OS/runtime/hardware/tooling.
   - Current Docker snapshots honestly report `environment.scope=docker_container`.
@@ -221,6 +227,9 @@ Live local configuration after integration:
 - `GET /trainer/codeneuron/pocket-map`
 - `GET /trainer/codeneuron/search?q=...`
 - `GET /trainer/curriculum/status`
+- `GET /trainer/knowledge/status`
+- `POST /trainer/knowledge/index-list`
+- `POST /trainer/knowledge/tick`
 - `GET /trainer/local-machine/status`
 - `POST /trainer/local-machine/snapshot`
 - `GET /trainer/independence/status`
@@ -235,6 +244,7 @@ The React Trainer tab now shows:
 - CodeNeuron index/search status.
 - 11D Pocket Map cards with source counts.
 - Curriculum coverage.
+- Knowledge Acquisition status for the OUROBOROS kennislijst, Gemma/browser progress, next topics and recent stored records.
 - Local machine profile scope/status.
 - Independence score and external-model-needed indicator.
 - Capability gaps/recommendations.
@@ -247,6 +257,12 @@ The React Trainer tab now shows:
 - CodeNeuron mount: `/codeneuron` read-only.
 - Real index observed: 191 files, 30,537 lines, all 11 pocket dimensions matched.
 - Independence score observed: `0.8412`, label `mostly_independent`, `external_model_needed=true`.
+- Knowledge list runtime input copied to `/tmp/OUROBOROS_KENNIS_LIJST.md` in Docker for the current backend process.
+- `GET /trainer/knowledge/status` observed 216 topics and 44 sections from `OUROBOROS_KENNIS_LIJST.md`.
+- A bounded live acquisition stored 2 approved records in `wintrip_training_11d`:
+  - `gemma_distillation` from `ollama:gemma4:latest`
+  - `browser_research_call` through Playwright/DuckDuckGo search-result page, with `browser_action_performed=true`
+- Playwright browser and Chromium runtime dependencies were installed in the running Docker container with `python -m playwright install chromium` and `python -m playwright install-deps chromium`.
 
 ### Validation
 Run in Docker:
@@ -263,6 +279,7 @@ Result: OK.
 
 ```bash
 python -m unittest \
+  sandbox_tests.test_knowledge_acquisition \
   sandbox_tests.test_streaming_consciousness_adapter \
   sandbox_tests.test_trainer_pipeline_blue_brain \
   sandbox_tests.test_rotating_blue_brain \
@@ -271,6 +288,17 @@ python -m unittest \
 ```
 
 Result: OK.
+
+```bash
+python -m unittest \
+  sandbox_tests.test_knowledge_acquisition \
+  sandbox_tests.test_training_curriculum \
+  sandbox_tests.test_codeneuron_adapter \
+  sandbox_tests.test_local_machine_profile \
+  sandbox_tests.test_ouroboros_independence
+```
+
+Docker result after knowledge-acquisition update: `Ran 8 tests in 0.659s - OK`.
 
 ```bash
 python -m unittest sandbox_tests.test_tauri_backend_routes

@@ -493,12 +493,17 @@ label {
 .rotating-controls label,
 .streaming-controls label,
 .codex-controls label,
-.codeneuron-controls label {
+.codeneuron-controls label,
+.knowledge-controls label {
   width: 132px;
 }
 
 .codeneuron-controls label {
   min-width: 280px;
+}
+
+.knowledge-controls label:last-of-type {
+  min-width: 220px;
 }
 
 .codex-controls label:first-child {
