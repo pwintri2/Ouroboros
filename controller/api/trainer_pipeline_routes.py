@@ -33,6 +33,7 @@ from controller.ecosystem_knowledge_ingest import get_ecosystem_knowledge_status
 from controller.ecosystem_status import get_ecosystem_status
 from controller.google_workspace_adapter import GoogleWorkspaceAdapter, get_google_workspace_status
 from controller.host_program_inventory import get_host_program_inventory_status, scan_host_program_inventory
+from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory
 from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights
 from controller.local_machine_profile import get_local_machine_status, snapshot_local_machine
 from controller.microsoft_graph_adapter import MicrosoftGraphAdapter, get_microsoft_graph_status
@@ -306,6 +307,14 @@ class HostProgramInventoryRequest(BaseModel):
     max_path_binaries: int = Field(default=3000, ge=1, le=20000)
 
 
+class HostSensorySnapshotRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    max_processes: int = Field(default=80, ge=1, le=500)
+    max_flows: int = Field(default=120, ge=1, le=1000)
+    max_windows: int = Field(default=80, ge=1, le=500)
+    max_recent: int = Field(default=60, ge=1, le=500)
+
+
 class GoogleDriveFilesRequest(BaseModel):
     approval: str = Field(..., min_length=1)
     page_size: int = Field(default=25, ge=1, le=100)
@@ -370,6 +379,7 @@ async def trainer_pipeline_status() -> dict[str, Any]:
         "sharepoint": get_sharepoint_status(),
         "agentic_crawler": get_agentic_crawler_status(),
         "program_inventory": get_host_program_inventory_status(),
+        "host_sensory": get_host_sensory_status(),
         "ecosystem_knowledge": get_ecosystem_knowledge_status(),
         "curriculum": curriculum_status(),
         "knowledge_acquisition": get_knowledge_acquisition_status(),
@@ -844,6 +854,27 @@ async def trainer_host_programs_scan(request: HostProgramInventoryRequest) -> di
         max_desktop_apps=request.max_desktop_apps,
         max_packages=request.max_packages,
         max_path_binaries=request.max_path_binaries,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.get("/host-sensory/status")
+async def trainer_host_sensory_status() -> dict[str, Any]:
+    """Get the latest read-only host sensory status."""
+    return get_host_sensory_status()
+
+
+@trainer_pipeline_router.post("/host-sensory/snapshot")
+async def trainer_host_sensory_snapshot(request: HostSensorySnapshotRequest) -> dict[str, Any]:
+    """Capture read-only host process/window/network-flow metadata."""
+    result = snapshot_host_sensory(
+        approval=request.approval,
+        max_processes=request.max_processes,
+        max_flows=request.max_flows,
+        max_windows=request.max_windows,
+        max_recent=request.max_recent,
     )
     if result.get("status") == "blocked":
         raise HTTPException(status_code=403, detail=result.get("reason"))

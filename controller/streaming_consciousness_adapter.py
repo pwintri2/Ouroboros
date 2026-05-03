@@ -19,6 +19,8 @@ import random
 import struct
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -34,6 +36,8 @@ REQUIRED_PACKAGES = ("numpy",)
 DIM_ELECTRICAL = 0
 DIM_INFO = 3
 DIM_NETWORK = 5
+DIM_ROUTER_PULL = 7
+DIM_ENTANGLEMENT = 9
 _STATE_LOCK = threading.Lock()
 _WORKER_THREAD: threading.Thread | None = None
 _WORKER_STOP = threading.Event()
@@ -64,6 +68,619 @@ class NetworkPacket:
     @property
     def size(self) -> int:
         return len(self.payload)
+
+
+@dataclass
+class NetworkConnection:
+    device_id: str
+    ip: str
+    mac: str
+    protocol: str
+    last_seen: float
+    gemma_context: dict[str, Any]
+    pull_strength: float
+    packet_count: int = 0
+    route_superposition: list[str] = field(default_factory=list)
+    observed_route: str = ""
+    entangled_peers: list[str] = field(default_factory=list)
+
+
+class SimulatedElectronNeuron:
+    """Quantum Integrate-and-Fire neuron backed by a simulated electron spin.
+
+    The state is a two-amplitude spinor. Integration is continuous and unitary;
+    the classical spike is isolated in process_stream(), where measurement-like
+    thresholding bridges the quantum state to the 11D stream.
+    """
+
+    def __init__(self, firing_threshold: float = 0.85, phase_gain: float = 0.65, np_module: Any | None = None) -> None:
+        if np_module is None:
+            import numpy as np
+
+            np_module = np
+        self.np = np_module
+        self.firing_threshold = float(self.np.clip(float(firing_threshold), -1.0, 1.0))
+        self.phase_gain = max(0.0, float(phase_gain))
+        self.identity = self.np.eye(2, dtype=complex)
+        self.sigma_x = self.np.array([[0, 1], [1, 0]], dtype=complex)
+        self.sigma_y = self.np.array([[0, -1j], [1j, 0]], dtype=complex)
+        self.sigma_z = self.np.array([[1, 0], [0, -1]], dtype=complex)
+        self.state = self.np.array([1.0 + 0j, 0.0 + 0j], dtype=complex)
+        self.armed_for_spike = False
+        self.spike_count = 0
+        self.last_expectation_z = 1.0
+        self.last_angles = {"theta_x": 0.0, "theta_y": 0.0, "theta_z": 0.0}
+        self.last_unitarity_error = 0.0
+
+    def reset(self) -> None:
+        self.state = self.np.array([1.0 + 0j, 0.0 + 0j], dtype=complex)
+        self.armed_for_spike = False
+        self.last_expectation_z = 1.0
+
+    def integrate_signals(self, incoming_11d_vector: Any) -> Any:
+        """Apply exact Pauli-axis unitary rotations from an incoming 11D vector."""
+        vector = self._as_11d(incoming_11d_vector)
+        theta_x, theta_y, theta_z = self._angles_from_11d(vector)
+
+        # For a Pauli matrix sigma, exp(-i theta sigma / 2) is unitary:
+        # R(theta) = cos(theta/2) I - i sin(theta/2) sigma.
+        rx = self._rotation(self.sigma_x, theta_x)
+        ry = self._rotation(self.sigma_y, theta_y)
+        rz = self._rotation(self.sigma_z, theta_z)
+        unitary = rz @ ry @ rx
+        evolved = unitary @ self.state
+        self.state = self._normalize(evolved)
+
+        unitary_check = unitary.conjugate().T @ unitary
+        self.last_unitarity_error = float(self.np.linalg.norm(unitary_check - self.identity))
+        self.last_angles = {
+            "theta_x": round(float(theta_x), 8),
+            "theta_y": round(float(theta_y), 8),
+            "theta_z": round(float(theta_z), 8),
+        }
+        return self.state.copy()
+
+    def check_action_potential(self) -> float:
+        """Return the Born expectation value <psi|Z|psi> in the range [-1, 1]."""
+        bra = self.state.conjugate().T
+        expectation = float(self.np.real(bra @ self.sigma_z @ self.state))
+        expectation = float(self.np.clip(expectation, -1.0, 1.0))
+        self.last_expectation_z = expectation
+        return expectation
+
+    def process_stream(self, incoming_11d_vector: Any) -> dict[str, Any]:
+        """Integrate one 11D sample and emit a classical spike on threshold crossing."""
+        vector = self._as_11d(incoming_11d_vector)
+        self.integrate_signals(vector)
+        expectation = self.check_action_potential()
+
+        fired = bool(self.armed_for_spike and expectation >= self.firing_threshold)
+        spike_vector = self.np.zeros(11, dtype=self.np.float32)
+        if fired:
+            spike_vector = (vector * expectation).astype(self.np.float32)
+            self.spike_count += 1
+            spike_index = self.spike_count
+            self.reset()
+        else:
+            if expectation < self.firing_threshold:
+                self.armed_for_spike = True
+            spike_index = self.spike_count
+
+        return {
+            "fired": fired,
+            "spike_index": int(spike_index),
+            "expectation_z": round(float(expectation), 8),
+            "membrane_potential": round(float(expectation), 8),
+            "threshold": round(float(self.firing_threshold), 8),
+            "spike_vector": [round(float(value), 6) for value in spike_vector.tolist()],
+            "armed": bool(self.armed_for_spike),
+            "state": self.status(),
+        }
+
+    def status(self) -> dict[str, Any]:
+        probabilities = self.np.abs(self.state) ** 2
+        return {
+            "type": "simulated_electron_qif",
+            "state_vector": [
+                {"real": round(float(self.np.real(value)), 8), "imag": round(float(self.np.imag(value)), 8)}
+                for value in self.state.tolist()
+            ],
+            "probabilities": [round(float(value), 8) for value in probabilities.tolist()],
+            "expectation_z": round(float(self.last_expectation_z), 8),
+            "threshold": round(float(self.firing_threshold), 8),
+            "phase_gain": round(float(self.phase_gain), 8),
+            "armed": bool(self.armed_for_spike),
+            "spike_count": int(self.spike_count),
+            "last_angles": dict(self.last_angles),
+            "unitarity_error": round(float(self.last_unitarity_error), 12),
+            "sdk": "none_numpy_classical_complex",
+        }
+
+    def _rotation(self, sigma: Any, theta: float) -> Any:
+        return self.np.cos(theta / 2.0) * self.identity - 1j * self.np.sin(theta / 2.0) * sigma
+
+    def _angles_from_11d(self, vector: Any) -> tuple[float, float, float]:
+        norm_pressure = float(self.np.tanh(float(self.np.linalg.norm(vector)) / self.np.sqrt(11.0)))
+        pressure_scale = 0.65 + 0.35 * norm_pressure
+        theta_x = self.phase_gain * pressure_scale * float(self.np.tanh(vector[0] + 0.5 * vector[3] - 0.25 * vector[6]))
+        theta_y = self.phase_gain * pressure_scale * float(self.np.tanh(vector[1] + 0.5 * vector[4] - 0.25 * vector[7]))
+        theta_z = self.phase_gain * pressure_scale * float(self.np.tanh(vector[2] + 0.5 * vector[5] + 0.25 * vector[8] - 0.25 * vector[10]))
+        return theta_x, theta_y, theta_z
+
+    def _normalize(self, state: Any) -> Any:
+        norm = float(self.np.linalg.norm(state))
+        if norm <= 0.0:
+            return self.np.array([1.0 + 0j, 0.0 + 0j], dtype=complex)
+        return self.np.asarray(state, dtype=complex) / norm
+
+    def _as_11d(self, value: Any) -> Any:
+        vector = self.np.asarray(value, dtype=float).reshape(-1)
+        if vector.size != 11:
+            raise ValueError("Exacte invoer vereist: De array moet een 11D vector zijn.")
+        if not bool(self.np.all(self.np.isfinite(vector))):
+            raise ValueError("Exacte invoer vereist: De 11D vector mag geen NaN of inf bevatten.")
+        return vector.astype(self.np.float64)
+
+
+class MiniRouter:
+    """Self-attracting, simulated router at the centre of the 11D pocket.
+
+    The router does not bind TUN/TAP, sniff host packets, run DHCP on the LAN or
+    forward traffic. It works on the pocket's simulated packet stream and can
+    optionally ask a local Ollama model for read-only context labels.
+    """
+
+    def __init__(self, pocket: "StreamingConsciousness11DPocket") -> None:
+        self.pocket = pocket
+        self.connections: dict[str, NetworkConnection] = {}
+        self.entanglement: dict[str, int] = {}
+        self.gemma_model = (
+            os.getenv("WINTRIP_MINI_ROUTER_GEMMA_MODEL")
+            or os.getenv("WINTRIP_KNOWLEDGE_MODEL")
+            or os.getenv("OLLAMA_MODEL")
+            or "gemma4:latest"
+        )
+        self.gemma_enabled = os.getenv("WINTRIP_MINI_ROUTER_GEMMA", "").strip() == "1"
+        self.gemma_timeout = max(0.5, min(float(os.getenv("WINTRIP_MINI_ROUTER_GEMMA_TIMEOUT", "6") or 6), 30.0))
+        self.gemma_host_sensory = os.getenv("WINTRIP_MINI_ROUTER_GEMMA_HOST_SENSORY", "").strip() == "1"
+        try:
+            self.gemma_cooldown_seconds = max(
+                0.0,
+                min(float(os.getenv("WINTRIP_MINI_ROUTER_GEMMA_COOLDOWN_SECONDS", "8") or 8), 300.0),
+            )
+        except ValueError:
+            self.gemma_cooldown_seconds = 8.0
+        try:
+            self.host_flow_limit = max(1, min(int(os.getenv("WINTRIP_MINI_ROUTER_HOST_FLOW_LIMIT", "3") or 3), 12))
+        except ValueError:
+            self.host_flow_limit = 3
+        self.context_cache: dict[str, dict[str, Any]] = {}
+        self.rotation_pull = 0.0
+        self.total_packets_processed = 0
+        self.last_context: dict[str, Any] = {}
+        self.last_packet_route: dict[str, Any] = {}
+        self.last_host_sensory_at = ""
+        self.host_sensory_absorptions = 0
+        self.last_gemma_attempt_monotonic = 0.0
+        self.gemma_call_count = 0
+        self.gemma_cooldown_skips = 0
+        self.mode = "simulated_read_only"
+
+    def discover_devices(self) -> None:
+        """Simulate DHCP + mDNS/SSDP discovery inside the pocket subnet."""
+        fake_devices = [
+            {"id": "phone-01", "ip": "192.168.42.101", "mac": "aa:bb:cc:dd:ee:01", "protocol": "mDNS"},
+            {"id": "laptop-01", "ip": "192.168.42.102", "mac": "aa:bb:cc:dd:ee:02", "protocol": "SSDP"},
+            {"id": "iot-thermostat", "ip": "192.168.42.50", "mac": "aa:bb:cc:dd:ee:50", "protocol": "DHCP"},
+        ]
+        for device in fake_devices:
+            conn = self.connections.get(device["id"])
+            if conn is None:
+                self.connections[device["id"]] = NetworkConnection(
+                    device_id=device["id"],
+                    ip=device["ip"],
+                    mac=device["mac"],
+                    protocol=device["protocol"],
+                    last_seen=self.pocket.time,
+                    gemma_context={
+                        "device_type": _device_type_from_id(device["id"]),
+                        "intent": "presence_announcement",
+                        "sensitivity": "low",
+                        "protocol_meaning": f"{device['protocol']} discovery beacon",
+                        "emotional_tone": "neutral",
+                        "security_risk": 1,
+                        "source": "simulated_discovery",
+                    },
+                    pull_strength=0.3,
+                    route_superposition=["local_pocket", "observe_only"],
+                    observed_route="local_pocket",
+                )
+            else:
+                conn.last_seen = self.pocket.time
+                conn.pull_strength = min(1.0, conn.pull_strength + 0.01)
+
+    def process_packet(self, packet: NetworkPacket) -> None:
+        """Observe a simulated packet and fold its context into the pocket."""
+        context = self._context_for_packet(packet)
+        conn_id = f"{packet.src_ip}->{packet.dst_ip}:{packet.protocol}"
+        conn = self.connections.get(conn_id)
+        if conn is None:
+            conn = NetworkConnection(
+                device_id=conn_id,
+                ip=packet.src_ip,
+                mac="unknown",
+                protocol=context.get("protocol", packet.protocol),
+                last_seen=packet.timestamp,
+                gemma_context=context,
+                pull_strength=_pull_from_context(context, packet.size),
+                packet_count=1,
+                route_superposition=self._route_superposition(packet, context),
+            )
+            self.connections[conn_id] = conn
+        else:
+            conn.last_seen = packet.timestamp
+            conn.protocol = context.get("protocol", packet.protocol)
+            conn.gemma_context = context
+            conn.pull_strength = min(1.0, 0.82 * conn.pull_strength + 0.18 * _pull_from_context(context, packet.size) + 0.03)
+            conn.packet_count += 1
+            conn.route_superposition = self._route_superposition(packet, context)
+
+        conn.observed_route = self._observe_route(conn.route_superposition, context)
+        self._update_entanglement(packet.src_ip, packet.dst_ip)
+        conn.entangled_peers = self._peers_for_ip(packet.src_ip)
+        self.total_packets_processed += 1
+        self.last_context = dict(context)
+        self.last_packet_route = {
+            "connection": conn_id,
+            "superposition": list(conn.route_superposition),
+            "observed": conn.observed_route,
+        }
+        self._apply_pull_to_pocket(conn)
+        self._encode_into_consciousness(packet, context, conn)
+
+    def absorb_host_sensory(self, sensory: dict[str, Any]) -> None:
+        """Fold real host flow/process metadata into the simulated router."""
+        captured_at = str(sensory.get("last_snapshot_at") or sensory.get("captured_at") or "")
+        if captured_at and captured_at == self.last_host_sensory_at:
+            return
+        flows = list(sensory.get("sample_flows") or [])[: self.host_flow_limit]
+        if not flows:
+            return
+        for flow in flows:
+            if not isinstance(flow, dict):
+                continue
+            src_ip = _endpoint_ip(str(flow.get("peer") or "host-sensory"))
+            dst_ip = _endpoint_ip(str(flow.get("local") or self.pocket.local_ip))
+            proto = str(flow.get("proto") or "TCP").upper()
+            payload = (
+                f"HOST_FLOW proto={proto} state={flow.get('state','')} "
+                f"local={flow.get('local','')} peer={flow.get('peer','')} process={flow.get('process','')}"
+            ).encode("utf-8", errors="replace")
+            self.process_packet(NetworkPacket(src_ip, dst_ip, proto, payload[:512], self.pocket.time))
+        self.last_host_sensory_at = captured_at
+        self.host_sensory_absorptions += 1
+
+    def status(self) -> dict[str, Any]:
+        strongest = sorted(self.connections.values(), key=lambda item: item.pull_strength, reverse=True)[:5]
+        return {
+            "status": "active",
+            "mode": self.mode,
+            "connections": len(self.connections),
+            "discovered_devices": sum(1 for item in self.connections.values() if item.mac != "unknown"),
+            "packets_processed": int(self.total_packets_processed),
+            "rotation_pull": round(float(self.rotation_pull), 6),
+            "gemma": {
+                "enabled": self.gemma_enabled,
+                "model": self.gemma_model,
+                "last_source": self.last_context.get("source", "none"),
+                "host_sensory_enabled": self.gemma_host_sensory,
+                "timeout_seconds": self.gemma_timeout,
+                "cooldown_seconds": self.gemma_cooldown_seconds,
+                "calls": int(self.gemma_call_count),
+                "cooldown_skips": int(self.gemma_cooldown_skips),
+            },
+            "host_flow_limit": int(self.host_flow_limit),
+            "strongest_connections": [
+                {
+                    "device_id": conn.device_id,
+                    "ip": conn.ip,
+                    "protocol": conn.protocol,
+                    "pull_strength": round(float(conn.pull_strength), 6),
+                    "packet_count": int(conn.packet_count),
+                    "observed_route": conn.observed_route,
+                    "risk": conn.gemma_context.get("security_risk", 0),
+                }
+                for conn in strongest
+            ],
+            "entanglement_pairs": len(self.entanglement),
+            "host_sensory_absorptions": int(self.host_sensory_absorptions),
+            "last_route": dict(self.last_packet_route),
+            "real_forwarding": False,
+            "real_packet_capture": False,
+            "fake_success": False,
+        }
+
+    def _context_for_packet(self, packet: NetworkPacket) -> dict[str, Any]:
+        cache_key = f"{packet.protocol}:{packet.payload[:80].hex()}"
+        if cache_key in self.context_cache:
+            cached = dict(self.context_cache[cache_key])
+            cached["source"] = f"{cached.get('source', 'context')}:cache"
+            return cached
+        if packet.payload.startswith(b"HOST_FLOW") and not self.gemma_host_sensory:
+            context = _heuristic_packet_context(packet)
+            self.context_cache[cache_key] = dict(context)
+            return context
+        if self.gemma_enabled and self._gemma_budget_available():
+            context = self._ask_gemma(packet)
+            if context:
+                self.context_cache[cache_key] = dict(context)
+                return context
+        context = _heuristic_packet_context(packet)
+        self.context_cache[cache_key] = dict(context)
+        return context
+
+    def _gemma_budget_available(self) -> bool:
+        now = time.monotonic()
+        if self.last_gemma_attempt_monotonic and now - self.last_gemma_attempt_monotonic < self.gemma_cooldown_seconds:
+            self.gemma_cooldown_skips += 1
+            return False
+        self.last_gemma_attempt_monotonic = now
+        self.gemma_call_count += 1
+        return True
+
+    def _ask_gemma(self, packet: NetworkPacket) -> dict[str, Any]:
+        prompt = (
+            "Return ONLY valid JSON. Fill this exact schema for a synthetic/read-only packet observation:\n"
+            '{"device_type":"web_client|server|iot|unknown_device","intent":"short intent",'
+            '"sensitivity":"low|medium|high|critical","protocol":"TCP|UDP|DHCP|HTTP",'
+            '"protocol_meaning":"short meaning","emotional_tone":"neutral|curious|calm|seeking","security_risk":0}\n'
+            f"Observation: src={packet.src_ip}, dst={packet.dst_ip}, transport={packet.protocol}, "
+            f"size={packet.size}, payload_hint={_payload_hint(packet.payload)}"
+        )
+        try:
+            payload = json.dumps(
+                {
+                    "model": self.gemma_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "format": "json",
+                    "stream": False,
+                    "options": {"temperature": 0.0, "num_predict": 160},
+                }
+            ).encode("utf-8")
+            request = urllib.request.Request(
+                _ollama_chat_url(),
+                data=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=self.gemma_timeout) as response:
+                raw = json.loads(response.read().decode("utf-8"))
+            content = str((raw.get("message") or {}).get("content") or "").strip()
+            parsed = _parse_context_json(content)
+            parsed["source"] = f"ollama:{self.gemma_model}"
+            return parsed
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
+            return {}
+
+    def _route_superposition(self, packet: NetworkPacket, context: dict[str, Any]) -> list[str]:
+        routes = ["observe_only", "local_pocket"]
+        if packet.dst_ip == "255.255.255.255" or packet.protocol == "DHCP":
+            routes.append("pocket_dhcp_sim")
+        if context.get("sensitivity") in {"high", "critical"} or float(context.get("security_risk") or 0) >= 7:
+            routes.append("quarantine_shadow")
+        elif packet.protocol in {"TCP", "UDP"}:
+            routes.append("consciousness_buffer")
+        return routes[:4]
+
+    def _observe_route(self, routes: list[str], context: dict[str, Any]) -> str:
+        if "quarantine_shadow" in routes:
+            return "quarantine_shadow"
+        if context.get("intent") == "presence_announcement" and "pocket_dhcp_sim" in routes:
+            return "pocket_dhcp_sim"
+        return "consciousness_buffer" if "consciousness_buffer" in routes else routes[0]
+
+    def _update_entanglement(self, src_ip: str, dst_ip: str) -> None:
+        pair = " <-> ".join(sorted([src_ip, dst_ip]))
+        self.entanglement[pair] = int(self.entanglement.get(pair, 0)) + 1
+
+    def _peers_for_ip(self, ip: str) -> list[str]:
+        peers: list[str] = []
+        for pair, count in sorted(self.entanglement.items(), key=lambda item: item[1], reverse=True):
+            if ip in pair:
+                peers.append(pair.replace(ip, "").replace(" <-> ", "").strip())
+        return peers[:5]
+
+    def _apply_pull_to_pocket(self, conn: NetworkConnection) -> None:
+        np = self.pocket.np
+        pull = float(np.clip(conn.pull_strength * 0.8, 0.0, 1.0))
+        self.rotation_pull = float(0.7 * self.rotation_pull + 0.3 * pull)
+        row_index = self.pocket.current_idx % len(self.pocket.X_base)
+        self.pocket.X_base[row_index, DIM_NETWORK] = np.clip(self.pocket.X_base[row_index, DIM_NETWORK] + pull * 0.25, -3.0, 3.5)
+        self.pocket.X_base[row_index, DIM_ROUTER_PULL] = np.clip(self.pocket.X_base[row_index, DIM_ROUTER_PULL] + pull * 0.4, -3.0, 3.5)
+        self.pocket.X_base[row_index, DIM_ENTANGLEMENT] = np.clip(
+            self.pocket.X_base[row_index, DIM_ENTANGLEMENT] + min(len(conn.entangled_peers), 5) * 0.04 + pull * 0.25,
+            -3.0,
+            3.5,
+        )
+        heat = pull * 0.08
+        if self.pocket.elec.i_inj:
+            self.pocket.elec.i_inj[row_index % len(self.pocket.elec.i_inj)] += heat
+
+    def _encode_into_consciousness(self, packet: NetworkPacket, context: dict[str, Any], conn: NetworkConnection) -> None:
+        meta = {
+            "router": "mini",
+            "mode": self.mode,
+            "src": packet.src_ip,
+            "dst": packet.dst_ip,
+            "protocol": packet.protocol,
+            "packet_size": packet.size,
+            "pull_strength": round(float(conn.pull_strength), 6),
+            "rotation_pull": round(float(self.rotation_pull), 6),
+            "observed_route": conn.observed_route,
+            "gemma_context": context,
+        }
+        self.pocket.consciousness_buffer.extend(json.dumps(meta, sort_keys=True).encode("utf-8"))
+        if len(self.pocket.consciousness_buffer) > self.pocket.max_buffer:
+            self.pocket.consciousness_buffer = self.pocket.consciousness_buffer[-self.pocket.max_buffer // 2 :]
+
+
+def _device_type_from_id(device_id: str) -> str:
+    text = str(device_id or "").lower()
+    if "phone" in text:
+        return "phone"
+    if "laptop" in text:
+        return "laptop"
+    if "thermostat" in text or "iot" in text:
+        return "iot_sensor"
+    return "unknown_device"
+
+
+def _pull_from_context(context: dict[str, Any], packet_size: int) -> float:
+    risk = float(context.get("security_risk") or 0) / 10.0
+    sensitivity = str(context.get("sensitivity") or "medium").lower()
+    sensitivity_boost = {"low": 0.05, "medium": 0.15, "high": 0.28, "critical": 0.4}.get(sensitivity, 0.15)
+    size_boost = min(max(int(packet_size), 0), 512) / 512.0 * 0.18
+    return max(0.1, min(1.0, 0.35 + sensitivity_boost + risk * 0.22 + size_boost))
+
+
+def _heuristic_packet_context(packet: NetworkPacket) -> dict[str, Any]:
+    payload = packet.payload[:512]
+    lower = payload.lower()
+    protocol = str(packet.protocol or "TCP").upper()
+    if protocol == "DHCP" or b"dhcp" in lower:
+        return {
+            "device_type": "network_bootstrap",
+            "intent": "address_negotiation",
+            "sensitivity": "low",
+            "protocol": "DHCP",
+            "protocol_meaning": "simulated address discovery/offer inside the pocket",
+            "emotional_tone": "seeking",
+            "security_risk": 2,
+            "source": "heuristic",
+        }
+    if lower.startswith(b"host_flow"):
+        risk = 2
+        if b":22" in lower or b":3389" in lower or b":5900" in lower:
+            risk = 5
+        if b"listen" in lower:
+            risk = max(risk, 4)
+        return {
+            "device_type": "host_application",
+            "intent": "read_only_host_flow_observation",
+            "sensitivity": "medium",
+            "protocol": protocol,
+            "protocol_meaning": "host network-flow metadata folded into the pocket without packet capture",
+            "emotional_tone": "attentive",
+            "security_risk": risk,
+            "source": "heuristic:host_sensory",
+        }
+    if b"host:" in lower or lower.startswith(b"get ") or lower.startswith(b"post "):
+        return {
+            "device_type": "web_client",
+            "intent": "http_stream_request",
+            "sensitivity": "medium",
+            "protocol": "TCP",
+            "protocol_meaning": "HTTP-like request folded into the consciousness buffer",
+            "emotional_tone": "curious",
+            "security_risk": 3,
+            "source": "heuristic",
+        }
+    if b"200 ok" in lower:
+        return {
+            "device_type": "web_service",
+            "intent": "acknowledgement",
+            "sensitivity": "low",
+            "protocol": "TCP",
+            "protocol_meaning": "HTTP-like response acknowledgement",
+            "emotional_tone": "calm",
+            "security_risk": 1,
+            "source": "heuristic",
+        }
+    return {
+        "device_type": "unknown_device",
+        "intent": "data_transfer",
+        "sensitivity": "medium",
+        "protocol": protocol,
+        "protocol_meaning": "opaque simulated packet payload",
+        "emotional_tone": "neutral",
+        "security_risk": 4,
+        "source": "heuristic",
+    }
+
+
+def _parse_context_json(content: str) -> dict[str, Any]:
+    text = str(content or "").strip()
+    if not text:
+        raise ValueError("empty_gemma_context")
+    if "```" in text:
+        text = text.replace("```json", "```").split("```", 2)[1].strip()
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start : end + 1]
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise ValueError("gemma_context_must_be_object")
+    context = dict(value)
+    context["security_risk"] = max(0, min(10, int(float(context.get("security_risk") or 0))))
+    context.setdefault("device_type", "unknown_device")
+    context.setdefault("intent", "data_transfer")
+    context.setdefault("sensitivity", "medium")
+    context.setdefault("protocol", "TCP")
+    context.setdefault("protocol_meaning", "local Gemma packet context")
+    context.setdefault("emotional_tone", "neutral")
+    return context
+
+
+def _payload_hint(payload: bytes) -> str:
+    sample = bytes(payload[:96])
+    text = "".join(chr(byte) if 32 <= byte < 127 else "." for byte in sample)
+    if text.strip("."):
+        return text[:160]
+    return sample.hex()[:160]
+
+
+def _endpoint_ip(endpoint: str) -> str:
+    text = str(endpoint or "").strip()
+    if not text or text in {"*", "*:*"}:
+        return "host-sensory"
+    text = text.strip("[]")
+    if "]:" in text:
+        text = text.split("]:", 1)[0].strip("[")
+    elif ":" in text:
+        text = text.rsplit(":", 1)[0].strip("[]")
+    text = text.replace("*", "host-sensory")
+    return text or "host-sensory"
+
+
+def _ollama_chat_url() -> str:
+    configured = str(os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL") or "").rstrip("/")
+    candidates = [
+        configured,
+        "http://localhost:11434",
+        "http://host.docker.internal:11434",
+        "http://172.17.0.1:11434",
+        "http://localhost:11436",
+        "http://host.docker.internal:11436",
+        "http://172.17.0.1:11436",
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        base = candidate.rstrip("/")
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        root = base[:-4] if base.endswith("/api") else base
+        try:
+            with urllib.request.urlopen(f"{root}/api/tags", timeout=1.0) as response:
+                if response.status == 200:
+                    return f"{root}/api/chat"
+        except Exception:
+            continue
+    base = configured or "http://localhost:11434"
+    if base.endswith("/api"):
+        return f"{base}/chat"
+    return f"{base}/api/chat"
 
 
 class StreamingConsciousnessAdapter:
@@ -172,6 +789,17 @@ class StreamingConsciousness11DPocket:
         self.dt = 0.05
         self.stream_log: list[dict[str, Any]] = []
         self.max_log = 2000
+        self.mini_router = MiniRouter(self)
+        try:
+            qif_threshold = float(os.getenv("WINTRIP_QIF_THRESHOLD", "0.85") or 0.85)
+        except ValueError:
+            qif_threshold = 0.85
+        try:
+            qif_phase_gain = float(os.getenv("WINTRIP_QIF_PHASE_GAIN", "0.65") or 0.65)
+        except ValueError:
+            qif_phase_gain = 0.65
+        self.qif_neuron = SimulatedElectronNeuron(qif_threshold, qif_phase_gain, np_module=self.np)
+        self._last_host_sensory_check = -999.0
 
     def _generate_base_pocket(self, n_samples: int) -> tuple[Any, Any]:
         try:
@@ -218,16 +846,16 @@ class StreamingConsciousness11DPocket:
     def network_step(self) -> None:
         np = self.np
         row_index = self.current_idx % len(self.X_base)
+        self.mini_router.discover_devices()
+        self._absorb_host_sensory_if_due()
         if self.dhcp_state == DHCPState.INIT and self.random.random() < 0.08:
-            self.packet_queue.append(
-                NetworkPacket("0.0.0.0", "255.255.255.255", "DHCP", b"DHCPDISCOVER", self.time)
-            )
+            self._enqueue_packet(NetworkPacket("0.0.0.0", "255.255.255.255", "DHCP", b"DHCPDISCOVER", self.time))
             self.dhcp_state = DHCPState.DISCOVER_SENT
             self.X_base[row_index, DIM_NETWORK] = min(3.0, self.X_base[row_index, DIM_NETWORK] + 0.8)
         elif self.dhcp_state == DHCPState.DISCOVER_SENT and self.random.random() < 0.25:
             offered_ip = f"192.168.42.{self.random.randint(10, 250)}"
             self.local_ip = offered_ip
-            self.packet_queue.append(
+            self._enqueue_packet(
                 NetworkPacket("192.168.42.1", offered_ip, "DHCP", f"DHCPOFFER {offered_ip}".encode(), self.time)
             )
             self.dhcp_state = DHCPState.BOUND
@@ -240,12 +868,12 @@ class StreamingConsciousness11DPocket:
                 "Host: ouroboros.wintrip.ai\r\n"
                 f"X-11D-State: {self.current_idx}\r\n\r\n"
             ).encode() + self.rng.bytes(self.random.randint(16, 64))
-            self.packet_queue.append(NetworkPacket(src_ip, self.local_ip, "TCP", payload, self.time))
+            self._enqueue_packet(NetworkPacket(src_ip, self.local_ip, "TCP", payload, self.time))
             self.total_packets_received += 1
             info_load = min(2.5, len(payload) / 80.0)
             self.X_base[row_index, DIM_INFO] = np.clip(self.X_base[row_index, DIM_INFO] + info_load * 0.15, -3.0, 3.5)
             if self.random.random() < 0.4:
-                self.packet_queue.append(
+                self._enqueue_packet(
                     NetworkPacket(
                         self.local_ip,
                         src_ip,
@@ -254,6 +882,23 @@ class StreamingConsciousness11DPocket:
                         self.time + 0.01,
                     )
                 )
+
+    def _enqueue_packet(self, packet: NetworkPacket) -> None:
+        self.packet_queue.append(packet)
+        self.mini_router.process_packet(packet)
+
+    def _absorb_host_sensory_if_due(self) -> None:
+        if self.time - self._last_host_sensory_check < 1.0:
+            return
+        self._last_host_sensory_check = self.time
+        try:
+            from controller.host_sensory_adapter import get_host_sensory_status
+
+            sensory = get_host_sensory_status()
+        except Exception:
+            return
+        if sensory.get("status") == "success":
+            self.mini_router.absorb_host_sensory(sensory)
 
     def stream_step(self) -> dict[str, Any]:
         np = self.np
@@ -266,6 +911,10 @@ class StreamingConsciousness11DPocket:
         current_11d = self.X_base[row_index].copy()
         net_load = len(self.packet_queue) / 5.0 + (self.total_packets_received % 7) * 0.1
         current_11d = current_11d * (1.0 + 0.04 * np.tanh(net_load))
+        qif = self.qif_neuron.process_stream(current_11d)
+        if qif["fired"]:
+            spike_vector = np.asarray(qif["spike_vector"], dtype=np.float32)
+            current_11d = (0.72 * current_11d + 0.28 * spike_vector).astype(np.float32)
         current_11d = self.quantum_adapter.trigger_quantum_collapse(current_11d).astype(np.float32)
         self.last_quantum_observation = dict(self.quantum_adapter.last_observation)
         self.last_collapsed_11d = [round(float(value), 6) for value in current_11d.tolist()]
@@ -273,6 +922,7 @@ class StreamingConsciousness11DPocket:
             "t": round(float(self.time), 3),
             "11d": [round(float(value), 4) for value in current_11d],
             "quantum": dict(self.last_quantum_observation),
+            "qif": qif,
             "elec": {
                 "v_avg": round(float(np.mean(self.elec.v_m)), 2),
                 "i_total": round(float(np.sum(self.elec.i_inj)), 2),
@@ -288,6 +938,7 @@ class StreamingConsciousness11DPocket:
                 "dhcp": self.dhcp_state.value,
                 "packets_queued": len(self.packet_queue),
                 "total_received": int(self.total_packets_received),
+                "mini_router": self.mini_router.status(),
             },
             "regime": int(self.y_regime[row_index]),
         }
@@ -354,12 +1005,14 @@ class StreamingConsciousness11DPocket:
             or [round(float(value), 6) for value in self.X_base[row_index].tolist()],
             "raw_11d_state": [round(float(value), 6) for value in self.X_base[row_index].tolist()],
             "quantum": dict(self.last_quantum_observation),
+            "qif": self.qif_neuron.status(),
             "electrical": asdict(self.elec),
             "network": {
                 "local_ip": self.local_ip,
                 "dhcp_state": self.dhcp_state.value,
                 "packets_queued": len(self.packet_queue),
                 "total_received": int(self.total_packets_received),
+                "mini_router": self.mini_router.status(),
             },
             "buffer_len": len(self.consciousness_buffer),
             "total_bytes": int(self.total_bytes_streamed),

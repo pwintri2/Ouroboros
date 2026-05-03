@@ -25,8 +25,18 @@ NUMPY_AVAILABLE = importlib.util.find_spec("numpy") is not None
 class TestStreamingConsciousnessAdapter(unittest.TestCase):
     def setUp(self):
         self.previous_workspace = os.environ.get("WINTRIP_WORKSPACE")
+        self.previous_mini_router_env = {
+            name: os.environ.get(name)
+            for name in [
+                "WINTRIP_MINI_ROUTER_GEMMA",
+                "WINTRIP_MINI_ROUTER_GEMMA_COOLDOWN_SECONDS",
+                "WINTRIP_MINI_ROUTER_GEMMA_TIMEOUT",
+            ]
+        }
         self.tmp = tempfile.TemporaryDirectory(prefix="streaming-consciousness-")
         os.environ["WINTRIP_WORKSPACE"] = self.tmp.name
+        for name in self.previous_mini_router_env:
+            os.environ.pop(name, None)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -34,6 +44,11 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
             os.environ.pop("WINTRIP_WORKSPACE", None)
         else:
             os.environ["WINTRIP_WORKSPACE"] = self.previous_workspace
+        for name, value in self.previous_mini_router_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
     def test_tick_status_and_dataset_export(self):
         from controller.streaming_consciousness_adapter import (
@@ -61,7 +76,11 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         self.assertIn("11d", tick["last_event"])
         self.assertEqual(len(tick["last_event"]["11d"]), 11)
         self.assertIn("quantum", tick["last_event"])
+        self.assertIn("qif", tick["last_event"])
+        self.assertIn("expectation_z", tick["last_event"]["qif"])
         self.assertIn("expectation", tick["last_event"]["quantum"])
+        self.assertIn("mini_router", tick["last_event"]["network"])
+        self.assertEqual(tick["last_event"]["network"]["mini_router"]["mode"], "simulated_read_only")
 
         status = get_streaming_status()
         self.assertGreaterEqual(status["step_count"], 12)
@@ -99,6 +118,127 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             adapter.trigger_quantum_collapse(np.zeros(10))
+
+    def test_qif_electron_neuron_unitary_and_edge_triggered_firing(self):
+        import numpy as np
+
+        from controller.streaming_consciousness_adapter import SimulatedElectronNeuron
+
+        neuron = SimulatedElectronNeuron(firing_threshold=0.85, phase_gain=np.pi / 2)
+        self.assertAlmostEqual(float(np.linalg.norm(neuron.state)), 1.0, places=7)
+
+        resting = neuron.process_stream(np.zeros(11))
+        self.assertFalse(resting["fired"])
+        self.assertFalse(resting["armed"])
+        self.assertGreaterEqual(resting["expectation_z"], 0.85)
+
+        rotate_down = np.zeros(11)
+        rotate_down[0] = 10.0
+        below_threshold = neuron.process_stream(rotate_down)
+        self.assertFalse(below_threshold["fired"])
+        self.assertTrue(below_threshold["armed"])
+        self.assertLess(below_threshold["expectation_z"], 0.85)
+        self.assertAlmostEqual(float(np.linalg.norm(neuron.state)), 1.0, places=7)
+        self.assertLess(neuron.status()["unitarity_error"], 1e-10)
+
+        rotate_up = np.zeros(11)
+        rotate_up[0] = -10.0
+        fired = neuron.process_stream(rotate_up)
+        self.assertTrue(fired["fired"])
+        self.assertEqual(fired["spike_index"], 1)
+        self.assertEqual(neuron.status()["spike_count"], 1)
+        self.assertFalse(neuron.status()["armed"])
+        self.assertAlmostEqual(float(np.linalg.norm(neuron.state)), 1.0, places=7)
+
+    def test_mini_router_observes_simulated_packets_and_applies_pull(self):
+        from controller.streaming_consciousness_adapter import NetworkPacket, StreamingConsciousness11DPocket
+
+        pocket = StreamingConsciousness11DPocket(n_samples=160, seed=7)
+        row_index = pocket.current_idx % len(pocket.X_base)
+        pocket.X_base[row_index, 7] = 0.0
+        pocket.X_base[row_index, 9] = 0.0
+        before_pull_dim = float(pocket.X_base[row_index, 7])
+        before_entanglement_dim = float(pocket.X_base[row_index, 9])
+
+        pocket.mini_router.discover_devices()
+        self.assertGreaterEqual(len(pocket.mini_router.connections), 3)
+
+        packet = NetworkPacket(
+            src_ip="192.168.42.102",
+            dst_ip="192.168.42.1",
+            protocol="TCP",
+            payload=b"GET /stream/consciousness HTTP/1.1\r\nHost: ouroboros.wintrip.ai\r\n\r\n",
+            timestamp=pocket.time,
+        )
+        pocket.mini_router.process_packet(packet)
+        status = pocket.mini_router.status()
+
+        self.assertEqual(status["status"], "active")
+        self.assertEqual(status["mode"], "simulated_read_only")
+        self.assertEqual(status["packets_processed"], 1)
+        self.assertFalse(status["real_packet_capture"])
+        self.assertFalse(status["real_forwarding"])
+        self.assertGreater(status["rotation_pull"], 0.0)
+        self.assertGreaterEqual(float(pocket.X_base[row_index, 7]), before_pull_dim)
+        self.assertGreaterEqual(float(pocket.X_base[row_index, 9]), before_entanglement_dim)
+        self.assertGreater(len(pocket.consciousness_buffer), 0)
+
+    def test_mini_router_absorbs_real_host_flow_metadata(self):
+        from controller.streaming_consciousness_adapter import StreamingConsciousness11DPocket
+
+        pocket = StreamingConsciousness11DPocket(n_samples=160, seed=9)
+        sensory = {
+            "status": "success",
+            "last_snapshot_at": "2026-05-03T00:00:00",
+            "sample_flows": [
+                {
+                    "proto": "tcp",
+                    "state": "ESTAB",
+                    "local": "192.168.42.10:50100",
+                    "peer": "142.250.74.14:443",
+                    "process": 'users:(("firefox",pid=123,fd=99))',
+                }
+            ],
+        }
+        pocket.mini_router.absorb_host_sensory(sensory)
+        status = pocket.mini_router.status()
+
+        self.assertEqual(status["host_sensory_absorptions"], 1)
+        self.assertEqual(status["packets_processed"], 1)
+        self.assertGreater(status["rotation_pull"], 0.0)
+        self.assertFalse(status["real_packet_capture"])
+
+    def test_mini_router_gemma_cooldown_keeps_ticks_fast(self):
+        os.environ["WINTRIP_MINI_ROUTER_GEMMA"] = "1"
+        os.environ["WINTRIP_MINI_ROUTER_GEMMA_COOLDOWN_SECONDS"] = "60"
+
+        from controller.streaming_consciousness_adapter import NetworkPacket, StreamingConsciousness11DPocket
+
+        pocket = StreamingConsciousness11DPocket(n_samples=160, seed=11)
+        calls = []
+
+        def fake_gemma(packet):
+            calls.append(packet.payload)
+            return {
+                "device_type": "web_client",
+                "intent": "test_context",
+                "sensitivity": "medium",
+                "protocol": packet.protocol,
+                "protocol_meaning": "test",
+                "emotional_tone": "neutral",
+                "security_risk": 1,
+                "source": "fake_gemma",
+            }
+
+        pocket.mini_router._ask_gemma = fake_gemma
+        pocket.mini_router.process_packet(NetworkPacket("10.0.0.2", "10.0.0.1", "TCP", b"first", pocket.time))
+        pocket.mini_router.process_packet(NetworkPacket("10.0.0.3", "10.0.0.1", "TCP", b"second", pocket.time))
+        status = pocket.mini_router.status()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(status["gemma"]["calls"], 1)
+        self.assertGreaterEqual(status["gemma"]["cooldown_skips"], 1)
+        self.assertEqual(status["packets_processed"], 2)
 
 
 @unittest.skipIf(FastAPI is None or TestClient is None, MISSING_FASTAPI)

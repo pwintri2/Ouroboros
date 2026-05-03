@@ -33,6 +33,7 @@ from typing import Any
 
 WORKSPACE = Path(os.getenv("WINTRIP_WORKSPACE") or Path(__file__).resolve().parents[1]).expanduser().resolve()
 TOKEN_PATH = WORKSPACE / ".secrets" / "rclone_bridge_token"
+os.environ.pop("WINTRIP_RCLONE_BRIDGE_URL", None)
 
 import sys
 
@@ -40,6 +41,7 @@ if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
 from controller.rclone_drive_adapter import RcloneDriveAdapter, get_rclone_drive_status  # noqa: E402
+from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory  # noqa: E402
 
 
 def main() -> int:
@@ -72,6 +74,9 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
         if self.path == "/status":
             self._json(get_rclone_drive_status())
             return
+        if self.path == "/sensory/status":
+            self._json(get_host_sensory_status())
+            return
         self._json({"status": "error", "reason": "not_found", "fake_success": False}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -86,6 +91,16 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
                 path=str(body.get("path") or ""),
                 max_items=int(body.get("max_items") or 100),
                 max_depth=int(body.get("max_depth") or 1),
+            )
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/sensory/snapshot":
+            result = snapshot_host_sensory(
+                approval=str(body.get("approval") or ""),
+                max_processes=int(body.get("max_processes") or 80),
+                max_flows=int(body.get("max_flows") or 120),
+                max_windows=int(body.get("max_windows") or 80),
+                max_recent=int(body.get("max_recent") or 60),
             )
             self._json(result, status=403 if result.get("status") == "blocked" else 200)
             return

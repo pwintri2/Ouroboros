@@ -34,6 +34,7 @@ artifacts/backend_sandbox_allow.log
 artifacts/crawler/
 artifacts/ecosystem_knowledge/
 artifacts/host_program_inventory/
+artifacts/host_sensory/
 artifacts/popos_diagnostics_output/
 token_drop/*
 !token_drop/README.md

@@ -1154,6 +1154,7 @@ def _ecosystem_status_extra() -> dict[str, Any]:
             "ecosystem_adapters": ecosystem.get("ecosystem_adapters", {}),
             "crawl_stats": ecosystem.get("crawl_stats", {}),
             "program_inventory": ecosystem.get("program_inventory", {}),
+            "host_sensory": ecosystem.get("host_sensory", {}),
             "ecosystem_knowledge": ecosystem.get("ecosystem_knowledge", {}),
         }
     except Exception as exc:
@@ -1161,6 +1162,7 @@ def _ecosystem_status_extra() -> dict[str, Any]:
             "ecosystem_adapters": {},
             "crawl_stats": {"status": "unavailable", "reason": str(exc), "fake_success": False},
             "program_inventory": {"status": "unavailable", "reason": str(exc), "fake_success": False},
+            "host_sensory": {"status": "unavailable", "reason": str(exc), "fake_success": False},
             "ecosystem_knowledge": {"status": "unavailable", "reason": str(exc), "fake_success": False},
         }
 

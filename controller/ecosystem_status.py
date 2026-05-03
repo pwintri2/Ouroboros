@@ -32,6 +32,7 @@ def get_ecosystem_status() -> dict[str, Any]:
     adapters["sharepoint"] = _safe_status("controller.sharepoint_pnp_adapter", "get_sharepoint_status")
     crawler = _safe_status("controller.agentic_crawler", "get_agentic_crawler_status")
     programs = _safe_status("controller.host_program_inventory", "get_host_program_inventory_status")
+    sensory = _safe_status("controller.host_sensory_adapter", "get_host_sensory_status")
     knowledge = _safe_status("controller.ecosystem_knowledge_ingest", "get_ecosystem_knowledge_status")
     health_values = [str(value.get("status", "unknown")) for value in adapters.values() if isinstance(value, dict)]
     return {
@@ -39,6 +40,7 @@ def get_ecosystem_status() -> dict[str, Any]:
         "ecosystem_adapters": adapters,
         "crawl_stats": crawler,
         "program_inventory": programs,
+        "host_sensory": sensory,
         "ecosystem_knowledge": knowledge,
         "healthy_adapter_count": sum(1 for value in adapters.values() if str(value.get("status")) in {"ready", "connected"}),
         "approval_required": True,

@@ -1369,6 +1369,8 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
         <Metric label="Indexed Files" value={trainerStatus?.agentic_crawler?.indexed_files ?? trainerStatus?.ecosystem?.crawl_stats?.indexed_files ?? 0} />
         <Metric label="Programs" value={trainerStatus?.program_inventory?.desktop_app_count ?? trainerStatus?.ecosystem?.program_inventory?.desktop_app_count ?? 0} tone={(trainerStatus?.program_inventory?.desktop_app_count ?? trainerStatus?.ecosystem?.program_inventory?.desktop_app_count ?? 0) > 0 ? "good" : "warn"} />
         <Metric label="Packages" value={trainerStatus?.program_inventory?.package_count ?? trainerStatus?.ecosystem?.program_inventory?.package_count ?? 0} />
+        <Metric label="Host Flows" value={trainerStatus?.host_sensory?.active_flow_count ?? trainerStatus?.ecosystem?.host_sensory?.active_flow_count ?? 0} tone={(trainerStatus?.host_sensory?.active_flow_count ?? trainerStatus?.ecosystem?.host_sensory?.active_flow_count ?? 0) > 0 ? "good" : "warn"} />
+        <Metric label="Host Apps" value={trainerStatus?.host_sensory?.process_count ?? trainerStatus?.ecosystem?.host_sensory?.process_count ?? 0} />
         <Metric label="Ecosystem Topics" value={trainerStatus?.ecosystem_knowledge?.topic_count ?? trainerStatus?.ecosystem?.ecosystem_knowledge?.topic_count ?? 0} />
         <Metric label="11D Overlay" value={trainerStatus?.streaming_consciousness?.ecosystem_overlay?.status ?? "--"} tone={trainerStatus?.streaming_consciousness?.ecosystem_overlay?.status === "available" ? "good" : "warn"} />
       </div>
