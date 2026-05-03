@@ -17,6 +17,18 @@ from typing import Any, Iterable
 
 from controller.safe_shell import run_safe_shell, workspace_root
 
+try:
+    from controller.ouroboros_self_context import codex_path, roo_path, ruflo_path
+except Exception:
+    def ruflo_path() -> Path:
+        return Path(os.getenv("WINTRIP_RUFLO_PATH") or "/home/pwintri2/ruflo").expanduser().resolve()
+
+    def codex_path() -> Path:
+        return Path(os.getenv("WINTRIP_CODEX_PATH") or "/home/pwintri2/Codex").expanduser().resolve()
+
+    def roo_path() -> Path:
+        return Path(os.getenv("WINTRIP_ROO_PATH") or "/home/pwintri2/Roo").expanduser().resolve()
+
 
 ROO_TOOL_NAMES: tuple[str, ...] = (
     "roo_read_file",
@@ -33,6 +45,7 @@ ROO_TOOL_NAMES: tuple[str, ...] = (
 
 
 def roo_tools_status() -> dict[str, Any]:
+    roots = _allowed_roots()
     return {
         "status": "online",
         "available": True,
@@ -40,6 +53,14 @@ def roo_tools_status() -> dict[str, Any]:
         "local_python_adapters": list(ROO_TOOL_NAMES),
         "approval_required_for": ["roo_write_file", "roo_apply_patch", "roo_execute_command"],
         "workspace": str(workspace_root()),
+        "allowed_roots": [str(root) for root in roots],
+        "configured_agent_roots": {
+            "wintripai": str(workspace_root()),
+            "ruflo": str(ruflo_path()),
+            "roo": str(roo_path()),
+            "codex": str(codex_path()),
+        },
+        "path_aliases": ["workspace/...", "wintripai/...", "ruflo/...", "roo/...", "codex/..."],
         "fake_success": False,
     }
 
@@ -98,20 +119,18 @@ def read_file(path: str, offset: int | None = None, limit: int | None = None) ->
 def list_files(path: str = ".", recursive: bool = False, limit: int = 200) -> dict[str, Any]:
     started = time.time()
     try:
-        root = workspace_root()
         target = _resolve_workspace_path(path or ".")
         if not target.exists():
             return _result("roo_list_files", "error", stderr=f"Pad bestaat niet: {path}", started=started)
         max_items = max(1, min(int(limit or 200), 1000))
         items: list[str] = []
         if target.is_file():
-            items.append(str(target.relative_to(root)))
+            items.append(_display_path(target))
         elif recursive:
             for dirpath, dirnames, filenames in os.walk(target):
                 dirnames[:] = sorted(_skip_hidden(dirnames))
                 for name in sorted(_skip_hidden(filenames)):
-                    rel = str((Path(dirpath) / name).resolve().relative_to(root))
-                    items.append(rel)
+                    items.append(_display_path((Path(dirpath) / name).resolve()))
                     if len(items) >= max_items:
                         break
                 if len(items) >= max_items:
@@ -121,7 +140,7 @@ def list_files(path: str = ".", recursive: bool = False, limit: int = 200) -> di
                 if child.name.startswith("."):
                     continue
                 suffix = "/" if child.is_dir() else ""
-                items.append(f"{child.relative_to(root)}{suffix}")
+                items.append(f"{_display_path(child.resolve())}{suffix}")
                 if len(items) >= max_items:
                     break
         stdout = "\n".join(items)
@@ -146,14 +165,13 @@ def search_files(
 ) -> dict[str, Any]:
     started = time.time()
     try:
-        root = workspace_root()
         target = _resolve_workspace_path(path or ".")
         pattern = re.compile(regex)
         max_matches = max(1, min(int(limit or 100), 500))
         matches: list[dict[str, Any]] = []
         files = [target] if target.is_file() else _iter_files(target)
         for file_path in files:
-            rel = str(file_path.resolve().relative_to(root))
+            rel = _display_path(file_path.resolve())
             if file_pattern and not fnmatch.fnmatch(rel, file_pattern):
                 continue
             try:
@@ -324,13 +342,70 @@ def _resolve_workspace_path(path: str) -> Path:
     if not str(path or "").strip():
         raise ValueError("Pad is verplicht.")
     root = workspace_root()
-    candidate = Path(path)
-    target = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"Pad valt buiten /workspace: {path}") from exc
+    target = _resolve_alias_path(path)
+    if target is None:
+        candidate = Path(path)
+        target = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+    if _root_for_path(target) is None:
+        raise ValueError(f"Pad valt buiten /workspace of bekende agent-roots: {path}")
     return target
+
+
+def _allowed_roots() -> list[Path]:
+    roots: list[Path] = [workspace_root()]
+    for root in (ruflo_path(), roo_path(), codex_path()):
+        if root.exists():
+            roots.append(root.resolve())
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            unique.append(root)
+            seen.add(key)
+    return unique
+
+
+def _resolve_alias_path(path: str) -> Path | None:
+    raw = str(path or "").strip()
+    if not raw:
+        return None
+    normalized = raw.replace("\\", "/")
+    first, _, rest = normalized.partition("/")
+    aliases = {
+        "workspace": workspace_root(),
+        "wintripai": workspace_root(),
+        "wintrip": workspace_root(),
+        "ruflo": ruflo_path(),
+        "roo": roo_path(),
+        "codex": codex_path(),
+    }
+    base = aliases.get(first.lower())
+    if base is None:
+        return None
+    return (base / rest).resolve()
+
+
+def _root_for_path(path: Path) -> Path | None:
+    for root in _allowed_roots():
+        try:
+            path.relative_to(root)
+            return root
+        except ValueError:
+            continue
+    return None
+
+
+def _display_path(path: Path) -> str:
+    root = _root_for_path(path)
+    if root is None:
+        return str(path)
+    rel = path.relative_to(root)
+    if root == workspace_root():
+        return str(rel) if str(rel) != "." else "."
+    labels = {ruflo_path(): "ruflo", roo_path(): "roo", codex_path(): "codex"}
+    prefix = labels.get(root, root.name)
+    return f"{prefix}/{rel}" if str(rel) != "." else f"{prefix}/"
 
 
 def _iter_files(root: Path) -> Iterable[Path]:

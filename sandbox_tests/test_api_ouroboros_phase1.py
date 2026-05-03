@@ -3,6 +3,7 @@ import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -119,6 +120,7 @@ def install_main_fakes():
         "controller.orchestrator",
         "controller.provider_router",
         "controller.agent_tools",
+        "controller.api.trainer_pipeline_routes",
         "controller.api.training_routes",
         "controller.safe_shell",
         "controller.stream.storage",
@@ -227,6 +229,7 @@ def install_main_fakes():
 
     shell_mod = types.ModuleType("controller.safe_shell")
     shell_mod.run_safe_shell = lambda command, approval="", timeout=20: {"status": "success", "stdout": "ok", "stderr": "", "command": command, "exit_code": 0}
+    shell_mod.workspace_root = lambda: Path(os.getenv("WINTRIP_WORKSPACE") or os.getcwd()).resolve()
 
     storage_mod = types.ModuleType("controller.stream.storage")
     class StreamStorage:

@@ -97,6 +97,7 @@ type CockpitConfig = {
   required_approval_phrase?: string;
   approval?: { required_phrase?: string; case_sensitive?: boolean };
   api_keys?: ApiKeyStatusPayload;
+  slash_agents?: Record<string, unknown>;
 };
 
 type OuroborosStatus = {
@@ -253,6 +254,7 @@ export default function App() {
   const selectedModels = selectedProvider?.models.length ? selectedProvider.models : [model].filter(Boolean);
   const approvalReady = approval === approvalPhrase;
   const canCallSelectedProvider = selectedProvider?.enabled ?? false;
+  const slashPrompt = prompt.trim().startsWith("/");
 
   const writeTerm = useCallback((text: string) => {
     terminalRef.current?.writeln(text.replace(/\n/g, "\r\n"));
@@ -408,7 +410,35 @@ export default function App() {
         body: JSON.stringify({ provider, model, prompt, approval, include_tools: true }),
       }),
     );
-    if (data) setChatOutput(renderResponse(data));
+    if (data) {
+      await handleFrontendAction(data);
+      setChatOutput(renderResponse(data));
+    }
+  }
+
+  async function handleFrontendAction(data: Record<string, unknown>) {
+    const action = data.frontend_action as { type?: string; url?: string; target?: string; action_id?: string } | undefined;
+    if (action?.type !== "open_url" || !action.url) return;
+    const opened = window.open(action.url, action.target ?? "_blank", "noopener,noreferrer");
+    if (action.action_id) {
+      await api("/trainer/codex/agent/frontend-event", {
+        method: "POST",
+        body: JSON.stringify({
+          action_id: action.action_id,
+          status: opened ? "opened" : "blocked_by_browser",
+          detail: opened ? "Slash command opened a browser tab" : "Browser blocked the popup or no window handle was returned",
+          payload: { url: action.url, source: "cockpit_slash" },
+        }),
+      }).catch(() => undefined);
+    }
+  }
+
+  function insertSlash(prefix: string) {
+    setPrompt((current) => {
+      const text = current.trim();
+      if (!text || text.startsWith("/")) return `${prefix} `;
+      return `${prefix} ${current}`;
+    });
   }
 
   async function createModel() {
@@ -622,8 +652,15 @@ export default function App() {
         </section>
 
         <section className="prompt-pane">
-          <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-          <button onClick={sendChat} disabled={busy || !prompt.trim() || !canCallSelectedProvider}>
+          <div className="prompt-stack">
+            <div className="slash-strip">
+              {["/codex", "/ruflo", "/roo", "/claude", "/agents"].map((item) => (
+                <button type="button" key={item} onClick={() => insertSlash(item)}>{item}</button>
+              ))}
+            </div>
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+          </div>
+          <button onClick={sendChat} disabled={busy || !prompt.trim() || (!slashPrompt && !canCallSelectedProvider)}>
             <Send size={15} /> Send
           </button>
         </section>
@@ -1064,6 +1101,30 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
     } catch (error) {
       recordTrainerError("Continuous Tick", error);
       console.error("Failed to tick continuous trainer:", error);
+    }
+  }
+
+  async function accelerateLearning() {
+    try {
+      const data = await api("/trainer/learning/accelerate", {
+        method: "POST",
+        body: JSON.stringify({
+          approval,
+          knowledge_mode: knowledgeMode,
+          knowledge_topics: knowledgeMaxTopics,
+          model: knowledgeModel,
+          continuous_methods: continuousMethods,
+          execute_training: continuousExecute,
+          max_records: 1000,
+        }),
+      });
+      recordTrainerAction("Accelerate Learning", data);
+      setKnowledgeAcquisition(data?.knowledge?.state ?? data?.knowledge ?? data);
+      await loadKnowledgeStatus();
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Accelerate Learning", error);
+      console.error("Failed to accelerate learning:", error);
     }
   }
 
@@ -1657,6 +1718,9 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           </button>
           <button onClick={tickKnowledgeAcquisition} disabled={!approvalReady}>
             <RefreshCw size={15} /> Acquire
+          </button>
+          <button onClick={accelerateLearning} disabled={!approvalReady || continuousMethods.length === 0}>
+            <Rocket size={15} /> Accelerate
           </button>
         </div>
         {(knowledgeAcquisition?.recent_records ?? trainerStatus?.knowledge_acquisition?.recent_records ?? []).length > 0 && (

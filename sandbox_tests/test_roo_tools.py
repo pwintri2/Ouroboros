@@ -10,17 +10,25 @@ from controller import roo_tools
 class TestRooTools(unittest.TestCase):
     def setUp(self):
         self.old_workspace = os.environ.get("WINTRIP_WORKSPACE")
+        self.old_ruflo = os.environ.get("WINTRIP_RUFLO_PATH")
         self.workspace = tempfile.mkdtemp(prefix="wintrip-roo-tools-")
+        self.ruflo = tempfile.mkdtemp(prefix="wintrip-ruflo-tools-")
         os.environ["WINTRIP_WORKSPACE"] = self.workspace
+        os.environ["WINTRIP_RUFLO_PATH"] = self.ruflo
         Path(self.workspace, "alpha.txt").write_text("first\nsecond needle\nthird\n", encoding="utf-8")
         Path(self.workspace, "nested").mkdir()
         Path(self.workspace, "nested", "beta.py").write_text("def beta():\n    return 'needle'\n", encoding="utf-8")
+        Path(self.ruflo, "ruflo_note.md").write_text("Ruflo sees WintripAI needle\n", encoding="utf-8")
 
     def tearDown(self):
         if self.old_workspace is None:
             os.environ.pop("WINTRIP_WORKSPACE", None)
         else:
             os.environ["WINTRIP_WORKSPACE"] = self.old_workspace
+        if self.old_ruflo is None:
+            os.environ.pop("WINTRIP_RUFLO_PATH", None)
+        else:
+            os.environ["WINTRIP_RUFLO_PATH"] = self.old_ruflo
 
     def test_read_list_and_search_stay_inside_workspace(self):
         read = roo_tools.read_file("alpha.txt", offset=2, limit=1)
@@ -41,6 +49,22 @@ class TestRooTools(unittest.TestCase):
         result = roo_tools.read_file("/etc/passwd")
         self.assertEqual(result["status"], "error")
         self.assertIn("buiten /workspace", result["stderr"])
+
+    def test_ruflo_alias_can_be_read_listed_and_searched(self):
+        status = roo_tools.roo_tools_status()
+        self.assertIn(self.ruflo, status["allowed_roots"])
+
+        read = roo_tools.read_file("ruflo/ruflo_note.md")
+        self.assertEqual(read["status"], "success")
+        self.assertIn("Ruflo sees WintripAI", read["stdout"])
+
+        listed = roo_tools.list_files("ruflo")
+        self.assertEqual(listed["status"], "success")
+        self.assertIn("ruflo/ruflo_note.md", listed["result"]["items"])
+
+        searched = roo_tools.search_files("ruflo", "needle")
+        self.assertEqual(searched["status"], "success")
+        self.assertEqual(searched["result"]["matches"][0]["path"], "ruflo/ruflo_note.md")
 
     def test_write_file_preview_does_not_write(self):
         target = Path(self.workspace, "preview_only.txt")

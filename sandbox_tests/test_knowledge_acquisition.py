@@ -1,6 +1,8 @@
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -51,6 +53,7 @@ class KnowledgeAcquisitionEnv:
             "WINTRIP_WORKSPACE": os.environ.get("WINTRIP_WORKSPACE"),
             "WINTRIP_DB_PATH": os.environ.get("WINTRIP_DB_PATH"),
             "WINTRIP_KNOWLEDGE_LIST_PATH": os.environ.get("WINTRIP_KNOWLEDGE_LIST_PATH"),
+            "WINTRIP_KNOWLEDGE_PARALLELISM": os.environ.get("WINTRIP_KNOWLEDGE_PARALLELISM"),
         }
         os.environ["WINTRIP_WORKSPACE"] = str(self.workspace)
         os.environ["WINTRIP_DB_PATH"] = str(self.db)
@@ -120,6 +123,51 @@ class TestKnowledgeAcquisition(unittest.TestCase):
             self.assertEqual(status["gemma_completed"], 2)
             self.assertEqual(status["browser_completed"], 2)
             self.assertGreaterEqual(status["total_records"], 4)
+
+    def test_gemma_tick_uses_bounded_parallelism(self):
+        from controller import knowledge_acquisition as ka
+
+        with KnowledgeAcquisitionEnv():
+            os.environ["WINTRIP_KNOWLEDGE_PARALLELISM"] = "3"
+            active = 0
+            max_active = 0
+            lock = threading.Lock()
+
+            def fake_distill(topic, model="gemma4:latest"):
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.02)
+                with lock:
+                    active -= 1
+                return {
+                    "status": "success",
+                    "document": f"Parallel Gemma distillation for {topic['title']}.",
+                    "source": f"ollama:{model}",
+                    "model": model,
+                    "fake_success": False,
+                }
+
+            original_gemma = ka.distill_gemma_topic
+            original_store = ka.store_knowledge_record
+            try:
+                ka.distill_gemma_topic = fake_distill
+                ka.store_knowledge_record = lambda document, metadata: {
+                    "status": "success",
+                    "stored": True,
+                    "item_id": f"parallel_{metadata['topic_id']}",
+                    "fake_success": False,
+                }
+                tick = ka.run_knowledge_tick(approval="Akkoord", mode="gemma", max_topics=3)
+            finally:
+                ka.distill_gemma_topic = original_gemma
+                ka.store_knowledge_record = original_store
+
+            self.assertEqual(tick["status"], "success")
+            self.assertEqual(tick["created_count"], 3)
+            self.assertEqual(tick["parallelism"]["gemma_distillation"], 3)
+            self.assertGreaterEqual(max_active, 2)
 
 
 @unittest.skipIf(FastAPI is None or TestClient is None, MISSING_FASTAPI)

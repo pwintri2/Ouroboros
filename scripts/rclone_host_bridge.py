@@ -42,6 +42,8 @@ if str(WORKSPACE) not in sys.path:
 
 from controller.rclone_drive_adapter import RcloneDriveAdapter, get_rclone_drive_status  # noqa: E402
 from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory  # noqa: E402
+from controller.ouroboros_self_context import get_ruflo_status  # noqa: E402
+from controller.slash_agent_router import execute_host_agent_command  # noqa: E402
 
 
 def main() -> int:
@@ -77,6 +79,12 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
         if self.path == "/sensory/status":
             self._json(get_host_sensory_status())
             return
+        if self.path == "/ruflo/status":
+            self._json(get_ruflo_status())
+            return
+        if self.path == "/agents/status":
+            self._json({"status": "online", "agents": ["codex", "ruflo", "claude"], "fake_success": False})
+            return
         self._json({"status": "error", "reason": "not_found", "fake_success": False}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -101,6 +109,16 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
                 max_flows=int(body.get("max_flows") or 120),
                 max_windows=int(body.get("max_windows") or 80),
                 max_recent=int(body.get("max_recent") or 60),
+            )
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/agents/command":
+            result = execute_host_agent_command(
+                agent=str(body.get("agent") or ""),
+                task=str(body.get("task") or ""),
+                approval=str(body.get("approval") or ""),
+                timeout_seconds=int(body.get("timeout_seconds") or 240),
+                prefer_bridge=False,
             )
             self._json(result, status=403 if result.get("status") == "blocked" else 200)
             return

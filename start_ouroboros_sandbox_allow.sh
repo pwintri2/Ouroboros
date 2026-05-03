@@ -37,6 +37,31 @@ p.chmod(0o600)
 PY
 fi
 
+bridge_endpoint_ready() {
+  python3 - "$BRIDGE_PORT" <<'PY'
+from pathlib import Path
+import sys
+import urllib.request
+
+port = sys.argv[1]
+try:
+    token = Path(".secrets/rclone_bridge_token").read_text(encoding="utf-8").strip()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/agents/status",
+        headers={"X-Ouroboros-Bridge-Token": token},
+    )
+    with urllib.request.urlopen(req, timeout=2) as response:
+        raise SystemExit(0 if response.status == 200 else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+if pgrep -f "[r]clone_host_bridge.py.*--port ${BRIDGE_PORT}" >/dev/null 2>&1 && ! bridge_endpoint_ready; then
+  pkill -f "[r]clone_host_bridge.py.*--port ${BRIDGE_PORT}" || true
+  sleep 0.5
+fi
+
 if ! pgrep -f "[r]clone_host_bridge.py.*--port ${BRIDGE_PORT}" >/dev/null 2>&1; then
   setsid -f python3 scripts/rclone_host_bridge.py --bind 0.0.0.0 --port "${BRIDGE_PORT}" \
     > artifacts/rclone_host_bridge.log 2>&1

@@ -250,6 +250,27 @@ label {
   border-bottom: 1px solid #1d2634;
 }
 
+.prompt-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.slash-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.slash-strip button {
+  min-height: 28px;
+  padding: 0 9px;
+  border-color: #263449;
+  background: #101a29;
+  color: #b7c6dc;
+  font-size: 12px;
+}
+
 .cockpit-grid {
   display: grid;
   grid-template-columns: minmax(340px, 1.25fr) minmax(280px, 0.9fr) minmax(280px, 0.9fr);

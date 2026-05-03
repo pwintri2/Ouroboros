@@ -41,10 +41,12 @@ from controller.popos_diagnostics_adapter import get_popos_diagnostics_status, r
 from controller.rclone_drive_adapter import RcloneDriveAdapter, get_rclone_drive_status
 from controller.sharepoint_pnp_adapter import SharePointPnPAdapter, get_sharepoint_status
 from controller.knowledge_acquisition import (
+    DEFAULT_GEMMA_MODEL,
     get_knowledge_acquisition_status,
     index_knowledge_list,
     run_knowledge_tick,
 )
+from controller.learning_accelerator import accelerate_learning
 from controller.model_artifacts import (
     get_artifacts_summary,
     list_artifacts,
@@ -188,6 +190,7 @@ class ContinuousTickRequest(BaseModel):
     force: bool = Field(default=False)
     execute_training: bool = Field(default=False)
     methods: list[TrainerMethod] | None = Field(default=None)
+    max_records: int | None = Field(default=None, ge=1, le=10000)
 
 
 class TrainerBrowserIngestRequest(BrowserTrainingRequest):
@@ -270,6 +273,17 @@ class KnowledgeTickRequest(BaseModel):
     max_topics: int = Field(default=3, ge=1, le=10)
     start_index: int | None = Field(default=None, ge=0)
     model: str = Field(default="gemma4:latest", min_length=1, max_length=256)
+
+
+class AccelerateLearningRequest(BaseModel):
+    approval: str = Field(..., min_length=1)
+    knowledge_mode: str = Field(default="gemma", pattern="^(off|gemma|browser|both)$")
+    knowledge_topics: int = Field(default=3, ge=0, le=10)
+    start_index: int | None = Field(default=None, ge=0)
+    model: str = Field(default=DEFAULT_GEMMA_MODEL, min_length=1, max_length=256)
+    continuous_methods: list[TrainerMethod] = Field(default_factory=lambda: [TrainerMethod.LITGPT, TrainerMethod.UNSLOOTH])
+    execute_training: bool = Field(default=False)
+    max_records: int = Field(default=1000, ge=1, le=10000)
 
 
 class EcosystemKnowledgeIngestRequest(BaseModel):
@@ -468,9 +482,35 @@ async def trainer_continuous_tick(request: ContinuousTickRequest) -> dict[str, A
         force=request.force,
         execute_training=request.execute_training,
         methods=methods,
+        max_records=request.max_records,
     )
     if result.get("status") == "blocked":
         raise HTTPException(status_code=403, detail=result.get("reason"))
+    return result
+
+
+@trainer_pipeline_router.post("/learning/accelerate")
+async def trainer_learning_accelerate(request: AccelerateLearningRequest) -> dict[str, Any]:
+    """Run one bounded learning accelerator pass (requires approval)."""
+    methods = [
+        method.value
+        for method in request.continuous_methods
+        if method.value in {TrainerMethod.LITGPT.value, TrainerMethod.UNSLOOTH.value}
+    ]
+    result = accelerate_learning(
+        approval=request.approval,
+        knowledge_mode=request.knowledge_mode,
+        knowledge_topics=request.knowledge_topics,
+        start_index=request.start_index,
+        model=request.model,
+        continuous_methods=methods,
+        execute_training=request.execute_training,
+        max_records=request.max_records,
+    )
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=403, detail=result.get("reason"))
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result)
     return result
 
 

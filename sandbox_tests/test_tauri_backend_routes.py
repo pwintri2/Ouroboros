@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import tempfile
 import unittest
@@ -80,6 +81,10 @@ class FakeMultiAPIRouter:
 
 
 def load_main_with_fakes():
+    previous_env = {
+        "WINTRIP_DB_PATH": os.environ.get("WINTRIP_DB_PATH"),
+        "WINTRIP_API_KEY_STORE": os.environ.get("WINTRIP_API_KEY_STORE"),
+    }
     os.environ["WINTRIP_DB_PATH"] = tempfile.mkdtemp(prefix="tauri-backend-routes-")
     os.environ["WINTRIP_API_KEY_STORE"] = os.path.join(tempfile.mkdtemp(prefix="tauri-api-keys-"), "keys.json")
     previous_main = sys.modules.pop("controller.main", None)
@@ -105,14 +110,14 @@ def load_main_with_fakes():
         "paused_at": None,
         "aborted_at": None,
     }
-    return main, previous_main
+    return main, previous_main, previous_env
 
 
 @unittest.skipIf(TestClient is None, MISSING_FASTAPI)
 class TestTauriBackendRoutes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.main, cls.previous_main = load_main_with_fakes()
+        cls.main, cls.previous_main, cls.previous_env = load_main_with_fakes()
         cls.client = TestClient(cls.main.app)
 
     @classmethod
@@ -120,8 +125,18 @@ class TestTauriBackendRoutes(unittest.TestCase):
         sys.modules.pop("controller.main", None)
         if cls.previous_main is not None:
             sys.modules["controller.main"] = cls.previous_main
+        for key, value in cls.previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def setUp(self):
+        self.old_workspace = os.environ.get("WINTRIP_WORKSPACE")
+        self.old_bridge = os.environ.get("WINTRIP_RCLONE_BRIDGE_URL")
+        self.workspace_tmp = tempfile.TemporaryDirectory(prefix="tauri-self-context-")
+        os.environ["WINTRIP_WORKSPACE"] = self.workspace_tmp.name
+        os.environ.pop("WINTRIP_RCLONE_BRIDGE_URL", None)
         self.main.agent_tools = FakeAgentTools()
         self.main.app.state.multi_api_router = FakeMultiAPIRouter()
         self.main.app.state.ouroboros_loop = {
@@ -139,6 +154,17 @@ class TestTauriBackendRoutes(unittest.TestCase):
             "paused_at": None,
             "aborted_at": None,
         }
+
+    def tearDown(self):
+        self.workspace_tmp.cleanup()
+        if self.old_workspace is None:
+            os.environ.pop("WINTRIP_WORKSPACE", None)
+        else:
+            os.environ["WINTRIP_WORKSPACE"] = self.old_workspace
+        if self.old_bridge is None:
+            os.environ.pop("WINTRIP_RCLONE_BRIDGE_URL", None)
+        else:
+            os.environ["WINTRIP_RCLONE_BRIDGE_URL"] = self.old_bridge
 
     def test_cockpit_config_exposes_backend_providers_models_and_approval_phrase(self):
         response = self.client.get("/api/cockpit/config")
@@ -172,6 +198,53 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["tool_schema_count"], 1)
         self.assertEqual(data["tool_schemas"][0]["function"]["name"], "memory_search")
         self.assertEqual(self.main.app.state.multi_api_router.calls[0]["tools"][0]["function"]["name"], "memory_search")
+
+    def test_cockpit_chat_slash_agents_are_intercepted_before_provider(self):
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={"provider": "google", "model": "gemini-test", "prompt": "/agents"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "slash_agent")
+        self.assertEqual(data["agent"], "catalog")
+        self.assertTrue(any(command.startswith("/codex") for command in data["commands"]))
+        self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
+    def test_cockpit_chat_keeps_server_side_history_for_next_turn(self):
+        first = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "google",
+                "model": "gemini-test",
+                "conversation_id": "diti-test-memory",
+                "prompt": "Mijn projectroot is WintripAI en Ruflo hoort erbij.",
+            },
+        )
+        second = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "google",
+                "model": "gemini-test",
+                "conversation_id": "diti-test-memory",
+                "prompt": "Wat zei ik net over de projectroot?",
+            },
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["conversation_id"], "diti-test-memory")
+        calls = self.main.app.state.multi_api_router.calls
+        self.assertEqual(len(calls), 2)
+        second_context = json.dumps(
+            {"history": calls[1]["history"], "system_prompt": calls[1]["system_prompt"]},
+            ensure_ascii=False,
+        )
+        self.assertIn("Ouroboros self-context", second_context)
+        self.assertIn("Mijn projectroot is WintripAI", second_context)
+        self.assertIn("fake multi-api response", second_context)
+        self.assertGreaterEqual(second.json()["self_context"]["server_history_count"], 2)
 
     def test_cockpit_chat_returns_disabled_payload_when_multi_api_is_unavailable(self):
         self.main.app.state.multi_api_router = None

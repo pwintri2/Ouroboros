@@ -101,17 +101,21 @@ def chatgpt_browser_ask(question: str, approval: object = None) -> dict[str, Any
     """
     clean_question = _clean_text(question, max_len=MAX_CHATGPT_QUESTION_LENGTH)
     if not clean_question:
-        return _blocked_result(
+        blocked = _blocked_result(
             tool_name="chatgpt_browser_ask",
             action="chatgpt_browser_ask",
             reason="Vraag ontbreekt.",
             next_action="Geef een vraag op voordat de browser wordt geopend.",
         )
+        blocked.update({"question": "", "question_chars": 0})
+        return blocked
     if not _has_exact_approval(approval):
         return {
             "tool_name": "chatgpt_browser_ask",
             "action": "chatgpt_browser_ask",
             "status": "approval_required",
+            "question": clean_question,
+            "question_chars": len(clean_question),
             "approval_required": True,
             "approval_phrase": DEFAULT_APPROVAL_PHRASE,
             "reason": "ChatGPT ask typt en submit tekst in de browser en vereist exact Akkoord.",
@@ -122,7 +126,7 @@ def chatgpt_browser_ask(question: str, approval: object = None) -> dict[str, Any
         }
 
     action = _run_chatgpt_ask_with_playwright(clean_question)
-    return _browser_action_to_scrubbed_payload(
+    payload = _browser_action_to_scrubbed_payload(
         tool_name="chatgpt_browser_ask",
         action="chatgpt_browser_ask",
         action_result=action,
@@ -130,6 +134,8 @@ def chatgpt_browser_ask(question: str, approval: object = None) -> dict[str, Any
         fallback_url=CHATGPT_URL,
         title="ChatGPT browser ask",
     )
+    payload.update({"question": clean_question, "question_chars": len(clean_question)})
+    return payload
 
 
 def read_visible_text(url: str, approval: object = None) -> dict[str, Any]:

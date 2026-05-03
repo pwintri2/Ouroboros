@@ -17,8 +17,31 @@ from typing import Any
 
 from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune
 from controller.trainer_jobs import JobState, TrainerMethod, create_job, set_dataset_info, update_job_state
-from controller.training_dataset_builder import build_dataset, count_approved_records
 from controller.unsloth_adapter import get_unsloth_status, run_unsloth_sft_training
+
+try:
+    from controller.training_dataset_builder import build_dataset, count_approved_records
+except Exception as exc:
+    _DATASET_IMPORT_ERROR = str(exc)
+
+    def count_approved_records() -> int:
+        return 0
+
+    def build_dataset(
+        output_path: str,
+        format: str = "chat",
+        max_records: int = 1000,
+        include_system_prompt: bool = True,
+    ) -> dict[str, Any]:
+        return {
+            "status": "error",
+            "reason": f"Training dataset builder unavailable: {_DATASET_IMPORT_ERROR}",
+            "record_count": 0,
+            "output_path": output_path,
+            "format": format,
+            "max_records": max_records,
+            "include_system_prompt": include_system_prompt,
+        }
 
 
 SUPPORTED_CONTINUOUS_METHODS = (TrainerMethod.LITGPT.value, TrainerMethod.UNSLOOTH.value)
@@ -26,6 +49,7 @@ APPROVAL_PHRASE = "Akkoord"
 _STATE_LOCK = threading.Lock()
 _WORKER_THREAD: threading.Thread | None = None
 _WORKER_STOP = threading.Event()
+_WORKER_WAKE = threading.Event()
 
 
 def _workspace_root() -> Path:
@@ -157,9 +181,11 @@ def stop_continuous_training(approval: str) -> dict[str, Any]:
 
 def notify_browser_training_record(item_id: str | None = None, source_url: str | None = None) -> dict[str, Any]:
     """Record that a browser call stored approved data for trainer consumption."""
+    should_wake = False
     with _STATE_LOCK:
         state = load_continuous_state()
         state["pending_browser_records"] = int(state.get("pending_browser_records") or 0) + 1
+        should_wake = bool(state.get("enabled"))
         _event(
             state,
             "browser_record_received",
@@ -167,6 +193,9 @@ def notify_browser_training_record(item_id: str | None = None, source_url: str |
             {"item_id": item_id, "source_url": source_url},
         )
         save_continuous_state(state)
+    if should_wake:
+        _WORKER_WAKE.set()
+        _ensure_worker()
     return get_continuous_status()
 
 
@@ -175,6 +204,7 @@ def run_continuous_tick(
     force: bool = False,
     execute_training: bool | None = None,
     methods: list[str] | None = None,
+    max_records: int | None = None,
 ) -> dict[str, Any]:
     """Run one bounded continuous-training tick."""
     with _STATE_LOCK:
@@ -183,6 +213,10 @@ def run_continuous_tick(
         enabled = bool(state.get("enabled"))
         selected_methods = _normalize_methods(methods or state.get("methods"))
         should_execute = bool(state.get("execute_training")) if execute_training is None else bool(execute_training)
+        dataset_max_records = max(
+            1,
+            min(int(max_records if max_records is not None else (state.get("max_records") or 1000)), 10_000),
+        )
 
         if should_execute and approval != APPROVAL_PHRASE:
             state["status"] = "blocked"
@@ -208,7 +242,7 @@ def run_continuous_tick(
         dataset = build_dataset(
             output_path=str(dataset_path),
             format="text",
-            max_records=int(state.get("max_records") or 1000),
+            max_records=dataset_max_records,
             include_system_prompt=True,
         )
         if dataset.get("status") != "success":
@@ -255,11 +289,23 @@ def _worker_loop() -> None:
     while not _WORKER_STOP.is_set():
         state = load_continuous_state()
         if not state.get("enabled"):
+            _WORKER_WAKE.clear()
             _WORKER_STOP.wait(5)
             continue
         run_continuous_tick(approval=APPROVAL_PHRASE if state.get("execute_training") else "", force=False)
         wait_seconds = max(30, min(int(state.get("interval_seconds") or 300), 86_400))
-        _WORKER_STOP.wait(wait_seconds)
+        _wait_for_next_tick(wait_seconds)
+
+
+def _wait_for_next_tick(wait_seconds: int) -> None:
+    deadline = time.monotonic() + max(1, int(wait_seconds))
+    while not _WORKER_STOP.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        if _WORKER_WAKE.wait(min(remaining, 1.0)):
+            _WORKER_WAKE.clear()
+            return
 
 
 def _create_or_run_job(

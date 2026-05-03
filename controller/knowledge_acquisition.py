@@ -14,6 +14,7 @@ import os
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -212,15 +213,21 @@ def run_knowledge_tick(
     if clean_mode in {"both", "browser"}:
         source_types.append("browser_research_call")
 
+    parallelism: dict[str, int] = {}
     for source_type in source_types:
         completed = _completed_topics(records, source_type)
         selected = _select_topics(topics, completed, bounded_max, start_index)
-        for topic in selected:
+        parallelism[source_type] = _parallelism_for_source(source_type, len(selected))
+        for topic, result, exception in _acquire_topics(
+            topics=selected,
+            source_type=source_type,
+            approval=approval,
+            model=model,
+            workers=parallelism[source_type],
+        ):
             try:
-                if source_type == "gemma_distillation":
-                    result = distill_gemma_topic(topic, model=model)
-                else:
-                    result = browser_research_topic(topic, approval=approval)
+                if exception is not None:
+                    raise exception
 
                 if result.get("status") not in {"success", "preview"}:
                     errors.append(
@@ -285,11 +292,62 @@ def run_knowledge_tick(
         "mode": clean_mode,
         "created_count": len(created),
         "error_count": len(errors),
+        "parallelism": parallelism,
         "created": created,
         "errors": errors,
         "state": get_knowledge_acquisition_status(),
         "fake_success": False,
     }
+
+
+def _acquire_topics(
+    topics: list[dict[str, Any]],
+    source_type: str,
+    approval: str,
+    model: str,
+    workers: int,
+) -> list[tuple[dict[str, Any], dict[str, Any], Exception | None]]:
+    if not topics:
+        return []
+
+    if source_type == "gemma_distillation" and workers > 1:
+        ordered: list[tuple[dict[str, Any], dict[str, Any], Exception | None] | None] = [None] * len(topics)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="knowledge-gemma") as executor:
+            futures = {
+                executor.submit(distill_gemma_topic, topic, model=model): index
+                for index, topic in enumerate(topics)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                topic = topics[index]
+                try:
+                    ordered[index] = (topic, future.result(), None)
+                except Exception as exc:
+                    ordered[index] = (topic, {}, exc)
+        return [item for item in ordered if item is not None]
+
+    acquired: list[tuple[dict[str, Any], dict[str, Any], Exception | None]] = []
+    for topic in topics:
+        try:
+            if source_type == "gemma_distillation":
+                result = distill_gemma_topic(topic, model=model)
+            else:
+                result = browser_research_topic(topic, approval=approval)
+            acquired.append((topic, result, None))
+        except Exception as exc:
+            acquired.append((topic, {}, exc))
+    return acquired
+
+
+def _parallelism_for_source(source_type: str, selected_count: int) -> int:
+    if source_type != "gemma_distillation" or selected_count <= 1:
+        return 1
+    raw = os.getenv("WINTRIP_KNOWLEDGE_PARALLELISM", "2")
+    try:
+        configured = int(raw)
+    except (TypeError, ValueError):
+        configured = 2
+    return max(1, min(configured, selected_count, 4))
 
 
 def distill_gemma_topic(topic: dict[str, Any], model: str = DEFAULT_GEMMA_MODEL) -> dict[str, Any]:

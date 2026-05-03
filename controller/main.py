@@ -4,8 +4,10 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 import os
 import sys
+import asyncio
 import json
 import math
+import re
 import time
 import requests
 import uvicorn
@@ -92,6 +94,44 @@ except Exception:
     load_provider_api_keys = None
     provider_key_status = None
     save_provider_api_key = None
+
+try:
+    from controller.ouroboros_self_context import (
+        build_chat_context,
+        get_self_context_status,
+        record_chat_turn,
+    )
+except Exception:
+    def build_chat_context(
+        prompt: str,
+        provider: str,
+        model: str,
+        system_prompt: Optional[str] = None,
+        history: Optional[List[Dict[str, str]]] = None,
+        conversation_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        return {
+            "conversation_id": conversation_id or f"cockpit:{provider}:{model}",
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "history": history or [],
+            "self_context": {"enabled": False, "reason": "ouroboros_self_context unavailable"},
+        }
+
+    def get_self_context_status() -> dict[str, Any]:
+        return {"status": "unavailable", "enabled": False, "fake_success": False}
+
+    def record_chat_turn(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "stored": False, "fake_success": False}
+
+try:
+    from controller.slash_agent_router import handle_slash_command, slash_command_catalog
+except Exception:
+    def handle_slash_command(*_args: Any, **_kwargs: Any) -> dict[str, Any] | None:
+        return None
+
+    def slash_command_catalog() -> dict[str, Any]:
+        return {"status": "unavailable", "commands": {}, "fake_success": False}
 
 try:
     from controller.api.browser_routes import init_browser_research
@@ -245,6 +285,8 @@ class CockpitChatRequest(BaseModel):
     provider: Optional[str] = "ollama"
     model: Optional[str] = None
     system_prompt: Optional[str] = None
+    conversation_id: Optional[str] = None
+    approval: Optional[str] = None
     history: Optional[List[Dict[str, str]]] = None
     files: Optional[List[str]] = None
     include_tools: Optional[bool] = False
@@ -337,8 +379,11 @@ class InspectHippocampusRequest(BaseModel):
     limit: Optional[int] = 7
 
 class BrowserChatGPTRequest(BaseModel):
-    prompt: str
+    prompt: Optional[str] = None
+    question: Optional[str] = None
     approval: Optional[str] = None
+    conversation_id: Optional[str] = None
+    store_question: Optional[bool] = True
 
 class CommitSaveRequest(BaseModel):
     filename: str
@@ -438,27 +483,60 @@ async def ouroboros_inspect_hippocampus(req: InspectHippocampusRequest):
 
 @app.post("/api/ouroboros/chatgpt/browser")
 async def ouroboros_ask_chatgpt_in_browser(req: BrowserChatGPTRequest):
+    question = _normalize_chatgpt_question(req.question or req.prompt or "")
+    if not question:
+        raise HTTPException(status_code=400, detail="prompt of question is verplicht")
+    understanding = _chatgpt_question_understanding(question, original_prompt=req.prompt or req.question or "")
     try:
         from controller.browser_research import chatgpt_browser_ask
 
-        response = chatgpt_browser_ask(question=req.prompt, approval=req.approval)
+        response = chatgpt_browser_ask(question=question, approval=req.approval)
         status = response.get("status", "error")
-        stdout = json.dumps(response, ensure_ascii=False, indent=2)
+        self_context = _store_chatgpt_question_context(
+            question=question,
+            browser_response=response,
+            understanding=understanding,
+            conversation_id=req.conversation_id,
+            enabled=bool(req.store_question),
+        )
+        stdout = json.dumps(
+            {
+                "question": question,
+                "understanding": understanding,
+                "browser": response,
+                "self_context": self_context,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
         return {
             "status": status,
+            "question": question,
+            "understanding": understanding,
             "browser": response,
+            "self_context": self_context,
             "diff_view": response.get("diff_view", ""),
             "flags": response.get("blocked_patterns", []),
             "stdout": stdout,
             "stderr": "" if status == "success" else (response.get("reason") or stdout),
-            "learned": "ChatGPT browserantwoord is als UNTRUSTED browsercontent behandeld en gescrubd." if status == "success" else "ChatGPT browseractie is veilig geblokkeerd of niet beschikbaar.",
-            "mentor": "Store alleen via Preview Ingest + Akkoord; deze route schrijft niets stiekem weg.",
+            "learned": "ChatGPT vraag is begrepen en opgeslagen; browserantwoord is als UNTRUSTED browsercontent behandeld en gescrubd." if status == "success" else "ChatGPT vraag is begrepen; browseractie is veilig geblokkeerd of niet beschikbaar.",
+            "mentor": "Self-context bewaart alleen de vraag en actie-samenvatting; browsercontent blijft buiten durable context tot expliciete ingest-review.",
             "next_action": "Preview Ingest" if status == "success" else response.get("next_action", "Vul Akkoord in en probeer opnieuw."),
         }
     except Exception as exc:
+        self_context = _store_chatgpt_question_context(
+            question=question,
+            browser_response={"status": "error", "reason": str(exc), "browser_action_performed": False},
+            understanding=understanding,
+            conversation_id=req.conversation_id,
+            enabled=bool(req.store_question),
+        )
         return {
             "status": "error",
-            "stdout": "",
+            "question": question,
+            "understanding": understanding,
+            "self_context": self_context,
+            "stdout": json.dumps({"question": question, "understanding": understanding, "self_context": self_context}, ensure_ascii=False, indent=2),
             "stderr": str(exc),
             "learned": "ChatGPT browser automation faalde veilig.",
             "mentor": "Controleer of de ChatGPT-app lokaal beschikbaar is.",
@@ -623,6 +701,10 @@ async def cockpit_config():
 async def cockpit_chat(req: CockpitChatRequest):
     return await _cockpit_chat_payload(req)
 
+@app.get("/api/ouroboros/self-context/status")
+async def ouroboros_self_context_status():
+    return _self_context_status_payload()
+
 @app.get("/api/cockpit/api-keys")
 async def cockpit_api_keys():
     return _api_key_status_payload()
@@ -644,6 +726,8 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "run_tests": {"method": "POST", "path": "/agent/tool", "tool_name": "run_tests"},
         "inspect_hippocampus": {"method": "POST", "path": "/api/ouroboros/hippocampus/inspect"},
         "self_training_step": {"method": "POST", "path": "/api/ouroboros/self-training/step"},
+        "self_context": {"method": "GET", "path": "/api/ouroboros/self-context/status"},
+        "slash_agents": {"method": "POST", "path": "/api/cockpit/chat", "prefix": "/"},
     }
 
 
@@ -759,6 +843,8 @@ def _cockpit_config_payload() -> dict[str, Any]:
         "required_approval_phrase": APPROVAL_PHRASE,
         "approval": {"required_phrase": APPROVAL_PHRASE, "case_sensitive": True},
         "api_keys": _api_key_status_payload(),
+        "self_context": _self_context_status_payload(),
+        "slash_agents": slash_command_catalog(),
         "tool_schemas_available": callable(getattr(agent_tools, "get_tool_schemas", None)),
         "capabilities": {
             "cockpit_chat": {"method": "POST", "path": "/api/cockpit/chat"},
@@ -864,6 +950,18 @@ def _api_key_status_payload() -> dict[str, Any]:
         }
 
 
+def _self_context_status_payload() -> dict[str, Any]:
+    try:
+        return get_self_context_status()
+    except Exception as exc:
+        return {
+            "status": "error",
+            "enabled": False,
+            "reason": str(exc),
+            "fake_success": False,
+        }
+
+
 def _save_api_key_payload(req: ProviderApiKeyRequest) -> dict[str, Any]:
     if (req.approval or "").strip() != APPROVAL_PHRASE:
         return {
@@ -917,21 +1015,53 @@ def _disabled_chat_payload(req: CockpitChatRequest, provider: str, model: str, t
     }
 
 
+def _slash_agent_timeout_seconds() -> int:
+    try:
+        return max(10, min(int(os.getenv("WINTRIP_SLASH_AGENT_TIMEOUT_SECONDS", "240")), 600))
+    except ValueError:
+        return 240
+
+
 async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     requested_provider, provider = _normalize_cockpit_provider(req.provider)
     model = _default_cockpit_model(provider, req.model)
     tools = _requested_tool_payload(req, provider)
+    chat_context = build_chat_context(
+        prompt=req.prompt,
+        provider=provider,
+        model=model,
+        system_prompt=req.system_prompt,
+        history=req.history or [],
+        conversation_id=req.conversation_id,
+    )
+    slash_result = await asyncio.to_thread(
+        handle_slash_command,
+        req.prompt,
+        approval=req.approval or "",
+        timeout_seconds=_slash_agent_timeout_seconds(),
+    )
+    if slash_result is not None:
+        slash_result.setdefault("status", "success")
+        slash_result.setdefault("provider", "slash")
+        slash_result.setdefault("requested_provider", requested_provider)
+        slash_result.setdefault("model", slash_result.get("agent", "slash"))
+        slash_result.setdefault("route", "slash_agent")
+        slash_result.setdefault("local_only", True)
+        slash_result.setdefault("tool_schemas", [])
+        slash_result.setdefault("tool_schema_count", 0)
+        slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
+        return _with_cockpit_self_context(slash_result, chat_context, provider, model)
 
     if provider == "ollama":
         try:
             response = router.route_request(
-                req.prompt,
+                chat_context.get("prompt") or req.prompt,
                 model=model,
-                history=req.history or [],
-                system_prompt=req.system_prompt,
+                history=chat_context.get("history") or [],
+                system_prompt=chat_context.get("system_prompt"),
                 files=req.files,
             )
-            return {
+            result = {
                 "status": "success",
                 "provider": "ollama",
                 "requested_provider": requested_provider,
@@ -942,6 +1072,7 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
                 "tool_schemas": tools if _should_return_tool_schemas(req) else [],
                 "tool_schema_count": len(tools),
             }
+            return _with_cockpit_self_context(result, chat_context, provider, model)
         except Exception as exc:
             return {
                 "status": "error",
@@ -951,6 +1082,8 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
                 "response": "",
                 "route": "local",
                 "local_only": True,
+                "conversation_id": chat_context.get("conversation_id"),
+                "self_context": chat_context.get("self_context") or {},
                 "tool_schemas": tools if _should_return_tool_schemas(req) else [],
                 "tool_schema_count": len(tools),
                 "error": str(exc),
@@ -963,10 +1096,10 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     result = await multi_router.route_chat(
         provider=provider,
         model=model,
-        prompt=req.prompt,
-        system_prompt=req.system_prompt,
+        prompt=chat_context.get("prompt") or req.prompt,
+        system_prompt=chat_context.get("system_prompt"),
         tools=tools or None,
-        history=req.history or [],
+        history=chat_context.get("history") or [],
     )
     if not isinstance(result, dict):
         result = {"status": "success", "response": str(result)}
@@ -979,6 +1112,32 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     result["local_only"] = False
     result["tool_schemas"] = tools if _should_return_tool_schemas(req) else []
     result["tool_schema_count"] = len(tools)
+    return _with_cockpit_self_context(result, chat_context, provider, model)
+
+
+def _with_cockpit_self_context(
+    result: dict[str, Any],
+    chat_context: dict[str, Any],
+    provider: str,
+    model: str,
+) -> dict[str, Any]:
+    response = str(result.get("response") or result.get("message") or "")
+    status = str(result.get("status") or "")
+    self_context = dict(chat_context.get("self_context") or {})
+    result["conversation_id"] = chat_context.get("conversation_id")
+    if status == "success" and response.strip():
+        try:
+            self_context["last_store"] = record_chat_turn(
+                prompt=str(chat_context.get("prompt") or ""),
+                response=response,
+                provider=provider,
+                model=model,
+                conversation_id=str(chat_context.get("conversation_id") or ""),
+                status=status,
+            )
+        except Exception as exc:
+            self_context["last_store"] = {"status": "error", "reason": str(exc), "fake_success": False}
+    result["self_context"] = self_context
     return result
 
 
@@ -1102,7 +1261,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
             roo_adapter=roo_adapter,
             self_modification_pipeline=self_modification,
             training_events=getattr(app.state, "training_events", []),
-            extra={"ollama_router": router_status, **ecosystem_extra},
+            extra={"ollama_router": router_status, "self_context": _self_context_status_payload(), **ecosystem_extra},
         )
         if extra:
             payload.update(extra)
@@ -1130,6 +1289,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
         "external_providers": check_providers(),
         "blocked_external_providers": list(check_providers().keys()),
         "roo_adapter": roo_adapter or {"status": "unavailable", "available": False},
+        "self_context": _self_context_status_payload(),
         "last_tool_call": last_tool or {"status": "not_run"},
         "self_modification_pipeline": self_modification or {"status": "not_configured", "approval_required": True},
         "integrity": {"fake_fine_tune_success": False, "fake_tool_success": False},
@@ -1700,6 +1860,100 @@ def _prompt_understanding_payload(prompt: str, context: Optional[str] = None, mo
         "mentor": "Gebruik de intent alleen als routevoorstel; preview blijft verplicht voor opslag.",
         "next_action": next_action,
     }
+
+
+_CHATGPT_QUESTION_PREFIXES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?is)^\s*(?:vraag|ask|stel)\s+(?:aan\s+)?(?:chatgpt|openai|gpt)\s*:?\s*"),
+    re.compile(r"(?is)^\s*(?:open|start|lanceer)\s+(?:chatgpt|openai|gpt)\s+(?:en\s+)?(?:vraag|ask|stel)(?:\s+(?:de\s+)?vraag)?\s*:?\s*"),
+    re.compile(r"(?is)^\s*(?:chatgpt|openai|gpt)\s*[:\-]\s*"),
+)
+
+
+def _normalize_chatgpt_question(value: object) -> str:
+    question = str(value or "").replace("\x00", " ").strip()
+    for pattern in _CHATGPT_QUESTION_PREFIXES:
+        extracted = pattern.sub("", question, count=1).strip()
+        if extracted != question:
+            question = extracted
+            break
+    return question[:4000]
+
+
+def _chatgpt_question_understanding(question: str, original_prompt: object = "") -> dict[str, Any]:
+    understanding = _prompt_understanding_payload(question)
+    original = str(original_prompt or "").strip()
+    flags = list(understanding.get("flags") or [])
+    if original and original != question:
+        flags.append("chatgpt_question_extracted")
+    understanding.update(
+        {
+            "intent": "chatgpt_browser_ask",
+            "summary": question[:240],
+            "question_chars": len(question),
+            "requires_approval": True,
+            "approval_phrase": APPROVAL_PHRASE,
+            "flags": list(dict.fromkeys(flags)),
+            "stdout": json.dumps(
+                {
+                    "intent": "chatgpt_browser_ask",
+                    "question_chars": len(question),
+                    "flags": list(dict.fromkeys(flags)),
+                },
+                ensure_ascii=False,
+            ),
+            "learned": "Prompt begrepen als ChatGPT-browservraag.",
+            "mentor": "De browseractie blijft approval-gated; self-context bewaart alleen vraag en actie-samenvatting.",
+            "next_action": "Akkoord + Ask ChatGPT Browser",
+        }
+    )
+    missing = list(understanding.get("missing_knowledge") or [])
+    if "browser_observation" not in missing:
+        missing.append("browser_observation")
+    understanding["missing_knowledge"] = missing
+    return understanding
+
+
+def _store_chatgpt_question_context(
+    question: str,
+    browser_response: dict[str, Any],
+    understanding: dict[str, Any],
+    conversation_id: Optional[str],
+    enabled: bool = True,
+) -> dict[str, Any]:
+    if not enabled:
+        return {"enabled": False, "status": "skipped", "reason": "store_question=false", "fake_success": False}
+
+    status = str(browser_response.get("status") or "unknown")
+    safe_summary = {
+        "tool": "chatgpt_browser_ask",
+        "status": status,
+        "intent": understanding.get("intent") or "chatgpt_browser_ask",
+        "browser_action_performed": bool(browser_response.get("browser_action_performed")),
+        "approval_required": bool(browser_response.get("approval_required", status == "approval_required")),
+        "approval_status": browser_response.get("approval_status") or ("pending_philip_akkoord" if status == "approval_required" else ""),
+        "source_url": browser_response.get("source_url") or browser_response.get("url") or "",
+        "diff_hash": browser_response.get("diff_hash") or "",
+        "blocked_patterns": list(browser_response.get("blocked_patterns") or []),
+        "untrusted_browser_content_saved": False,
+        "note": "ChatGPT browsercontent blijft UNTRUSTED; self-context bewaart alleen vraag en actie-samenvatting.",
+    }
+    try:
+        return {
+            "enabled": True,
+            "last_store": record_chat_turn(
+                prompt=f"ChatGPT vraag: {question}",
+                response=json.dumps(safe_summary, ensure_ascii=False, sort_keys=True),
+                provider="chatgpt_browser",
+                model="chatgpt.com",
+                conversation_id=conversation_id or "chatgpt-browser",
+                status=status,
+            ),
+            "stored_question": True,
+            "stored_browser_content": False,
+            "fake_success": False,
+        }
+    except Exception as exc:
+        return {"enabled": True, "status": "error", "reason": str(exc), "stored_question": False, "fake_success": False}
 
 
 def _browser_research_payload(req: BrowserResearchRequest) -> dict[str, Any]:

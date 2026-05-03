@@ -172,11 +172,11 @@ class AgentToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "roo_read_file",
-                    "description": "Leest de inhoud van een bestand in de workspace.",
+                    "description": "Leest de inhoud van een bestand in de workspace of een bekende agent-root.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {"type": "string", "description": "Pad relatief aan /workspace."},
+                            "path": {"type": "string", "description": "Pad relatief aan /workspace, of alias zoals ruflo/..., roo/... of codex/... wanneer zichtbaar."},
                             "offset": {"type": "integer", "description": "Start byte."},
                             "limit": {"type": "integer", "description": "Maximum bytes om te lezen."}
                         },
@@ -188,11 +188,11 @@ class AgentToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "roo_write_file",
-                    "description": "Schrijft of overschrijft een bestand in de workspace. VEREIST PHILIP AKKOORD.",
+                    "description": "Schrijft of overschrijft een bestand in de workspace of een bekende agent-root. VEREIST PHILIP AKKOORD.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {"type": "string", "description": "Pad relatief aan /workspace."},
+                            "path": {"type": "string", "description": "Pad relatief aan /workspace, of alias zoals ruflo/..., roo/... of codex/... wanneer zichtbaar."},
                             "content": {"type": "string", "description": "De volledige nieuwe inhoud."},
                             "approval": {"type": "string", "description": "Moet 'Akkoord' bevatten voor echte schrijfactie."}
                         },

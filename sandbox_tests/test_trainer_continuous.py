@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -37,6 +38,39 @@ class MockCollection:
 
     def count(self):
         return len(self._store)
+
+
+class TestContinuousTrainerWake(unittest.TestCase):
+    def test_notify_wakes_worker_when_continuous_training_is_enabled(self):
+        from controller import trainer_continuous
+
+        previous_workspace = os.environ.get("WINTRIP_WORKSPACE")
+        try:
+            with tempfile.TemporaryDirectory(prefix="continuous-wake-") as tmp:
+                os.environ["WINTRIP_WORKSPACE"] = tmp
+                state = trainer_continuous._default_state()
+                state["enabled"] = True
+                trainer_continuous.save_continuous_state(state)
+                trainer_continuous._WORKER_WAKE.clear()
+
+                with (
+                    patch.object(trainer_continuous, "_ensure_worker") as ensure_worker,
+                    patch.object(trainer_continuous, "get_continuous_status", return_value={"status": "running"}),
+                ):
+                    result = trainer_continuous.notify_browser_training_record(
+                        item_id="record-1",
+                        source_url="https://example.com/train",
+                    )
+
+                self.assertEqual(result["status"], "running")
+                self.assertTrue(trainer_continuous._WORKER_WAKE.is_set())
+                ensure_worker.assert_called_once()
+        finally:
+            trainer_continuous._WORKER_WAKE.clear()
+            if previous_workspace is None:
+                os.environ.pop("WINTRIP_WORKSPACE", None)
+            else:
+                os.environ["WINTRIP_WORKSPACE"] = previous_workspace
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE and CHROMA_AVAILABLE, "FastAPI/ChromaDB test dependencies are not installed")
