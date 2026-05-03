@@ -1,5 +1,6 @@
 import logging
 import os
+import platform
 import re
 import tempfile
 import urllib.parse
@@ -9,18 +10,23 @@ import docx
 
 from controller.imap_client import ImapClient
 from controller.knowledge_base import KnowledgeBase
-from controller.mac_automator import MacAutomator
 from controller.sandbox import SandboxExecutor
 from controller.reflector import Reflector
+
+if platform.system() == "Darwin":
+    from controller.mac_automator import MacAutomator as _Automator
+else:
+    from controller.linux_automator import LinuxAutomator as _Automator
 
 
 logger = logging.getLogger(__name__)
 
 
 class AIRouter:
-    def __init__(self, ollama_client=None, kb=None):
+    def __init__(self, ollama_client=None, kb=None, grok_client=None):
         self.ollama_client = ollama_client
-        self.automator = MacAutomator()
+        self.grok_client = grok_client
+        self.automator = _Automator()
         self.mail_client = ImapClient()
 
         self.brain = kb if kb else KnowledgeBase()
@@ -160,9 +166,21 @@ class AIRouter:
         return any(m in text for m in ("FOUT", "ERROR", "Traceback", "Exception", "ModuleNotFoundError"))
 
     def _safe_chat(self, prompt, model=None, history=None, system_prompt=None):
-        if not self.ollama_client: raise RuntimeError("Geen LLM geconfigureerd.")
+        # Gebruik Grok als actief model, anders Ollama als fallback
+        _grok_models = {"grok", "grok-2", "grok-3", "grok-3-mini"}
+        use_grok = (model in _grok_models) or (
+            model is None and self.grok_client and not self.ollama_client
+        )
+        if use_grok and self.grok_client:
+            kwargs = {"model": model if model in _grok_models else None, "system_prompt": system_prompt}
+            if history is not None:
+                kwargs["history"] = history
+            return self.grok_client.chat(prompt, **kwargs)
+        if not self.ollama_client:
+            raise RuntimeError("Geen LLM geconfigureerd.")
         kwargs = {"model": model, "system_prompt": system_prompt}
-        if history is not None: kwargs["history"] = history
+        if history is not None:
+            kwargs["history"] = history
         return self.ollama_client.chat(prompt, **kwargs)
 
     # ==========================================================
@@ -176,7 +194,11 @@ class AIRouter:
         # 1. Web Ingest
         match = re.search(r"^(?:INGEST_URL|INGEST_URLS):\s+(.+)$", user_input_str, re.IGNORECASE)
         if match: return {"action": "web_ingest", "args": match.group(1).strip()}
-            
+
+        # 1b. Shell commando uitvoeren (Linux)
+        match = re.search(r"^(?:RUN|VOER UIT|SHELL):\s+(\S.*)", user_input_str, re.IGNORECASE)
+        if match: return {"action": "run_command", "args": match.group(1).strip()}
+
         # 2. Open App
         match = re.search(r"^(?:open|start|lanceer)\s+(.+)$", user_input_str, re.IGNORECASE)
         if match: return {"action": "open_app", "args": match.group(1).strip()}
@@ -208,6 +230,7 @@ class AIRouter:
         
         try:
             if action == "web_ingest": result = self._handle_web_ingest_action(args)
+            elif action == "run_command": result = self._handle_run_command_action(args)
             elif action == "open_app": result = self._handle_open_app_action(args)
             elif action == "chatgpt_app": result = self._handle_chatgpt_app_action(args)
             elif action == "research": result = self._handle_research_action(args, model, system_prompt)
@@ -228,6 +251,17 @@ class AIRouter:
     # ==========================================================
     # ACTION DOMAIN HANDLERS (ACT PHASE)
     # ==========================================================
+    def _handle_run_command_action(self, command: str) -> str:
+        """Voer een shell-commando uit via de platform-automator."""
+        if not command:
+            return "Wintrip: Geen commando opgegeven."
+        try:
+            return self.automator.run_command(command)
+        except AttributeError:
+            return "[FOUT]: run_command is niet beschikbaar op dit platform."
+        except Exception as e:
+            return f"[FOUT]: Commando '{command}' mislukt: {str(e)}"
+
     def _handle_open_app_action(self, app_name):
         if not app_name: return "Wintrip: Ik mis de naam van de app."
         try:

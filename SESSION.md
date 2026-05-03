@@ -1,33 +1,51 @@
-# 🕒 Wintrip Session Status (Update: 13 April 2026 - Fase 4.5 / PoC Demo)
+# 🕒 Wintrip Session Status (Update: 3 mei 2026 — Linux/Grok native app)
 
 ## 📌 Huidige Status
-Fase 4.5 is actief. De **Ambient Sentinel PoC Demo** is volledig geïmplementeerd en geïntegreerd in de bestaande FastAPI-backend.
+Linux-native Grok-app volledig geïmplementeerd. De app draait op Pop!_OS (en elke andere Linux-distro met GNOME/GTK4).
 
 ## ✅ Voltooide Wijzigingen
-1. **Orchestrator Logica Ontwikkeld** (vorige sessie)
-2. **Naadloze Reflector Integratie** (vorige sessie)
-3. **Autonome Bypass & Unit Tests** (vorige sessie)
-4. **Ambient Sentinel PoC Demo** (`controller/poc_demo.py`):
-   - `KernelStateMatrix`: 256-dim float32 rolling temporal buffer (mock Mojo-kern)
-   - `AmbientIngestionEngine`: simuleert continue OS-state sampling met injecteerbare scareware-aanval
-   - `AnomalyDetectionEngine`: Frobenius-norm temporal delta-score over NTSSM-venster
-   - `AutonomousResolutionLoop`: stille remediatie (process beëindigen, audio herstel, overlay sluiten)
-   - `EmpathyEngine`: empathische, Nederlandstalige gebruikersboodschap
-   - FastAPI router gemount op `/demo` (`POST /demo/run`, `GET /demo/state`)
-   - `numpy` toegevoegd aan `controller/requirements.txt`
-   - Router geregistreerd in `controller/main.py`
-
-## 💻 Windows Demo (nieuw)
-- `start_demo.bat` — dubbelklik om backend + browser te starten (eenvoudigste methode)
-- `start_demo.ps1` — PowerShell alternatief met kleur-output en health-check
-- `dashboard/index.html` — opent automatisch op `http://localhost:8000`
-- Eerste keer: script maakt `.venv` aan en installeert alle dependencies automatisch
+1. **Ambient Sentinel PoC Demo** (vorige sessie) — volledig operationeel
+2. **xAI Grok-integratie** (`controller/grok_xai_client.py`):
+   - OpenAI-compatibele client voor `api.x.ai/v1`
+   - Modellen: `grok-3`, `grok-3-mini`, `grok-2`
+   - API-sleutel via `XAI_API_KEY` in `.env`
+3. **Linux Computer-Access tools** (`controller/linux_automator.py`):
+   - `open_app` — apps starten via `gtk-launch` / `xdg-open`
+   - `run_command` — shell-commando's uitvoeren
+   - `list_windows` / `focus_window` — vensterbeheer via `wmctrl`
+   - `type_text` — toetsenbord-simulatie via `xdotool`
+   - `take_screenshot` — schermafbeeldingen via `scrot` of `gnome-screenshot`
+   - `read_file` / `write_file` — veilige bestandsoperaties
+4. **`controller/router.py` bijgewerkt**:
+   - Auto-detectie van OS (macOS → `MacAutomator`, Linux → `LinuxAutomator`)
+   - Grok als primair model indien `model="grok"`
+   - Nieuw intent: `RUN: <commando>` voert een shell-commando uit
+5. **`controller/main.py` bijgewerkt**:
+   - Hardcoded macOS-pad verwijderd — werkt nu cross-platform
+   - `GrokXAIClient` geïnitialiseerd en doorgegeven aan de router
+   - `/models`-endpoint geeft ook Grok-modellen terug
+6. **Native GTK4 Linux-app** (`linux_app/app.py`):
+   - Libadwaita-stijl chatvenster (native GNOME-look op Pop!_OS)
+   - Model-kiezer (grok, grok-3, grok-3-mini, ollama)
+   - Chatgeschiedenis met ballon-UI
+   - Automatisch backend opstarten indien niet actief
+7. **`start_linux.sh`** — één commando voor volledige installatie & start
+8. **`.env copy`** — `XAI_API_KEY` toegevoegd als voorbeeld-sleutel
 
 ## 🚀 Volgende Stappen
-- [ ] **Orchestrator Definitief Integreren**: De code uit de zandbak (`orchestrator_test_versie.py`) importeren of overschrijven in de centrale Wintrip flow (`router.py`), waardoor de OODA-loop operationeel wordt.
-- [ ] **Permissies en Docker Herstellen**: De Mac host Terminal of Full Disk Access (TCC) configureren zodat `sandbox.py` de actieve docker-containment weer feilloos kan aansturen (Docker daemon was onbereikbaar door permission errors).
-- [ ] **Oneindige Loop Activeren**: De Python API zo instellen dat het `TaskModel` daadwerkelijk achtereenvolgend model-outputs en feedback reïnjecteert zonder menselijke goedkeuring tot `COMPLETED` is bereikt.
-- [ ] **Demo uitbreiden**: `POST /demo/run` voorzien van een optionele `user_profile` body-parameter voor gepersonaliseerde empathische berichten.
+- [ ] **Orchestrator Definitief Integreren**: OODA-loop operationeel maken in `router.py`
+- [ ] **Shell-commando veiligheidsfilter**: gevaarlijke commando's blokkeren in `linux_automator.py`
+- [ ] **Grok Streaming**: streaming responses toevoegen aan `grok_xai_client.py` en de GTK-app
+- [ ] **Desktop-entry (.desktop file)**: app toevoegen aan het Pop!_OS applicatiemenu
+- [ ] **Demo uitbreiden**: `POST /demo/run` voorzien van optionele `user_profile`
 
-## 🛠️ Herinnering voor volgende sessie
-De werkende prototypes staan momenteel op de tijdelijke locatie: `/Users/philip/.gemini/antigravity/scratch/sandbox_tests/`. De nieuwe PoC demo staat in `controller/poc_demo.py` en is volledig operationeel.
+## 🛠️ Starten op Linux/Pop!_OS
+```bash
+# Eenmalig: kopieer .env en vul je xAI API-sleutel in
+cp ".env copy" .env
+nano .env  # vul XAI_API_KEY in
+
+# Start alles met één commando
+chmod +x start_linux.sh
+./start_linux.sh
+```

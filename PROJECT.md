@@ -1,42 +1,60 @@
-# 🦅 Wintrip: Local-First AI Agent voor macOS
+# 🦅 Wintrip: Local-First AI Agent voor macOS én Linux
 
-Wintrip is een autonome, privacy-gerichte AI-agent die volledig lokaal op macOS draait. Het project combineert de kracht van lokale taalmodellen (Ollama) met een native Swift interface en een robuuste Python controller-laag.
+Wintrip is een autonome, privacy-gerichte AI-agent die volledig lokaal draait op **macOS** én **Linux/Pop!_OS**. Het project combineert xAI Grok (cloud) en lokale taalmodellen (Ollama) met een platform-native interface en een robuuste Python controller-laag.
 
 ## 🏗️ Architectuur & Mappenstructuur
 
--   **/controller/**: De hersenen van de agent. Bevat de FastAPI server, de Agentic Router, de Scrubber en alle data-parsers.
--   **/regiekamer/**: De native macOS UI (SwiftUI). Een minimalistische menubalk-applicatie voor directe interactie met het brein.
--   **/data/**: De veilige landingszone voor ruwe input (ongestructureerde documenten, archieven).
--   **/output/**: De gecontroleerde eindbestemming voor alle door de AI gegenereerde bestanden en rapporten (Human-in-the-Loop flow).
+- **/controller/**: De hersenen van de agent. FastAPI server, Agentic Router, Scrubber en data-parsers.
+  - `grok_xai_client.py` — xAI Grok API (model: grok-3)
+  - `groq_client.py` — Groq inference API (llama-3.3-70b)
+  - `ollama_client.py` — Lokale Ollama LLMs
+  - `linux_automator.py` — Linux computer-access tools
+  - `mac_automator.py` — macOS AppleScript tools
+- **/linux_app/**: Native GTK4/libadwaita chat-app voor Linux (Pop!_OS)
+- **/regiekamer/**: Native macOS SwiftUI menubalk-applicatie
+- **/data/**: Veilige landingszone voor ruwe input
+- **/output/**: Eindbestemming voor AI-gegenereerde bestanden
 
-## 🛡️ Veiligheidsmechanismen (Constraint-Driven)
+## 🛡️ Veiligheidsmechanismen
 
-1.  **Strikte Isolatie**: De agent heeft uitsluitend leesrechten in `/data` en schrijfrechten in `/output`, beveiligd met *Path Traversal* validatie in de Python-laag.
-2.  **De Scrubber Regel**: Alle data wordt lokaal gescand en gereinigd (API-keys, wachtwoorden, PII) voordat deze naar een Cloud-tier (Tier 1/2) wordt gestuurd.
-3.  **Read-Only IMAP**: E-mail integratie is softwarematig beperkt tot alleen-lezen; de agent kan NOOIT mails verwijderen of als gelezen markeren.
-4.  **Local-First Default**: Tier 3 (Ollama) is de standaard verwerkingslaag, waardoor gevoelige data de machine nooit verlaat.
+1. **Strikte Isolatie**: Agent heeft uitsluitend leesrechten in `/data` en schrijfrechten in `/output`
+2. **De Scrubber Regel**: Alle data wordt lokaal gescand voor verzending naar cloud-tier
+3. **Read-Only IMAP**: E-mail integratie is beperkt tot alleen-lezen
+4. **Local-First Default**: Tier 3 (Ollama) is de standaard verwerkingslaag
 
 ## 🧠 Agentic Router & Tools
 
-De AI-agent is niet passief, maar beschikt over een **Agentic Router** die op basis van jouw vragen autonoom gereedschap kan inzetten:
--   **Web Search**: Haalt actuele kennis en definities op via de Wikipedia API.
--   **Mail Fetcher**: Leest op verzoek recente e-mails via een beveiligde IMAP-verbinding.
--   **File Parser**: Analyseert lokale documenten (.txt, .json, .md, .eml) en ChatGPT exports.
+- **Web Search**: Actuele kennis via Wikipedia API
+- **Mail Fetcher**: Beveiligde IMAP-verbinding (alleen-lezen)
+- **File Parser**: Analyseert lokale documenten (.txt, .json, .md, .pdf, .docx)
+- **Shell Runner**: `RUN: <commando>` voert een shell-commando uit (Linux)
+- **App Launcher**: `open <appnaam>` opent applicaties
 
-## 🚀 Het project opstarten
+## 🚀 Opstarten
 
-1.  **Vereisten**:
-    -   Zorg dat **Ollama** draait op je Mac (standaard model: `llama3`).
-    -   Installeer Python dependencies: `pip install -r controller/requirements.txt`.
-    -   Swift Toolchain (macOS 13+) voor de Regiekamer.
-2.  **Configuratie**:
-    -   Vul het `.env` bestand in de `WintripAI/` hoofdmap met je IMAP-credentials (`IMAP_SERVER`, `IMAP_USER`, `IMAP_PASS`).
-3.  **Uitvoeren**:
-    -   Start de volledige agent (backend + frontend) met één commando vanuit de hoofdmap:
-        ```bash
-        ./start.sh
-        ```
-    -   Gebruik `Ctrl+C` om alles veilig af te sluiten.
+### Linux / Pop!_OS (nieuw)
+```bash
+cp ".env copy" .env
+# Vul XAI_API_KEY in .env
+chmod +x start_linux.sh
+./start_linux.sh
+```
+
+### macOS
+1. Zorg dat **Ollama** draait (`ollama serve`)
+2. `pip install -r controller/requirements.txt`
+3. `./start.sh`
+
+## ⚙️ Configuratie (.env)
+
+| Variabele | Beschrijving |
+|-----------|-------------|
+| `XAI_API_KEY` | xAI Grok API-sleutel (https://console.x.ai/) |
+| `GROQ_API_KEY` | Groq inference API-sleutel (optioneel) |
+| `IMAP_SERVER` | IMAP-server adres |
+| `IMAP_USER` | E-mailadres |
+| `IMAP_PASS` | App-wachtwoord |
+| `WINTRIP_DEFAULT_MODEL` | Standaard model (`grok`, `ollama`, etc.) |
 
 ---
 *Ontwikkeld met passie voor privacy en AI-autonomie.*

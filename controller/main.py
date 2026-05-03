@@ -7,8 +7,10 @@ from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
-# Forceer het juiste pad
-project_root = "/Users/philip/wintripai"
+load_dotenv()
+
+# Voeg project-root dynamisch toe zodat het op elk OS werkt
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
@@ -22,6 +24,7 @@ try:
     from controller.virtual_team import VirtualMeeting
     from controller.orchestrator import WintripOrchestrator
     from controller.poc_demo import router_demo
+    from controller.grok_xai_client import GrokXAIClient
 except ImportError:
     from ollama_client import OllamaClient
     from router import AIRouter
@@ -31,8 +34,8 @@ except ImportError:
     from virtual_team import VirtualMeeting
     from orchestrator import WintripOrchestrator
     from poc_demo import router_demo
+    from grok_xai_client import GrokXAIClient
 
-load_dotenv()
 app = FastAPI()
 
 app.add_middleware(
@@ -47,8 +50,9 @@ app.add_middleware(
 app.include_router(router_demo)
 
 ollama = OllamaClient()
+grok = GrokXAIClient()
 kb = KnowledgeBase()
-router = AIRouter(ollama_client=ollama, kb=kb)
+router = AIRouter(ollama_client=ollama, kb=kb, grok_client=grok)
 mail_executor = MailExecutor()
 
 # Regiekamer / Orchestrator Instantie (Hergebruikt sandbox en reflector uit de router array)
@@ -92,8 +96,9 @@ async def health():
 
 @app.get("/models")
 async def get_models():
-    models = ollama.list_models()
-    return {"models": models}
+    ollama_models = ollama.list_models()
+    grok_models = grok.list_models()
+    return {"models": ollama_models, "grok_models": grok_models}
 
 @app.post("/keep-alive")
 async def keep_alive():
