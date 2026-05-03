@@ -148,6 +148,28 @@ type LoopStatus = {
   updated_at?: number;
 };
 
+type AgentJob = {
+  job_id: string;
+  agent: string;
+  status: string;
+  task?: string;
+  created_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  response_preview?: string;
+  output_dir?: string;
+  events_file?: string;
+  cancel_requested?: boolean;
+};
+
+type AgentJobEvent = {
+  index?: number;
+  ts?: string;
+  type?: string;
+  data?: Record<string, unknown>;
+};
+
 type ProviderChoice = {
   id: string;
   label: string;
@@ -225,6 +247,9 @@ export default function App() {
   const [trainerStatus, setTrainerStatus] = useState<any>(null);
   const [trainerJobs, setTrainerJobs] = useState<any[]>([]);
   const [contextData, setContextData] = useState<any>(null);
+  const [agentJobs, setAgentJobs] = useState<AgentJob[]>([]);
+  const [selectedAgentJobId, setSelectedAgentJobId] = useState<string | null>(null);
+  const [agentJobEvents, setAgentJobEvents] = useState<AgentJobEvent[]>([]);
   const terminalHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -240,9 +265,16 @@ export default function App() {
         },
       });
       const text = await response.text();
-      const data = text ? JSON.parse(text) : {};
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { raw: text };
+      }
       if (!response.ok) {
-        throw new Error(data.detail ?? data.error ?? response.statusText);
+        const detail = data?.detail ?? data?.error ?? data?.reason ?? data?.raw ?? response.statusText;
+        const message = typeof detail === "string" ? detail : JSON.stringify(detail);
+        throw new Error(`HTTP ${response.status}: ${message}`);
       }
       return data as T;
     },
@@ -315,6 +347,14 @@ export default function App() {
         // Context endpoints may not be available yet
       }
     }
+    if (activeTab === "main") {
+      try {
+        const jobsResponse = await api<{ jobs?: AgentJob[] }>("/api/agent-runtime/jobs?limit=20");
+        setAgentJobs(Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs : []);
+      } catch {
+        // Agent runtime not available yet — leave previous list intact.
+      }
+    }
   }, [api, activeTab]);
 
   useEffect(() => {
@@ -370,6 +410,29 @@ export default function App() {
   }, [activeTab, api]);
 
   useEffect(() => {
+    if (!selectedAgentJobId) {
+      setAgentJobEvents([]);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await api<{ events?: AgentJobEvent[] }>(`/api/agent-runtime/jobs/${selectedAgentJobId}/events?limit=200`);
+        if (cancelled) return;
+        setAgentJobEvents(Array.isArray(response.events) ? response.events : []);
+      } catch {
+        // Job may have been removed; clear and stop polling next tick.
+      }
+    };
+    load();
+    const id = window.setInterval(load, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [selectedAgentJobId, api]);
+
+  useEffect(() => {
     if (providerInitialized.current || providerChoices.length === 0) return;
     const local = providerChoices.find((item) => item.id === "ollama" && item.enabled) ?? providerChoices.find((item) => item.enabled);
     if (!local) return;
@@ -413,6 +476,18 @@ export default function App() {
     if (data) {
       await handleFrontendAction(data);
       setChatOutput(renderResponse(data));
+      // Slash-agent dispatched a background job — pull it into the Agent Jobs panel right away
+      // instead of waiting for the next 5s poll.
+      const job = (data as { job?: { job_id?: string } }).job;
+      if (data.route === "slash_agent" && job?.job_id) {
+        setSelectedAgentJobId(job.job_id);
+        try {
+          const jobsResponse = await api<{ jobs?: AgentJob[] }>("/api/agent-runtime/jobs?limit=20");
+          setAgentJobs(Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs : []);
+        } catch {
+          // ignore — the regular refresh will catch up
+        }
+      }
     }
   }
 
@@ -537,6 +612,22 @@ export default function App() {
     }
   }
 
+  async function cancelAgentJob(jobId: string) {
+    setBusy(true);
+    try {
+      const data = await api<{ status: string; job: AgentJob }>(
+        `/api/agent-runtime/jobs/${jobId}/cancel`,
+        { method: "POST" },
+      );
+      pushEvent(`Agent job ${jobId.slice(0, 18)} cancelled`, data);
+      await refresh();
+    } catch (error) {
+      pushEvent(`Agent job cancel error`, { status: "error", error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const records = status.records ?? {};
   const learning = status.learning_11d?.chromadb ?? {};
   const createFlow = status.model?.create_flow;
@@ -545,6 +636,8 @@ export default function App() {
   const toolCount = status.roo_adapter?.local_python_adapters?.length ?? 0;
   const externalProviderChoices = providerChoices.filter((item) => item.kind === "external");
   const apiKeyStatus = config.api_keys?.providers ?? {};
+  const selectedAgentJob = agentJobs.find((job) => job.job_id === selectedAgentJobId) ?? null;
+  const agentJobTerminalStatuses = new Set(["completed", "failed", "cancelled"]);
 
   return (
     <main className="app-shell">
@@ -659,6 +752,11 @@ export default function App() {
               ))}
             </div>
             <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+            {slashPrompt && !approvalReady && (
+              <div className="status-pill warn" style={{ alignSelf: "flex-start" }}>
+                Slash agents have approval needed: type <strong>{approvalPhrase}</strong> in the Akkoord field.
+              </div>
+            )}
           </div>
           <button onClick={sendChat} disabled={busy || !prompt.trim() || (!slashPrompt && !canCallSelectedProvider)}>
             <Send size={15} /> Send
@@ -748,6 +846,58 @@ export default function App() {
               </div>
               <PanelHeader title="Last Response" small />
               <pre className="response-box">{chatOutput || summarizeResult(loopResult) || "Nog geen response."}</pre>
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="Agent Jobs" />
+              {agentJobs.length === 0 ? (
+                <div className="empty-state">Nog geen agent jobs. Start er een met /codex &lt;opdracht&gt;.</div>
+              ) : (
+                <div className="role-list">
+                  {agentJobs.map((job) => {
+                    const isSelected = job.job_id === selectedAgentJobId;
+                    const isTerminal = agentJobTerminalStatuses.has(job.status);
+                    return (
+                      <div className="role-row" key={job.job_id} style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedAgentJobId(isSelected ? null : job.job_id)}
+                            style={{ background: "transparent", border: "none", color: "inherit", padding: 0, cursor: "pointer", textAlign: "left", flex: 1 }}
+                          >
+                            <strong>{job.agent}</strong> <span>{job.status}</span>
+                            <div style={{ fontSize: 11, opacity: 0.7 }}>{job.job_id}</div>
+                          </button>
+                          {!isTerminal && (
+                            <button onClick={() => cancelAgentJob(job.job_id)} disabled={busy || !!job.cancel_requested}>
+                              {job.cancel_requested ? "stopping" : "cancel"}
+                            </button>
+                          )}
+                        </div>
+                        {job.task && <div style={{ fontSize: 11, opacity: 0.7 }}>{job.task.slice(0, 160)}{job.task.length > 160 ? "…" : ""}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedAgentJob && (
+                <>
+                  <PanelHeader title={`Events (${selectedAgentJob.job_id.slice(0, 18)})`} small />
+                  <pre className="response-box" style={{ maxHeight: 220, overflowY: "auto" }}>
+                    {agentJobEvents.length === 0
+                      ? "Nog geen events."
+                      : agentJobEvents
+                          .map((event) => `${event.ts ?? ""} ${event.type ?? ""} ${event.data ? JSON.stringify(event.data) : ""}`.trim())
+                          .join("\n")}
+                  </pre>
+                  {selectedAgentJob.response_preview && (
+                    <>
+                      <PanelHeader title="Response preview" small />
+                      <pre className="response-box">{selectedAgentJob.response_preview}</pre>
+                    </>
+                  )}
+                </>
+              )}
             </section>
           </section>
         )}
@@ -929,6 +1079,7 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   const [knowledgeAcquisition, setKnowledgeAcquisition] = useState<any>(null);
   const [knowledgeMode, setKnowledgeMode] = useState("both");
   const [knowledgeMaxTopics, setKnowledgeMaxTopics] = useState(2);
+  const [knowledgePasses, setKnowledgePasses] = useState(3);
   const [knowledgeModel, setKnowledgeModel] = useState("gemma4:latest");
   const isBlueBrain = method === "blue_brain";
   const continuousMethods = [
@@ -1001,11 +1152,16 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   }
 
   async function createJob() {
+    const resolvedBaseModel = isBlueBrain ? baseModel || "blue-brain-random-forest" : baseModel.trim();
+    if (!resolvedBaseModel) {
+      recordTrainerError("Create Job", new Error("Base model is required. Vul eerst een base model in."));
+      return;
+    }
     try {
       const data = await api("/trainer/jobs", {
         method: "POST",
         body: JSON.stringify({
-          base_model: isBlueBrain ? baseModel || "blue-brain-random-forest" : baseModel,
+          base_model: resolvedBaseModel,
           method,
           epochs: isBlueBrain ? blueCycles : 3,
           blue_samples: blueSamples,
@@ -1017,7 +1173,6 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
       await refresh();
     } catch (error) {
       recordTrainerError("Create Job", error);
-      console.error("Failed to create job:", error);
     }
   }
 
@@ -1112,6 +1267,7 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           approval,
           knowledge_mode: knowledgeMode,
           knowledge_topics: knowledgeMaxTopics,
+          knowledge_passes: knowledgePasses,
           model: knowledgeModel,
           continuous_methods: continuousMethods,
           execute_training: continuousExecute,
@@ -1708,6 +1864,10 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           <label>
             Max
             <input type="number" min={1} max={10} value={knowledgeMaxTopics} onChange={(e) => setKnowledgeMaxTopics(Number(e.target.value))} />
+          </label>
+          <label>
+            Batches
+            <input type="number" min={1} max={5} value={knowledgePasses} onChange={(e) => setKnowledgePasses(Math.max(1, Math.min(5, Number(e.target.value) || 1)))} />
           </label>
           <label>
             Model

@@ -279,6 +279,7 @@ class AccelerateLearningRequest(BaseModel):
     approval: str = Field(..., min_length=1)
     knowledge_mode: str = Field(default="gemma", pattern="^(off|gemma|browser|both)$")
     knowledge_topics: int = Field(default=3, ge=0, le=10)
+    knowledge_passes: int = Field(default=3, ge=1, le=5)
     start_index: int | None = Field(default=None, ge=0)
     model: str = Field(default=DEFAULT_GEMMA_MODEL, min_length=1, max_length=256)
     continuous_methods: list[TrainerMethod] = Field(default_factory=lambda: [TrainerMethod.LITGPT, TrainerMethod.UNSLOOTH])
@@ -501,6 +502,7 @@ async def trainer_learning_accelerate(request: AccelerateLearningRequest) -> dic
         approval=request.approval,
         knowledge_mode=request.knowledge_mode,
         knowledge_topics=request.knowledge_topics,
+        knowledge_passes=request.knowledge_passes,
         start_index=request.start_index,
         model=request.model,
         continuous_methods=methods,

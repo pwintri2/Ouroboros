@@ -12,10 +12,8 @@ import json
 import os
 import re
 import subprocess
-import threading
 import time
 import urllib.request
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,9 +44,6 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
     re.compile(r"(?i)authorization:\s*bearer\s+[A-Za-z0-9._\-]+"),
 )
-_AGENT_JOBS_LOCK = threading.Lock()
-
-
 def parse_slash_command(prompt: str) -> dict[str, str] | None:
     text = str(prompt or "").strip()
     if not text.startswith("/"):
@@ -204,233 +199,61 @@ def execute_roo_agent_task(task: str, approval: str = "") -> dict[str, Any]:
 def _run_codex_exec(task: str, timeout_seconds: int) -> dict[str, Any]:
     started = time.time()
     if not _command_exists("codex"):
-        return _agent_result("codex", "codex_exec", "missing", started, response="Codex CLI is niet gevonden op de host.")
+        return _agent_result(
+            "codex",
+            "codex_exec",
+            "missing",
+            started,
+            response=(
+                "Codex CLI staat niet in PATH van de backend. "
+                "Installeer Codex op de host of voeg het pad toe aan het backend-process, en probeer opnieuw."
+            ),
+        )
     auth = _codex_login_status()
     if not auth.get("logged_in"):
         return _login_required("codex", started, "https://chatgpt.com/codex")
-    stamp = _stamp()
-    out_file = _agent_output_dir() / f"codex_{stamp}.md"
-    stdout_file = _agent_output_dir() / f"codex_{stamp}.stdout.log"
-    stderr_file = _agent_output_dir() / f"codex_{stamp}.stderr.log"
-    prompt = _agent_prompt("Codex", task)
-    command = [
-        "codex",
-        "exec",
-        "--cd",
-        str(_host_wintrip_root()),
-        "--add-dir",
-        str(ruflo_path()),
-        "--add-dir",
-        str(codex_path()),
-        "--add-dir",
-        str(roo_path()),
-        "--sandbox",
-        "workspace-write",
-        "--full-auto",
-        "--skip-git-repo-check",
-        "--output-last-message",
-        str(out_file),
-        prompt,
-    ]
-    timeout_seconds = max(1, min(int(timeout_seconds or 60), 600))
-    foreground_seconds = min(timeout_seconds, _codex_foreground_seconds())
     try:
-        stdout_handle = stdout_file.open("w", encoding="utf-8")
-        stderr_handle = stderr_file.open("w", encoding="utf-8")
-        proc = subprocess.Popen(
-            command,
-            cwd=str(_host_wintrip_root()),
-            text=True,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            env=_host_env(),
-            start_new_session=True,
+        from controller.agent_runtime.orchestrator import get_orchestrator
+
+        orchestrator = get_orchestrator()
+        record = orchestrator.submit(
+            agent="codex",
+            task=task,
+            timeout_seconds=int(timeout_seconds or 240),
+            metadata={"prompt": _agent_prompt("Codex", task)},
         )
     except Exception as exc:
-        try:
-            stdout_handle.close()  # type: ignore[possibly-undefined]
-            stderr_handle.close()  # type: ignore[possibly-undefined]
-        except Exception:
-            pass
-        return _agent_result("codex", "codex_exec", "error", started, command=_public_command(command), reason=str(exc))
-
-    try:
-        return_code = proc.wait(timeout=foreground_seconds)
-        stdout_handle.close()
-        stderr_handle.close()
-        process = _completed_process_payload(return_code, stdout_file, stderr_file, started)
-        response = out_file.read_text(encoding="utf-8", errors="replace") if out_file.exists() else process.get("stdout", "")
-        return _agent_result(
-            "codex",
-            "codex_exec",
-            process["status"],
-            started,
-            command=_public_command(command),
-            response=response,
-            process=process,
-        )
-    except subprocess.TimeoutExpired:
-        stdout_handle.close()
-        stderr_handle.close()
-        job = _register_agent_job(
-            agent="codex",
-            pid=proc.pid,
-            command=_public_command(command),
-            output_file=out_file,
-            stdout_file=stdout_file,
-            stderr_file=stderr_file,
-            started=started,
-            timeout_seconds=timeout_seconds,
-        )
-        _monitor_agent_process(proc, job["job_id"], stdout_file, stderr_file, out_file, started, timeout_seconds)
-        return _agent_result(
-            "codex",
-            "codex_exec",
-            "running",
-            started,
-            command=_public_command(command),
-            job=job,
-            response=(
-                "Codex is gestart en werkt door op de host. "
-                f"Job {job['job_id']} loopt nog; vraag `/Codex status` voor de laatste output."
-            ),
-        )
-
-
-def _codex_foreground_seconds() -> int:
-    try:
-        value = int(os.getenv("WINTRIP_CODEX_FOREGROUND_SECONDS", "12"))
-    except ValueError:
-        value = 12
-    return max(3, min(value, 120))
-
-
-def _agent_jobs_path() -> Path:
-    return _agent_output_dir() / "agent_jobs.json"
-
-
-def _load_agent_jobs() -> dict[str, Any]:
-    path = _agent_jobs_path()
-    if not path.exists():
-        return {"jobs": {}, "last_updated": None}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"jobs": {}, "last_updated": None}
-    if not isinstance(payload, dict):
-        return {"jobs": {}, "last_updated": None}
-    jobs = payload.get("jobs")
-    if not isinstance(jobs, dict):
-        payload["jobs"] = {}
-    return payload
-
-
-def _save_agent_jobs(payload: dict[str, Any]) -> None:
-    path = _agent_jobs_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload["last_updated"] = datetime.utcnow().isoformat() + "Z"
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def _register_agent_job(
-    agent: str,
-    pid: int,
-    command: list[str],
-    output_file: Path,
-    stdout_file: Path,
-    stderr_file: Path,
-    started: float,
-    timeout_seconds: int,
-) -> dict[str, Any]:
-    job = {
-        "job_id": f"{agent}_{_stamp()}_{uuid.uuid4().hex[:8]}",
-        "agent": agent,
-        "status": "running",
-        "pid": pid,
-        "started_at": datetime.utcnow().isoformat() + "Z",
-        "duration_seconds": round(time.time() - started, 3),
-        "timeout_seconds": timeout_seconds,
-        "output_file": str(output_file),
-        "stdout_file": str(stdout_file),
-        "stderr_file": str(stderr_file),
-        "command": command,
-        "fake_success": False,
-    }
-    with _AGENT_JOBS_LOCK:
-        payload = _load_agent_jobs()
-        payload["jobs"][job["job_id"]] = job
-        _save_agent_jobs(payload)
-    return job
-
-
-def _monitor_agent_process(
-    proc: subprocess.Popen[str],
-    job_id: str,
-    stdout_file: Path,
-    stderr_file: Path,
-    output_file: Path,
-    started: float,
-    timeout_seconds: int,
-) -> None:
-    def worker() -> None:
-        deadline = max(1, timeout_seconds - _codex_foreground_seconds())
-        timed_out = False
-        try:
-            return_code = proc.wait(timeout=deadline)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            proc.terminate()
-            try:
-                return_code = proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                return_code = proc.wait(timeout=5)
-        process = _completed_process_payload(return_code, stdout_file, stderr_file, started)
-        if timed_out:
-            process["status"] = "timeout"
-        response = output_file.read_text(encoding="utf-8", errors="replace") if output_file.exists() else process.get("stdout", "")
-        _update_agent_job(
-            job_id,
-            {
-                "status": process["status"],
-                "exit_code": process.get("exit_code"),
-                "duration_seconds": process.get("duration_seconds"),
-                "completed_at": datetime.utcnow().isoformat() + "Z",
-                "response_preview": _clip(_redact(response), 2000),
-                "process": process,
-            },
-        )
-
-    thread = threading.Thread(target=worker, name=f"wintrip-agent-job-{job_id}", daemon=True)
-    thread.start()
-
-
-def _update_agent_job(job_id: str, updates: dict[str, Any]) -> None:
-    with _AGENT_JOBS_LOCK:
-        payload = _load_agent_jobs()
-        job = payload.get("jobs", {}).get(job_id)
-        if not isinstance(job, dict):
-            return
-        job.update(updates)
-        payload["jobs"][job_id] = job
-        _save_agent_jobs(payload)
+        return _agent_result("codex", "codex_exec", "error", started, reason=str(exc))
+    job_payload = record.to_dict()
+    return _agent_result(
+        "codex",
+        "codex_exec",
+        "running",
+        started,
+        job=job_payload,
+        response=(
+            f"Codex job {record.job_id} gestart in de agent runtime. "
+            "Volg live in Agent Jobs of vraag `/Codex status` voor de laatste samenvatting."
+        ),
+    )
 
 
 def _agent_jobs_result(agent: str) -> dict[str, Any]:
     started = time.time()
-    jobs = _recent_agent_jobs(agent)
+    try:
+        from controller.agent_runtime.orchestrator import get_orchestrator
+
+        jobs = get_orchestrator().list_jobs(agent=agent, limit=10)
+    except Exception as exc:
+        return _agent_result(agent, "agent_jobs", "error", started, reason=str(exc), jobs=[])
     latest = jobs[0] if jobs else None
     lines = [f"/{agent} jobs:"]
     if not jobs:
         lines.append("Nog geen jobs gevonden.")
     for job in jobs[:5]:
-        label = f"- {job.get('job_id')}: {job.get('status')} ({job.get('duration_seconds', 0)}s)"
+        label = f"- {job.get('job_id')}: {job.get('status')}"
         if job.get("response_preview"):
             label += f"\n{str(job.get('response_preview')).strip()[-1200:]}"
-        elif job.get("stdout_file"):
-            tail = _read_tail(Path(str(job["stdout_file"])), 1200).strip()
-            if tail:
-                label += f"\n{tail}"
         lines.append(label)
     return _agent_result(
         agent,
@@ -441,33 +264,6 @@ def _agent_jobs_result(agent: str) -> dict[str, Any]:
         latest=latest,
         response="\n".join(lines),
     )
-
-
-def _recent_agent_jobs(agent: str) -> list[dict[str, Any]]:
-    with _AGENT_JOBS_LOCK:
-        payload = _load_agent_jobs()
-    jobs = [job for job in payload.get("jobs", {}).values() if isinstance(job, dict) and job.get("agent") == agent]
-    return sorted(jobs, key=lambda item: str(item.get("started_at", "")), reverse=True)
-
-
-def _completed_process_payload(return_code: int, stdout_file: Path, stderr_file: Path, started: float) -> dict[str, Any]:
-    stdout = _read_tail(stdout_file, 12000)
-    stderr = _read_tail(stderr_file, 12000)
-    return {
-        "status": "success" if return_code == 0 else "error",
-        "exit_code": return_code,
-        "stdout": _redact(stdout),
-        "stderr": _redact(stderr),
-        "duration_seconds": round(time.time() - started, 3),
-        "fake_success": False,
-    }
-
-
-def _read_tail(path: Path, limit: int) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")[-limit:]
-    except Exception:
-        return ""
 
 
 def _run_ruflo_swarm(task: str, timeout_seconds: int) -> dict[str, Any]:
@@ -736,9 +532,15 @@ def _host_wintrip_root() -> Path:
 def _host_env() -> dict[str, str]:
     env = dict(os.environ)
     node_bin = str(Path.home() / ".nvm" / "versions" / "node" / "v22.22.2" / "bin")
+    extension_bases = (
+        Path.home() / ".windsurf" / "extensions",
+        Path.home() / ".vscode" / "extensions",
+        Path.home() / ".antigravity" / "extensions",
+        Path.home() / ".cursor" / "extensions",
+    )
     codex_bins = [
         str(path)
-        for base in (Path.home() / ".windsurf" / "extensions", Path.home() / ".vscode" / "extensions")
+        for base in extension_bases
         for path in sorted(base.glob("openai.chatgpt-*/bin/linux-x86_64"))
         if path.exists()
     ]

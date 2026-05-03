@@ -1,0 +1,11 @@
+[
+  {
+    "threadId": "aec546fe-b3f7-4a9e-a0e5-6822752b9b16",
+    "name": "koorstudio",
+    "terminalId": "1301272",
+    "workingDir": "/home/pwintri2/WintripAI",
+    "branch": "trainer-pipeline-integration",
+    "whitelistPatterns": [],
+    "createdAt": 1777625993506
+  }
+]

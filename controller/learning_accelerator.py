@@ -33,6 +33,7 @@ def accelerate_learning(
     approval: str = "",
     knowledge_mode: str = "gemma",
     knowledge_topics: int = 3,
+    knowledge_passes: int = 1,
     start_index: int | None = None,
     model: str = DEFAULT_GEMMA_MODEL,
     continuous_methods: list[str] | None = None,
@@ -42,8 +43,10 @@ def accelerate_learning(
     """Run one bounded accelerated-learning pass.
 
     Default behavior is intentionally fast and local: Gemma distillation plus a
-    forced continuous dataset/job tick. Set execute_training=True only when the
-    caller explicitly wants real LitGPT/Unsloth training to start.
+    forced continuous dataset/job tick. knowledge_passes lets the caller run a
+    few bounded acquisition batches before rebuilding the trainer dataset. Set
+    execute_training=True only when the caller explicitly wants real LitGPT/
+    Unsloth training to start.
     """
     if approval != APPROVAL_PHRASE:
         return {"status": "blocked", "reason": "Approval phrase must be 'Akkoord'", "fake_success": False}
@@ -58,23 +61,29 @@ def accelerate_learning(
 
     methods = _normalize_methods(continuous_methods)
     bounded_topics = max(0, min(int(knowledge_topics or 0), 10))
+    bounded_passes = max(1, min(int(knowledge_passes or 1), 5))
     bounded_records = max(1, min(int(max_records or 1000), 10_000))
     started_at = _now_iso()
     approved_before = _safe_count_approved()
     steps: list[dict[str, Any]] = []
     knowledge_result: dict[str, Any] | None = None
+    knowledge_runs: list[dict[str, Any]] = []
 
     if clean_mode != "off" and bounded_topics > 0:
         index_result = index_knowledge_list(approval=approval)
         steps.append(_step("knowledge_index", index_result))
-        knowledge_result = run_knowledge_tick(
-            approval=approval,
-            mode=clean_mode,
-            max_topics=bounded_topics,
-            start_index=start_index,
-            model=model,
-        )
-        steps.append(_step("knowledge_tick", knowledge_result))
+        for pass_index in range(bounded_passes):
+            knowledge_result = run_knowledge_tick(
+                approval=approval,
+                mode=clean_mode,
+                max_topics=bounded_topics,
+                start_index=start_index,
+                model=model,
+            )
+            knowledge_runs.append(knowledge_result)
+            steps.append(_step(f"knowledge_tick_{pass_index + 1}", knowledge_result))
+            if _should_stop_knowledge_batches(knowledge_result):
+                break
     else:
         steps.append(
             {
@@ -105,6 +114,10 @@ def accelerate_learning(
         "completed_at": _now_iso(),
         "knowledge_mode": clean_mode,
         "knowledge_topics": bounded_topics,
+        "knowledge_passes_requested": bounded_passes if clean_mode != "off" and bounded_topics > 0 else 0,
+        "knowledge_passes_completed": len(knowledge_runs),
+        "knowledge_created_count": sum(int(run.get("created_count") or 0) for run in knowledge_runs),
+        "knowledge_error_count": sum(int(run.get("error_count") or 0) for run in knowledge_runs),
         "continuous_methods": methods,
         "execute_training": bool(execute_training),
         "approved_records_before": approved_before,
@@ -113,6 +126,7 @@ def accelerate_learning(
         "added_approved_records": max(0, approved_after - approved_before),
         "steps": steps,
         "knowledge": knowledge_result,
+        "knowledge_runs": knowledge_runs,
         "continuous": continuous_result,
         "fake_success": False,
     }
@@ -137,6 +151,13 @@ def _step(name: str, result: dict[str, Any] | None) -> dict[str, Any]:
         "error_count": int(payload.get("error_count") or 0),
         "reason": payload.get("reason") or payload.get("last_error") or "",
     }
+
+
+def _should_stop_knowledge_batches(result: dict[str, Any] | None) -> bool:
+    payload = result or {}
+    status = str(payload.get("status") or "")
+    created_count = int(payload.get("created_count") or 0)
+    return created_count <= 0 or status in {"blocked", "error", "missing"}
 
 
 def _overall_status(steps: list[dict[str, Any]]) -> str:

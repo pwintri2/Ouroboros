@@ -1,0 +1,44 @@
+{
+  "tasks": {
+    "task-1777822806197-rp326k": {
+      "taskId": "task-1777822806197-rp326k",
+      "type": "implementation",
+      "description": "Ruflo swarm werkt nu als onderdeel van Ouroboros.\n\nOpdracht van Philip:\nKun je het leerproces versnellen?\n\nSysteemcontext:\n- WintripAI root: /home/pwintri2/WintripAI\n- Ruflo root: /home/pwintri2/ruflo\n- Roo root: /home/pwintri2/Roo\n- Codex root: /home/pwintri2/Codex\n- Lees AGENTS.md en OUROBOROS_IDE_CONTEXT.md wanneer aanwezig.\n- Werk in WintripAI tenzij Philip expliciet iets anders vraagt.\n- Respecteer bestaande dirty worktree; revert geen onbekende wijzigingen.\n- Schrijf geen API keys, OAuth tokens, bearer tokens of browser session data naar bestanden/logs.\n- Valideer met gerichte tests waar haalbaar en rapporteer echte stdout/stderr.\n",
+      "priority": "normal",
+      "status": "pending",
+      "progress": 0,
+      "assignedTo": [],
+      "tags": [],
+      "createdAt": "2026-05-03T15:40:06.197Z",
+      "startedAt": null,
+      "completedAt": null
+    },
+    "task-1777845338879-qou289": {
+      "taskId": "task-1777845338879-qou289",
+      "type": "implementation",
+      "description": "Ruflo swarm werkt nu als onderdeel van Ouroboros.\n\nOpdracht van Philip:\nKun je het leren versnellen?\n\nSysteemcontext:\n- WintripAI root: /home/pwintri2/WintripAI\n- Ruflo root: /home/pwintri2/ruflo\n- Roo root: /home/pwintri2/Roo\n- Codex root: /home/pwintri2/Codex\n- Lees AGENTS.md en OUROBOROS_IDE_CONTEXT.md wanneer aanwezig.\n- Werk in WintripAI tenzij Philip expliciet iets anders vraagt.\n- Respecteer bestaande dirty worktree; revert geen onbekende wijzigingen.\n- Schrijf geen API keys, OAuth tokens, bearer tokens of browser session data naar bestanden/logs.\n- Valideer met gerichte tests waar haalbaar en rapporteer echte stdout/stderr.\n",
+      "priority": "normal",
+      "status": "pending",
+      "progress": 0,
+      "assignedTo": [],
+      "tags": [],
+      "createdAt": "2026-05-03T21:55:38.879Z",
+      "startedAt": null,
+      "completedAt": null
+    },
+    "task-1777845606635-xkdwng": {
+      "taskId": "task-1777845606635-xkdwng",
+      "type": "implementation",
+      "description": "Ruflo swarm werkt nu als onderdeel van Ouroboros.\n\nOpdracht van Philip:\nVersnel de rotatie van Ouroboros\n\nSysteemcontext:\n- WintripAI root: /home/pwintri2/WintripAI\n- Ruflo root: /home/pwintri2/ruflo\n- Roo root: /home/pwintri2/Roo\n- Codex root: /home/pwintri2/Codex\n- Lees AGENTS.md en OUROBOROS_IDE_CONTEXT.md wanneer aanwezig.\n- Werk in WintripAI tenzij Philip expliciet iets anders vraagt.\n- Respecteer bestaande dirty worktree; revert geen onbekende wijzigingen.\n- Schrijf geen API keys, OAuth tokens, bearer tokens of browser session data naar bestanden/logs.\n- Valideer met gerichte tests waar haalbaar en rapporteer echte stdout/stderr.\n",
+      "priority": "normal",
+      "status": "pending",
+      "progress": 0,
+      "assignedTo": [],
+      "tags": [],
+      "createdAt": "2026-05-03T22:00:06.635Z",
+      "startedAt": null,
+      "completedAt": null
+    }
+  },
+  "version": "3.0.0"
+}

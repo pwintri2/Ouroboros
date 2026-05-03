@@ -1,0 +1,41 @@
+{
+  "swarmId": "swarm-moqbddrf",
+  "objective": "Ruflo swarm werkt nu als onderdeel van Ouroboros.\n\nOpdracht van Philip:\nVersnel de rotatie van Ouroboros\n\nSysteemcontext:\n- WintripAI root: /home/pwintri2/WintripAI\n- Ruflo root: /home/pwintri2/ruflo\n- Roo root: /home/pwintri2/Roo\n- Codex root: /home/pwintri2/Codex\n- Lees AGENTS.md en OUROBOROS_IDE_CONTEXT.md wanneer aanwezig.\n- Werk in WintripAI tenzij Philip expliciet iets anders vraagt.\n- Respecteer bestaande dirty worktree; revert geen onbekende wijzigingen.\n- Schrijf geen API keys, OAuth tokens, bearer tokens of browser session data naar bestanden/logs.\n- Valideer met gerichte tests waar haalbaar en rapporteer echte stdout/stderr.\n",
+  "strategy": "development",
+  "status": "initialized",
+  "agents": 8,
+  "agentPlan": [
+    {
+      "role": "Coordinator",
+      "type": "coordinator",
+      "count": 1,
+      "purpose": "Orchestrate workflow"
+    },
+    {
+      "role": "Architect",
+      "type": "architect",
+      "count": 1,
+      "purpose": "System design"
+    },
+    {
+      "role": "Coder",
+      "type": "coder",
+      "count": 3,
+      "purpose": "Implementation"
+    },
+    {
+      "role": "Tester",
+      "type": "tester",
+      "count": 2,
+      "purpose": "Quality assurance"
+    },
+    {
+      "role": "Reviewer",
+      "type": "reviewer",
+      "count": 1,
+      "purpose": "Code review"
+    }
+  ],
+  "startedAt": "2026-05-03T22:00:06.891Z",
+  "parallel": true
+}

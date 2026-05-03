@@ -175,6 +175,12 @@ except Exception:
         app.state.trainer_pipeline_routes_unavailable = True
 
 try:
+    from controller.api.agent_runtime_routes import init_agent_runtime
+except Exception:
+    def init_agent_runtime(app: Any) -> None:
+        app.state.agent_runtime_routes_unavailable = True
+
+try:
     from controller.safe_shell import run_safe_shell
 except Exception:
     def run_safe_shell(command: str, approval: str = "", timeout: int = 20) -> dict[str, Any]:
@@ -239,6 +245,7 @@ stream_storage = StreamStorage(collection=kb.collection)
 init_training(app, storage=stream_storage)
 init_browser_research(app)
 init_trainer_pipeline(app)
+init_agent_runtime(app)
 app.state.self_modification_pipeline = {
     "status": "online",
     "approval_required": True,

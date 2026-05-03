@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -72,36 +73,49 @@ class TestSlashAgentRouter(unittest.TestCase):
 
         self.assertTrue(status["logged_in"])
 
-    def test_codex_exec_returns_running_instead_of_blocking_forever(self):
+    def test_codex_exec_dispatches_to_agent_runtime_instead_of_blocking(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="agent-runtime-test-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+        adapter_calls: list[str] = []
+
+        def fake_adapter(job, log, on_progress):
+            adapter_calls.append(job.job_id)
+            log.append("test", {"task": job.task})
+            return {"status": "completed", "exit_code": 0, "response_preview": "ok"}
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"codex": fake_adapter})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+
         original_exists = slash_agent_router._command_exists
         original_auth = slash_agent_router._codex_login_status
-        original_popen = slash_agent_router.subprocess.Popen
-        original_monitor = slash_agent_router._monitor_agent_process
-        original_foreground = slash_agent_router._codex_foreground_seconds
-
-        class FakePopen:
-            pid = 12345
-
-            def wait(self, timeout=None):
-                raise slash_agent_router.subprocess.TimeoutExpired("codex", timeout)
-
         slash_agent_router._command_exists = lambda name: name == "codex"
         slash_agent_router._codex_login_status = lambda: {"logged_in": True, "status": "success"}
-        slash_agent_router.subprocess.Popen = lambda *args, **kwargs: FakePopen()
-        slash_agent_router._monitor_agent_process = lambda *args, **kwargs: None
-        slash_agent_router._codex_foreground_seconds = lambda: 1
         try:
             result = slash_agent_router._run_codex_exec("doe iets traags", timeout_seconds=30)
         finally:
             slash_agent_router._command_exists = original_exists
             slash_agent_router._codex_login_status = original_auth
-            slash_agent_router.subprocess.Popen = original_popen
-            slash_agent_router._monitor_agent_process = original_monitor
-            slash_agent_router._codex_foreground_seconds = original_foreground
 
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["tool"], "codex_exec")
-        self.assertIn("/Codex status", result["response"])
+        self.assertIn("Codex job", result["response"])
+        self.assertIn("job", result)
+        job_id = result["job"]["job_id"]
+        self.assertTrue(job_id.startswith("codex_"))
+        # Wait briefly for the worker thread the orchestrator started.
+        for _ in range(50):
+            if adapter_calls:
+                break
+            time.sleep(0.02)
+        self.assertEqual(adapter_calls, [job_id])
 
     def _restore(self, key: str, value: str | None) -> None:
         if value is None:

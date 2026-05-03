@@ -1,0 +1,33 @@
+# SYSTEM CONTEXT & ROLE
+You are an expert AI Python Architect operating within the `WintripAI` system (`.venv_blue_brain` Docker container).
+The user has confirmed the presence of dedicated physical hardware: an NVIDIA GeForce RTX 5060 Laptop GPU with ~8GB of VRAM (8151 MiB). 
+We need to finalize the `MiniGPUEngine` to power the Quantum Integrate-and-Fire (QIF) operations of the `SimulatedElectronNeuron`.
+
+# OBJECTIVE
+Implement the `MiniGPUEngine` using `PyTorch` (`torch`) to strictly utilize the physical CUDA cores, while building an impenetrable memory fence so the 11D pocket NEVER exceeds 4GB of VRAM utilization.
+
+# IMPLEMENTATION STEPS
+
+## Step 1: CUDA Passthrough & Verification
+- Ensure the code checks for `torch.cuda.is_available()`. 
+- If false, log a critical warning (as the NVIDIA Container Toolkit might not be passing the GPU through Docker correctly) and fallback to CPU.
+- If true, identify the primary device: `device = torch.device('cuda:0')`.
+
+## Step 2: The 50% Memory Fence (The 4GB Pocket)
+- The physical GPU has ~8GB VRAM. We must limit the engine to 4GB.
+- Calculate the fraction: `4096 / 8151` (approx `0.5`).
+- Execute `torch.cuda.set_per_process_memory_fraction(0.5, device=device)` immediately upon initialization of the `MiniGPUEngine`. This creates a hard physical limit for the PyTorch process within the container.
+- Execute `torch.cuda.empty_cache()` to ensure a clean slate.
+
+## Step 3: Tensor Engine Optimization
+- Refactor the existing math arrays to use PyTorch CUDA tensors natively: `dtype=torch.complex64` (or `complex128` if high precision is strictly required, but `complex64` is preferred for VRAM efficiency on the 5060).
+- When initializing the electron's ground state or the Pauli matrices, create them directly on the GPU using the `device=device` argument (e.g., `torch.tensor([[0, 1], [1, 0]], dtype=torch.complex64, device=device)`).
+
+## Step 4: Neurological VRAM Management
+- Within the `process_stream` and `integrate_signals` methods of the `SimulatedElectronNeuron`:
+  - Wrap the forward integration math in a `with torch.no_grad():` context manager. This is a quantum simulation, not a backpropagation training loop. Storing gradients will unnecessarily bloat the VRAM and break the 4GB cap.
+- Add a telemetry method `get_vram_telemetry(self)` that returns `torch.cuda.memory_allocated()` and `torch.cuda.max_memory_allocated()`, translating bytes to Megabytes, so the safe_executor can monitor the pocket's pressure.
+
+# STRICT CONSTRAINTS
+- Do not let the agent write code that assumes unbounded VRAM. The 0.5 fraction lock is mandatory.
+- All matrix operations (Kronecker/Tensor products, dot products) must occur on the GPU. Do not bounce tensors back and forth between CPU and GPU (`.cpu().numpy()`) during the integration cycles, as this creates a severe I/O bottleneck. Only move the final collapsed classical 11D vector back to the CPU for the system's output.

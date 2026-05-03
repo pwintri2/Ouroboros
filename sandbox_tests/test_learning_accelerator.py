@@ -46,6 +46,7 @@ class TestLearningAccelerator(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "success")
+        self.assertEqual(result["knowledge_passes_completed"], 1)
         self.assertEqual(result["added_approved_records"], 3)
         knowledge_tick.assert_called_once_with(
             approval="Akkoord",
@@ -61,6 +62,46 @@ class TestLearningAccelerator(unittest.TestCase):
             methods=["litgpt"],
             max_records=250,
         )
+
+    def test_accelerate_learning_runs_batches_until_no_progress(self):
+        from controller.learning_accelerator import accelerate_learning
+
+        with (
+            patch("controller.learning_accelerator.count_approved_records", side_effect=[10, 14, 14]),
+            patch("controller.learning_accelerator.index_knowledge_list", return_value={"status": "success"}),
+            patch(
+                "controller.learning_accelerator.run_knowledge_tick",
+                side_effect=[
+                    {"status": "success", "created_count": 2, "error_count": 0},
+                    {"status": "success", "created_count": 2, "error_count": 0},
+                    {"status": "noop", "created_count": 0, "error_count": 0},
+                ],
+            ) as knowledge_tick,
+            patch(
+                "controller.learning_accelerator.run_continuous_tick",
+                return_value={"status": "success", "dataset": {"included_count": 14}},
+            ) as continuous_tick,
+        ):
+            result = accelerate_learning(
+                approval="Akkoord",
+                knowledge_mode="gemma",
+                knowledge_topics=2,
+                knowledge_passes=5,
+                continuous_methods=["litgpt"],
+                execute_training=False,
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["knowledge_passes_requested"], 5)
+        self.assertEqual(result["knowledge_passes_completed"], 3)
+        self.assertEqual(result["knowledge_created_count"], 4)
+        self.assertEqual(result["knowledge_error_count"], 0)
+        self.assertEqual(knowledge_tick.call_count, 3)
+        self.assertEqual(
+            [step["name"] for step in result["steps"][1:4]],
+            ["knowledge_tick_1", "knowledge_tick_2", "knowledge_tick_3"],
+        )
+        continuous_tick.assert_called_once()
 
 
 class TestContinuousTrainerAcceleratorSupport(unittest.TestCase):
