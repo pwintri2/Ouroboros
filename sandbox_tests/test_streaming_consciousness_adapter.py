@@ -31,12 +31,17 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
                 "WINTRIP_MINI_ROUTER_GEMMA",
                 "WINTRIP_MINI_ROUTER_GEMMA_COOLDOWN_SECONDS",
                 "WINTRIP_MINI_ROUTER_GEMMA_TIMEOUT",
+                "WINTRIP_QIF_GPU",
+                "WINTRIP_QIF_GPU_VRAM_MB",
+                "WINTRIP_QIF_GPU_MEMORY_FRACTION",
+                "WINTRIP_QIF_GPU_DTYPE",
             ]
         }
         self.tmp = tempfile.TemporaryDirectory(prefix="streaming-consciousness-")
         os.environ["WINTRIP_WORKSPACE"] = self.tmp.name
         for name in self.previous_mini_router_env:
             os.environ.pop(name, None)
+        os.environ["WINTRIP_QIF_GPU"] = "0"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -78,6 +83,7 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         self.assertIn("quantum", tick["last_event"])
         self.assertIn("qif", tick["last_event"])
         self.assertIn("expectation_z", tick["last_event"]["qif"])
+        self.assertIn("gpu", tick["last_event"]["qif"]["state"])
         self.assertIn("expectation", tick["last_event"]["quantum"])
         self.assertIn("mini_router", tick["last_event"]["network"])
         self.assertEqual(tick["last_event"]["network"]["mini_router"]["mode"], "simulated_read_only")
@@ -149,6 +155,24 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         self.assertEqual(neuron.status()["spike_count"], 1)
         self.assertFalse(neuron.status()["armed"])
         self.assertAlmostEqual(float(np.linalg.norm(neuron.state)), 1.0, places=7)
+
+    def test_mini_gpu_engine_memory_fence_and_disabled_fallback(self):
+        from controller.streaming_consciousness_adapter import MiniGPUEngine, SimulatedElectronNeuron
+
+        fraction = MiniGPUEngine.calculate_memory_fraction(8151, target_vram_mb=4096, requested_fraction=0.5)
+        self.assertLessEqual(fraction, 0.5)
+        self.assertLessEqual(8151 * fraction, 4096)
+
+        engine = MiniGPUEngine(enabled=False)
+        status = engine.status()
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["backend"], "numpy")
+        self.assertFalse(status["vram"]["available"])
+
+        neuron = SimulatedElectronNeuron(gpu_engine=engine)
+        qif_status = neuron.status()
+        self.assertEqual(qif_status["sdk"], "none_numpy_classical_complex")
+        self.assertFalse(qif_status["gpu"]["enabled"])
 
     def test_mini_router_observes_simulated_packets_and_applies_pull(self):
         from controller.streaming_consciousness_adapter import NetworkPacket, StreamingConsciousness11DPocket

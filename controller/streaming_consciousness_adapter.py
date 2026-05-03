@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 import random
 import struct
@@ -42,6 +43,7 @@ _STATE_LOCK = threading.Lock()
 _WORKER_THREAD: threading.Thread | None = None
 _WORKER_STOP = threading.Event()
 _POCKET: StreamingConsciousness11DPocket | None = None
+LOGGER = logging.getLogger(__name__)
 
 
 class DHCPState(Enum):
@@ -85,6 +87,227 @@ class NetworkConnection:
     entangled_peers: list[str] = field(default_factory=list)
 
 
+class MiniGPUEngine:
+    """Tiny PyTorch/CUDA engine for QIF math with a hard VRAM budget.
+
+    PyTorch is imported lazily so the 11D pocket still works in containers that
+    do not yet expose CUDA. When CUDA is available, state and Pauli matrices are
+    created directly on cuda:0 and all integration math stays there.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        target_vram_mb: float = 4096.0,
+        requested_fraction: float = 0.5,
+        dtype_name: str = "complex64",
+    ) -> None:
+        self.requested = bool(enabled)
+        self.enabled = False
+        self.backend = "numpy"
+        self.reason = "disabled"
+        self.warning = ""
+        self.device_label = "cpu"
+        self.device_name = ""
+        self.total_vram_mb = 0.0
+        self.target_vram_mb = max(1.0, float(target_vram_mb))
+        self.memory_fraction = 0.0
+        self.dtype_name = dtype_name if dtype_name in {"complex64", "complex128"} else "complex64"
+        self.torch: Any | None = None
+        self.device: Any | None = None
+        self.identity: Any | None = None
+        self.sigma_x: Any | None = None
+        self.sigma_y: Any | None = None
+        self.sigma_z: Any | None = None
+        self.state: Any | None = None
+        self.last_unitarity_error = 0.0
+        self.last_angles = {"theta_x": 0.0, "theta_y": 0.0, "theta_z": 0.0}
+        if not self.requested:
+            return
+        try:
+            import torch  # type: ignore
+        except Exception as exc:
+            self.reason = "torch_unavailable"
+            self.warning = f"PyTorch is unavailable, QIF stays on NumPy CPU: {exc}"
+            LOGGER.critical(self.warning)
+            return
+
+        self.torch = torch
+        try:
+            cuda_available = bool(torch.cuda.is_available())
+        except Exception as exc:
+            cuda_available = False
+            self.warning = f"CUDA availability check failed, QIF stays on NumPy CPU: {exc}"
+        if not cuda_available:
+            self.reason = "cuda_unavailable"
+            self.warning = self.warning or "CUDA is unavailable; NVIDIA Container Toolkit/GPU passthrough may be missing."
+            LOGGER.critical(self.warning)
+            return
+
+        try:
+            self.device = torch.device("cuda:0")
+            props = torch.cuda.get_device_properties(self.device)
+            self.total_vram_mb = float(props.total_memory) / 1024.0 / 1024.0
+            self.device_name = str(props.name)
+            self.memory_fraction = self.calculate_memory_fraction(self.total_vram_mb, self.target_vram_mb, requested_fraction)
+            torch.cuda.set_per_process_memory_fraction(self.memory_fraction, device=self.device)
+            torch.cuda.empty_cache()
+            dtype = torch.complex64 if self.dtype_name == "complex64" else torch.complex128
+            self.identity = torch.eye(2, dtype=dtype, device=self.device)
+            self.sigma_x = torch.tensor([[0, 1], [1, 0]], dtype=dtype, device=self.device)
+            self.sigma_y = torch.tensor([[0, -1j], [1j, 0]], dtype=dtype, device=self.device)
+            self.sigma_z = torch.tensor([[1, 0], [0, -1]], dtype=dtype, device=self.device)
+            self.state = torch.tensor([1.0 + 0j, 0.0 + 0j], dtype=dtype, device=self.device)
+            self.enabled = True
+            self.backend = "torch_cuda"
+            self.reason = "cuda_ready"
+            self.device_label = "cuda:0"
+        except Exception as exc:
+            self.enabled = False
+            self.backend = "numpy"
+            self.reason = "cuda_initialization_failed"
+            self.warning = f"CUDA QIF engine failed to initialize, falling back to NumPy CPU: {exc}"
+            LOGGER.critical(self.warning)
+
+    @staticmethod
+    def calculate_memory_fraction(total_vram_mb: float, target_vram_mb: float = 4096.0, requested_fraction: float = 0.5) -> float:
+        total = max(float(total_vram_mb), 1.0)
+        target_fraction = max(0.01, float(target_vram_mb) / total)
+        requested = max(0.01, min(float(requested_fraction), 1.0))
+        return max(0.01, min(requested, target_fraction))
+
+    def reset(self) -> None:
+        if not self.enabled or self.torch is None or self.device is None:
+            return
+        dtype = self.torch.complex64 if self.dtype_name == "complex64" else self.torch.complex128
+        with self.torch.no_grad():
+            self.state = self.torch.tensor([1.0 + 0j, 0.0 + 0j], dtype=dtype, device=self.device)
+
+    def as_11d_tensor(self, incoming_11d_vector: Any) -> Any:
+        if not self.enabled or self.torch is None or self.device is None:
+            raise RuntimeError("MiniGPUEngine is not enabled.")
+        with self.torch.no_grad():
+            vector = self.torch.as_tensor(incoming_11d_vector, dtype=self.torch.float32, device=self.device).reshape(-1)
+            if int(vector.numel()) != 11:
+                raise ValueError("Exacte invoer vereist: De array moet een 11D vector zijn.")
+            if not bool(self.torch.all(self.torch.isfinite(vector)).item()):
+                raise ValueError("Exacte invoer vereist: De 11D vector mag geen NaN of inf bevatten.")
+            return vector
+
+    def integrate_signals(self, incoming_11d_vector: Any, phase_gain: float) -> Any:
+        if not self.enabled or self.torch is None:
+            raise RuntimeError("MiniGPUEngine is not enabled.")
+        with self.torch.no_grad():
+            vector = self.as_11d_tensor(incoming_11d_vector)
+            theta_x, theta_y, theta_z = self._angles_from_11d(vector, phase_gain)
+            rx = self._rotation(self.sigma_x, theta_x)
+            ry = self._rotation(self.sigma_y, theta_y)
+            rz = self._rotation(self.sigma_z, theta_z)
+            unitary = rz @ ry @ rx
+            evolved = unitary @ self.state
+            self.state = self._normalize(evolved)
+            unitary_check = unitary.conj().T @ unitary
+            self.last_unitarity_error = float(self.torch.linalg.norm(unitary_check - self.identity).detach().item())
+            self.last_angles = {
+                "theta_x": round(float(theta_x.detach().item()), 8),
+                "theta_y": round(float(theta_y.detach().item()), 8),
+                "theta_z": round(float(theta_z.detach().item()), 8),
+            }
+            return self.state
+
+    def check_action_potential(self) -> float:
+        if not self.enabled or self.torch is None:
+            raise RuntimeError("MiniGPUEngine is not enabled.")
+        with self.torch.no_grad():
+            bra = self.state.conj().T
+            expectation = self.torch.real(bra @ self.sigma_z @ self.state)
+            expectation = self.torch.clamp(expectation, -1.0, 1.0)
+            return float(expectation.detach().item())
+
+    def spike_vector(self, incoming_11d_vector: Any, expectation: float) -> list[float]:
+        if not self.enabled or self.torch is None:
+            raise RuntimeError("MiniGPUEngine is not enabled.")
+        with self.torch.no_grad():
+            vector = self.as_11d_tensor(incoming_11d_vector)
+            # This is the only intentional GPU->CPU transfer in the QIF path:
+            # the classical 11D spike output leaves the quantum simulation.
+            spike = (vector * float(expectation)).detach().to("cpu", dtype=self.torch.float32)
+            return [round(float(value), 6) for value in spike.tolist()]
+
+    def get_vram_telemetry(self) -> dict[str, Any]:
+        if not self.enabled or self.torch is None or self.device is None:
+            return {
+                "available": False,
+                "allocated_mb": 0.0,
+                "max_allocated_mb": 0.0,
+                "reserved_mb": 0.0,
+                "max_reserved_mb": 0.0,
+                "memory_cap_mb": round(float(self.target_vram_mb), 3),
+                "memory_fraction": round(float(self.memory_fraction), 6),
+            }
+        torch = self.torch
+        return {
+            "available": True,
+            "allocated_mb": round(float(torch.cuda.memory_allocated(self.device)) / 1024.0 / 1024.0, 3),
+            "max_allocated_mb": round(float(torch.cuda.max_memory_allocated(self.device)) / 1024.0 / 1024.0, 3),
+            "reserved_mb": round(float(torch.cuda.memory_reserved(self.device)) / 1024.0 / 1024.0, 3),
+            "max_reserved_mb": round(float(torch.cuda.max_memory_reserved(self.device)) / 1024.0 / 1024.0, 3),
+            "memory_cap_mb": round(float(self.total_vram_mb * self.memory_fraction), 3),
+            "memory_fraction": round(float(self.memory_fraction), 6),
+        }
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "requested": bool(self.requested),
+            "enabled": bool(self.enabled),
+            "backend": self.backend,
+            "reason": self.reason,
+            "warning": self.warning,
+            "device": self.device_label,
+            "device_name": self.device_name,
+            "dtype": self.dtype_name,
+            "total_vram_mb": round(float(self.total_vram_mb), 3),
+            "target_vram_mb": round(float(self.target_vram_mb), 3),
+            "memory_fraction": round(float(self.memory_fraction), 6),
+            "vram": self.get_vram_telemetry(),
+        }
+
+    def state_status(self) -> dict[str, Any]:
+        if not self.enabled or self.torch is None:
+            return {}
+        with self.torch.no_grad():
+            state_cpu = self.state.detach().to("cpu")
+            probabilities = (self.torch.abs(self.state) ** 2).detach().to("cpu")
+            return {
+                "state_vector": [
+                    {"real": round(float(self.torch.real(value).item()), 8), "imag": round(float(self.torch.imag(value).item()), 8)}
+                    for value in state_cpu
+                ],
+                "probabilities": [round(float(value), 8) for value in probabilities.tolist()],
+                "last_angles": dict(self.last_angles),
+                "unitarity_error": round(float(self.last_unitarity_error), 12),
+            }
+
+    def _rotation(self, sigma: Any, theta: Any) -> Any:
+        return self.torch.cos(theta / 2.0) * self.identity - 1j * self.torch.sin(theta / 2.0) * sigma
+
+    def _angles_from_11d(self, vector: Any, phase_gain: float) -> tuple[Any, Any, Any]:
+        norm_pressure = self.torch.tanh(self.torch.linalg.norm(vector) / (11.0**0.5))
+        pressure_scale = 0.65 + 0.35 * norm_pressure
+        gain = float(max(0.0, phase_gain))
+        theta_x = gain * pressure_scale * self.torch.tanh(vector[0] + 0.5 * vector[3] - 0.25 * vector[6])
+        theta_y = gain * pressure_scale * self.torch.tanh(vector[1] + 0.5 * vector[4] - 0.25 * vector[7])
+        theta_z = gain * pressure_scale * self.torch.tanh(vector[2] + 0.5 * vector[5] + 0.25 * vector[8] - 0.25 * vector[10])
+        return theta_x, theta_y, theta_z
+
+    def _normalize(self, state: Any) -> Any:
+        norm = self.torch.linalg.norm(state)
+        if bool((norm <= 0.0).detach().item()):
+            self.reset()
+            return self.state
+        return state / norm
+
+
 class SimulatedElectronNeuron:
     """Quantum Integrate-and-Fire neuron backed by a simulated electron spin.
 
@@ -93,7 +316,13 @@ class SimulatedElectronNeuron:
     thresholding bridges the quantum state to the 11D stream.
     """
 
-    def __init__(self, firing_threshold: float = 0.85, phase_gain: float = 0.65, np_module: Any | None = None) -> None:
+    def __init__(
+        self,
+        firing_threshold: float = 0.85,
+        phase_gain: float = 0.65,
+        np_module: Any | None = None,
+        gpu_engine: MiniGPUEngine | None = None,
+    ) -> None:
         if np_module is None:
             import numpy as np
 
@@ -106,6 +335,7 @@ class SimulatedElectronNeuron:
         self.sigma_y = self.np.array([[0, -1j], [1j, 0]], dtype=complex)
         self.sigma_z = self.np.array([[1, 0], [0, -1]], dtype=complex)
         self.state = self.np.array([1.0 + 0j, 0.0 + 0j], dtype=complex)
+        self.gpu_engine = gpu_engine or MiniGPUEngine(enabled=False)
         self.armed_for_spike = False
         self.spike_count = 0
         self.last_expectation_z = 1.0
@@ -113,12 +343,20 @@ class SimulatedElectronNeuron:
         self.last_unitarity_error = 0.0
 
     def reset(self) -> None:
-        self.state = self.np.array([1.0 + 0j, 0.0 + 0j], dtype=complex)
+        if self.gpu_engine.enabled:
+            self.gpu_engine.reset()
+        else:
+            self.state = self.np.array([1.0 + 0j, 0.0 + 0j], dtype=complex)
         self.armed_for_spike = False
         self.last_expectation_z = 1.0
 
     def integrate_signals(self, incoming_11d_vector: Any) -> Any:
         """Apply exact Pauli-axis unitary rotations from an incoming 11D vector."""
+        if self.gpu_engine.enabled:
+            state = self.gpu_engine.integrate_signals(incoming_11d_vector, self.phase_gain)
+            self.last_unitarity_error = self.gpu_engine.last_unitarity_error
+            self.last_angles = dict(self.gpu_engine.last_angles)
+            return state
         vector = self._as_11d(incoming_11d_vector)
         theta_x, theta_y, theta_z = self._angles_from_11d(vector)
 
@@ -142,6 +380,10 @@ class SimulatedElectronNeuron:
 
     def check_action_potential(self) -> float:
         """Return the Born expectation value <psi|Z|psi> in the range [-1, 1]."""
+        if self.gpu_engine.enabled:
+            expectation = self.gpu_engine.check_action_potential()
+            self.last_expectation_z = expectation
+            return expectation
         bra = self.state.conjugate().T
         expectation = float(self.np.real(bra @ self.sigma_z @ self.state))
         expectation = float(self.np.clip(expectation, -1.0, 1.0))
@@ -150,14 +392,17 @@ class SimulatedElectronNeuron:
 
     def process_stream(self, incoming_11d_vector: Any) -> dict[str, Any]:
         """Integrate one 11D sample and emit a classical spike on threshold crossing."""
-        vector = self._as_11d(incoming_11d_vector)
+        vector = self.gpu_engine.as_11d_tensor(incoming_11d_vector) if self.gpu_engine.enabled else self._as_11d(incoming_11d_vector)
         self.integrate_signals(vector)
         expectation = self.check_action_potential()
 
         fired = bool(self.armed_for_spike and expectation >= self.firing_threshold)
-        spike_vector = self.np.zeros(11, dtype=self.np.float32)
+        spike_vector: Any = [0.0] * 11
         if fired:
-            spike_vector = (vector * expectation).astype(self.np.float32)
+            if self.gpu_engine.enabled:
+                spike_vector = self.gpu_engine.spike_vector(vector, expectation)
+            else:
+                spike_vector = [round(float(value), 6) for value in (vector * expectation).astype(self.np.float32).tolist()]
             self.spike_count += 1
             spike_index = self.spike_count
             self.reset()
@@ -172,28 +417,42 @@ class SimulatedElectronNeuron:
             "expectation_z": round(float(expectation), 8),
             "membrane_potential": round(float(expectation), 8),
             "threshold": round(float(self.firing_threshold), 8),
-            "spike_vector": [round(float(value), 6) for value in spike_vector.tolist()],
+            "spike_vector": spike_vector,
             "armed": bool(self.armed_for_spike),
             "state": self.status(),
         }
 
     def status(self) -> dict[str, Any]:
-        probabilities = self.np.abs(self.state) ** 2
-        return {
-            "type": "simulated_electron_qif",
-            "state_vector": [
+        if self.gpu_engine.enabled:
+            engine_state = self.gpu_engine.state_status()
+            state_vector = engine_state.get("state_vector", [])
+            probabilities = engine_state.get("probabilities", [])
+            last_angles = engine_state.get("last_angles", dict(self.last_angles))
+            unitarity_error = engine_state.get("unitarity_error", self.last_unitarity_error)
+            sdk = "torch_cuda_complex"
+        else:
+            probabilities_np = self.np.abs(self.state) ** 2
+            state_vector = [
                 {"real": round(float(self.np.real(value)), 8), "imag": round(float(self.np.imag(value)), 8)}
                 for value in self.state.tolist()
-            ],
-            "probabilities": [round(float(value), 8) for value in probabilities.tolist()],
+            ]
+            probabilities = [round(float(value), 8) for value in probabilities_np.tolist()]
+            last_angles = dict(self.last_angles)
+            unitarity_error = self.last_unitarity_error
+            sdk = "none_numpy_classical_complex"
+        return {
+            "type": "simulated_electron_qif",
+            "state_vector": state_vector,
+            "probabilities": probabilities,
             "expectation_z": round(float(self.last_expectation_z), 8),
             "threshold": round(float(self.firing_threshold), 8),
             "phase_gain": round(float(self.phase_gain), 8),
             "armed": bool(self.armed_for_spike),
             "spike_count": int(self.spike_count),
-            "last_angles": dict(self.last_angles),
-            "unitarity_error": round(float(self.last_unitarity_error), 12),
-            "sdk": "none_numpy_classical_complex",
+            "last_angles": last_angles,
+            "unitarity_error": round(float(unitarity_error), 12),
+            "sdk": sdk,
+            "gpu": self.gpu_engine.status(),
         }
 
     def _rotation(self, sigma: Any, theta: float) -> Any:
@@ -798,7 +1057,24 @@ class StreamingConsciousness11DPocket:
             qif_phase_gain = float(os.getenv("WINTRIP_QIF_PHASE_GAIN", "0.65") or 0.65)
         except ValueError:
             qif_phase_gain = 0.65
-        self.qif_neuron = SimulatedElectronNeuron(qif_threshold, qif_phase_gain, np_module=self.np)
+        qif_gpu_mode = str(os.getenv("WINTRIP_QIF_GPU", "auto") or "auto").strip().lower()
+        qif_gpu_enabled = qif_gpu_mode not in {"0", "false", "off", "no", "none", "disabled"}
+        try:
+            qif_gpu_target_mb = float(os.getenv("WINTRIP_QIF_GPU_VRAM_MB", "4096") or 4096)
+        except ValueError:
+            qif_gpu_target_mb = 4096.0
+        try:
+            qif_gpu_fraction = float(os.getenv("WINTRIP_QIF_GPU_MEMORY_FRACTION", "0.5") or 0.5)
+        except ValueError:
+            qif_gpu_fraction = 0.5
+        qif_gpu_dtype = str(os.getenv("WINTRIP_QIF_GPU_DTYPE", "complex64") or "complex64")
+        gpu_engine = MiniGPUEngine(
+            enabled=qif_gpu_enabled,
+            target_vram_mb=qif_gpu_target_mb,
+            requested_fraction=qif_gpu_fraction,
+            dtype_name=qif_gpu_dtype,
+        )
+        self.qif_neuron = SimulatedElectronNeuron(qif_threshold, qif_phase_gain, np_module=self.np, gpu_engine=gpu_engine)
         self._last_host_sensory_check = -999.0
 
     def _generate_base_pocket(self, n_samples: int) -> tuple[Any, Any]:
