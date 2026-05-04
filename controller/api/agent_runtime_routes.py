@@ -17,6 +17,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from controller.agent_runtime.orchestrator import AgentOrchestrator, get_orchestrator
+from controller.tool_bridge import run_tool_bridge, tool_bridge_status
+from ouroboros_esoteric.quantum_corruption_nexus import quantum_nexus_status
 
 
 agent_runtime_router = APIRouter(prefix="/api/agent-runtime", tags=["agent-runtime"])
@@ -29,6 +31,11 @@ class CreateJobRequest(BaseModel):
     metadata: Optional[dict[str, Any]] = None
 
 
+class ToolRunRequest(BaseModel):
+    tool: str = Field(..., min_length=1, max_length=64)
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
 def _orchestrator() -> AgentOrchestrator:
     return get_orchestrator()
 
@@ -37,6 +44,21 @@ def init_agent_runtime(app: Any) -> None:
     """Mount the runtime routes onto the FastAPI app."""
 
     app.include_router(agent_runtime_router)
+
+
+@agent_runtime_router.get("/nexus/status")
+async def get_nexus_status(limit: int = 20) -> dict[str, Any]:
+    return quantum_nexus_status(limit=limit)
+
+
+@agent_runtime_router.get("/tools/status")
+async def get_tools_status() -> dict[str, Any]:
+    return tool_bridge_status()
+
+
+@agent_runtime_router.post("/tools/run")
+async def run_tool(req: ToolRunRequest) -> dict[str, Any]:
+    return run_tool_bridge(req.tool, req.args)
 
 
 @agent_runtime_router.post("/jobs")

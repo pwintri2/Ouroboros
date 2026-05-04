@@ -416,6 +416,112 @@ label {
   font-size: 11px;
 }
 
+.nexus-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #263449;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.nexus-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.nexus-head div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.nexus-head strong {
+  font-size: 12px;
+}
+
+.nexus-head span,
+.nexus-last span {
+  color: #91a3b8;
+  font-size: 11px;
+}
+
+.nexus-head i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #c9a227;
+  box-shadow: 0 0 12px rgba(201, 162, 39, 0.45);
+}
+
+.nexus-head i.good {
+  background: #45d483;
+  box-shadow: 0 0 12px rgba(69, 212, 131, 0.5);
+}
+
+.nexus-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.nexus-stats span {
+  padding: 6px;
+  border: 1px solid #1d2634;
+  border-radius: 6px;
+  color: #91a3b8;
+  font-size: 10px;
+}
+
+.nexus-stats strong {
+  display: block;
+  margin-top: 2px;
+  color: #e5edf4;
+  font-size: 12px;
+}
+
+.nexus-bars {
+  display: grid;
+  gap: 6px;
+}
+
+.nexus-bars label {
+  display: grid;
+  gap: 4px;
+}
+
+.nexus-bars b {
+  display: block;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #121b2a;
+}
+
+.nexus-bars em {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #46d0a9;
+}
+
+.nexus-bars em.warn {
+  background: #c9a227;
+}
+
+.nexus-last {
+  display: grid;
+  gap: 3px;
+  padding-top: 2px;
+}
+
+.nexus-last strong {
+  font-size: 11px;
+}
+
 .key-row {
   display: grid;
   grid-template-columns: minmax(116px, 0.75fr) minmax(130px, 1fr) auto auto;

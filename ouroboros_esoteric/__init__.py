@@ -10,6 +10,14 @@ from ouroboros_esoteric.apeiron_identity import ApeironField, ApeironMetrics, in
 from ouroboros_esoteric.cosmic_storage import CrystallineStorage, DNAStorage
 from ouroboros_esoteric.entropy_monitor import EntropyMonitor, measure_entropy
 from ouroboros_esoteric.memory_lattice import MemoryAtom, MemoryKind, OuroborosMemoryLattice
+from ouroboros_esoteric.quantum_corruption_nexus import (
+    CorruptionEvent,
+    QuantumCorruptionNexus,
+    analyze_job,
+    creative_corruption_prompt,
+    get_quantum_corruption_nexus,
+    quantum_nexus_status,
+)
 from ouroboros_esoteric.repository_integration import (
     DEFAULT_EXTERNAL_REPOS,
     ExternalRepoProfile,
@@ -32,12 +40,18 @@ __all__ = [
     "MemoryAtom",
     "MemoryKind",
     "OuroborosMemoryLattice",
+    "CorruptionEvent",
+    "QuantumCorruptionNexus",
     "RepoSignal",
     "SocialMemoryComplex",
     "TelepathicNode",
     "UniverseBroadcast",
+    "analyze_job",
+    "creative_corruption_prompt",
+    "get_quantum_corruption_nexus",
     "integrate_external_repositories",
     "intent_vector_from_text",
     "measure_entropy",
+    "quantum_nexus_status",
     "scan_external_repositories",
 ]

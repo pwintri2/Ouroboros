@@ -193,6 +193,40 @@ type ProviderChoice = {
   maskedKey?: string;
 };
 
+type NexusEvent = {
+  event_id?: string;
+  ts?: string;
+  job_id?: string;
+  agent?: string;
+  phase?: string;
+  action?: string;
+  severity?: number;
+  coherence?: number;
+  entropy_level?: number;
+  omega_converged?: boolean;
+  frequency?: number;
+  reason?: string;
+  recommended_prompt?: string;
+};
+
+type NexusStatus = {
+  status?: string;
+  version?: string;
+  healing_events?: number;
+  sacred_corruptions?: number;
+  total_corruption_events?: number;
+  omega_convergences?: number;
+  tool_rejections?: number;
+  omega_vector?: {
+    converged?: boolean;
+    coherence?: number;
+    entropy_level?: number;
+    last_action?: string;
+  };
+  last_event?: NexusEvent | null;
+  recent_events?: NexusEvent[];
+};
+
 type ApiKeyStatusPayload = {
   status?: string;
   secrets_returned?: boolean;
@@ -261,6 +295,7 @@ export default function App() {
   const [agentJobs, setAgentJobs] = useState<AgentJob[]>([]);
   const [selectedAgentJobId, setSelectedAgentJobId] = useState<string | null>(null);
   const [agentJobEvents, setAgentJobEvents] = useState<AgentJobEvent[]>([]);
+  const [nexusStatus, setNexusStatus] = useState<NexusStatus>({ status: "unknown" });
   const terminalHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -333,6 +368,15 @@ export default function App() {
     if (detail) writeTerm(detail);
   }, [writeTerm]);
 
+  const loadNexusStatus = useCallback(async () => {
+    try {
+      const data = await api<NexusStatus>("/api/agent-runtime/nexus/status?limit=8");
+      setNexusStatus(data);
+    } catch {
+      setNexusStatus((previous) => ({ ...previous, status: previous.status || "unavailable" }));
+    }
+  }, [api]);
+
   const refresh = useCallback(async () => {
     const [healthData, configData, statusData] = await Promise.all([
       api<Health>(OUROBOROS_BACKEND_CONTRACT.health),
@@ -374,11 +418,12 @@ export default function App() {
       try {
         const jobsResponse = await api<{ jobs?: AgentJob[] }>("/api/agent-runtime/jobs?limit=20");
         setAgentJobs(Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs : []);
+        await loadNexusStatus();
       } catch {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab]);
+  }, [api, activeTab, loadNexusStatus]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -394,6 +439,12 @@ export default function App() {
     const id = window.setInterval(() => refresh().catch(() => undefined), 5000);
     return () => window.clearInterval(id);
   }, [refresh, writeTerm]);
+
+  useEffect(() => {
+    loadNexusStatus().catch(() => undefined);
+    const id = window.setInterval(() => loadNexusStatus().catch(() => undefined), 2000);
+    return () => window.clearInterval(id);
+  }, [loadNexusStatus]);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -741,6 +792,7 @@ export default function App() {
           <StatusPill icon={<Hammer size={16} />} label="Pipeline" value={status.self_modification_pipeline?.status ?? "not configured"} ok={status.self_modification_pipeline?.status === "online"} />
           <StatusPill icon={<Database size={16} />} label="11D" value={`${learning.total_count ?? records.total_count ?? 0}`} ok={!!learning.available} />
           <StatusPill icon={<ShieldCheck size={16} />} label="Approval" value={approvalReady ? "approved" : "locked"} ok={approvalReady} />
+          <StatusPill icon={<Activity size={16} />} label="Ω Nexus" value={nexusStatus.omega_vector?.converged ? "converged" : nexusStatus.status ?? "unknown"} ok={!!nexusStatus.omega_vector?.converged || nexusStatus.status === "online"} />
         </header>
 
         <section className="toolbar">
@@ -873,6 +925,7 @@ export default function App() {
 
             <section className="panel">
               <PanelHeader title="Agent Jobs" />
+              <OmegaPointNexusPanel nexus={nexusStatus} />
               {agentJobs.length === 0 ? (
                 <div className="empty-state">Nog geen agent jobs. Start er een met /codex &lt;opdracht&gt;.</div>
               ) : (
@@ -1052,6 +1105,48 @@ function StatusPill({ icon, label, value, ok }: { icon: React.ReactNode; label: 
 
 function PanelHeader({ title, small = false }: { title: string; small?: boolean }) {
   return <h2 className={small ? "small-heading" : ""}>{title}</h2>;
+}
+
+function OmegaPointNexusPanel({ nexus }: { nexus: NexusStatus }) {
+  const omega = nexus.omega_vector ?? {};
+  const last = nexus.last_event ?? null;
+  const coherence = typeof omega.coherence === "number" ? omega.coherence : last?.coherence;
+  const entropy = typeof omega.entropy_level === "number" ? omega.entropy_level : last?.entropy_level;
+  const coherencePercent = Math.max(0, Math.min(100, Math.round((coherence ?? 0) * 100)));
+  const entropyPercent = Math.max(0, Math.min(100, Math.round((entropy ?? 0) * 100)));
+  return (
+    <div className="nexus-panel">
+      <div className="nexus-head">
+        <div>
+          <strong>Ω-Point Recursion Vector</strong>
+          <span>{nexus.version ?? "v4.x"} / {omega.converged ? "converged" : omega.last_action ?? nexus.status ?? "observing"}</span>
+        </div>
+        <i className={omega.converged ? "good" : "warn"} />
+      </div>
+      <div className="nexus-stats">
+        <span>Heal <strong>{nexus.healing_events ?? 0}</strong></span>
+        <span>Creative <strong>{nexus.sacred_corruptions ?? 0}</strong></span>
+        <span>Total <strong>{nexus.total_corruption_events ?? 0}</strong></span>
+        <span>Rejected <strong>{nexus.tool_rejections ?? 0}</strong></span>
+      </div>
+      <div className="nexus-bars">
+        <label>
+          <span>COH {formatMetric(coherence)}</span>
+          <b><em style={{ width: `${coherencePercent}%` }} /></b>
+        </label>
+        <label>
+          <span>ENT {formatMetric(entropy)}</span>
+          <b><em className="warn" style={{ width: `${entropyPercent}%` }} /></b>
+        </label>
+      </div>
+      {last && (
+        <div className="nexus-last">
+          <strong>{last.action ?? "event"} · {last.agent ?? "agent"}</strong>
+          <span>{last.reason ?? last.phase ?? ""}</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Fact({ label, value, state }: { label: string; value: string; state?: string }) {

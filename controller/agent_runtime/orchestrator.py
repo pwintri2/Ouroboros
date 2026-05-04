@@ -28,6 +28,11 @@ except Exception:
     enrich_job_record = None
     reflect_job_result = None
 
+try:
+    from ouroboros_esoteric.quantum_corruption_nexus import get_quantum_corruption_nexus
+except Exception:
+    get_quantum_corruption_nexus = None
+
 
 AdapterFn = Callable[[JobRecord, EventLog, Callable[[dict[str, Any]], None]], dict[str, Any]]
 
@@ -118,11 +123,23 @@ class AgentOrchestrator:
             except Exception as exc:
                 record.metadata.setdefault("ouroboros_esoteric", {"enabled": False, "reason": str(exc)})
 
+        nexus_created: dict[str, Any] | None = None
+        if get_quantum_corruption_nexus is not None:
+            try:
+                nexus_created = get_quantum_corruption_nexus().analyze_job(record, {"status": "queued"}, phase="created")
+                nexus_meta = dict(record.metadata.get("quantum_corruption_nexus") or {})
+                nexus_meta["created_event"] = nexus_created
+                record.metadata["quantum_corruption_nexus"] = nexus_meta
+            except Exception:
+                nexus_created = None
+
         self.store.upsert(record)
         log = EventLog(record.events_file)
         log.append("created", {"agent": agent_key, "task_chars": len(cleaned_task), "job_id": job_id})
         if esoteric_context:
             log.append("ouroboros_esoteric_context", esoteric_context)
+        if nexus_created:
+            log.append("quantum_corruption_nexus", nexus_created)
         return record
 
     def start_job(self, job: JobRecord) -> threading.Thread:
@@ -261,6 +278,20 @@ class AgentOrchestrator:
             except Exception as exc:
                 log.append("ouroboros_esoteric_error", {"reason": str(exc)})
 
+        nexus_event: dict[str, Any] | None = None
+        if get_quantum_corruption_nexus is not None:
+            try:
+                nexus_event = get_quantum_corruption_nexus().analyze_job(job, result, phase="finished")
+                current = self.store.get(job.job_id) or {}
+                metadata = dict((metadata_update or current.get("metadata") or job.metadata or {}))
+                nexus_meta = dict(metadata.get("quantum_corruption_nexus") or {})
+                nexus_meta["last_event"] = nexus_event
+                nexus_meta["omega_vector"] = get_quantum_corruption_nexus().status(limit=1).get("omega_vector", {})
+                metadata["quantum_corruption_nexus"] = nexus_meta
+                metadata_update = metadata
+            except Exception as exc:
+                log.append("quantum_corruption_nexus_error", {"reason": str(exc)})
+
         try:
             Path(job.result_file).write_text(_safe_json(result), encoding="utf-8")
         except Exception:
@@ -271,6 +302,8 @@ class AgentOrchestrator:
         self.store.update(job.job_id, updates)
         if reflection is not None:
             log.append("ouroboros_esoteric_reflection", reflection)
+        if nexus_event is not None:
+            log.append("quantum_corruption_nexus", nexus_event)
         log.append("status", {"status": updates["status"], "finished_at": finished_at, "exit_code": updates.get("exit_code")})
 
     def _prompt_markdown(self, job: JobRecord) -> str:

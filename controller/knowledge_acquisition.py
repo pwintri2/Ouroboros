@@ -19,7 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    requests = None  # type: ignore[assignment]
 
 from controller.safe_shell import workspace_root
 from controller.training_curriculum import classify_record
@@ -406,6 +409,8 @@ def _ollama_generate(
     root = str(base_url or "http://localhost:11434").rstrip("/")
     if root.endswith("/api"):
         root = root[:-4]
+    if requests is None:
+        return f"LOKALE OLLAMA ERROR ({model}): requests module niet beschikbaar"
     try:
         response = requests.post(
             f"{root}/api/generate",

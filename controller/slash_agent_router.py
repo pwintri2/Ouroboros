@@ -364,6 +364,22 @@ def _host_agent_runtime_adapter(agent: str):
         else:
             result = {"status": "failed", "reason": f"unsupported host runtime agent: {agent}"}
         response = str(result.get("response") or _default_response(result) or "")
+        if agent == "ruflo":
+            try:
+                from controller.agent_runtime.adapters.ruflo_swarm import analyze_ruflo_swarm_signal
+
+                coherence = 0.82 if result.get("status") in {"success", "handoff"} else 0.42
+                nexus_event = analyze_ruflo_swarm_signal(
+                    job.task,
+                    coherence=coherence,
+                    agent_id=job.job_id,
+                    metadata={"slash_status": result.get("status"), "tool": result.get("tool")},
+                )
+                log.append("ruflo_quantum_corruption_nexus", nexus_event)
+                if nexus_event.get("action") == "sacred_corruption" and nexus_event.get("recommended_prompt"):
+                    response = f"{response}\n\n## Nexus creative retry\n\n{nexus_event['recommended_prompt']}"
+            except Exception as exc:
+                log.append("ruflo_quantum_corruption_nexus_error", {"reason": str(exc)})
         try:
             Path(job.output_file).write_text(response, encoding="utf-8")
         except Exception:

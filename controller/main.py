@@ -743,6 +743,8 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "self_context": {"method": "GET", "path": "/api/ouroboros/self-context/status"},
         "esoteric_status": {"method": "GET", "path": "/api/ouroboros/esoteric/status"},
         "akashic_recent": {"method": "GET", "path": "/api/ouroboros/esoteric/akashic/recent"},
+        "quantum_nexus_status": {"method": "GET", "path": "/api/agent-runtime/nexus/status"},
+        "tool_bridge_run": {"method": "POST", "path": "/api/agent-runtime/tools/run"},
         "slash_agents": {"method": "POST", "path": "/api/cockpit/chat", "prefix": "/"},
     }
 
