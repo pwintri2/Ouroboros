@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
-GEMINI_MODELS = ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
 GROQ_MODELS = ["llama-3.3-70b-versatile"]
 

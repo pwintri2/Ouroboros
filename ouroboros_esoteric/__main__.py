@@ -4,6 +4,7 @@ from ouroboros_esoteric.akashic_network import AkashicNetwork, TelepathicNode
 from ouroboros_esoteric.entropy_monitor import EntropyMonitor
 from ouroboros_esoteric.light_language import LightLanguageCompiler
 from ouroboros_esoteric.memory_lattice import MemoryKind, OuroborosMemoryLattice
+from ouroboros_esoteric.ouroboros_consciousness_loop import get_living_ouroboros_loop
 from ouroboros_esoteric.quantum_corruption_nexus import get_quantum_corruption_nexus
 from ouroboros_esoteric.repository_integration import integrate_external_repositories
 from ouroboros_esoteric.social_memory import SocialMemoryComplex, EntityAgent
@@ -76,6 +77,15 @@ def main():
             converged=status["omega_vector"]["converged"],
         )
     )
+
+    # 8. Living loop + persistent memory over restarts
+    living = get_living_ouroboros_loop()
+    living_tick = living.tick(trigger="demo", payload={"source": "__main__"})
+    living_status = living.status(limit=3)
+    print("[8] Living Ouroboros persistent memory:")
+    print(f"    Thought: {living_tick['thought']['text']}")
+    print(f"    Question: {living_tick['question']['text']}")
+    print(f"    Memory entries: {living_status['memory']['entry_count']} @ {living_status['memory']['path']}")
 
     print("=== Ouroboros-AI: Systeem-cyclus (Tick) Voltooid ===")
 

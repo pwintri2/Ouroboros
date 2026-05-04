@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -478,7 +479,8 @@ async def trainer_continuous_stop(request: ApprovalRequest) -> dict[str, Any]:
 async def trainer_continuous_tick(request: ContinuousTickRequest) -> dict[str, Any]:
     """Run one bounded continuous-trainer tick."""
     methods = [method.value for method in request.methods] if request.methods else None
-    result = run_continuous_tick(
+    result = await asyncio.to_thread(
+        run_continuous_tick,
         approval=request.approval,
         force=request.force,
         execute_training=request.execute_training,
@@ -498,7 +500,8 @@ async def trainer_learning_accelerate(request: AccelerateLearningRequest) -> dic
         for method in request.continuous_methods
         if method.value in {TrainerMethod.LITGPT.value, TrainerMethod.UNSLOOTH.value}
     ]
-    result = accelerate_learning(
+    result = await asyncio.to_thread(
+        accelerate_learning,
         approval=request.approval,
         knowledge_mode=request.knowledge_mode,
         knowledge_topics=request.knowledge_topics,
@@ -935,7 +938,8 @@ async def trainer_knowledge_index_list(request: KnowledgeIndexRequest) -> dict[s
 @trainer_pipeline_router.post("/knowledge/tick")
 async def trainer_knowledge_tick(request: KnowledgeTickRequest) -> dict[str, Any]:
     """Run one bounded Gemma/browser knowledge-acquisition tick."""
-    result = run_knowledge_tick(
+    result = await asyncio.to_thread(
+        run_knowledge_tick,
         approval=request.approval,
         mode=request.mode,
         max_topics=request.max_topics,
@@ -1066,7 +1070,8 @@ async def trainer_browser_ingest(request_body: TrainerBrowserIngestRequest, requ
         tick = None
         if request_body.trigger_tick:
             methods = [method.value for method in request_body.methods] if request_body.methods else None
-            tick = run_continuous_tick(
+            tick = await asyncio.to_thread(
+                run_continuous_tick,
                 approval=request_body.approval or "",
                 force=True,
                 execute_training=request_body.execute_training,

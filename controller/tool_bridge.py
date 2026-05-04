@@ -52,6 +52,14 @@ class ToolBridge:
                 reason=firewall["reason"],
                 args=payload,
             )
+            _notify_living_tool_event(
+                {
+                    "tool": clean_tool or "unknown",
+                    "status": firewall["status"],
+                    "reason": firewall["reason"],
+                    "firewall": firewall,
+                }
+            )
             self.last_result = result
             return result
 
@@ -79,6 +87,14 @@ class ToolBridge:
                 status=status,
                 reason=wrapped["reason"] or f"{clean_tool} returned {status}",
                 args=payload,
+            )
+            _notify_living_tool_event(
+                {
+                    "tool": clean_tool,
+                    "status": status,
+                    "reason": wrapped["reason"] or f"{clean_tool} returned {status}",
+                    "firewall": firewall,
+                }
             )
         self.last_result = wrapped
         return wrapped
@@ -202,3 +218,12 @@ def _int_or_none(value: Any) -> int | None:
     if value is None or value == "":
         return None
     return _int(value, default=0)
+
+
+def _notify_living_tool_event(event: dict[str, Any]) -> None:
+    try:
+        from ouroboros_esoteric.ouroboros_consciousness_loop import get_living_ouroboros_loop
+
+        get_living_ouroboros_loop().observe_tool_event(event)
+    except Exception:
+        pass

@@ -8,6 +8,7 @@ import asyncio
 import json
 import math
 import re
+import threading
 import time
 import requests
 import uvicorn
@@ -743,6 +744,9 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "self_context": {"method": "GET", "path": "/api/ouroboros/self-context/status"},
         "esoteric_status": {"method": "GET", "path": "/api/ouroboros/esoteric/status"},
         "akashic_recent": {"method": "GET", "path": "/api/ouroboros/esoteric/akashic/recent"},
+        "living_ouroboros_status": {"method": "GET", "path": "/api/ouroboros/esoteric/living/status"},
+        "living_ouroboros_tick": {"method": "POST", "path": "/api/ouroboros/esoteric/living/tick"},
+        "living_ouroboros_memory": {"method": "GET", "path": "/api/ouroboros/esoteric/living/memory"},
         "quantum_nexus_status": {"method": "GET", "path": "/api/agent-runtime/nexus/status"},
         "tool_bridge_run": {"method": "POST", "path": "/api/agent-runtime/tools/run"},
         "slash_agents": {"method": "POST", "path": "/api/cockpit/chat", "prefix": "/"},
@@ -753,7 +757,7 @@ APPROVAL_PHRASE = "Akkoord"
 MULTI_API_PROVIDER_MODELS: dict[str, list[str]] = {
     "openai": ["gpt-4.1", "gpt-4.1-mini"],
     "anthropic": ["claude-opus-4-6", "claude-sonnet-4-6"],
-    "google": ["gemini-2.5-pro", "gemini-2.0-flash"],
+    "google": ["gemini-2.5-flash", "gemini-2.5-pro"],
     "xai": ["grok-3", "grok-3-mini"],
     "mistral": ["mistral-large-latest", "mistral-small-latest"],
 }
@@ -1051,10 +1055,27 @@ def _slash_agent_timeout_seconds() -> int:
         return 240
 
 
+def _cockpit_chat_timeout_seconds() -> float:
+    try:
+        return max(3.0, min(float(os.getenv("WINTRIP_COCKPIT_CHAT_TIMEOUT_SECONDS", "75")), 85.0))
+    except ValueError:
+        return 75.0
+
+
+def _cockpit_slash_dispatch_timeout_seconds() -> float:
+    try:
+        configured = float(os.getenv("WINTRIP_COCKPIT_SLASH_DISPATCH_TIMEOUT_SECONDS", "24"))
+    except ValueError:
+        configured = 24.0
+    return max(3.0, min(configured, _cockpit_chat_timeout_seconds(), 28.0))
+
+
 async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     requested_provider, provider = _normalize_cockpit_provider(req.provider)
     model = _default_cockpit_model(provider, req.model)
     tools = _requested_tool_payload(req, provider)
+    timeout_seconds = _cockpit_chat_timeout_seconds()
+    slash_timeout_seconds = _cockpit_slash_dispatch_timeout_seconds()
     chat_context = build_chat_context(
         prompt=req.prompt,
         provider=provider,
@@ -1063,12 +1084,32 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         history=req.history or [],
         conversation_id=req.conversation_id,
     )
-    slash_result = await asyncio.to_thread(
-        handle_slash_command,
-        req.prompt,
-        approval=req.approval or "",
-        timeout_seconds=_slash_agent_timeout_seconds(),
-    )
+    try:
+        slash_result = await asyncio.wait_for(
+            asyncio.to_thread(
+                handle_slash_command,
+                req.prompt,
+                approval=req.approval or "",
+                timeout_seconds=_slash_agent_timeout_seconds(),
+            ),
+            timeout=slash_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        return _with_cockpit_self_context(
+            _chat_timeout_payload(
+                requested_provider=requested_provider,
+                provider="slash",
+                model=model,
+                route="slash_agent",
+                timeout_seconds=slash_timeout_seconds,
+                local_only=True,
+                tools=tools,
+                return_tools=_should_return_tool_schemas(req),
+            ),
+            chat_context,
+            provider,
+            model,
+        )
     if slash_result is not None:
         slash_result.setdefault("status", "success")
         slash_result.setdefault("provider", "slash")
@@ -1083,12 +1124,16 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
 
     if provider == "ollama":
         try:
-            response = router.route_request(
-                chat_context.get("prompt") or req.prompt,
-                model=model,
-                history=chat_context.get("history") or [],
-                system_prompt=chat_context.get("system_prompt"),
-                files=req.files,
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    router.route_request,
+                    chat_context.get("prompt") or req.prompt,
+                    model=model,
+                    history=chat_context.get("history") or [],
+                    system_prompt=chat_context.get("system_prompt"),
+                    files=req.files,
+                ),
+                timeout=timeout_seconds,
             )
             result = {
                 "status": "success",
@@ -1102,6 +1147,22 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
                 "tool_schema_count": len(tools),
             }
             return _with_cockpit_self_context(result, chat_context, provider, model)
+        except asyncio.TimeoutError:
+            return _with_cockpit_self_context(
+                _chat_timeout_payload(
+                    requested_provider=requested_provider,
+                    provider="ollama",
+                    model=model,
+                    route="local",
+                    timeout_seconds=timeout_seconds,
+                    local_only=True,
+                    tools=tools,
+                    return_tools=_should_return_tool_schemas(req),
+                ),
+                chat_context,
+                provider,
+                model,
+            )
         except Exception as exc:
             return {
                 "status": "error",
@@ -1122,14 +1183,34 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     if multi_router is None:
         return _disabled_chat_payload(req, provider, model, tools)
 
-    result = await multi_router.route_chat(
-        provider=provider,
-        model=model,
-        prompt=chat_context.get("prompt") or req.prompt,
-        system_prompt=chat_context.get("system_prompt"),
-        tools=tools or None,
-        history=chat_context.get("history") or [],
-    )
+    try:
+        result = await asyncio.wait_for(
+            multi_router.route_chat(
+                provider=provider,
+                model=model,
+                prompt=chat_context.get("prompt") or req.prompt,
+                system_prompt=chat_context.get("system_prompt"),
+                tools=tools or None,
+                history=chat_context.get("history") or [],
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        return _with_cockpit_self_context(
+            _chat_timeout_payload(
+                requested_provider=requested_provider,
+                provider=provider,
+                model=model,
+                route="multi_api",
+                timeout_seconds=timeout_seconds,
+                local_only=False,
+                tools=tools,
+                return_tools=_should_return_tool_schemas(req),
+            ),
+            chat_context,
+            provider,
+            model,
+        )
     if not isinstance(result, dict):
         result = {"status": "success", "response": str(result)}
     result.setdefault("status", "success")
@@ -1142,6 +1223,36 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     result["tool_schemas"] = tools if _should_return_tool_schemas(req) else []
     result["tool_schema_count"] = len(tools)
     return _with_cockpit_self_context(result, chat_context, provider, model)
+
+
+def _chat_timeout_payload(
+    *,
+    requested_provider: str,
+    provider: str,
+    model: str,
+    route: str,
+    timeout_seconds: float,
+    local_only: bool,
+    tools: list[dict[str, Any]],
+    return_tools: bool,
+) -> dict[str, Any]:
+    seconds = int(round(timeout_seconds))
+    reason = f"Chat provider exceeded backend timeout after {seconds}s."
+    return {
+        "status": "timeout",
+        "provider": provider,
+        "requested_provider": requested_provider,
+        "model": model,
+        "response": "",
+        "route": route,
+        "local_only": local_only,
+        "error": reason,
+        "reason": reason,
+        "tool_schemas": tools if return_tools else [],
+        "tool_schema_count": len(tools),
+        "next_action": "Kies een sneller model of probeer opnieuw met een kortere prompt.",
+        "fake_success": False,
+    }
 
 
 def _with_cockpit_self_context(
@@ -1411,6 +1522,14 @@ def _ensure_ouroboros_loop_state() -> dict[str, Any]:
     return state
 
 
+def _ensure_ouroboros_loop_lock() -> Any:
+    lock = getattr(app.state, "ouroboros_loop_lock", None)
+    if not (hasattr(lock, "acquire") and hasattr(lock, "release")):
+        lock = threading.RLock()
+        app.state.ouroboros_loop_lock = lock
+    return lock
+
+
 def _ouroboros_loop_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     state = dict(_ensure_ouroboros_loop_state())
     payload = {
@@ -1429,49 +1548,74 @@ def _ouroboros_loop_status_payload(extra: Optional[dict[str, Any]] = None) -> di
 
 
 def _ouroboros_loop_start_payload(req: OuroborosLoopStartRequest) -> dict[str, Any]:
-    state = _ensure_ouroboros_loop_state()
     now = time.time()
     prompt = req.prompt or req.browser_text or "Ouroboros self-training loop"
-    if state.get("running"):
+    step_request = SelfTrainingStepRequest(
+        prompt=prompt,
+        browser_text=req.browser_text,
+        url=req.url,
+        target_hz=req.target_hz,
+        approval=req.approval,
+        test_selector=req.test_selector,
+        run_tests=req.run_tests,
+    )
+
+    with _ensure_ouroboros_loop_lock():
+        state = _ensure_ouroboros_loop_state()
+        if state.get("running"):
+            state.update(
+                {
+                    "status": "queued",
+                    "queued": True,
+                    "queued_prompt": prompt,
+                    "updated_at": now,
+                    "next_action": "Wacht tot de huidige self-training stap klaar is.",
+                }
+            )
+            return _ouroboros_loop_status_payload({"message": "Loop is al bezig; startverzoek staat queued."})
+
         state.update(
             {
-                "status": "queued",
-                "queued": True,
-                "queued_prompt": prompt,
+                "status": "running" if req.trigger_step else "queued",
+                "running": bool(req.trigger_step),
+                "queued": not bool(req.trigger_step),
+                "abort_requested": False,
+                "pause_requested": False,
+                "prompt": prompt,
+                "started_at": now,
                 "updated_at": now,
-                "next_action": "Wacht tot de huidige self-training stap klaar is.",
+                "next_action": "Self-training step draait op de achtergrond." if req.trigger_step else "Queued tot de cockpit de volgende stap start.",
             }
         )
-        return _ouroboros_loop_status_payload({"message": "Loop is al bezig; startverzoek staat queued."})
-
-    state.update(
-        {
-            "status": "running" if req.trigger_step else "queued",
-            "running": bool(req.trigger_step),
-            "queued": not bool(req.trigger_step),
-            "abort_requested": False,
-            "pause_requested": False,
-            "prompt": prompt,
-            "started_at": now,
-            "updated_at": now,
-            "next_action": "Self-training step uitvoeren." if req.trigger_step else "Queued tot de cockpit de volgende stap start.",
-        }
-    )
-    if not req.trigger_step:
-        return _ouroboros_loop_status_payload({"message": "Loop startverzoek staat queued; geen background loop gestart."})
-
-    try:
-        step = _self_training_step_payload(
-            SelfTrainingStepRequest(
-                prompt=prompt,
-                browser_text=req.browser_text,
-                url=req.url,
-                target_hz=req.target_hz,
-                approval=req.approval,
-                test_selector=req.test_selector,
-                run_tests=req.run_tests,
-            )
+        payload = _ouroboros_loop_status_payload(
+            {
+                "message": "Self-training stap is gestart op de achtergrond; poll /api/ouroboros/loop/status voor de uitkomst."
+                if req.trigger_step
+                else "Loop startverzoek staat queued; geen background loop gestart.",
+                "background": bool(req.trigger_step),
+            }
         )
+
+    if req.trigger_step:
+        _start_ouroboros_loop_worker(step_request)
+    return payload
+
+
+def _start_ouroboros_loop_worker(step_request: SelfTrainingStepRequest) -> None:
+    thread = threading.Thread(
+        target=_run_ouroboros_loop_step,
+        args=(step_request,),
+        name="ouroboros-loop-step",
+        daemon=True,
+    )
+    app.state.ouroboros_loop_thread = thread
+    thread.start()
+
+
+def _run_ouroboros_loop_step(step_request: SelfTrainingStepRequest) -> None:
+    state = _ensure_ouroboros_loop_state()
+    try:
+        step = _self_training_step_payload(step_request)
         step_status = str(step.get("status") or "success")
         if step_status == "blocked":
             loop_status = "blocked"
@@ -1479,30 +1623,35 @@ def _ouroboros_loop_start_payload(req: OuroborosLoopStartRequest) -> dict[str, A
             loop_status = "error"
         else:
             loop_status = "completed"
-        state.update(
-            {
-                "status": loop_status,
-                "running": False,
-                "queued": False,
-                "iteration": int(state.get("iteration", 0) or 0) + 1,
-                "last_step": step,
-                "last_error": str(step.get("stderr") or step.get("error") or "") if loop_status == "error" else "",
-                "updated_at": time.time(),
-                "next_action": step.get("next_action") or "Inspect Loop Status",
-            }
-        )
+        with _ensure_ouroboros_loop_lock():
+            if state.get("abort_requested"):
+                loop_status = "aborted"
+            elif state.get("pause_requested"):
+                loop_status = "paused"
+            state.update(
+                {
+                    "status": loop_status,
+                    "running": False,
+                    "queued": False,
+                    "iteration": int(state.get("iteration", 0) or 0) + 1,
+                    "last_step": step,
+                    "last_error": str(step.get("stderr") or step.get("error") or "") if loop_status == "error" else "",
+                    "updated_at": time.time(),
+                    "next_action": step.get("next_action") or "Inspect Loop Status",
+                }
+            )
     except Exception as exc:
-        state.update(
-            {
-                "status": "error",
-                "running": False,
-                "queued": False,
-                "last_error": str(exc),
-                "updated_at": time.time(),
-                "next_action": "Inspect failing self-training step.",
-            }
-        )
-    return _ouroboros_loop_status_payload({"message": "Een enkele self-training stap is uitgevoerd; geen infinite background loop gestart."})
+        with _ensure_ouroboros_loop_lock():
+            state.update(
+                {
+                    "status": "error",
+                    "running": False,
+                    "queued": False,
+                    "last_error": str(exc),
+                    "updated_at": time.time(),
+                    "next_action": "Inspect failing self-training step.",
+                }
+            )
 
 
 def _ouroboros_loop_control_payload(action: str) -> dict[str, Any]:

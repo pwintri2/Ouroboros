@@ -217,9 +217,18 @@ def run_knowledge_tick(
         source_types.append("browser_research_call")
 
     parallelism: dict[str, int] = {}
+    selected_topics: dict[str, list[dict[str, Any]]] = {}
     for source_type in source_types:
         completed = _completed_topics(records, source_type)
-        selected = _select_topics(topics, completed, bounded_max, start_index)
+        selected = _select_topics(
+            topics,
+            completed,
+            bounded_max,
+            start_index,
+            records=records,
+            source_type=source_type,
+        )
+        selected_topics[source_type] = _topic_selection_summary(selected)
         parallelism[source_type] = _parallelism_for_source(source_type, len(selected))
         for topic, result, exception in _acquire_topics(
             topics=selected,
@@ -296,6 +305,8 @@ def run_knowledge_tick(
         "created_count": len(created),
         "error_count": len(errors),
         "parallelism": parallelism,
+        "selection_strategy": "curriculum_gap_first" if start_index is None else "start_index_linear",
+        "selected_topics": selected_topics,
         "created": created,
         "errors": errors,
         "state": get_knowledge_acquisition_status(),
@@ -527,11 +538,68 @@ def _select_topics(
     completed: set[str],
     limit: int,
     start_index: int | None,
+    records: list[dict[str, Any]] | None = None,
+    source_type: str = "",
 ) -> list[dict[str, Any]]:
     candidates = topics
     if start_index is not None:
         candidates = [topic for topic in topics if int(topic.get("index") or 0) >= int(start_index)]
-    return [topic for topic in candidates if str(topic.get("id")) not in completed][:limit]
+        return [topic for topic in candidates if str(topic.get("id")) not in completed][:limit]
+
+    pending = [topic for topic in candidates if str(topic.get("id")) not in completed]
+    if not pending:
+        return []
+
+    coverage = _curriculum_counts([record for record in (records or []) if record.get("status") == "success"])
+    attempts = _topic_attempt_counts(records or [], source_type)
+
+    def sort_key(topic: dict[str, Any]) -> tuple[int, int, int]:
+        topic_id = str(topic.get("id") or "")
+        return (
+            coverage.get(_topic_curriculum_primary(topic), 0),
+            attempts.get(topic_id, 0),
+            int(topic.get("index") or 0),
+        )
+
+    return sorted(pending, key=sort_key)[:limit]
+
+
+def _topic_selection_summary(topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": topic.get("id"),
+            "index": topic.get("index"),
+            "title": topic.get("title"),
+            "curriculum_primary": _topic_curriculum_primary(topic),
+        }
+        for topic in topics
+    ]
+
+
+def _topic_curriculum_primary(topic: dict[str, Any]) -> str:
+    title = str(topic.get("title") or "")
+    section = str(topic.get("section_path") or topic.get("section") or "")
+    direct = str(classify_record(f"{section} {title}", {}).get("primary") or "").strip()
+    if direct and direct != "general":
+        return direct
+
+    curriculum = topic.get("curriculum") if isinstance(topic.get("curriculum"), dict) else {}
+    primary = str(curriculum.get("primary") or "").strip()
+    if primary:
+        return primary
+    return direct or "general"
+
+
+def _topic_attempt_counts(records: list[dict[str, Any]], source_type: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        if source_type and record.get("source_type") != source_type:
+            continue
+        topic_id = str(record.get("topic_id") or "")
+        if not topic_id:
+            continue
+        counts[topic_id] = counts.get(topic_id, 0) + 1
+    return counts
 
 
 def _completed_topics(records: list[dict[str, Any]], source_type: str) -> set[str]:

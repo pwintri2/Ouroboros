@@ -1,7 +1,10 @@
 import os
+import asyncio
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -75,6 +78,17 @@ class FakeMultiAPIRouter:
         return {
             "status": "success",
             "response": "fake multi-api response",
+            "provider": provider,
+            "model": model,
+        }
+
+
+class SlowFakeMultiAPIRouter:
+    async def route_chat(self, provider, model, prompt, system_prompt=None, tools=None, history=None):
+        await asyncio.sleep(1)
+        return {
+            "status": "success",
+            "response": "late response",
             "provider": provider,
             "model": model,
         }
@@ -166,6 +180,16 @@ class TestTauriBackendRoutes(unittest.TestCase):
         else:
             os.environ["WINTRIP_RCLONE_BRIDGE_URL"] = self.old_bridge
 
+    def _wait_for_loop_status(self, expected_status, timeout=2.0):
+        deadline = time.time() + timeout
+        last = None
+        while time.time() < deadline:
+            last = self.client.get("/api/ouroboros/loop/status").json()
+            if last.get("status") == expected_status:
+                return last
+            time.sleep(0.02)
+        return last
+
     def test_cockpit_config_exposes_backend_providers_models_and_approval_phrase(self):
         response = self.client.get("/api/cockpit/config")
 
@@ -176,6 +200,9 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("ollama", data["provider_options"])
         self.assertTrue(data["provider_options"]["ollama"]["local_only"])
         self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
+        google_models = data["provider_options"]["google"]["models"]
+        self.assertIn("gemini-2.5-flash", google_models)
+        self.assertNotIn("gemini-2.0-flash", google_models)
         self.assertIn("api_keys", data)
         self.assertFalse(data["api_keys"]["secrets_returned"])
 
@@ -263,6 +290,30 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("fake multi-api response", second_context)
         self.assertGreaterEqual(second.json()["self_context"]["server_history_count"], 2)
 
+    def test_cockpit_chat_returns_timeout_payload_before_client_abort(self):
+        self.main.app.state.multi_api_router = SlowFakeMultiAPIRouter()
+        original_timeout = self.main._cockpit_chat_timeout_seconds
+        original_slash_timeout = self.main._cockpit_slash_dispatch_timeout_seconds
+        self.main._cockpit_chat_timeout_seconds = lambda: 0.05
+        self.main._cockpit_slash_dispatch_timeout_seconds = lambda: 0.05
+        try:
+            before = time.time()
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={"provider": "google", "model": "gemini-test", "prompt": "hello"},
+            )
+            elapsed = time.time() - before
+        finally:
+            self.main._cockpit_chat_timeout_seconds = original_timeout
+            self.main._cockpit_slash_dispatch_timeout_seconds = original_slash_timeout
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertLess(elapsed, 0.75)
+        self.assertEqual(data["status"], "timeout")
+        self.assertEqual(data["route"], "multi_api")
+        self.assertIn("timeout", data["error"].lower())
+
     def test_cockpit_chat_returns_disabled_payload_when_multi_api_is_unavailable(self):
         self.main.app.state.multi_api_router = None
         original_multi = self.main.MultiAPIRouter
@@ -306,17 +357,58 @@ class TestTauriBackendRoutes(unittest.TestCase):
                 "/api/ouroboros/loop/start",
                 json={"prompt": "Train one tiny loop step", "approval": "Akkoord"},
             )
-            status_response = self.client.get("/api/ouroboros/loop/status")
+            status_payload = self._wait_for_loop_status("completed")
         finally:
             self.main.self_training_step = original_step
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
+        self.assertTrue(data["background"])
+        self.assertIn(data["status"], {"running", "completed"})
         self.assertEqual(len(calls), 1)
-        self.assertEqual(data["status"], "completed")
-        self.assertFalse(data["running"])
-        self.assertEqual(data["iteration"], 1)
-        self.assertEqual(status_response.json()["loop"]["last_step"]["status"], "success")
+        self.assertEqual(status_payload["status"], "completed")
+        self.assertFalse(status_payload["running"])
+        self.assertEqual(status_payload["iteration"], 1)
+        self.assertEqual(status_payload["loop"]["last_step"]["status"], "success")
+
+    def test_ouroboros_loop_start_returns_before_slow_step_finishes(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_step(philip_opdracht, registry, approval="", action=None, action_args=None):
+            started.set()
+            release.wait(timeout=2)
+            return {
+                "status": "success",
+                "next_action": "Inspect Loop Status",
+                "stdout": "slow step",
+                "stderr": "",
+            }
+
+        original_step = self.main.self_training_step
+        self.main.self_training_step = slow_step
+        try:
+            before = time.time()
+            response = self.client.post(
+                "/api/ouroboros/loop/start",
+                json={"prompt": "Train one slow loop step", "approval": "Akkoord"},
+            )
+            elapsed = time.time() - before
+            self.assertTrue(started.wait(timeout=1.0))
+            data = response.json()
+            self.assertLess(elapsed, 0.75)
+            self.assertEqual(data["status"], "running")
+            self.assertTrue(data["running"])
+            self.assertTrue(data["background"])
+            release.set()
+            status_payload = self._wait_for_loop_status("completed")
+        finally:
+            release.set()
+            self.main.self_training_step = original_step
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(status_payload["status"], "completed")
+        self.assertEqual(status_payload["loop"]["last_step"]["stdout"], "slow step")
 
     def test_ouroboros_loop_pause_and_abort_update_app_state(self):
         paused = self.client.post("/api/ouroboros/loop/pause").json()

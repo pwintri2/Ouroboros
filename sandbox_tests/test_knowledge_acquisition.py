@@ -169,6 +169,112 @@ class TestKnowledgeAcquisition(unittest.TestCase):
             self.assertEqual(tick["parallelism"]["gemma_distillation"], 3)
             self.assertGreaterEqual(max_active, 2)
 
+    def test_gemma_tick_prioritizes_curriculum_gaps(self):
+        from controller import knowledge_acquisition as ka
+
+        with KnowledgeAcquisitionEnv() as env:
+            env.knowledge.write_text(
+                """# Kennislijst
+
+## Pop!_OS
+### Pop!_OS thermal checks
+- System76 recovery partition and NVIDIA powerprofilesctl
+
+## SharePoint
+### SharePoint unique permissions PnP PowerShell
+- SharePoint unique permissions and PnP PowerShell
+""",
+                encoding="utf-8",
+            )
+            ka._save_state(
+                {
+                    "records": [
+                        {
+                            "topic_id": "historic_popos",
+                            "source_type": "gemma_distillation",
+                            "status": "success",
+                            "curriculum_primary": "local_machine",
+                        },
+                        {
+                            "topic_id": "historic_popos_mastery",
+                            "source_type": "gemma_distillation",
+                            "status": "success",
+                            "curriculum_primary": "popos_mastery",
+                        }
+                    ],
+                    "fake_success": False,
+                }
+            )
+            selected_titles = []
+            original_gemma = ka.distill_gemma_topic
+            original_store = ka.store_knowledge_record
+            try:
+                def fake_distill(topic, model="gemma4:latest"):
+                    selected_titles.append(topic["title"])
+                    return {
+                        "status": "success",
+                        "document": f"Gap-prioritized record for {topic['title']}.",
+                        "source": f"ollama:{model}",
+                        "model": model,
+                        "fake_success": False,
+                    }
+
+                ka.distill_gemma_topic = fake_distill
+                ka.store_knowledge_record = lambda document, metadata: {
+                    "status": "success",
+                    "stored": True,
+                    "item_id": f"gap_{metadata['topic_id']}",
+                    "fake_success": False,
+                }
+                tick = ka.run_knowledge_tick(approval="Akkoord", mode="gemma", max_topics=1)
+            finally:
+                ka.distill_gemma_topic = original_gemma
+                ka.store_knowledge_record = original_store
+
+            self.assertEqual(tick["status"], "success")
+            self.assertEqual(tick["selection_strategy"], "curriculum_gap_first")
+            self.assertEqual(len(selected_titles), 1)
+            self.assertIn("SharePoint", selected_titles[0])
+            self.assertEqual(
+                tick["selected_topics"]["gemma_distillation"][0]["curriculum_primary"],
+                "sharepoint",
+            )
+
+    def test_topic_selection_does_not_stall_on_failed_attempt(self):
+        from controller import knowledge_acquisition as ka
+
+        topics = [
+            {
+                "id": "python_tests",
+                "index": 0,
+                "title": "Python test failures",
+                "curriculum": {"primary": "programming"},
+            },
+            {
+                "id": "python_refactor",
+                "index": 1,
+                "title": "Python refactor patterns",
+                "curriculum": {"primary": "programming"},
+            },
+        ]
+        selected = ka._select_topics(
+            topics=topics,
+            completed=set(),
+            limit=1,
+            start_index=None,
+            records=[
+                {
+                    "topic_id": "python_tests",
+                    "source_type": "gemma_distillation",
+                    "status": "error",
+                    "curriculum_primary": "programming",
+                }
+            ],
+            source_type="gemma_distillation",
+        )
+
+        self.assertEqual(selected[0]["id"], "python_refactor")
+
 
 @unittest.skipIf(FastAPI is None or TestClient is None, MISSING_FASTAPI)
 class TestKnowledgeAcquisitionRoutes(unittest.TestCase):

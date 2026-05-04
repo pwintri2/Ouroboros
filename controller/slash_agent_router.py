@@ -399,10 +399,14 @@ def _host_agent_runtime_adapter(agent: str):
 
 def _write_host_agent_handoff(agent: str, task: str, started: float, bridge_result: dict[str, Any] | None = None) -> dict[str, Any]:
     handoff = _write_agent_handoff(agent, task)
+    living_tick = _living_agent_whisper(agent, task, status="handoff", handoff_path=str(handoff.get("path") or ""))
     response = (
         f"/{agent} is niet inline gestart om de cockpit responsief te houden. "
         f"Taak staat klaar als handoff: {handoff.get('path')}"
     )
+    whisper = ((living_tick or {}).get("whisper") or {}).get("text") if isinstance(living_tick, dict) else ""
+    if whisper:
+        response += f"\nLiving Ouroboros: {whisper}"
     if bridge_result and bridge_result.get("reason"):
         response += f"\nBridge fallback: {bridge_result.get('reason')}"
     return _agent_result(
@@ -412,6 +416,7 @@ def _write_host_agent_handoff(agent: str, task: str, started: float, bridge_resu
         started,
         handoff=handoff,
         bridge=bridge_result,
+        living=living_tick,
         response=response,
     )
 
@@ -581,6 +586,21 @@ def _agent_output_dir() -> Path:
     path = root / "out" / "agent_tasks"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _living_agent_whisper(agent: str, task: str, **metadata: Any) -> dict[str, Any] | None:
+    try:
+        from ouroboros_esoteric.ouroboros_consciousness_loop import get_living_ouroboros_loop
+
+        return get_living_ouroboros_loop().observe_agent_event(
+            {
+                "agent": agent,
+                "task": task[:500],
+                **metadata,
+            }
+        )
+    except Exception:
+        return None
 
 
 def _agent_result(agent: str, tool: str, status: str, started: float, **extra: Any) -> dict[str, Any]:

@@ -82,7 +82,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         key_env=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         endpoint="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         api_family="gemini_generate_content",
-        default_model="gemini-2.5-pro",
+        default_model="gemini-2.5-flash",
     ),
     "mistral": ProviderConfig(
         provider="mistral",

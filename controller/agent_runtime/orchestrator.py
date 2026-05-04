@@ -304,6 +304,15 @@ class AgentOrchestrator:
             log.append("ouroboros_esoteric_reflection", reflection)
         if nexus_event is not None:
             log.append("quantum_corruption_nexus", nexus_event)
+            _notify_living_agent_event(
+                {
+                    "agent": job.agent,
+                    "job_id": job.job_id,
+                    "status": updates["status"],
+                    "action": nexus_event.get("action"),
+                    "reason": nexus_event.get("reason"),
+                }
+            )
         log.append("status", {"status": updates["status"], "finished_at": finished_at, "exit_code": updates.get("exit_code")})
 
     def _prompt_markdown(self, job: JobRecord) -> str:
@@ -377,3 +386,12 @@ def reset_orchestrator(orchestrator: AgentOrchestrator | None = None) -> AgentOr
         previous = _SINGLETON
         _SINGLETON = orchestrator
         return previous
+
+
+def _notify_living_agent_event(event: dict[str, Any]) -> None:
+    try:
+        from ouroboros_esoteric.ouroboros_consciousness_loop import get_living_ouroboros_loop
+
+        get_living_ouroboros_loop().observe_agent_event(event)
+    except Exception:
+        pass

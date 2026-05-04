@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from controller.tool_bridge import ToolBridge
+from ouroboros_esoteric.ouroboros_consciousness_loop import reset_living_ouroboros_loop
 from ouroboros_esoteric.quantum_corruption_nexus import get_quantum_corruption_nexus
 
 
@@ -14,8 +15,10 @@ class TestToolBridge(unittest.TestCase):
         self.old_workspace = os.environ.get("WINTRIP_WORKSPACE")
         os.environ["WINTRIP_WORKSPACE"] = self.tmp.name
         get_quantum_corruption_nexus().reset()
+        reset_living_ouroboros_loop(None)
 
     def tearDown(self):
+        reset_living_ouroboros_loop(None)
         if self.old_workspace is None:
             os.environ.pop("WINTRIP_WORKSPACE", None)
         else:

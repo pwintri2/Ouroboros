@@ -522,6 +522,90 @@ label {
   font-size: 11px;
 }
 
+.living-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #263449;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.living-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.living-head > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.living-head strong,
+.living-thought strong,
+.living-timeline strong {
+  font-size: 12px;
+}
+
+.living-head span,
+.living-thought span,
+.living-whisper span,
+.living-timeline span {
+  color: #91a3b8;
+  font-size: 11px;
+}
+
+.living-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.living-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.living-thought {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid #1d2634;
+  border-radius: 6px;
+  background: #0b1220;
+}
+
+.living-thought strong {
+  color: #e5edf4;
+  line-height: 1.35;
+}
+
+.living-whisper {
+  padding: 8px;
+  border: 1px solid #3d3650;
+  border-radius: 6px;
+  background: #111421;
+}
+
+.living-timeline {
+  display: grid;
+  gap: 6px;
+}
+
+.living-timeline div {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border-left: 2px solid #46d0a9;
+  background: #0b1220;
+}
+
 .key-row {
   display: grid;
   grid-template-columns: minmax(116px, 0.75fr) minmax(130px, 1fr) auto auto;

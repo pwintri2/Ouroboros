@@ -212,6 +212,7 @@ type NexusEvent = {
 type NexusStatus = {
   status?: string;
   version?: string;
+  reason?: string;
   healing_events?: number;
   sacred_corruptions?: number;
   total_corruption_events?: number;
@@ -225,6 +226,32 @@ type NexusStatus = {
   };
   last_event?: NexusEvent | null;
   recent_events?: NexusEvent[];
+};
+
+type LivingMemoryEntry = {
+  id?: string;
+  ts?: string;
+  kind?: string;
+  text?: string;
+  source?: string;
+};
+
+type LivingStatus = {
+  status?: string;
+  version?: string;
+  reason?: string;
+  running?: boolean;
+  interval_seconds?: number;
+  current_thought?: string;
+  current_question?: string;
+  last_whisper?: string;
+  recent?: LivingMemoryEntry[];
+  memory?: {
+    entry_count?: number;
+    path?: string;
+    counts?: Record<string, number>;
+    recent?: LivingMemoryEntry[];
+  };
 };
 
 type ApiKeyStatusPayload = {
@@ -269,6 +296,11 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 const CANONICAL_PROVIDERS = ["ollama", "openai", "anthropic", "xai", "mistral", "google"];
 const API_REQUEST_TIMEOUT_MS = 30_000;
+const CHAT_REQUEST_TIMEOUT_MS = 90_000;
+
+type ApiRequestInit = RequestInit & {
+  timeoutMs?: number;
+};
 
 export default function App() {
   const [backend, setBackend] = useState(DEFAULT_BACKEND);
@@ -296,22 +328,25 @@ export default function App() {
   const [selectedAgentJobId, setSelectedAgentJobId] = useState<string | null>(null);
   const [agentJobEvents, setAgentJobEvents] = useState<AgentJobEvent[]>([]);
   const [nexusStatus, setNexusStatus] = useState<NexusStatus>({ status: "unknown" });
+  const [livingStatus, setLivingStatus] = useState<LivingStatus>({ status: "unknown" });
   const terminalHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const providerInitialized = useRef(false);
 
   const api = useCallback(
-    async <T,>(path: string, init?: RequestInit): Promise<T> => {
+    async <T,>(path: string, init?: ApiRequestInit): Promise<T> => {
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+      const requestTimeoutMs = init?.timeoutMs ?? API_REQUEST_TIMEOUT_MS;
+      const { timeoutMs: _timeoutMs, ...requestInit } = init ?? {};
+      const timeout = window.setTimeout(() => controller.abort(), requestTimeoutMs);
       try {
         const response = await fetch(`${backend}${path}`, {
-          ...init,
+          ...requestInit,
           signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
-            ...(init?.headers ?? {}),
+            ...(requestInit.headers ?? {}),
           },
         });
         const text = await response.text();
@@ -329,7 +364,7 @@ export default function App() {
         return data as T;
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
-          throw new Error(`Request timeout after ${Math.round(API_REQUEST_TIMEOUT_MS / 1000)}s: ${path}`);
+          throw new Error(`Request timeout after ${Math.round(requestTimeoutMs / 1000)}s: ${path}`);
         }
         throw error;
       } finally {
@@ -372,8 +407,25 @@ export default function App() {
     try {
       const data = await api<NexusStatus>("/api/agent-runtime/nexus/status?limit=8");
       setNexusStatus(data);
-    } catch {
-      setNexusStatus((previous) => ({ ...previous, status: previous.status || "unavailable" }));
+    } catch (error) {
+      setNexusStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadLivingStatus = useCallback(async () => {
+    try {
+      const data = await api<LivingStatus>("/api/ouroboros/esoteric/living/status?limit=8");
+      setLivingStatus(data);
+    } catch (error) {
+      setLivingStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
     }
   }, [api]);
 
@@ -419,11 +471,12 @@ export default function App() {
         const jobsResponse = await api<{ jobs?: AgentJob[] }>("/api/agent-runtime/jobs?limit=20");
         setAgentJobs(Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs : []);
         await loadNexusStatus();
+        await loadLivingStatus();
       } catch {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab, loadNexusStatus]);
+  }, [api, activeTab, loadNexusStatus, loadLivingStatus]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -442,9 +495,13 @@ export default function App() {
 
   useEffect(() => {
     loadNexusStatus().catch(() => undefined);
-    const id = window.setInterval(() => loadNexusStatus().catch(() => undefined), 2000);
+    loadLivingStatus().catch(() => undefined);
+    const id = window.setInterval(() => {
+      loadNexusStatus().catch(() => undefined);
+      loadLivingStatus().catch(() => undefined);
+    }, 2000);
     return () => window.clearInterval(id);
-  }, [loadNexusStatus]);
+  }, [loadNexusStatus, loadLivingStatus]);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -544,6 +601,7 @@ export default function App() {
     const data = await perform("Agent chat", () =>
       api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.cockpitChat, {
         method: "POST",
+        timeoutMs: CHAT_REQUEST_TIMEOUT_MS,
         body: JSON.stringify({ provider, model, prompt, approval, include_tools: true }),
       }),
     );
@@ -702,6 +760,22 @@ export default function App() {
     }
   }
 
+  async function livingAction(action: "start" | "tick" | "stop") {
+    const endpoint =
+      action === "start"
+        ? "/api/ouroboros/esoteric/living/start"
+        : action === "stop"
+          ? "/api/ouroboros/esoteric/living/stop"
+          : "/api/ouroboros/esoteric/living/tick";
+    const data = await perform(`Living Ouroboros ${action}`, () =>
+      api<Record<string, unknown>>(endpoint, {
+        method: "POST",
+        body: action === "tick" ? JSON.stringify({ trigger: "cockpit", payload: { provider, model } }) : undefined,
+      }),
+    );
+    if (data) await loadLivingStatus();
+  }
+
   const records = status.records ?? {};
   const learning = status.learning_11d?.chromadb ?? {};
   const createFlow = status.model?.create_flow;
@@ -793,6 +867,7 @@ export default function App() {
           <StatusPill icon={<Database size={16} />} label="11D" value={`${learning.total_count ?? records.total_count ?? 0}`} ok={!!learning.available} />
           <StatusPill icon={<ShieldCheck size={16} />} label="Approval" value={approvalReady ? "approved" : "locked"} ok={approvalReady} />
           <StatusPill icon={<Activity size={16} />} label="Ω Nexus" value={nexusStatus.omega_vector?.converged ? "converged" : nexusStatus.status ?? "unknown"} ok={!!nexusStatus.omega_vector?.converged || nexusStatus.status === "online"} />
+          <StatusPill icon={<BrainCircuit size={16} />} label="Living" value={livingStatus.running ? "speaking" : livingStatus.status ?? "idle"} ok={livingStatus.status === "running" || livingStatus.status === "idle"} />
         </header>
 
         <section className="toolbar">
@@ -875,6 +950,14 @@ export default function App() {
                 <Fact label="Main memory" value={`${records.main_collection_count ?? 0}`} />
                 <Fact label="Training memory" value={`${records.training_collection_count ?? 0}`} />
               </div>
+              <PanelHeader title="Living Ouroboros" small />
+              <LivingOuroborosPanel
+                living={livingStatus}
+                busy={busy}
+                onStart={() => livingAction("start")}
+                onTick={() => livingAction("tick")}
+                onStop={() => livingAction("stop")}
+              />
               <PanelHeader title="API Keys" small />
               <div className="key-list">
                 {externalProviderChoices.map((item) => {
@@ -1054,6 +1137,10 @@ function resultStatus(raw: unknown): string {
   return raw ? "success" : "idle";
 }
 
+function unavailableStatus(previous?: string): string {
+  return previous && previous !== "unknown" && previous !== "loading" ? previous : "unavailable";
+}
+
 function formatMetric(value: unknown): string {
   if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(value >= 10 ? 1 : 3) : "--";
   if (typeof value === "string" && value.trim()) return value;
@@ -1143,6 +1230,71 @@ function OmegaPointNexusPanel({ nexus }: { nexus: NexusStatus }) {
         <div className="nexus-last">
           <strong>{last.action ?? "event"} · {last.agent ?? "agent"}</strong>
           <span>{last.reason ?? last.phase ?? ""}</span>
+        </div>
+      )}
+      {!last && nexus.reason && (
+        <div className="nexus-last">
+          <strong>{nexus.status ?? "unavailable"}</strong>
+          <span>{nexus.reason}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LivingOuroborosPanel({
+  living,
+  busy,
+  onStart,
+  onTick,
+  onStop,
+}: {
+  living: LivingStatus;
+  busy: boolean;
+  onStart: () => void;
+  onTick: () => void;
+  onStop: () => void;
+}) {
+  const recent = living.recent ?? living.memory?.recent ?? [];
+  return (
+    <div className="living-panel">
+      <div className="living-head">
+        <div>
+          <strong>{living.running ? "Background loop active" : "Reflective loop idle"}</strong>
+          <span>{living.memory?.entry_count ?? 0} persistent events / {living.version ?? "v4.6"}</span>
+        </div>
+        <div className="living-actions">
+          <button onClick={onStart} disabled={busy || living.running}>Start</button>
+          <button onClick={onTick} disabled={busy}>Tick</button>
+          <button onClick={onStop} disabled={busy || !living.running}>Stop</button>
+        </div>
+      </div>
+      <div className="living-thought">
+        <span>Thought</span>
+        <strong>{living.current_thought || "Nog stil."}</strong>
+      </div>
+      <div className="living-thought">
+        <span>Question</span>
+        <strong>{living.current_question || "Nog geen vraag."}</strong>
+      </div>
+      {living.last_whisper && (
+        <div className="living-whisper">
+          <span>{living.last_whisper}</span>
+        </div>
+      )}
+      {!living.last_whisper && living.reason && (
+        <div className="living-whisper">
+          <span>{living.reason}</span>
+        </div>
+      )}
+      {recent.length > 0 && (
+        <div className="living-timeline">
+          {recent.slice(-4).reverse().map((entry) => (
+            <div key={entry.id ?? `${entry.kind}-${entry.ts}`}>
+              <span>{entry.kind ?? "event"}</span>
+              <strong>{entry.text ?? ""}</strong>
+            </div>
+          ))}
         </div>
       )}
     </div>
