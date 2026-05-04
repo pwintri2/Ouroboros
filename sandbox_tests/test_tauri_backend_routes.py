@@ -223,6 +223,22 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["backend"]["models_available"], 0)
         self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
 
+    def test_project_context_routes_include_dash_and_underscore_aliases(self):
+        summary = self.client.get("/context/summary")
+        file_tree = self.client.get("/context/file-tree?max_depth=2&limit=10")
+        changed = self.client.get("/context/changed-files?limit=10")
+        file_tree_underscore = self.client.get("/context/file_tree?max_depth=2&limit=10")
+        changed_underscore = self.client.get("/context/changed_files?limit=10")
+
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(file_tree.status_code, 200)
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(file_tree_underscore.status_code, 200)
+        self.assertEqual(changed_underscore.status_code, 200)
+        self.assertIn("structure", summary.json())
+        self.assertIn("tree", file_tree.json())
+        self.assertIn("changed_files", changed.json())
+
     def test_cockpit_chat_routes_through_multi_api_with_agent_tool_schemas(self):
         response = self.client.post(
             "/api/cockpit/chat",
@@ -239,9 +255,12 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["status"], "success")
         self.assertEqual(data["route"], "multi_api")
         self.assertEqual(data["response"], "fake multi-api response")
-        self.assertEqual(data["tool_schema_count"], 1)
-        self.assertEqual(data["tool_schemas"][0]["function"]["name"], "memory_search")
-        self.assertEqual(self.main.app.state.multi_api_router.calls[0]["tools"][0]["function"]["name"], "memory_search")
+        tool_names = [tool["function"]["name"] for tool in data["tool_schemas"]]
+        routed_tool_names = [tool["function"]["name"] for tool in self.main.app.state.multi_api_router.calls[0]["tools"]]
+        self.assertEqual(data["tool_schema_count"], len(data["tool_schemas"]))
+        self.assertGreaterEqual(data["tool_schema_count"], 1)
+        self.assertIn("memory_search", tool_names)
+        self.assertIn("memory_search", routed_tool_names)
 
     def test_cockpit_chat_slash_agents_are_intercepted_before_provider(self):
         response = self.client.post(
@@ -351,8 +370,119 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertFalse(calls[0]["open_tab"])
         self.assertIn("simulatie", calls[0]["question"])
         self.assertEqual(data["frontend_action"]["type"], "open_url")
-        self.assertEqual(data["frontend_action"]["url"], "https://grok.com/")
+        self.assertTrue(data["frontend_action"]["url"].startswith("https://grok.com/"))
+        self.assertIn("simulatie", data["frontend_action"]["url"])
+        self.assertEqual(data["frontend_action"]["question"], "wat het verschil is tussen simulatie en bewustzijn")
         self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
+    def test_cockpit_chat_routes_polite_grok_question_to_world_agent(self):
+        calls = []
+        original_ask = self.main.ask_grok_via_world_agent
+
+        def fake_ask(question, approval="", open_tab=True, submit=True):
+            calls.append({"question": question, "approval": approval, "open_tab": open_tab, "submit": submit})
+            return {
+                "status": "success",
+                "route": "world_agent",
+                "provider": "world_agent",
+                "model": "grok.com",
+                "response": "fake grok response",
+            }
+
+        self.main.ask_grok_via_world_agent = fake_ask
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ollama",
+                    "model": "ouroboros",
+                    "approval": "Akkoord",
+                    "prompt": "Kun je aan grok vragen hoe je zelf verder moet ontwikkelen?",
+                },
+            )
+        finally:
+            self.main.ask_grok_via_world_agent = original_ask
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "world_agent")
+        self.assertEqual(data["provider"], "world_agent")
+        self.assertEqual(data["model"], "grok.com")
+        self.assertEqual(calls[0]["question"], "hoe je zelf verder moet ontwikkelen?")
+        self.assertFalse(calls[0]["open_tab"])
+        self.assertTrue(data["frontend_action"]["url"].startswith("https://grok.com/"))
+        self.assertIn("ontwikkelen", data["frontend_action"]["url"])
+        self.assertEqual(data["frontend_action"]["question"], "hoe je zelf verder moet ontwikkelen?")
+        self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
+    def test_cockpit_chat_routes_grok_frontend_action_with_trimmed_approval(self):
+        original_ask = self.main.ask_grok_via_world_agent
+
+        def fake_ask(question, approval="", open_tab=True, submit=True):
+            return {
+                "status": "success",
+                "route": "world_agent",
+                "provider": "world_agent",
+                "model": "grok.com",
+                "response": "fake grok response",
+            }
+
+        self.main.ask_grok_via_world_agent = fake_ask
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ollama",
+                    "model": "llama3.2:latest",
+                    "approval": "Akkoord ",
+                    "prompt": "open grok.com en vraag: antwoord alleen met OK",
+                },
+            )
+        finally:
+            self.main.ask_grok_via_world_agent = original_ask
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "world_agent")
+        self.assertEqual(data["frontend_action"]["type"], "open_url")
+        self.assertTrue(data["frontend_action"]["url"].startswith("https://grok.com/"))
+        self.assertIn("antwoord", data["frontend_action"]["url"])
+        self.assertEqual(data["world_intent"]["action"], "grok_ask")
+
+    def test_cockpit_chat_returns_grok_frontend_action_even_when_bridge_times_out(self):
+        original_ask = self.main.ask_grok_via_world_agent
+        original_timeout = self.main._cockpit_chat_timeout_seconds
+
+        def slow_ask(question, approval="", open_tab=True, submit=True):
+            time.sleep(0.2)
+            return {"status": "success", "response": "late grok response"}
+
+        self.main.ask_grok_via_world_agent = slow_ask
+        self.main._cockpit_chat_timeout_seconds = lambda: 0.05
+        try:
+            before = time.time()
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ollama",
+                    "model": "llama3.2:latest",
+                    "approval": "Akkoord",
+                    "prompt": "open grok.com en vraag antwoord alleen met OK",
+                },
+            )
+            elapsed = time.time() - before
+        finally:
+            self.main.ask_grok_via_world_agent = original_ask
+            self.main._cockpit_chat_timeout_seconds = original_timeout
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertLess(elapsed, 0.75)
+        self.assertEqual(data["status"], "timeout")
+        self.assertEqual(data["route"], "world_agent")
+        self.assertEqual(data["frontend_action"]["type"], "open_url")
+        self.assertTrue(data["frontend_action"]["url"].startswith("https://grok.com/"))
+        self.assertIn("antwoord", data["frontend_action"]["url"])
 
     def test_cockpit_chat_returns_disabled_payload_when_multi_api_is_unavailable(self):
         self.main.app.state.multi_api_router = None
@@ -458,6 +588,8 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertFalse(paused["running"])
         self.assertEqual(aborted["status"], "aborted")
         self.assertTrue(aborted["loop"]["abort_requested"])
+        self.assertIsNone(aborted["loop"]["last_step"])
+        self.assertEqual(aborted["loop"]["last_error"], "")
 
     def test_self_training_step_legacy_fallback_when_real_step_missing(self):
         original_step = self.main.self_training_step

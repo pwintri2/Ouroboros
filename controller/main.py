@@ -189,7 +189,7 @@ except Exception:
 
 try:
     from controller.api.world_agent_routes import init_world_agent
-    from controller.world_agent import GROK_URL, ask_grok_via_world_agent, detect_world_intent, search_world_memory, world_agent_status
+    from controller.world_agent import GROK_URL, ask_grok_via_world_agent, detect_world_intent, grok_frontend_url, search_world_memory, world_agent_status
 except Exception:
     GROK_URL = "https://grok.com/"
 
@@ -207,6 +207,21 @@ except Exception:
 
     def world_agent_status() -> dict[str, Any]:
         return {"status": "unavailable", "reason": "WorldAgent niet beschikbaar.", "fake_success": False}
+
+    def grok_frontend_url(_question: object = "") -> str:
+        return GROK_URL
+
+try:
+    from controller.fase8_agent import Fase8ToolDispatcher, get_fase8_runner
+    from controller.external_capabilities import external_capabilities_status
+except Exception:
+    Fase8ToolDispatcher = None
+
+    def get_fase8_runner(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def external_capabilities_status() -> dict[str, Any]:
+        return {"status": "unavailable", "capabilities": {}, "reason": "Fase8 capabilities niet beschikbaar.", "fake_success": False}
 
 try:
     from controller.safe_shell import run_safe_shell
@@ -422,6 +437,21 @@ class BrowserChatGPTRequest(BaseModel):
     conversation_id: Optional[str] = None
     store_question: Optional[bool] = True
 
+class Fase8RunRequest(BaseModel):
+    goal: str
+    approval: Optional[str] = None
+    max_iterations: Optional[int] = None
+    continuous: Optional[bool] = False
+
+class Fase8PlanRequest(BaseModel):
+    goal: str
+
+class Fase8ToolDispatchRequest(BaseModel):
+    tool: Optional[str] = None
+    args: Optional[Dict[str, object]] = None
+    prompt: Optional[str] = None
+    approval: Optional[str] = None
+
 class CommitSaveRequest(BaseModel):
     filename: str
     content: str
@@ -509,6 +539,52 @@ async def ouroboros_loop_abort():
 @app.get("/api/ouroboros/loop/status")
 async def ouroboros_loop_status():
     return _ouroboros_loop_status_payload()
+
+@app.get("/api/fase8/status")
+async def fase8_status():
+    return _fase8_runner().status()
+
+@app.get("/orchestrator/status")
+@app.get("/api/orchestrator/status")
+async def fase8_orchestrator_status():
+    return _fase8_runner().status()
+
+@app.get("/orchestrator/status/{task_id}")
+@app.get("/api/orchestrator/status/{task_id}")
+async def fase8_orchestrator_task_status(task_id: str):
+    return _fase8_runner().get(task_id)
+
+@app.post("/orchestrator/run")
+@app.post("/api/orchestrator/run")
+async def fase8_orchestrator_run(req: Fase8RunRequest):
+    return _fase8_runner().run(
+        req.goal,
+        approval=req.approval or "",
+        max_iterations=req.max_iterations,
+        continuous=bool(req.continuous),
+    )
+
+@app.post("/orchestrator/stop/{task_id}")
+@app.post("/api/orchestrator/stop/{task_id}")
+async def fase8_orchestrator_stop(task_id: str):
+    return _fase8_runner().stop(task_id)
+
+@app.post("/api/fase8/plan")
+async def fase8_plan(req: Fase8PlanRequest):
+    return _fase8_runner().create_plan(req.goal)
+
+@app.post("/api/fase8/tools/dispatch")
+async def fase8_tool_dispatch(req: Fase8ToolDispatchRequest):
+    dispatcher = _fase8_runner().dispatcher
+    if req.tool:
+        return dispatcher.dispatch(req.tool, dict(req.args or {}))
+    choice = dispatcher.choose(req.prompt or "", approval=req.approval or "")
+    result = dispatcher.dispatch(choice["tool"], dict(choice.get("args") or {}))
+    return {"status": result.get("status", "unknown"), "choice": choice, "result": result, "fake_success": False}
+
+@app.get("/api/fase8/external-capabilities")
+async def fase8_external_capabilities():
+    return external_capabilities_status()
 
 @app.post("/api/ouroboros/training/ingest")
 async def ouroboros_training_ingest(req: TrainingIngestRequest):
@@ -775,6 +851,13 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "world_agent_memory_search": {"method": "POST", "path": "/api/world-agent/memory/search"},
         "world_agent_recent_actions": {"method": "GET", "path": "/api/world-agent/actions/recent"},
         "tool_bridge_run": {"method": "POST", "path": "/api/agent-runtime/tools/run"},
+        "fase8_status": {"method": "GET", "path": "/api/fase8/status"},
+        "fase8_plan": {"method": "POST", "path": "/api/fase8/plan"},
+        "fase8_tool_dispatch": {"method": "POST", "path": "/api/fase8/tools/dispatch"},
+        "external_capabilities": {"method": "GET", "path": "/api/fase8/external-capabilities"},
+        "orchestrator_run": {"method": "POST", "path": "/orchestrator/run"},
+        "orchestrator_status": {"method": "GET", "path": "/orchestrator/status/{task_id}"},
+        "orchestrator_stop": {"method": "POST", "path": "/orchestrator/stop/{task_id}"},
         "slash_agents": {"method": "POST", "path": "/api/cockpit/chat", "prefix": "/"},
     }
 
@@ -911,6 +994,13 @@ def _cockpit_config_payload() -> dict[str, Any]:
             "loop_pause": {"method": "POST", "path": "/api/ouroboros/loop/pause"},
             "loop_abort": {"method": "POST", "path": "/api/ouroboros/loop/abort"},
             "loop_status": {"method": "GET", "path": "/api/ouroboros/loop/status"},
+            "fase8_status": {"method": "GET", "path": "/api/fase8/status"},
+            "fase8_plan": {"method": "POST", "path": "/api/fase8/plan"},
+            "fase8_tool_dispatch": {"method": "POST", "path": "/api/fase8/tools/dispatch"},
+            "fase8_external_capabilities": {"method": "GET", "path": "/api/fase8/external-capabilities"},
+            "orchestrator_run": {"method": "POST", "path": "/orchestrator/run"},
+            "orchestrator_status": {"method": "GET", "path": "/orchestrator/status/{task_id}"},
+            "orchestrator_stop": {"method": "POST", "path": "/orchestrator/stop/{task_id}"},
             **_ouroboros_capabilities(),
         },
     }
@@ -933,14 +1023,32 @@ def _default_cockpit_model(provider: str, requested_model: Optional[str] = None)
 def _agent_tool_schemas(provider: str = "openai") -> list[dict[str, Any]]:
     getter = getattr(agent_tools, "get_tool_schemas", None)
     if not callable(getter):
-        return []
+        base_schemas: list[dict[str, Any]] = []
+    else:
+        try:
+            schemas = getter(provider=provider)
+        except TypeError:
+            schemas = getter()
+        except Exception:
+            schemas = []
+        base_schemas = list(schemas or [])
+    runner = _fase8_runner(allow_unavailable=True)
+    if runner is not None:
+        try:
+            base_schemas.extend(runner.dispatcher.schemas())
+        except Exception:
+            pass
+    return base_schemas
+
+
+def _fase8_runner(allow_unavailable: bool = False) -> Any:
     try:
-        schemas = getter(provider=provider)
-    except TypeError:
-        schemas = getter()
+        runner = get_fase8_runner(agent_tools=agent_tools)
     except Exception:
-        return []
-    return list(schemas or [])
+        runner = None
+    if runner is None and not allow_unavailable:
+        raise HTTPException(status_code=503, detail="Fase 8 runner niet beschikbaar")
+    return runner
 
 
 def _requested_tool_payload(req: CockpitChatRequest, provider: str) -> list[dict[str, Any]]:
@@ -1150,8 +1258,11 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
 
     world_intent = detect_world_intent(req.prompt)
     if world_intent is not None:
+        world_action = str(getattr(world_intent, "action", "") or "")
+        is_grok_intent = world_action.startswith("grok")
+        grok_frontend_allowed = is_grok_intent and (req.approval or "").strip() == APPROVAL_PHRASE
         try:
-            if getattr(world_intent, "action", "") == "memory_search":
+            if world_action == "memory_search":
                 result = await asyncio.wait_for(
                     asyncio.to_thread(search_world_memory, getattr(world_intent, "query", ""), limit=5),
                     timeout=min(timeout_seconds, 30.0),
@@ -1164,22 +1275,33 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
                         grok_question,
                         approval=req.approval or "",
                         open_tab=False,
-                        submit=getattr(world_intent, "action", "") != "grok_open",
+                        submit=world_action != "grok_open",
                     ),
                     timeout=timeout_seconds,
                 )
         except asyncio.TimeoutError:
+            timeout_payload = _chat_timeout_payload(
+                requested_provider=requested_provider,
+                provider="world_agent",
+                model="grok.com",
+                route="world_agent",
+                timeout_seconds=timeout_seconds,
+                local_only=False,
+                tools=tools,
+                return_tools=_should_return_tool_schemas(req),
+            )
+            if grok_frontend_allowed:
+                timeout_payload["frontend_action"] = _grok_frontend_action(question=getattr(world_intent, "query", ""))
+                timeout_payload["frontend_note"] = (
+                    "Cockpit opent de zichtbare Grok-tab ook als de host-bridge/Playwright ask vertraagt of timeout."
+                )
+            timeout_payload["world_intent"] = world_intent.to_dict() if callable(getattr(world_intent, "to_dict", None)) else {
+                "action": world_action,
+                "query": getattr(world_intent, "query", ""),
+                "target": getattr(world_intent, "target", ""),
+            }
             return _with_cockpit_self_context(
-                _chat_timeout_payload(
-                    requested_provider=requested_provider,
-                    provider="world_agent",
-                    model="grok.com",
-                    route="world_agent",
-                    timeout_seconds=timeout_seconds,
-                    local_only=False,
-                    tools=tools,
-                    return_tools=_should_return_tool_schemas(req),
-                ),
+                timeout_payload,
                 chat_context,
                 provider,
                 model,
@@ -1191,20 +1313,11 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         result.setdefault("requested_provider", requested_provider)
         result.setdefault("model", "grok.com")
         result.setdefault("route", "world_agent")
-        result.setdefault("local_only", getattr(world_intent, "action", "") == "memory_search")
+        result.setdefault("local_only", world_action == "memory_search")
         result.setdefault("tool_schemas", [])
         result.setdefault("tool_schema_count", 0)
-        if str(getattr(world_intent, "action", "")).startswith("grok") and req.approval == APPROVAL_PHRASE:
-            result.setdefault(
-                "frontend_action",
-                {
-                    "type": "open_url",
-                    "url": GROK_URL,
-                    "target": "_blank",
-                    "agent": "world_agent",
-                    "action_id": result.get("action_id") or f"world_{int(time.time())}",
-                },
-            )
+        if grok_frontend_allowed:
+            result.setdefault("frontend_action", _grok_frontend_action(result.get("action_id"), question=getattr(world_intent, "query", "")))
             result.setdefault(
                 "frontend_note",
                 "Cockpit opent de zichtbare Grok-tab; de host-bridge probeert de vraag apart via Playwright te stellen.",
@@ -1346,6 +1459,20 @@ def _chat_timeout_payload(
         "tool_schema_count": len(tools),
         "next_action": "Kies een sneller model of probeer opnieuw met een kortere prompt.",
         "fake_success": False,
+    }
+
+
+def _grok_frontend_action(action_id: object = None, question: object = "") -> dict[str, Any]:
+    clean_question = str(question or "").strip()
+    return {
+        "type": "open_url",
+        "url": grok_frontend_url(clean_question),
+        "base_url": GROK_URL,
+        "target": "_blank",
+        "agent": "world_agent",
+        "action_id": str(action_id or f"world_{int(time.time())}"),
+        "question": clean_question,
+        "auto_submit_hint": bool(clean_question),
     }
 
 
@@ -1518,6 +1645,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
             training_events=getattr(app.state, "training_events", []),
             extra={"ollama_router": router_status, "self_context": _self_context_status_payload(), **ecosystem_extra},
         )
+        payload["fase8"] = _fase8_status_summary()
         if extra:
             payload.update(extra)
         return payload
@@ -1547,6 +1675,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
         "self_context": _self_context_status_payload(),
         "last_tool_call": last_tool or {"status": "not_run"},
         "self_modification_pipeline": self_modification or {"status": "not_configured", "approval_required": True},
+        "fase8": _fase8_status_summary(),
         "integrity": {"fake_fine_tune_success": False, "fake_tool_success": False},
         "learned": "Status gelezen: model, research, 11D geometry en Hippocampus records zijn beschikbaar.",
         "mentor": "Backend-first: gebruik Preview Ingest voordat iets in 11D Memory wordt opgeslagen.",
@@ -1557,6 +1686,23 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
     if extra:
         payload.update(extra)
     return payload
+
+
+def _fase8_status_summary() -> dict[str, Any]:
+    runner = _fase8_runner(allow_unavailable=True)
+    if runner is None:
+        return {"status": "unavailable", "fake_success": False}
+    try:
+        status = runner.status()
+        return {
+            "status": status.get("status", "unknown"),
+            "task_count": status.get("task_count", 0),
+            "tool_schema_count": status.get("tool_schema_count", 0),
+            "external_capabilities": status.get("external_capabilities", {}),
+            "fake_success": False,
+        }
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc), "fake_success": False}
 
 
 def _ecosystem_status_extra() -> dict[str, Any]:
@@ -1676,6 +1822,8 @@ def _ouroboros_loop_start_payload(req: OuroborosLoopStartRequest) -> dict[str, A
                 "abort_requested": False,
                 "pause_requested": False,
                 "prompt": prompt,
+                "last_step": None,
+                "last_error": "",
                 "started_at": now,
                 "updated_at": now,
                 "next_action": "Self-training step draait op de achtergrond." if req.trigger_step else "Queued tot de cockpit de volgende stap start.",
@@ -1759,6 +1907,8 @@ def _ouroboros_loop_control_payload(action: str) -> dict[str, Any]:
                 "queued": False,
                 "abort_requested": True,
                 "pause_requested": False,
+                "last_step": None,
+                "last_error": "",
                 "aborted_at": now,
                 "updated_at": now,
                 "next_action": "Start Loop",

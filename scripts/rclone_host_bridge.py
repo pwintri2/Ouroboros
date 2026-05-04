@@ -46,6 +46,14 @@ from controller.host_sensory_adapter import get_host_sensory_status, snapshot_ho
 from controller.ouroboros_self_context import get_ruflo_status  # noqa: E402
 from controller.slash_agent_router import execute_host_agent_command  # noqa: E402
 from controller.world_agent import ask_grok_via_world_agent, recent_world_actions, search_world_memory, world_agent_status  # noqa: E402
+from controller.external_capabilities import external_capabilities_status  # noqa: E402
+from controller.project_context import (  # noqa: E402
+    get_changed_files,
+    get_context_summary,
+    get_file_tree,
+    get_project_structure_summary,
+    get_test_files,
+)
 
 
 def main() -> int:
@@ -92,6 +100,46 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
             return
         if path == "/world/status":
             result = world_agent_status()
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/external/capabilities":
+            result = external_capabilities_status(prefer_bridge=False)
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/context/summary":
+            result = get_context_summary(prefer_bridge=False)
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path in {"/context/file_tree", "/context/file-tree"}:
+            result = get_file_tree(
+                max_depth=self._query_int(query, "max_depth", 3, minimum=1, maximum=8),
+                limit=self._query_int(query, "limit", 500, minimum=1, maximum=2000),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path in {"/context/changed_files", "/context/changed-files"}:
+            result = get_changed_files(
+                limit=self._query_int(query, "limit", 50, minimum=1, maximum=500),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/context/test_files":
+            result = get_test_files(
+                limit=self._query_int(query, "limit", 100, minimum=1, maximum=500),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/context/structure":
+            result = get_project_structure_summary(prefer_bridge=False)
             result["via_bridge"] = False
             self._json(result)
             return
@@ -180,6 +228,14 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
         except Exception:
             return {}
         return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _query_int(query: dict[str, list[str]], key: str, default: int, *, minimum: int, maximum: int) -> int:
+        try:
+            value = int((query.get(key) or [str(default)])[0])
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(value, maximum))
 
     def _json(self, payload: dict[str, Any], status: int = 200) -> None:
         data = json.dumps(payload, sort_keys=True).encode("utf-8")

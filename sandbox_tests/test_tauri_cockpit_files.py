@@ -174,6 +174,8 @@ class TestTauriCockpitFiles(unittest.TestCase):
         self.assertIn("open_external_url", rust_source)
         self.assertIn("tauri::generate_handler![backend_config, open_external_url]", rust_source)
         self.assertIn('invoke<boolean>("open_external_url"', react_source)
+        self.assertIn('window.open("about:blank"', react_source)
+        self.assertIn("reserved-window", react_source)
 
 
 if __name__ == "__main__":

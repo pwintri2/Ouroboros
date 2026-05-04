@@ -1369,12 +1369,14 @@ async def project_context_summary() -> dict[str, Any]:
 
 
 @project_context_router.get("/file_tree")
+@project_context_router.get("/file-tree")
 async def project_file_tree(max_depth: int = 3, limit: int = 500) -> dict[str, Any]:
     """Get project file tree."""
     return get_file_tree(max_depth=max_depth, limit=limit)
 
 
 @project_context_router.get("/changed_files")
+@project_context_router.get("/changed-files")
 async def project_changed_files(limit: int = 50) -> dict[str, Any]:
     """Get changed files from git."""
     return get_changed_files(limit=limit)

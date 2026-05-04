@@ -15,6 +15,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
@@ -59,6 +60,15 @@ class WorldIntent:
 
     def to_dict(self) -> dict[str, str]:
         return {"action": self.action, "query": self.query, "target": self.target}
+
+
+def grok_frontend_url(question: object = "") -> str:
+    """URL that opens Grok with the prompt preloaded/submitted when possible."""
+
+    clean_question = _clean_question(question)
+    if not clean_question:
+        return GROK_URL
+    return f"{GROK_URL}?{urllib.parse.urlencode({'q': clean_question})}"
 
 
 class HashEmbeddingFunction:
@@ -325,10 +335,13 @@ class WorldAgent:
         action_id = uuid.uuid4().hex
         frontend_action = {
             "type": "open_url",
-            "url": GROK_URL,
+            "url": grok_frontend_url(clean_question if submit else ""),
+            "base_url": GROK_URL,
             "target": "_blank",
             "agent": "world_agent",
             "action_id": action_id,
+            "question": clean_question,
+            "auto_submit_hint": bool(submit),
         }
         if not clean_question:
             return _world_payload(
@@ -368,6 +381,17 @@ class WorldAgent:
             browser_action_performed=tab_opened,
         )
         visible_text = _bounded_text(browser.visible_text, MAX_WORLD_ANSWER_CHARS)
+        browser_status = browser.status
+        browser_reason = browser.reason
+        browser_next_action = browser.next_action
+        if browser_status == "success" and _looks_like_login_or_captcha(visible_text):
+            browser_status = "login_required"
+            browser_reason = "Grok toont login/CAPTCHA/interactieve verificatie; er is geen bypass uitgevoerd."
+            browser_next_action = "Log handmatig in of gebruik een expliciete API-route; sessiemateriaal wordt niet opgeslagen."
+        elif browser_status == "success" and _looks_like_grok_rate_limit(visible_text):
+            browser_status = "rate_limited"
+            browser_reason = "Grok accepteerde de prompt, maar gaf een drukte/rate-limit melding terug."
+            browser_next_action = "Probeer later opnieuw of stel de vraag in de zichtbare Grok-tab waar je eventueel ingelogd bent."
         scrubbed_answer = ""
         scrubbed_payload: dict[str, Any] = {}
         if visible_text:
@@ -390,27 +414,27 @@ class WorldAgent:
                 scrubbed_answer = scrub_data(visible_text)[:MAX_WORLD_ANSWER_CHARS]
                 scrubbed_payload = {"taint": "untrusted_web", "scrub_error": str(exc)}
 
-        answer_for_memory = scrubbed_answer or browser.reason or "Grok-tab geopend; geen browserantwoord vastgelegd."
+        answer_for_memory = scrubbed_answer or browser_reason or "Grok-tab geopend; geen browserantwoord vastgelegd."
         memory = self.memory.store_understanding(
             question=clean_question,
             answer=answer_for_memory,
             source_url=browser.url or GROK_URL,
             action_id=action_id,
-            status=browser.status,
+            status=browser_status,
             browser_action_performed=bool(browser.browser_action_performed or tab_opened),
             metadata={
-                "browser_status": browser.status,
+                "browser_status": browser_status,
                 "tab_opened": bool(tab_opened),
                 "title": browser.title[:240] if browser.title else "",
             },
         )
         payload = _world_payload(
-            status=browser.status,
+            status=browser_status,
             action_id=action_id,
             question=clean_question,
-            response=_answer_excerpt(scrubbed_answer, browser.reason),
-            reason=browser.reason,
-            next_action=browser.next_action or ("Semantisch zoeken kan via: wat weet je nog over <onderwerp>." if memory.get("stored") else ""),
+            response=_answer_excerpt(scrubbed_answer, browser_reason),
+            reason=browser_reason,
+            next_action=browser_next_action or ("Semantisch zoeken kan via: wat weet je nog over <onderwerp>." if memory.get("stored") else ""),
             frontend_action=frontend_action if open_tab and not tab_opened else None,
             extra={
                 "url": browser.url or GROK_URL,
@@ -568,8 +592,12 @@ def detect_world_intent(prompt: object) -> WorldIntent | None:
 
     if "grok.com" in lowered or re.search(r"\bgrok\b", lowered):
         ask_patterns = (
-            r"(?:open|ga naar|start)\s+grok(?:\.com)?\s+(?:en\s+)?(?:vraag|stel)\s+(?P<query>.+)$",
-            r"(?:vraag|stel)\s+(?:aan\s+)?grok(?:\.com)?\s+(?P<query>.+)$",
+            r"(?:kun|kan|wil|zou)\s+(?:je|jij|u|hij|ouroboros)\s+(?:het\s+)?(?:aan\s+)?grok(?:\.com)?\s+(?:vragen|stellen)\s*:?\s+(?P<query>.+)$",
+            r"(?:kun|kan|wil|zou)\s+(?:je|jij|u|hij|ouroboros)\s+(?:het\s+)?(?:vragen|stellen)\s+(?:aan\s+)?grok(?:\.com)?\s*:?\s+(?P<query>.+)$",
+            r"(?:can|could|would|will)\s+you\s+(?:ask|tell)\s+grok(?:\.com)?\s*:?\s+(?P<query>.+)$",
+            r"(?:open|ga naar|start)\s+grok(?:\.com)?\s+(?:en\s+)?(?:vraag|stel)\s*:?\s+(?P<query>.+)$",
+            r"(?:vraag|stel)\s+(?:aan\s+)?grok(?:\.com)?\s*:?\s+(?P<query>.+)$",
+            r"(?:ask|tell)\s+grok(?:\.com)?\s*:?\s+(?P<query>.+)$",
             r"grok(?:\.com)?\s*[:\-]\s*(?P<query>.+)$",
         )
         for pattern in ask_patterns:

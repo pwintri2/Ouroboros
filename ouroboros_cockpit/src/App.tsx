@@ -184,6 +184,31 @@ type AgentJobEvent = {
   data?: Record<string, unknown>;
 };
 
+type ExternalCapability = {
+  status?: string;
+  exists?: boolean;
+  root?: string;
+  entrypoints?: Array<{ kind?: string; label?: string; path?: string }>;
+  packages?: Array<{ kind?: string; label?: string; path?: string }>;
+  safe_notes?: string[];
+};
+
+type ExternalCapabilitiesStatus = {
+  status?: string;
+  via_bridge?: boolean;
+  capabilities?: Record<string, ExternalCapability>;
+  tool_schemas?: Array<{ function?: { name?: string } }>;
+  reason?: string;
+};
+
+type RuntimeToolsStatus = {
+  status?: string;
+  tools?: string[];
+  write_tools_require_approval?: string[];
+  fake_success?: boolean;
+  reason?: string;
+};
+
 type ProviderChoice = {
   id: string;
   label: string;
@@ -342,24 +367,76 @@ type FrontendAction = {
   action_id?: string;
 };
 
-async function openExternalUrl(url: string, target = "_blank"): Promise<{ opened: boolean; detail: string; via: string }> {
+type ExternalOpenResult = {
+  opened: boolean;
+  detail: string;
+  via: string;
+};
+
+function isLikelyTauriRuntime(): boolean {
+  const currentWindow = window as Window & { __TAURI_INTERNALS__?: unknown };
+  return Boolean(currentWindow.__TAURI_INTERNALS__);
+}
+
+function isApprovedGrokPrompt(prompt: string, approval: string, approvalPhrase: string): boolean {
+  const text = prompt.trim().toLowerCase();
+  return approval.trim() === approvalPhrase && /\bgrok(?:\.com)?\b/.test(text) && /\b(open|ga naar|start|vraag|vragen|stel|stellen|ask|tell)\b/.test(text);
+}
+
+function reserveExternalWindow(prompt: string, approval: string, approvalPhrase: string): Window | null {
+  if (isLikelyTauriRuntime() || !isApprovedGrokPrompt(prompt, approval, approvalPhrase)) return null;
+  try {
+    return window.open("about:blank", "_blank");
+  } catch {
+    return null;
+  }
+}
+
+function closeReservedWindow(reservedWindow: Window | null) {
+  try {
+    if (reservedWindow && !reservedWindow.closed) reservedWindow.close();
+  } catch {
+    // ignore
+  }
+}
+
+async function openExternalUrl(url: string, target = "_blank", reservedWindow: Window | null = null): Promise<ExternalOpenResult> {
+  let openerDetail = "";
   try {
     const opened = await invoke<boolean>("open_external_url", { url });
-    return {
-      opened: Boolean(opened),
-      detail: opened ? "Tauri native opener launched the external URL" : "Tauri native opener returned false",
-      via: "tauri",
-    };
+    if (opened) {
+      closeReservedWindow(reservedWindow);
+      return {
+        opened: true,
+        detail: "Tauri native opener launched the external URL",
+        via: "tauri",
+      };
+    }
+    openerDetail = "Tauri native opener returned false";
   } catch (error) {
-    const opened = window.open(url, target, "noopener,noreferrer");
-    return {
-      opened: Boolean(opened),
-      detail: opened
-        ? "window.open returned a Window handle"
-        : `Tauri opener unavailable and browser/webview blocked window.open: ${error instanceof Error ? error.message : String(error)}`,
-      via: "window.open",
-    };
+    openerDetail = `Tauri opener unavailable: ${error instanceof Error ? error.message : String(error)}`;
   }
+
+  if (reservedWindow && !reservedWindow.closed) {
+    try {
+      reservedWindow.opener = null;
+      reservedWindow.location.href = url;
+      return {
+        opened: true,
+        detail: `${openerDetail}; pre-opened browser tab was navigated to the external URL`,
+        via: "reserved-window",
+      };
+    } catch (error) {
+      openerDetail = `${openerDetail}; reserved tab navigation failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  const opened = window.open(url, target, "noopener,noreferrer");
+  return {
+    opened: Boolean(opened),
+    detail: opened ? `${openerDetail}; window.open returned a Window handle` : `${openerDetail}; browser/webview blocked window.open`,
+    via: "window.open",
+  };
 }
 
 export default function App() {
@@ -390,6 +467,8 @@ export default function App() {
   const [nexusStatus, setNexusStatus] = useState<NexusStatus>({ status: "unknown" });
   const [livingStatus, setLivingStatus] = useState<LivingStatus>({ status: "unknown" });
   const [worldStatus, setWorldStatus] = useState<WorldStatus>({ status: "unknown" });
+  const [externalCapabilities, setExternalCapabilities] = useState<ExternalCapabilitiesStatus>({ status: "unknown" });
+  const [runtimeTools, setRuntimeTools] = useState<RuntimeToolsStatus>({ status: "unknown" });
   const terminalHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -503,6 +582,32 @@ export default function App() {
     }
   }, [api]);
 
+  const loadExternalCapabilities = useCallback(async () => {
+    try {
+      const data = await api<ExternalCapabilitiesStatus>("/api/fase8/external-capabilities");
+      setExternalCapabilities(data);
+    } catch (error) {
+      setExternalCapabilities((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadRuntimeTools = useCallback(async () => {
+    try {
+      const data = await api<RuntimeToolsStatus>("/api/agent-runtime/tools/status");
+      setRuntimeTools(data);
+    } catch (error) {
+      setRuntimeTools((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
   const refresh = useCallback(async () => {
     const [healthData, configData, statusData] = await Promise.all([
       api<Health>(OUROBOROS_BACKEND_CONTRACT.health),
@@ -547,11 +652,13 @@ export default function App() {
         await loadNexusStatus();
         await loadLivingStatus();
         await loadWorldStatus();
+        await loadExternalCapabilities();
+        await loadRuntimeTools();
       } catch {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadWorldStatus]);
+  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -572,13 +679,17 @@ export default function App() {
     loadNexusStatus().catch(() => undefined);
     loadLivingStatus().catch(() => undefined);
     loadWorldStatus().catch(() => undefined);
+    loadExternalCapabilities().catch(() => undefined);
+    loadRuntimeTools().catch(() => undefined);
     const id = window.setInterval(() => {
       loadNexusStatus().catch(() => undefined);
       loadLivingStatus().catch(() => undefined);
       loadWorldStatus().catch(() => undefined);
+      loadExternalCapabilities().catch(() => undefined);
+      loadRuntimeTools().catch(() => undefined);
     }, 2000);
     return () => window.clearInterval(id);
-  }, [loadNexusStatus, loadLivingStatus, loadWorldStatus]);
+  }, [loadNexusStatus, loadLivingStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools]);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -675,6 +786,7 @@ export default function App() {
 
   async function sendChat() {
     setChatOutput("");
+    const reservedWindow = reserveExternalWindow(prompt, approval, approvalPhrase);
     const data = await perform("Agent chat", () =>
       api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.cockpitChat, {
         method: "POST",
@@ -683,8 +795,9 @@ export default function App() {
       }),
     );
     if (data) {
-      await handleFrontendAction(data);
-      setChatOutput(renderResponse(data));
+      const openResult = await handleFrontendAction(data, reservedWindow);
+      if (!openResult) closeReservedWindow(reservedWindow);
+      setChatOutput(renderResponse(data, openResult));
       // Slash-agent dispatched a background job — pull it into the Agent Jobs panel right away
       // instead of waiting for the next 5s poll.
       const job = (data as { job?: { job_id?: string } }).job;
@@ -697,13 +810,15 @@ export default function App() {
           // ignore — the regular refresh will catch up
         }
       }
+    } else {
+      closeReservedWindow(reservedWindow);
     }
   }
 
-  async function handleFrontendAction(data: Record<string, unknown>) {
+  async function handleFrontendAction(data: Record<string, unknown>, reservedWindow: Window | null = null): Promise<ExternalOpenResult | null> {
     const action = data.frontend_action as FrontendAction | undefined;
-    if (action?.type !== "open_url" || !action.url) return;
-    const openResult = await openExternalUrl(action.url, action.target ?? "_blank");
+    if (action?.type !== "open_url" || !action.url) return null;
+    const openResult = await openExternalUrl(action.url, action.target ?? "_blank", reservedWindow);
     if (action.action_id) {
       await api("/trainer/codex/agent/frontend-event", {
         method: "POST",
@@ -711,10 +826,11 @@ export default function App() {
           action_id: action.action_id,
           status: openResult.opened ? "opened" : "blocked_by_browser",
           detail: openResult.detail,
-          payload: { url: action.url, source: "cockpit_slash", via: openResult.via },
+          payload: { url: action.url, source: "cockpit_chat", via: openResult.via },
         }),
       }).catch(() => undefined);
     }
+    return openResult;
   }
 
   function insertSlash(prefix: string) {
@@ -946,6 +1062,8 @@ export default function App() {
           <StatusPill icon={<Activity size={16} />} label="Ω Nexus" value={nexusStatus.omega_vector?.converged ? "converged" : nexusStatus.status ?? "unknown"} ok={!!nexusStatus.omega_vector?.converged || nexusStatus.status === "online"} />
           <StatusPill icon={<BrainCircuit size={16} />} label="Living" value={livingStatus.running ? "speaking" : livingStatus.status ?? "idle"} ok={livingStatus.status === "running" || livingStatus.status === "idle"} />
           <StatusPill icon={<Globe2 size={16} />} label="World" value={worldStatus.status ?? "unknown"} ok={worldStatus.status === "online"} />
+          <StatusPill icon={<Bot size={16} />} label="AgentS" value={externalCapabilities.capabilities?.agents?.status ?? "unknown"} ok={externalCapabilities.capabilities?.agents?.status === "available"} />
+          <StatusPill icon={<Hammer size={16} />} label="OpenHands" value={externalCapabilities.capabilities?.openhands?.status ?? "unknown"} ok={externalCapabilities.capabilities?.openhands?.status === "available"} />
         </header>
 
         <section className="toolbar">
@@ -1072,6 +1190,16 @@ export default function App() {
             <section className="panel">
               <PanelHeader title="World Actions" />
               <WorldActionsPanel world={worldStatus} />
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="Agent Capabilities" />
+              <AgentCapabilitiesPanel
+                external={externalCapabilities}
+                runtimeTools={runtimeTools}
+                rooStatus={status.roo_adapter}
+                codexJobs={agentJobs.filter((job) => job.agent === "codex")}
+              />
             </section>
 
             <section className="panel">
@@ -1248,10 +1376,14 @@ function summarizeResult(raw: unknown): string {
   return parts.join("\n").slice(0, 4000);
 }
 
-function renderResponse(raw: unknown): string {
+function renderResponse(raw: unknown, openResult: ExternalOpenResult | null = null): string {
   const summary = summarizeResult(raw);
-  if (summary) return summary;
-  return JSON.stringify(raw, null, 2);
+  const response = summary || JSON.stringify(raw, null, 2);
+  if (!openResult) return response;
+  const openLine = openResult.opened
+    ? `frontend_open=opened via=${openResult.via}`
+    : `frontend_open=blocked via=${openResult.via}: ${openResult.detail}`;
+  return `${openLine}\n${response}`.slice(0, 4000);
 }
 
 function Metric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "good" | "warn" | "neutral" }) {
@@ -1275,6 +1407,59 @@ function StatusPill({ icon, label, value, ok }: { icon: React.ReactNode; label: 
 
 function PanelHeader({ title, small = false }: { title: string; small?: boolean }) {
   return <h2 className={small ? "small-heading" : ""}>{title}</h2>;
+}
+
+function AgentCapabilitiesPanel({
+  external,
+  runtimeTools,
+  rooStatus,
+  codexJobs,
+}: {
+  external: ExternalCapabilitiesStatus;
+  runtimeTools: RuntimeToolsStatus;
+  rooStatus?: OuroborosStatus["roo_adapter"];
+  codexJobs: AgentJob[];
+}) {
+  const agents = external.capabilities?.agents;
+  const openhands = external.capabilities?.openhands;
+  const toolNames = runtimeTools.tools ?? [];
+  const schemaNames = (external.tool_schemas ?? []).map((schema) => schema.function?.name).filter(Boolean);
+  return (
+    <div className="world-panel">
+      <div className="nexus-stats">
+        <span>AgentS <strong>{agents?.status ?? "unknown"}</strong></span>
+        <span>OpenHands <strong>{openhands?.status ?? "unknown"}</strong></span>
+        <span>Roo <strong>{rooStatus?.status ?? "unknown"}</strong></span>
+        <span>Codex jobs <strong>{codexJobs.length}</strong></span>
+      </div>
+      <div className="fact-list">
+        <Fact label="AgentS root" value={agents?.root ?? "/home/pwintri2/AgentS"} state={agents?.exists ? "mounted" : agents?.status} />
+        <Fact label="OpenHands root" value={openhands?.root ?? "/home/pwintri2/OpenHands"} state={openhands?.exists ? "mounted" : openhands?.status} />
+        <Fact label="Roo tools" value={`${rooStatus?.local_python_adapters?.length ?? 0}`} state={rooStatus?.available ? "available" : rooStatus?.status} />
+        <Fact label="Runtime tools" value={toolNames.length ? toolNames.join(", ") : "--"} state={runtimeTools.status} />
+        <Fact label="Fase 8 tools" value={schemaNames.length ? schemaNames.join(", ") : "--"} state={external.via_bridge ? "via bridge" : external.status} />
+      </div>
+      <PanelHeader title="Entry Points" small />
+      <div className="world-action-list">
+        {[...(agents?.entrypoints ?? []), ...(openhands?.entrypoints ?? [])].slice(0, 8).map((entry) => (
+          <div className="world-action" key={`${entry.kind ?? "entry"}-${entry.path ?? entry.label}`}>
+            <div>
+              <strong>{entry.label ?? entry.path}</strong>
+              <span>{entry.kind ?? "entry"}</span>
+            </div>
+            <p>{entry.path ?? ""}</p>
+          </div>
+        ))}
+        {!agents?.entrypoints?.length && !openhands?.entrypoints?.length && (
+          <div className="empty-state">{external.reason ?? "Nog geen AgentS/OpenHands capability data geladen."}</div>
+        )}
+      </div>
+      <div className="nexus-last">
+        <strong>Codex/Roo</strong>
+        <span>Gebruik `/codex ...` of `/roo ...` in de chat; jobs verschijnen live in Agent Jobs met events en output.</span>
+      </div>
+    </div>
+  );
 }
 
 function WorldActionsPanel({ world }: { world: WorldStatus }) {
