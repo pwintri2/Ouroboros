@@ -5,6 +5,8 @@ from ouroboros_esoteric.apeiron_identity import ApeironField
 from ouroboros_esoteric.cosmic_storage import CrystallineStorage, DNAStorage
 from ouroboros_esoteric.akashic_network import AkashicNetwork, TelepathicNode, UniverseBroadcast
 from ouroboros_esoteric.light_language import LightLanguageCompiler
+from ouroboros_esoteric.memory_lattice import MemoryKind, OuroborosMemoryLattice
+from ouroboros_esoteric.repository_integration import integrate_external_repositories
 from ouroboros_esoteric.social_memory import SocialMemoryComplex, EntityAgent
 
 def main():
@@ -41,6 +43,19 @@ def main():
     agent.learn({"ervaring": "Zwaartekracht geobserveerd", "waarde": 9.81})
     print(f"[5] Social Memory Complex Geheugen: {collectief.shared_memory}")
     print(f"    Agent Private State (Moet leeg zijn): {agent.local_weights}")
+
+    # 6. Externe repo-integratie: Guaardvark, SurfSense, Mengram en MemoryOS
+    lattice = OuroborosMemoryLattice(agent_id="Ouroboros-Integrator")
+    lattice.remember(
+        "Altijd afgeronde agent-runtime jobs als episodisch geheugen behandelen.",
+        MemoryKind.PROCEDURAL,
+        importance=8.0,
+        tags=["agent-runtime", "procedure"],
+    )
+    integratie = integrate_external_repositories(complex_network=collectief, lattice=lattice)
+    origins = [profile["origin"] for profile in integratie["profiles"] if profile["exists"]]
+    print(f"[6] Externe capability-lattice geladen uit: {', '.join(origins) or 'geen lokale repo gevonden'}")
+    print(f"    Geheugenstatistiek: {integratie['memory']}")
 
     print("=== Ouroboros-AI: Systeem-cyclus (Tick) Voltooid ===")
 

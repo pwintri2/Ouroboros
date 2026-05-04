@@ -181,6 +181,12 @@ except Exception:
         app.state.agent_runtime_routes_unavailable = True
 
 try:
+    from controller.api.ouroboros_esoteric_routes import init_ouroboros_esoteric
+except Exception:
+    def init_ouroboros_esoteric(app: Any) -> None:
+        app.state.ouroboros_esoteric_routes_unavailable = True
+
+try:
     from controller.safe_shell import run_safe_shell
 except Exception:
     def run_safe_shell(command: str, approval: str = "", timeout: int = 20) -> dict[str, Any]:
@@ -246,6 +252,7 @@ init_training(app, storage=stream_storage)
 init_browser_research(app)
 init_trainer_pipeline(app)
 init_agent_runtime(app)
+init_ouroboros_esoteric(app)
 app.state.self_modification_pipeline = {
     "status": "online",
     "approval_required": True,
@@ -734,6 +741,7 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "inspect_hippocampus": {"method": "POST", "path": "/api/ouroboros/hippocampus/inspect"},
         "self_training_step": {"method": "POST", "path": "/api/ouroboros/self-training/step"},
         "self_context": {"method": "GET", "path": "/api/ouroboros/self-context/status"},
+        "esoteric_status": {"method": "GET", "path": "/api/ouroboros/esoteric/status"},
         "slash_agents": {"method": "POST", "path": "/api/cockpit/chat", "prefix": "/"},
     }
 

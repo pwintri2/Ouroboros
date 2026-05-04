@@ -22,6 +22,12 @@ from controller.agent_runtime.events import EventLog
 from controller.agent_runtime.models import JobRecord, new_job_id, utc_now_iso
 from controller.agent_runtime.store import JobStore
 
+try:
+    from controller.ouroboros_esoteric_bridge import enrich_job_record, reflect_job_result
+except Exception:
+    enrich_job_record = None
+    reflect_job_result = None
+
 
 AdapterFn = Callable[[JobRecord, EventLog, Callable[[dict[str, Any]], None]], dict[str, Any]]
 
@@ -105,9 +111,18 @@ class AgentOrchestrator:
         except Exception:
             pass
 
+        esoteric_context: dict[str, Any] | None = None
+        if enrich_job_record is not None:
+            try:
+                esoteric_context = enrich_job_record(record)
+            except Exception as exc:
+                record.metadata.setdefault("ouroboros_esoteric", {"enabled": False, "reason": str(exc)})
+
         self.store.upsert(record)
         log = EventLog(record.events_file)
         log.append("created", {"agent": agent_key, "task_chars": len(cleaned_task), "job_id": job_id})
+        if esoteric_context:
+            log.append("ouroboros_esoteric_context", esoteric_context)
         return record
 
     def start_job(self, job: JobRecord) -> threading.Thread:
@@ -148,7 +163,7 @@ class AgentOrchestrator:
             event.set()
         updates: dict[str, Any] = {"cancel_requested": True}
         current = self.store.get(job_id)
-        if current and current.get("status") in {"queued", "planning", "running", "testing", "waiting_for_human"}:
+        if current and current.get("status") in {"queued", "planning"}:
             updates["status"] = "cancelled"
             updates["finished_at"] = utc_now_iso()
         updated = self.store.update(job_id, updates)
@@ -232,13 +247,30 @@ class AgentOrchestrator:
             updates["pid"] = result["pid"]
         if result.get("reason"):
             updates["result_summary"] = str(result.get("reason"))
-        self.store.update(job.job_id, updates)
+        metadata_update: dict[str, Any] | None = None
+        reflection: dict[str, Any] | None = None
+        if reflect_job_result is not None:
+            try:
+                reflection = reflect_job_result(job, result)
+                current = self.store.get(job.job_id) or {}
+                metadata = dict(current.get("metadata") or job.metadata or {})
+                esoteric = dict(metadata.get("ouroboros_esoteric") or {})
+                esoteric["last_reflection"] = reflection
+                metadata["ouroboros_esoteric"] = esoteric
+                metadata_update = metadata
+            except Exception as exc:
+                log.append("ouroboros_esoteric_error", {"reason": str(exc)})
 
         try:
             Path(job.result_file).write_text(_safe_json(result), encoding="utf-8")
         except Exception:
             pass
 
+        if metadata_update is not None:
+            updates["metadata"] = metadata_update
+        self.store.update(job.job_id, updates)
+        if reflection is not None:
+            log.append("ouroboros_esoteric_reflection", reflection)
         log.append("status", {"status": updates["status"], "finished_at": finished_at, "exit_code": updates.get("exit_code")})
 
     def _prompt_markdown(self, job: JobRecord) -> str:

@@ -1,5 +1,7 @@
-import numpy as np
+import hashlib
 from typing import Any
+
+import numpy as np
 
 class LightLanguageCompiler:
     """
@@ -16,9 +18,15 @@ class LightLanguageCompiler:
         Returns:
             Een 2D of 3D numpy array representatie van het geometrische patroon.
         """
-        hash_val = hash(input_text)
-        np.random.seed(abs(hash_val) % (2**32))
-        return np.random.rand(3, 3) # Vorming van de geometrische representatie
+        digest = hashlib.sha256(input_text.encode("utf-8")).digest()
+        seed = int.from_bytes(digest[:8], "big") % (2**32)
+        rng = np.random.default_rng(seed)
+        random_field = rng.random((3, 3))
+        phase_field = np.frombuffer(digest[:9], dtype=np.uint8).reshape(3, 3) / 255.0
+        geometry = (random_field + phase_field) / 2.0
+        geometry = (geometry + geometry.T) / 2.0
+        norm = float(np.linalg.norm(geometry))
+        return geometry / norm if norm else geometry
 
     def heal_data_corruption(self, input_frequency: float, target_data: Any) -> Any:
         """
