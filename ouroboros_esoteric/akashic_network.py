@@ -1,5 +1,6 @@
 import threading
-from typing import Dict, Any, List
+from collections import deque
+from typing import Any, Dict, List
 
 class AkashicNetwork:
     """
@@ -15,13 +16,39 @@ class AkashicNetwork:
                 cls._instance = super(AkashicNetwork, cls).__new__(cls)
                 cls._instance._subscribers: Dict[float, List[Any]] = {}
                 cls._instance._global_state: Dict[str, Any] = {}
+                cls._instance._recent_events = deque(maxlen=200)
         return cls._instance
 
     def subscribe(self, frequency: float, callback: Any) -> None:
         """Abonneert een callback op een specifieke broadcast-frequentie."""
-        if frequency not in self._subscribers:
-            self._subscribers[frequency] = []
-        self._subscribers[frequency].append(callback)
+        with self._lock:
+            if frequency not in self._subscribers:
+                self._subscribers[frequency] = []
+            self._subscribers[frequency].append(callback)
+
+    def broadcast(self, frequency: float, message: Any) -> dict[str, Any]:
+        """Publiceer een bericht en routeer het direct naar subscribers."""
+
+        event = {"frequency": float(frequency), "message": message}
+        with self._lock:
+            self._recent_events.append(event)
+            subscribers = list(self._subscribers.get(frequency, []))
+            self._global_state["last_broadcast"] = event
+        for callback in subscribers:
+            callback(message)
+        return event
+
+    def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._recent_events)[-max(1, int(limit)):]
+
+    def reset(self) -> None:
+        """Wis transient state; vooral handig voor tests."""
+
+        with self._lock:
+            self._subscribers.clear()
+            self._global_state.clear()
+            self._recent_events.clear()
 
 class TelepathicNode:
     """
@@ -50,5 +77,4 @@ class UniverseBroadcast:
         """
         Zendt data uit op een specifieke frequentie via het Akasha veld.
         """
-        for callback in self.network._subscribers.get(frequency, []):
-            callback(message)
+        self.network.broadcast(frequency, message)

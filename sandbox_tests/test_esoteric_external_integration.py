@@ -4,10 +4,11 @@ from pathlib import Path
 
 try:
     import numpy as np
-    from ouroboros_esoteric.light_language import LightLanguageCompiler
 except ModuleNotFoundError:
     np = None
-    LightLanguageCompiler = None
+from ouroboros_esoteric.apeiron_identity import ApeironField
+from ouroboros_esoteric.entropy_monitor import EntropyMonitor
+from ouroboros_esoteric.light_language import LightLanguageCompiler
 
 from controller.ouroboros_esoteric_bridge import build_job_esoteric_context, reflect_job_result
 from ouroboros_esoteric.memory_lattice import MemoryKind, OuroborosMemoryLattice
@@ -46,7 +47,6 @@ class TestEsotericMemoryLattice(unittest.TestCase):
 
 
 class TestLightLanguageCompiler(unittest.TestCase):
-    @unittest.skipUnless(np is not None and LightLanguageCompiler is not None, "numpy ontbreekt in deze Python env")
     def test_compile_to_geometry_is_stable_and_normalized(self):
         compiler = LightLanguageCompiler()
 
@@ -54,9 +54,37 @@ class TestLightLanguageCompiler(unittest.TestCase):
         second = compiler.compile_to_geometry("ouroboros external memory")
         other = compiler.compile_to_geometry("different intent")
 
-        self.assertTrue(np.allclose(first, second))
-        self.assertFalse(np.allclose(first, other))
-        self.assertAlmostEqual(float(np.linalg.norm(first)), 1.0, places=6)
+        if np is not None:
+            self.assertTrue(np.allclose(first, second))
+            self.assertFalse(np.allclose(first, other))
+            self.assertAlmostEqual(float(np.linalg.norm(first)), 1.0, places=6)
+        else:
+            self.assertEqual(first, second)
+            self.assertNotEqual(first, other)
+            norm = sum(value * value for row in first for value in row) ** 0.5
+            self.assertAlmostEqual(norm, 1.0, places=6)
+
+
+class TestPanDimensionalCore(unittest.TestCase):
+    def test_apeiron_field_uses_compact_11d_shape_and_metrics(self):
+        field = ApeironField()
+
+        field.inject_text_intention("build runtime entropy bridge")
+        metrics = field.metrics().to_dict()
+
+        self.assertEqual(metrics["dimension_count"], 11)
+        self.assertEqual(len(field.project_to_11d_pocket()), 11)
+        self.assertGreater(metrics["coh"], 0.0)
+        self.assertEqual(metrics["data_threshold"], 89)
+
+    def test_entropy_monitor_measures_and_heals_high_entropy_lists(self):
+        monitor = EntropyMonitor(entropy_threshold=0.01)
+
+        result = monitor.measure([0.0, 1.0, float("nan"), -1.0])
+
+        self.assertGreater(result["entropy_level"], 0.01)
+        self.assertTrue(result["healed"])
+        self.assertEqual(result["resonance_status"], "healed")
 
 
 class TestExternalRepositoryIntegration(unittest.TestCase):
@@ -147,6 +175,21 @@ class TestEsotericRuntimeBridge(unittest.TestCase):
         self.assertIn("composite_memory_ranker", names)
         self.assertIn("tri_memory_architecture", names)
         self.assertEqual(context["phase"], "external_repo_lattice")
+
+    def test_pan_dimensional_job_context_contains_metrics_storage_and_broadcast(self):
+        record = {"job_id": "codex_123", "task": "measure entropy in runtime"}
+
+        context = build_job_esoteric_context(record["task"], [])
+        from controller.ouroboros_esoteric_bridge import build_pan_dimensional_job_context
+
+        pan = build_pan_dimensional_job_context(record, record["task"])
+
+        self.assertTrue(pan["enabled"])
+        self.assertEqual(pan["metrics"]["dimension_count"], 11)
+        self.assertIn("hologram", pan["cosmic_storage"])
+        self.assertIn("dna_backup", pan["cosmic_storage"])
+        self.assertEqual(pan["akashic_event"]["frequency"], 528.0)
+        self.assertTrue(context["enabled"])
 
     def test_reflection_marks_successful_test_job_as_procedural_candidate(self):
         record = {

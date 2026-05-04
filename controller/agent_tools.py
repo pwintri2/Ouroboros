@@ -556,6 +556,7 @@ class AgentToolRegistry:
         )
 
     def safe_shell(self, command: str, approval: str) -> dict[str, Any]:
+        coherence = _coherence_metadata("safe_shell", command)
         result = run_safe_shell(command, approval=approval)
         approval_status = "approved" if result.get("approved") else "pending_philip_akkoord"
         return _tool_result(
@@ -566,6 +567,7 @@ class AgentToolRegistry:
             stderr=result.get("stderr", "") or (result.get("reason") if result.get("status") != "success" else ""),
             source="safe_shell",
             approval_status=approval_status,
+            metadata_11d=coherence,
             next_action="Review stdout/stderr; store learning with training_ingest if it is durable knowledge.",
         )
 
@@ -634,12 +636,14 @@ class AgentToolRegistry:
 
     def run_tests(self, test_selector: str, approval: str) -> dict[str, Any]:
         selector = " ".join(str(test_selector or DEFAULT_TEST_SELECTOR).split())
+        coherence = _coherence_metadata("run_tests", selector)
         if not SAFE_TEST_SELECTOR_RE.match(selector):
             return _tool_result(
                 "run_tests",
                 "error",
                 stderr="Test selector contains blocked characters.",
                 source="python_unittest",
+                metadata_11d=coherence,
                 next_action="Use dotted unittest module names only.",
             )
         shell = run_safe_shell(f"python3 -m unittest {selector}", approval=approval)
@@ -655,6 +659,7 @@ class AgentToolRegistry:
                 source="python_unittest",
                 source_type="manual",
             )
+        metadata_11d = {**metadata_11d, **coherence}
         return _tool_result(
             "run_tests",
             status,
@@ -1071,6 +1076,32 @@ def _tool_result(
         "next_action": next_action,
         "error": stderr,
     }
+
+
+def _coherence_metadata(tool_name: str, payload: str) -> dict[str, Any]:
+    """Coherence wrapper voor tool-bridge acties."""
+
+    try:
+        from ouroboros_esoteric.entropy_monitor import EntropyMonitor
+        from ouroboros_esoteric.light_language import LightLanguageCompiler
+
+        entropy = EntropyMonitor().measure({"tool": tool_name, "payload": payload})
+        firewall = LightLanguageCompiler().coherence_check(
+            payload,
+            input_frequency=528.0,
+            entropy_level=float(entropy.get("entropy_level") or 0.0),
+        )
+        return {
+            "coherence_firewall": {
+                "tool": tool_name,
+                "status": firewall.get("status"),
+                "resonant": firewall.get("resonant"),
+                "healed": firewall.get("healed"),
+                "entropy": entropy,
+            }
+        }
+    except Exception as exc:
+        return {"coherence_firewall": {"tool": tool_name, "status": "unavailable", "reason": str(exc)}}
 
 
 def _rank_training_records(query: str, limit: int) -> tuple[list[dict[str, Any]], list[str]]:

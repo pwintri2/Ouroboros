@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -123,6 +124,7 @@ def execute_host_agent_command(
     timeout_seconds: int = 240,
     prefer_bridge: bool = True,
 ) -> dict[str, Any]:
+    started = time.time()
     agent = str(agent or "").strip().lower()
     task = _clip(str(task or "").strip(), MAX_TASK_CHARS)
     if agent not in HOST_AGENT_COMMANDS:
@@ -140,16 +142,25 @@ def execute_host_agent_command(
             "response": f"/{agent} wacht op {APPROVAL_PHRASE}.",
             "fake_success": False,
         }
+    bridged = None
     if prefer_bridge:
         bridged = _bridge_agent_command(agent=agent, task=task, approval=effective_approval, timeout_seconds=timeout_seconds)
-        if bridged is not None:
+        if bridged is not None and not bridged.get("transport_error"):
             return bridged
     if agent == "codex":
         return _run_codex_exec(task=task, timeout_seconds=timeout_seconds)
     if agent == "ruflo":
-        return _run_ruflo_swarm(task=task, timeout_seconds=timeout_seconds)
+        if _allow_inline_host_agents():
+            return _run_ruflo_swarm(task=task, timeout_seconds=timeout_seconds)
+        if _allow_runtime_host_agents():
+            return _submit_host_agent_runtime(agent="ruflo", task=task, timeout_seconds=timeout_seconds, started=started)
+        return _write_host_agent_handoff(agent="ruflo", task=task, started=started, bridge_result=bridged)
     if agent == "claude":
-        return _run_claude_code(task=task, timeout_seconds=timeout_seconds)
+        if _allow_inline_host_agents():
+            return _run_claude_code(task=task, timeout_seconds=timeout_seconds)
+        if _allow_runtime_host_agents():
+            return _submit_host_agent_runtime(agent="claude", task=task, timeout_seconds=timeout_seconds, started=started)
+        return _write_host_agent_handoff(agent="claude", task=task, started=started, bridge_result=bridged)
     return {"status": "error", "agent": agent, "reason": "Agent dispatch failed.", "fake_success": False}
 
 
@@ -314,6 +325,81 @@ def _run_claude_code(task: str, timeout_seconds: int) -> dict[str, Any]:
     return _agent_result("claude", "claude_code", result["status"], started, command=_public_command(command), process=result)
 
 
+def _submit_host_agent_runtime(agent: str, task: str, timeout_seconds: int, started: float | None = None) -> dict[str, Any]:
+    started = started or time.time()
+    try:
+        from controller.agent_runtime.orchestrator import get_orchestrator
+
+        orchestrator = get_orchestrator()
+        if agent not in orchestrator.adapters:
+            orchestrator.register_adapter(agent, _host_agent_runtime_adapter(agent))
+        record = orchestrator.submit(
+            agent=agent,
+            task=task,
+            timeout_seconds=int(timeout_seconds or 240),
+            metadata={"prompt": _agent_prompt(agent.title(), task), "slash_agent": agent},
+        )
+    except Exception as exc:
+        return _agent_result(agent, f"{agent}_runtime", "error", started, reason=str(exc))
+    return _agent_result(
+        agent,
+        f"{agent}_runtime",
+        "running",
+        started,
+        job=record.to_dict(),
+        response=(
+            f"{agent} job {record.job_id} gestart in de agent runtime. "
+            f"Volg live in Agent Jobs of vraag `/{agent} status` voor de laatste samenvatting."
+        ),
+    )
+
+
+def _host_agent_runtime_adapter(agent: str):
+    def adapter(job: Any, log: Any, on_progress: Any) -> dict[str, Any]:
+        log.append("slash_host_agent_start", {"agent": agent})
+        if agent == "ruflo":
+            result = _run_ruflo_swarm(task=job.task, timeout_seconds=int(job.timeout_seconds or 240))
+        elif agent == "claude":
+            result = _run_claude_code(task=job.task, timeout_seconds=int(job.timeout_seconds or 240))
+        else:
+            result = {"status": "failed", "reason": f"unsupported host runtime agent: {agent}"}
+        response = str(result.get("response") or _default_response(result) or "")
+        try:
+            Path(job.output_file).write_text(response, encoding="utf-8")
+        except Exception:
+            pass
+        log.append("slash_host_agent_result", {"agent": agent, "status": result.get("status")})
+        final_status = "completed" if result.get("status") in {"success", "handoff", "login_required", "missing"} else "failed"
+        return {
+            "status": final_status,
+            "exit_code": 0 if final_status == "completed" else None,
+            "response_preview": response[:2000],
+            "reason": str(result.get("reason") or "")[:1000],
+            "slash_result": result,
+        }
+
+    return adapter
+
+
+def _write_host_agent_handoff(agent: str, task: str, started: float, bridge_result: dict[str, Any] | None = None) -> dict[str, Any]:
+    handoff = _write_agent_handoff(agent, task)
+    response = (
+        f"/{agent} is niet inline gestart om de cockpit responsief te houden. "
+        f"Taak staat klaar als handoff: {handoff.get('path')}"
+    )
+    if bridge_result and bridge_result.get("reason"):
+        response += f"\nBridge fallback: {bridge_result.get('reason')}"
+    return _agent_result(
+        agent,
+        f"{agent}_handoff",
+        "handoff",
+        started,
+        handoff=handoff,
+        bridge=bridge_result,
+        response=response,
+    )
+
+
 def _bridge_agent_command(agent: str, task: str, approval: str, timeout_seconds: int) -> dict[str, Any] | None:
     base_url = str(os.getenv("WINTRIP_RCLONE_BRIDGE_URL") or "").rstrip("/")
     token_path = os.getenv("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH")
@@ -330,19 +416,43 @@ def _bridge_agent_command(agent: str, task: str, approval: str, timeout_seconds:
             headers={"Content-Type": "application/json", "X-Ouroboros-Bridge-Token": token},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=max(10, min(timeout_seconds + 5, 305))) as response:
+        with urllib.request.urlopen(request, timeout=_bridge_timeout_seconds(timeout_seconds)) as response:
             data = json.loads(response.read().decode("utf-8"))
+        data["via_bridge"] = True
+        return data
+    except urllib.error.HTTPError as exc:
+        try:
+            data = json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            data = {"status": "error", "reason": str(exc), "fake_success": False}
         data["via_bridge"] = True
         return data
     except Exception as exc:
         return {
-            "status": "error",
+            "status": "bridge_unavailable",
             "route": "slash_agent",
             "agent": agent,
             "reason": f"Host bridge agent call failed: {exc}",
             "via_bridge": True,
+            "transport_error": True,
             "fake_success": False,
         }
+
+
+def _bridge_timeout_seconds(timeout_seconds: int) -> int:
+    try:
+        configured = int(os.getenv("WINTRIP_SLASH_BRIDGE_TIMEOUT_SECONDS", "8"))
+    except ValueError:
+        configured = 8
+    return max(1, min(configured, max(1, int(timeout_seconds or 8)), 30))
+
+
+def _allow_inline_host_agents() -> bool:
+    return str(os.getenv("WINTRIP_SLASH_INLINE_HOST_AGENTS") or "").strip().lower() in {"1", "true", "yes", "ja"}
+
+
+def _allow_runtime_host_agents() -> bool:
+    return str(os.getenv("WINTRIP_SLASH_RUNTIME_HOST_AGENTS") or "").strip().lower() in {"1", "true", "yes", "ja"}
 
 
 def _run_command(command: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:

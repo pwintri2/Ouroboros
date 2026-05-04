@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-import numpy as np
-from typing import Tuple
+import hashlib
+import json
+from typing import Any, Tuple
 
 class CosmicStorageEngine(ABC):
     """
@@ -29,11 +30,27 @@ class CrystallineStorage(CosmicStorageEngine):
         """
         self.hologram_grid[(x, y, z)] = (polarisatie_hoek, intensiteit)
 
+    def write_job_artifact(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Map een job-artifact deterministisch naar een 5D hologram."""
+
+        digest = hashlib.sha256(job_id.encode("utf-8")).digest()
+        x, y, z = (round(digest[index] / 255.0, 6) for index in range(3))
+        polarisatie_hoek = round((digest[3] / 255.0) * 360.0, 6)
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        intensiteit = round(min(1.0, len(encoded) / 4096.0), 6)
+        self.hologram_grid[(x, y, z)] = (polarisatie_hoek, intensiteit, payload)
+        return {
+            "coordinates": [x, y, z],
+            "polarization_angle": polarisatie_hoek,
+            "intensity": intensiteit,
+        }
+
     def read_5d_hologram(self, x: float, y: float, z: float) -> Tuple[float, float]:
         """
         Leest de polarisatie_hoek en intensiteit op de opgegeven ruimtelijke coördinaten.
         """
-        return self.hologram_grid.get((x, y, z), (0.0, 0.0))
+        value = self.hologram_grid.get((x, y, z), (0.0, 0.0))
+        return value[:2]
 
     def ping_resonance(self) -> bool:
         return True
@@ -52,6 +69,16 @@ class DNAStorage(CosmicStorageEngine):
         bits = ''.join(f'{byte:08b}' for byte in binary_data)
         dna_sequence = ''.join(mapping[bits[i:i+2]] for i in range(0, len(bits), 2))
         return dna_sequence
+
+    def backup_hash_to_genetics(self, payload: Any) -> dict[str, str]:
+        """Maak een DNA-achtige back-up van een SHA-256 digest."""
+
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        digest = hashlib.sha256(raw).digest()
+        return {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "dna": self.encode_to_genetics(digest),
+        }
 
     def decode_from_genetics(self, dna_sequence: str) -> bytes:
         """

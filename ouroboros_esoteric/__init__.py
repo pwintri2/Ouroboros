@@ -1,11 +1,14 @@
 """
 Ouroboros-AI Esoterische Architectuur.
 
-Submodules blijven expliciet importeerbaar. De package root laadt alleen de
-dependency-vrije bouwstenen zodat memory/status tooling ook werkt in een shell
-waar `numpy` nog niet geïnstalleerd is.
+Submodules blijven expliciet importeerbaar. De package root laadt de
+dependency-vrije en fallback-veilige bouwstenen.
 """
 
+from ouroboros_esoteric.akashic_network import AkashicNetwork, TelepathicNode, UniverseBroadcast
+from ouroboros_esoteric.apeiron_identity import ApeironField, ApeironMetrics, intent_vector_from_text
+from ouroboros_esoteric.cosmic_storage import CrystallineStorage, DNAStorage
+from ouroboros_esoteric.entropy_monitor import EntropyMonitor, measure_entropy
 from ouroboros_esoteric.memory_lattice import MemoryAtom, MemoryKind, OuroborosMemoryLattice
 from ouroboros_esoteric.repository_integration import (
     DEFAULT_EXTERNAL_REPOS,
@@ -18,13 +21,23 @@ from ouroboros_esoteric.social_memory import EntityAgent, SocialMemoryComplex
 
 __all__ = [
     "DEFAULT_EXTERNAL_REPOS",
+    "AkashicNetwork",
+    "ApeironField",
+    "ApeironMetrics",
+    "CrystallineStorage",
+    "DNAStorage",
     "EntityAgent",
+    "EntropyMonitor",
     "ExternalRepoProfile",
     "MemoryAtom",
     "MemoryKind",
     "OuroborosMemoryLattice",
     "RepoSignal",
     "SocialMemoryComplex",
+    "TelepathicNode",
+    "UniverseBroadcast",
     "integrate_external_repositories",
+    "intent_vector_from_text",
+    "measure_entropy",
     "scan_external_repositories",
 ]

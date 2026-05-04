@@ -742,6 +742,7 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "self_training_step": {"method": "POST", "path": "/api/ouroboros/self-training/step"},
         "self_context": {"method": "GET", "path": "/api/ouroboros/self-context/status"},
         "esoteric_status": {"method": "GET", "path": "/api/ouroboros/esoteric/status"},
+        "akashic_recent": {"method": "GET", "path": "/api/ouroboros/esoteric/akashic/recent"},
         "slash_agents": {"method": "POST", "path": "/api/cockpit/chat", "prefix": "/"},
     }
 
@@ -797,18 +798,27 @@ def _backend_status_payload(models: Optional[list[str]] = None) -> dict[str, Any
 
 
 def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, dict[str, Any]]:
-    models = models or []
+    inventory_models = models or []
+    models = _local_model_choices(inventory_models)
+    inventory_online = bool(inventory_models)
     key_status = _api_key_status_payload().get("providers", {})
     options: dict[str, dict[str, Any]] = {
         "ollama": {
             "provider": "ollama",
             "label": "Local Ollama",
-            "available": bool(models),
-            "enabled": True,
+            "available": inventory_online,
+            "enabled": bool(models),
             "local_only": True,
             "models": models,
             "default_model": _active_base(models),
-            "status": "online" if models else "unavailable",
+            "status": "online" if inventory_online else "inventory_unavailable",
+            "reason": (
+                "Ollama model-inventaris is leeg of tijdelijk onbereikbaar; het lokale fallbackmodel blijft selecteerbaar."
+                if not inventory_online
+                else ""
+            ),
+            "inventory_models_available": len(inventory_models),
+            "fallback_model": models[0] if models else "",
         }
     }
     for provider, model_options in MULTI_API_PROVIDER_MODELS.items():
@@ -839,17 +849,19 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
 
 def _cockpit_config_payload() -> dict[str, Any]:
     raw_models = _raw_model_names()
-    models = _safe_model_names(raw_models)
-    ignored = [model for model in raw_models if model not in set(models)]
-    provider_options = _provider_options_payload(models)
+    inventory_models = _safe_model_names(raw_models)
+    models = _local_model_choices(inventory_models)
+    ignored = [model for model in raw_models if model not in set(inventory_models)]
+    provider_options = _provider_options_payload(inventory_models)
     return {
         "status": "online",
-        "backend": _backend_status_payload(models),
+        "backend": _backend_status_payload(inventory_models),
         "providers": provider_options,
         "provider_options": provider_options,
         "available_models": {
             "ollama": models,
             "local": models,
+            "ollama_inventory": inventory_models,
             "raw_local": raw_models,
             "ignored_disallowed_models": ignored,
             "multi_api": {provider: details.get("models", []) for provider, details in provider_options.items() if provider != "ollama"},
@@ -1177,12 +1189,33 @@ def _safe_model_names(raw_models: Optional[list[str]] = None) -> list[str]:
     return list(allowed_available_models(raw))
 
 
+def _local_model_choices(models: Optional[list[str]] = None) -> list[str]:
+    choices = list(models or [])
+    if choices:
+        return choices
+    fallback = _active_base(choices)
+    return [fallback] if fallback else []
+
+
 def _active_base(models: Optional[list[str]] = None) -> str:
     models = models or []
-    provider_ids = {"ollama", "chatgpt", "claude", "gemini", "groq"}
+    provider_ids = {
+        "ollama",
+        "chatgpt",
+        "claude",
+        "gemini",
+        "groq",
+        "openai",
+        "anthropic",
+        "google",
+        "xai",
+        "mistral",
+    }
     current = str(getattr(orchestrator, "active_model", "") or "")
     if not current or current in provider_ids:
         current = str(getattr(ollama, "model", "") or "")
+    elif not allowed_available_models([current]):
+        current = ""
     if not current and models:
         current = models[0]
     return current or "llama3.2:latest"

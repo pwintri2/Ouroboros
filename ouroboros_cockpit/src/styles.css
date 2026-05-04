@@ -393,6 +393,29 @@ label {
   font-style: normal;
 }
 
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.metric-strip span {
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid #263449;
+  border-radius: 6px;
+  background: #0b1220;
+  color: #91a3b8;
+  font-size: 10px;
+}
+
+.metric-strip strong {
+  display: block;
+  margin-top: 2px;
+  color: #d7fbe8;
+  font-size: 11px;
+}
+
 .key-row {
   display: grid;
   grid-template-columns: minmax(116px, 0.75fr) minmax(130px, 1fr) auto auto;

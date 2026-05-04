@@ -179,6 +179,23 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("api_keys", data)
         self.assertFalse(data["api_keys"]["secrets_returned"])
 
+    def test_cockpit_config_keeps_local_provider_enabled_when_ollama_inventory_is_empty(self):
+        original_list_models = self.main.ollama.list_models
+        self.main.ollama.list_models = lambda: []
+        try:
+            response = self.client.get("/api/cockpit/config")
+        finally:
+            self.main.ollama.list_models = original_list_models
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        local = data["provider_options"]["ollama"]
+        self.assertTrue(local["enabled"])
+        self.assertFalse(local["available"])
+        self.assertEqual(local["status"], "inventory_unavailable")
+        self.assertEqual(data["backend"]["models_available"], 0)
+        self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
+
     def test_cockpit_chat_routes_through_multi_api_with_agent_tool_schemas(self):
         response = self.client.post(
             "/api/cockpit/chat",

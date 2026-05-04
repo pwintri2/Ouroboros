@@ -117,6 +117,103 @@ class TestSlashAgentRouter(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(adapter_calls, [job_id])
 
+    def test_ruflo_defaults_to_handoff_instead_of_host_cli(self):
+        original_run = slash_agent_router._run_ruflo_swarm
+        calls: list[str] = []
+
+        def fake_ruflo(task: str, timeout_seconds: int):
+            calls.append(task)
+            return {"status": "success", "response": "ruflo ok"}
+
+        slash_agent_router._run_ruflo_swarm = fake_ruflo
+        try:
+            result = slash_agent_router.execute_host_agent_command(
+                "ruflo",
+                "maak plan",
+                approval="Akkoord",
+                prefer_bridge=False,
+            )
+
+            self.assertEqual(result["status"], "handoff")
+            self.assertEqual(result["tool"], "ruflo_handoff")
+            self.assertIn("handoff", result)
+            self.assertEqual(calls, [])
+        finally:
+            slash_agent_router._run_ruflo_swarm = original_run
+
+    def test_bridge_transport_error_falls_back_to_handoff(self):
+        original_bridge = slash_agent_router._bridge_agent_command
+        original_run = slash_agent_router._run_claude_code
+        calls: list[str] = []
+        slash_agent_router._bridge_agent_command = lambda *args, **kwargs: {
+            "status": "bridge_unavailable",
+            "transport_error": True,
+            "reason": "timeout",
+        }
+
+        def fake_claude(task: str, timeout_seconds: int):
+            calls.append(task)
+            return {"status": "success", "response": "claude ok"}
+
+        slash_agent_router._run_claude_code = fake_claude
+        try:
+            result = slash_agent_router.execute_host_agent_command(
+                "claude",
+                "review code",
+                approval="Akkoord",
+                prefer_bridge=True,
+            )
+
+            self.assertEqual(result["status"], "handoff")
+            self.assertEqual(result["tool"], "claude_handoff")
+            self.assertIn("handoff", result)
+            self.assertEqual(calls, [])
+        finally:
+            slash_agent_router._bridge_agent_command = original_bridge
+            slash_agent_router._run_claude_code = original_run
+
+    def test_runtime_host_agents_can_be_enabled_explicitly(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="ruflo-runtime-test-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+        orchestrator = AgentOrchestrator(store=store, adapters={})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+
+        old_runtime = os.environ.get("WINTRIP_SLASH_RUNTIME_HOST_AGENTS")
+        os.environ["WINTRIP_SLASH_RUNTIME_HOST_AGENTS"] = "1"
+        original_run = slash_agent_router._run_ruflo_swarm
+        calls: list[str] = []
+
+        def fake_ruflo(task: str, timeout_seconds: int):
+            calls.append(task)
+            return {"status": "success", "response": "ruflo ok"}
+
+        slash_agent_router._run_ruflo_swarm = fake_ruflo
+        try:
+            result = slash_agent_router.execute_host_agent_command(
+                "ruflo",
+                "maak plan",
+                approval="Akkoord",
+                prefer_bridge=False,
+            )
+            self.assertEqual(result["status"], "running")
+            self.assertEqual(result["tool"], "ruflo_runtime")
+            for _ in range(50):
+                if calls:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(calls, ["maak plan"])
+        finally:
+            slash_agent_router._run_ruflo_swarm = original_run
+            self._restore("WINTRIP_SLASH_RUNTIME_HOST_AGENTS", old_runtime)
+
     def _restore(self, key: str, value: str | None) -> None:
         if value is None:
             os.environ.pop(key, None)

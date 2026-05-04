@@ -38,6 +38,7 @@ def append_event(events_file: Path | str, event_type: str, data: dict[str, Any] 
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    _broadcast_akashic_event(str(path), payload)
     return payload
 
 
@@ -84,3 +85,21 @@ class EventLog:
     def extend(self, events: Iterable[dict[str, Any]]) -> None:
         for event in events:
             self.append(event.get("type", "event"), event.get("data") or {})
+
+
+def _broadcast_akashic_event(events_file: str, payload: dict[str, Any]) -> None:
+    """Paralleliseer JSONL events naar AkashicNetwork zonder harde dependency."""
+
+    try:
+        from ouroboros_esoteric.akashic_network import AkashicNetwork
+
+        AkashicNetwork().broadcast(
+            528.0,
+            {
+                "type": "agent_runtime_event",
+                "events_file": events_file,
+                "event": payload,
+            },
+        )
+    except Exception:
+        pass

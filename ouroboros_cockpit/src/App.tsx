@@ -90,6 +90,7 @@ type CockpitConfig = {
   available_models?: {
     ollama?: string[];
     local?: string[];
+    ollama_inventory?: string[];
     raw_local?: string[];
     ignored_disallowed_models?: string[];
     multi_api?: Record<string, string[]>;
@@ -161,6 +162,15 @@ type AgentJob = {
   output_dir?: string;
   events_file?: string;
   cancel_requested?: boolean;
+  metadata?: {
+    ouroboros_esoteric?: {
+      pan_dimensional?: {
+        metrics?: Record<string, unknown>;
+        entropy?: Record<string, unknown>;
+        cosmic_storage?: Record<string, unknown>;
+      };
+    };
+  };
 };
 
 type AgentJobEvent = {
@@ -224,6 +234,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const CANONICAL_PROVIDERS = ["ollama", "openai", "anthropic", "xai", "mistral", "google"];
+const API_REQUEST_TIMEOUT_MS = 30_000;
 
 export default function App() {
   const [backend, setBackend] = useState(DEFAULT_BACKEND);
@@ -257,26 +268,38 @@ export default function App() {
 
   const api = useCallback(
     async <T,>(path: string, init?: RequestInit): Promise<T> => {
-      const response = await fetch(`${backend}${path}`, {
-        ...init,
-        headers: {
-          "Content-Type": "application/json",
-          ...(init?.headers ?? {}),
-        },
-      });
-      const text = await response.text();
-      let data: any = {};
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
       try {
-        data = text ? JSON.parse(text) : {};
-      } catch {
-        data = { raw: text };
+        const response = await fetch(`${backend}${path}`, {
+          ...init,
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            ...(init?.headers ?? {}),
+          },
+        });
+        const text = await response.text();
+        let data: any = {};
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          data = { raw: text };
+        }
+        if (!response.ok) {
+          const detail = data?.detail ?? data?.error ?? data?.reason ?? data?.raw ?? response.statusText;
+          const message = typeof detail === "string" ? detail : JSON.stringify(detail);
+          throw new Error(`HTTP ${response.status}: ${message}`);
+        }
+        return data as T;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          throw new Error(`Request timeout after ${Math.round(API_REQUEST_TIMEOUT_MS / 1000)}s: ${path}`);
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
-      if (!response.ok) {
-        const detail = data?.detail ?? data?.error ?? data?.reason ?? data?.raw ?? response.statusText;
-        const message = typeof detail === "string" ? detail : JSON.stringify(detail);
-        throw new Error(`HTTP ${response.status}: ${message}`);
-      }
-      return data as T;
     },
     [backend],
   );
@@ -857,6 +880,9 @@ export default function App() {
                   {agentJobs.map((job) => {
                     const isSelected = job.job_id === selectedAgentJobId;
                     const isTerminal = agentJobTerminalStatuses.has(job.status);
+                    const pan = job.metadata?.ouroboros_esoteric?.pan_dimensional;
+                    const metrics = pan?.metrics ?? {};
+                    const entropy = pan?.entropy ?? {};
                     return (
                       <div className="role-row" key={job.job_id} style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
@@ -875,6 +901,14 @@ export default function App() {
                           )}
                         </div>
                         {job.task && <div style={{ fontSize: 11, opacity: 0.7 }}>{job.task.slice(0, 160)}{job.task.length > 160 ? "…" : ""}</div>}
+                        {pan && (
+                          <div className="metric-strip">
+                            <span>COH <strong>{formatMetric(metrics.coh)}</strong></span>
+                            <span>FLUX <strong>{formatMetric(metrics.flux)}</strong></span>
+                            <span>ENT <strong>{formatMetric(entropy.entropy_level)}</strong></span>
+                            <span>SNR <strong>{formatMetric(entropy.signal_noise_ratio)}</strong></span>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -932,11 +966,17 @@ export default function App() {
 
 function buildProviderChoices(config: CockpitConfig, status: OuroborosStatus): ProviderChoice[] {
   const options = config.provider_options ?? config.providers ?? {};
-  const localModels = config.available_models?.ollama ?? config.models ?? status.model?.available_bases ?? [];
+  const configuredLocalModels = config.available_models?.ollama ?? config.models ?? status.model?.available_bases ?? [];
+  const localFallbackModel =
+    status.model?.active_base ??
+    options.ollama?.default_model ??
+    options.ollama?.model ??
+    "llama3.2:latest";
+  const localModels = configuredLocalModels.length ? configuredLocalModels : [localFallbackModel].filter(Boolean);
   const choices: ProviderChoice[] = CANONICAL_PROVIDERS.map((id) => {
     const details = options[id] ?? { provider: id };
     const models = id === "ollama" ? localModels : details.models ?? config.available_models?.multi_api?.[id] ?? [];
-    const enabled = id === "ollama" ? models.length > 0 : !!details.enabled;
+    const enabled = id === "ollama" ? Boolean(details.enabled ?? true) && models.length > 0 : !!details.enabled;
     return {
       id,
       label: PROVIDER_LABELS[id] ?? details.label ?? id,
@@ -944,7 +984,7 @@ function buildProviderChoices(config: CockpitConfig, status: OuroborosStatus): P
       enabled,
       status: details.status ?? (enabled ? "online" : "disabled"),
       models,
-      defaultModel: (id === "ollama" ? status.model?.active_base : details.default_model) ?? details.model ?? models[0] ?? "",
+      defaultModel: (id === "ollama" ? status.model?.active_base ?? details.default_model : details.default_model) ?? details.model ?? models[0] ?? "",
       reason: details.reason ?? details.message ?? (enabled ? "Beschikbaar" : "Niet geconfigureerd."),
       keySource: details.key_source,
       maskedKey: details.masked_key,
@@ -959,6 +999,12 @@ function resultStatus(raw: unknown): string {
     return String((raw as { status?: unknown }).status ?? "unknown");
   }
   return raw ? "success" : "idle";
+}
+
+function formatMetric(value: unknown): string {
+  if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(value >= 10 ? 1 : 3) : "--";
+  if (typeof value === "string" && value.trim()) return value;
+  return "--";
 }
 
 function summarizeResult(raw: unknown): string {
