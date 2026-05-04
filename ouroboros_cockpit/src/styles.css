@@ -426,6 +426,91 @@ label {
   background: #0d1420;
 }
 
+.world-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.world-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid #263449;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.world-head div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.world-head strong {
+  font-size: 12px;
+}
+
+.world-head span {
+  color: #91a3b8;
+  font-size: 11px;
+}
+
+.world-head i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #c9a227;
+  box-shadow: 0 0 12px rgba(201, 162, 39, 0.45);
+}
+
+.world-head i.good {
+  background: #34d399;
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.42);
+}
+
+.world-action-list {
+  display: grid;
+  gap: 8px;
+}
+
+.world-action {
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid #263449;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.world-action div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.world-action strong {
+  min-width: 0;
+  font-size: 12px;
+}
+
+.world-action span,
+.world-action em {
+  color: #91a3b8;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.world-action p {
+  margin: 0;
+  color: #d5e2ef;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
 .nexus-head {
   display: flex;
   justify-content: space-between;

@@ -29,6 +29,7 @@ import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 
 WORKSPACE = Path(os.getenv("WINTRIP_WORKSPACE") or Path(__file__).resolve().parents[1]).expanduser().resolve()
@@ -44,6 +45,7 @@ from controller.rclone_drive_adapter import RcloneDriveAdapter, get_rclone_drive
 from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory  # noqa: E402
 from controller.ouroboros_self_context import get_ruflo_status  # noqa: E402
 from controller.slash_agent_router import execute_host_agent_command  # noqa: E402
+from controller.world_agent import ask_grok_via_world_agent, recent_world_actions, search_world_memory, world_agent_status  # noqa: E402
 
 
 def main() -> int:
@@ -73,17 +75,34 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._json({"status": "error", "reason": "unauthorized", "fake_success": False}, status=401)
             return
-        if self.path == "/status":
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+        if path == "/status":
             self._json(get_rclone_drive_status())
             return
-        if self.path == "/sensory/status":
+        if path == "/sensory/status":
             self._json(get_host_sensory_status())
             return
-        if self.path == "/ruflo/status":
+        if path == "/ruflo/status":
             self._json(get_ruflo_status())
             return
-        if self.path == "/agents/status":
+        if path == "/agents/status":
             self._json({"status": "online", "agents": ["codex", "ruflo", "claude"], "fake_success": False})
+            return
+        if path == "/world/status":
+            result = world_agent_status()
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/world/actions":
+            try:
+                limit = int((query.get("limit") or ["20"])[0])
+            except ValueError:
+                limit = 20
+            result = recent_world_actions(limit=max(1, min(limit, 100)), prefer_bridge=False)
+            result["via_bridge"] = False
+            self._json(result)
             return
         self._json({"status": "error", "reason": "not_found", "fake_success": False}, status=404)
 
@@ -121,6 +140,26 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
                 prefer_bridge=False,
             )
             self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/world/grok":
+            result = ask_grok_via_world_agent(
+                str(body.get("question") or ""),
+                approval=str(body.get("approval") or ""),
+                open_tab=bool(body.get("open_tab", True)),
+                submit=bool(body.get("submit", True)),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "approval_required" else 200)
+            return
+        if self.path == "/world/search":
+            result = search_world_memory(
+                str(body.get("query") or ""),
+                limit=int(body.get("limit") or 5),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result)
             return
         self._json({"status": "error", "reason": "not_found", "fake_success": False}, status=404)
 

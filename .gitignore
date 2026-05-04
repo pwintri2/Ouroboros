@@ -31,6 +31,7 @@ tmp/
 data/tijdelijke_mail_dumps/*
 data/log_exports/*
 artifacts/backend_sandbox_allow.log
+artifacts/world_agent_actions.jsonl
 artifacts/crawler/
 artifacts/ecosystem_knowledge/
 artifacts/host_program_inventory/

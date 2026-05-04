@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
+use std::process::Command;
 use std::time::Duration;
 
 const DEFAULT_BACKEND_URL: &str = "http://localhost:8010";
@@ -107,9 +108,41 @@ async fn backend_config() -> BackendConfig {
     }
 }
 
+#[tauri::command]
+fn open_external_url(url: String) -> Result<bool, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed.len() > 2048 || trimmed.chars().any(|ch| ch.is_control()) {
+        return Err("Invalid external URL.".to_owned());
+    }
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("Only http(s) URLs can be opened externally.".to_owned());
+    }
+
+    #[cfg(target_os = "linux")]
+    let candidates: [(&str, &[&str]); 3] = [
+        ("xdg-open", &[trimmed]),
+        ("gio", &["open", trimmed]),
+        ("flatpak-spawn", &["--host", "xdg-open", trimmed]),
+    ];
+
+    #[cfg(target_os = "macos")]
+    let candidates: [(&str, &[&str]); 1] = [("open", &[trimmed])];
+
+    #[cfg(target_os = "windows")]
+    let candidates: [(&str, &[&str]); 1] = [("rundll32", &["url.dll,FileProtocolHandler", trimmed])];
+
+    for (program, args) in candidates {
+        match Command::new(program).args(args).spawn() {
+            Ok(_) => return Ok(true),
+            Err(_) => continue,
+        }
+    }
+    Err("No external URL opener was available.".to_owned())
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![backend_config])
+        .invoke_handler(tauri::generate_handler![backend_config, open_external_url])
         .run(tauri::generate_context!())
         .expect("error while running Ouroboros Cockpit");
 }

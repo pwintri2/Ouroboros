@@ -188,6 +188,27 @@ except Exception:
         app.state.ouroboros_esoteric_routes_unavailable = True
 
 try:
+    from controller.api.world_agent_routes import init_world_agent
+    from controller.world_agent import GROK_URL, ask_grok_via_world_agent, detect_world_intent, search_world_memory, world_agent_status
+except Exception:
+    GROK_URL = "https://grok.com/"
+
+    def init_world_agent(app: Any) -> None:
+        app.state.world_agent_routes_unavailable = True
+
+    def detect_world_intent(_prompt: object) -> Any:
+        return None
+
+    def ask_grok_via_world_agent(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "route": "world_agent", "reason": "WorldAgent niet beschikbaar.", "fake_success": False}
+
+    def search_world_memory(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "route": "world_agent", "reason": "WorldAgent niet beschikbaar.", "matches": [], "fake_success": False}
+
+    def world_agent_status() -> dict[str, Any]:
+        return {"status": "unavailable", "reason": "WorldAgent niet beschikbaar.", "fake_success": False}
+
+try:
     from controller.safe_shell import run_safe_shell
 except Exception:
     def run_safe_shell(command: str, approval: str = "", timeout: int = 20) -> dict[str, Any]:
@@ -254,6 +275,7 @@ init_browser_research(app)
 init_trainer_pipeline(app)
 init_agent_runtime(app)
 init_ouroboros_esoteric(app)
+init_world_agent(app)
 app.state.self_modification_pipeline = {
     "status": "online",
     "approval_required": True,
@@ -748,6 +770,10 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "living_ouroboros_tick": {"method": "POST", "path": "/api/ouroboros/esoteric/living/tick"},
         "living_ouroboros_memory": {"method": "GET", "path": "/api/ouroboros/esoteric/living/memory"},
         "quantum_nexus_status": {"method": "GET", "path": "/api/agent-runtime/nexus/status"},
+        "world_agent_status": {"method": "GET", "path": "/api/world-agent/status"},
+        "world_agent_grok_ask": {"method": "POST", "path": "/api/world-agent/grok/ask"},
+        "world_agent_memory_search": {"method": "POST", "path": "/api/world-agent/memory/search"},
+        "world_agent_recent_actions": {"method": "GET", "path": "/api/world-agent/actions/recent"},
         "tool_bridge_run": {"method": "POST", "path": "/api/agent-runtime/tools/run"},
         "slash_agents": {"method": "POST", "path": "/api/cockpit/chat", "prefix": "/"},
     }
@@ -1121,6 +1147,74 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         slash_result.setdefault("tool_schema_count", 0)
         slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
         return _with_cockpit_self_context(slash_result, chat_context, provider, model)
+
+    world_intent = detect_world_intent(req.prompt)
+    if world_intent is not None:
+        try:
+            if getattr(world_intent, "action", "") == "memory_search":
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(search_world_memory, getattr(world_intent, "query", ""), limit=5),
+                    timeout=min(timeout_seconds, 30.0),
+                )
+            else:
+                grok_question = getattr(world_intent, "query", "") or "Open grok.com"
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ask_grok_via_world_agent,
+                        grok_question,
+                        approval=req.approval or "",
+                        open_tab=False,
+                        submit=getattr(world_intent, "action", "") != "grok_open",
+                    ),
+                    timeout=timeout_seconds,
+                )
+        except asyncio.TimeoutError:
+            return _with_cockpit_self_context(
+                _chat_timeout_payload(
+                    requested_provider=requested_provider,
+                    provider="world_agent",
+                    model="grok.com",
+                    route="world_agent",
+                    timeout_seconds=timeout_seconds,
+                    local_only=False,
+                    tools=tools,
+                    return_tools=_should_return_tool_schemas(req),
+                ),
+                chat_context,
+                provider,
+                model,
+            )
+        if not isinstance(result, dict):
+            result = {"status": "success", "response": str(result)}
+        result.setdefault("status", "success")
+        result.setdefault("provider", "world_agent")
+        result.setdefault("requested_provider", requested_provider)
+        result.setdefault("model", "grok.com")
+        result.setdefault("route", "world_agent")
+        result.setdefault("local_only", getattr(world_intent, "action", "") == "memory_search")
+        result.setdefault("tool_schemas", [])
+        result.setdefault("tool_schema_count", 0)
+        if str(getattr(world_intent, "action", "")).startswith("grok") and req.approval == APPROVAL_PHRASE:
+            result.setdefault(
+                "frontend_action",
+                {
+                    "type": "open_url",
+                    "url": GROK_URL,
+                    "target": "_blank",
+                    "agent": "world_agent",
+                    "action_id": result.get("action_id") or f"world_{int(time.time())}",
+                },
+            )
+            result.setdefault(
+                "frontend_note",
+                "Cockpit opent de zichtbare Grok-tab; de host-bridge probeert de vraag apart via Playwright te stellen.",
+            )
+        result["world_intent"] = world_intent.to_dict() if callable(getattr(world_intent, "to_dict", None)) else {
+            "action": getattr(world_intent, "action", ""),
+            "query": getattr(world_intent, "query", ""),
+            "target": getattr(world_intent, "target", ""),
+        }
+        return _with_cockpit_self_context(result, chat_context, provider, model)
 
     if provider == "ollama":
         try:

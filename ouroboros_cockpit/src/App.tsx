@@ -11,6 +11,7 @@ import {
   Cpu,
   Database,
   FolderTree,
+  Globe2,
   Hammer,
   Layers,
   Pause,
@@ -45,6 +46,9 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   cockpitChat: "/api/cockpit/chat",
   agentTool: "/agent/tool",
   apiKeys: "/api/cockpit/api-keys",
+  worldAgentStatus: "/api/world-agent/status",
+  worldAgentGrok: "/api/world-agent/grok/ask",
+  worldAgentSearch: "/api/world-agent/memory/search",
   approvalPhrase: "Akkoord",
 } as const;
 
@@ -254,6 +258,35 @@ type LivingStatus = {
   };
 };
 
+type WorldAction = {
+  ts?: string;
+  status?: string;
+  action?: string;
+  action_id?: string;
+  question?: string;
+  query?: string;
+  response?: string;
+  reason?: string;
+  next_action?: string;
+  url?: string;
+  via_bridge?: boolean;
+  browser_action_performed?: boolean;
+  tab_opened?: boolean;
+  memory?: { stored?: boolean; memory_id?: string; status?: string; reason?: string };
+};
+
+type WorldStatus = {
+  status?: string;
+  reason?: string;
+  agent?: string;
+  grok_url?: string;
+  host_bridge?: boolean;
+  dependencies?: { chromadb?: boolean; playwright?: boolean };
+  memory?: { available?: boolean; collection?: string; count?: number; reason?: string; embedding_mode?: string };
+  recent_actions?: WorldAction[];
+  via_bridge?: boolean;
+};
+
 type ApiKeyStatusPayload = {
   status?: string;
   secrets_returned?: boolean;
@@ -302,6 +335,33 @@ type ApiRequestInit = RequestInit & {
   timeoutMs?: number;
 };
 
+type FrontendAction = {
+  type?: string;
+  url?: string;
+  target?: string;
+  action_id?: string;
+};
+
+async function openExternalUrl(url: string, target = "_blank"): Promise<{ opened: boolean; detail: string; via: string }> {
+  try {
+    const opened = await invoke<boolean>("open_external_url", { url });
+    return {
+      opened: Boolean(opened),
+      detail: opened ? "Tauri native opener launched the external URL" : "Tauri native opener returned false",
+      via: "tauri",
+    };
+  } catch (error) {
+    const opened = window.open(url, target, "noopener,noreferrer");
+    return {
+      opened: Boolean(opened),
+      detail: opened
+        ? "window.open returned a Window handle"
+        : `Tauri opener unavailable and browser/webview blocked window.open: ${error instanceof Error ? error.message : String(error)}`,
+      via: "window.open",
+    };
+  }
+}
+
 export default function App() {
   const [backend, setBackend] = useState(DEFAULT_BACKEND);
   const [approvalPhrase, setApprovalPhrase] = useState<string>(OUROBOROS_BACKEND_CONTRACT.approvalPhrase);
@@ -329,6 +389,7 @@ export default function App() {
   const [agentJobEvents, setAgentJobEvents] = useState<AgentJobEvent[]>([]);
   const [nexusStatus, setNexusStatus] = useState<NexusStatus>({ status: "unknown" });
   const [livingStatus, setLivingStatus] = useState<LivingStatus>({ status: "unknown" });
+  const [worldStatus, setWorldStatus] = useState<WorldStatus>({ status: "unknown" });
   const terminalHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -429,6 +490,19 @@ export default function App() {
     }
   }, [api]);
 
+  const loadWorldStatus = useCallback(async () => {
+    try {
+      const data = await api<WorldStatus>(OUROBOROS_BACKEND_CONTRACT.worldAgentStatus);
+      setWorldStatus(data);
+    } catch (error) {
+      setWorldStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
   const refresh = useCallback(async () => {
     const [healthData, configData, statusData] = await Promise.all([
       api<Health>(OUROBOROS_BACKEND_CONTRACT.health),
@@ -472,11 +546,12 @@ export default function App() {
         setAgentJobs(Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs : []);
         await loadNexusStatus();
         await loadLivingStatus();
+        await loadWorldStatus();
       } catch {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab, loadNexusStatus, loadLivingStatus]);
+  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadWorldStatus]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -496,12 +571,14 @@ export default function App() {
   useEffect(() => {
     loadNexusStatus().catch(() => undefined);
     loadLivingStatus().catch(() => undefined);
+    loadWorldStatus().catch(() => undefined);
     const id = window.setInterval(() => {
       loadNexusStatus().catch(() => undefined);
       loadLivingStatus().catch(() => undefined);
+      loadWorldStatus().catch(() => undefined);
     }, 2000);
     return () => window.clearInterval(id);
-  }, [loadNexusStatus, loadLivingStatus]);
+  }, [loadNexusStatus, loadLivingStatus, loadWorldStatus]);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -624,17 +701,17 @@ export default function App() {
   }
 
   async function handleFrontendAction(data: Record<string, unknown>) {
-    const action = data.frontend_action as { type?: string; url?: string; target?: string; action_id?: string } | undefined;
+    const action = data.frontend_action as FrontendAction | undefined;
     if (action?.type !== "open_url" || !action.url) return;
-    const opened = window.open(action.url, action.target ?? "_blank", "noopener,noreferrer");
+    const openResult = await openExternalUrl(action.url, action.target ?? "_blank");
     if (action.action_id) {
       await api("/trainer/codex/agent/frontend-event", {
         method: "POST",
         body: JSON.stringify({
           action_id: action.action_id,
-          status: opened ? "opened" : "blocked_by_browser",
-          detail: opened ? "Slash command opened a browser tab" : "Browser blocked the popup or no window handle was returned",
-          payload: { url: action.url, source: "cockpit_slash" },
+          status: openResult.opened ? "opened" : "blocked_by_browser",
+          detail: openResult.detail,
+          payload: { url: action.url, source: "cockpit_slash", via: openResult.via },
         }),
       }).catch(() => undefined);
     }
@@ -868,6 +945,7 @@ export default function App() {
           <StatusPill icon={<ShieldCheck size={16} />} label="Approval" value={approvalReady ? "approved" : "locked"} ok={approvalReady} />
           <StatusPill icon={<Activity size={16} />} label="Ω Nexus" value={nexusStatus.omega_vector?.converged ? "converged" : nexusStatus.status ?? "unknown"} ok={!!nexusStatus.omega_vector?.converged || nexusStatus.status === "online"} />
           <StatusPill icon={<BrainCircuit size={16} />} label="Living" value={livingStatus.running ? "speaking" : livingStatus.status ?? "idle"} ok={livingStatus.status === "running" || livingStatus.status === "idle"} />
+          <StatusPill icon={<Globe2 size={16} />} label="World" value={worldStatus.status ?? "unknown"} ok={worldStatus.status === "online"} />
         </header>
 
         <section className="toolbar">
@@ -989,6 +1067,11 @@ export default function App() {
                 <summary>Raw status</summary>
                 <pre>{JSON.stringify(status, null, 2)}</pre>
               </details>
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="World Actions" />
+              <WorldActionsPanel world={worldStatus} />
             </section>
 
             <section className="panel">
@@ -1192,6 +1275,45 @@ function StatusPill({ icon, label, value, ok }: { icon: React.ReactNode; label: 
 
 function PanelHeader({ title, small = false }: { title: string; small?: boolean }) {
   return <h2 className={small ? "small-heading" : ""}>{title}</h2>;
+}
+
+function WorldActionsPanel({ world }: { world: WorldStatus }) {
+  const actions = Array.isArray(world.recent_actions) ? world.recent_actions.slice().reverse().slice(0, 8) : [];
+  const memory = world.memory ?? {};
+  return (
+    <div className="world-panel">
+      <div className="world-head">
+        <div>
+          <strong>{world.grok_url ?? "https://grok.com"}</strong>
+          <span>{world.host_bridge ? "host bridge" : "backend"} / {memory.embedding_mode ?? "hash"} vectors</span>
+        </div>
+        <i className={world.status === "online" ? "good" : "warn"} />
+      </div>
+      <div className="nexus-stats">
+        <span>Memory <strong>{memory.available ? "online" : "off"}</strong></span>
+        <span>Count <strong>{memory.count ?? 0}</strong></span>
+        <span>Browser <strong>{world.dependencies?.playwright ? "ready" : "setup"}</strong></span>
+        <span>Chroma <strong>{world.dependencies?.chromadb ? "ready" : "setup"}</strong></span>
+      </div>
+      <div className="world-action-list">
+        {actions.length === 0 ? (
+          <div className="empty-state">Nog geen wereldacties. Typ bijvoorbeeld: open grok.com en vraag iets concreets.</div>
+        ) : (
+          actions.map((action, index) => (
+            <div className="world-action" key={action.action_id ?? `${action.ts ?? "action"}-${index}`}>
+              <div>
+                <strong>{action.action ?? "world"} · {action.status ?? "unknown"}</strong>
+                <span>{action.ts ? new Date(action.ts).toLocaleTimeString() : ""}</span>
+              </div>
+              <p>{action.question || action.query || action.reason || action.response || action.next_action || "Geen detail."}</p>
+              {action.memory?.stored && <em>stored {action.memory.memory_id?.slice(0, 24) ?? "memory"}</em>}
+            </div>
+          ))
+        )}
+      </div>
+      {world.reason && <div className="nexus-last"><strong>{world.status ?? "unavailable"}</strong><span>{world.reason}</span></div>}
+    </div>
+  );
 }
 
 function OmegaPointNexusPanel({ nexus }: { nexus: NexusStatus }) {
@@ -1733,14 +1855,14 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
       setCodexAgentResult(data);
       recordTrainerAction("Codex Agent", data);
       if (data?.frontend_action?.type === "open_url" && data.frontend_action.url) {
-        const opened = window.open(data.frontend_action.url, data.frontend_action.target ?? "_blank", "noopener,noreferrer");
+        const openResult = await openExternalUrl(data.frontend_action.url, data.frontend_action.target ?? "_blank");
         await api("/trainer/codex/agent/frontend-event", {
           method: "POST",
           body: JSON.stringify({
             action_id: data.frontend_action.action_id,
-            status: opened ? "opened" : "blocked_by_browser",
-            detail: opened ? "window.open returned a Window handle" : "Browser blocked the popup or no window handle was returned",
-            payload: { url: data.frontend_action.url },
+            status: openResult.opened ? "opened" : "blocked_by_browser",
+            detail: openResult.detail,
+            payload: { url: data.frontend_action.url, via: openResult.via },
           }),
         });
       }

@@ -163,6 +163,18 @@ class TestTauriCockpitFiles(unittest.TestCase):
             "React cockpit source does not mention all backend contract strings.",
         )
 
+    def test_tauri_native_external_url_opener_is_registered(self):
+        main_rs = COCKPIT_DIR / "src-tauri" / "src" / "main.rs"
+        app_tsx = COCKPIT_DIR / "src" / "App.tsx"
+
+        self.assertTrue(main_rs.exists(), "Missing Tauri main.rs")
+        rust_source = main_rs.read_text(encoding="utf-8")
+        react_source = app_tsx.read_text(encoding="utf-8")
+
+        self.assertIn("open_external_url", rust_source)
+        self.assertIn("tauri::generate_handler![backend_config, open_external_url]", rust_source)
+        self.assertIn('invoke<boolean>("open_external_url"', react_source)
+
 
 if __name__ == "__main__":
     unittest.main()

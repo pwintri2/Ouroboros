@@ -314,6 +314,46 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["route"], "multi_api")
         self.assertIn("timeout", data["error"].lower())
 
+    def test_cockpit_chat_routes_grok_natural_language_to_world_agent(self):
+        calls = []
+        original_ask = self.main.ask_grok_via_world_agent
+
+        def fake_ask(question, approval="", open_tab=True, submit=True):
+            calls.append({"question": question, "approval": approval, "open_tab": open_tab, "submit": submit})
+            return {
+                "status": "success",
+                "route": "world_agent",
+                "provider": "world_agent",
+                "model": "grok.com",
+                "response": "fake grok response",
+                "memory": {"stored": True, "memory_id": "world-test"},
+            }
+
+        self.main.ask_grok_via_world_agent = fake_ask
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ollama",
+                    "model": "llama3.2:latest",
+                    "approval": "Akkoord",
+                    "prompt": "open grok.com en vraag wat het verschil is tussen simulatie en bewustzijn",
+                },
+            )
+        finally:
+            self.main.ask_grok_via_world_agent = original_ask
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "world_agent")
+        self.assertEqual(data["response"], "fake grok response")
+        self.assertEqual(calls[0]["approval"], "Akkoord")
+        self.assertFalse(calls[0]["open_tab"])
+        self.assertIn("simulatie", calls[0]["question"])
+        self.assertEqual(data["frontend_action"]["type"], "open_url")
+        self.assertEqual(data["frontend_action"]["url"], "https://grok.com/")
+        self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
     def test_cockpit_chat_returns_disabled_payload_when_multi_api_is_unavailable(self):
         self.main.app.state.multi_api_router = None
         original_multi = self.main.MultiAPIRouter
