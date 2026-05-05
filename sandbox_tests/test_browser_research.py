@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from controller.browser_research import (
     BrowserActionResult,
+    browser_research,
     chatgpt_browser_ask,
     read_visible_text,
     scrub_browser_content,
@@ -96,6 +97,31 @@ class TestBrowserResearchPerimeter(unittest.TestCase):
         self.assertIn("tool_call_request", result["blocked_patterns"])
         self.assertIn("diff_view", result)
 
+    def test_browser_research_includes_brave_companion_by_default(self):
+        fake_result = BrowserActionResult(
+            status="success",
+            url="https://duckduckgo.com/?q=Ouroboros",
+            visible_text="Search results page.",
+            browser_action_performed=True,
+        )
+        with patch("controller.browser_research._run_read_with_playwright", return_value=fake_result):
+            with patch(
+                "controller.brave_search.search_brave_llm_context",
+                return_value={
+                    "status": "success",
+                    "provider": "brave",
+                    "document": "Brave context",
+                    "source_urls": ["https://example.com/source"],
+                    "fake_success": False,
+                },
+            ) as brave:
+                result = browser_research("Ouroboros", approval="Akkoord")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["brave"]["status"], "success")
+        self.assertEqual(result["brave"]["route"], "brave_companion_search")
+        brave.assert_called_once()
+
 
 @unittest.skipUnless(HAS_FASTAPI, "fastapi is niet geinstalleerd in deze testomgeving")
 class TestBrowserRoutes(unittest.TestCase):
@@ -125,6 +151,35 @@ class TestBrowserRoutes(unittest.TestCase):
         self.assertEqual(data["status"], "success")
         self.assertEqual(data["taint"], "untrusted_web")
         self.assertIn("diff_view", data)
+
+    def test_browser_research_route_includes_brave(self):
+        app = FastAPI()
+        init_browser_research(app)
+        client = TestClient(app)
+        fake_result = BrowserActionResult(
+            status="success",
+            url="https://duckduckgo.com/?q=Ouroboros",
+            visible_text="Search results page.",
+            browser_action_performed=True,
+        )
+
+        with patch("controller.browser_research._run_read_with_playwright", return_value=fake_result):
+            with patch(
+                "controller.brave_search.search_brave_llm_context",
+                return_value={
+                    "status": "success",
+                    "provider": "brave",
+                    "document": "Brave context",
+                    "source_urls": ["https://example.com/source"],
+                    "fake_success": False,
+                },
+            ):
+                response = client.post("/browser/research", json={"query": "Ouroboros", "approval": "Akkoord"})
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["brave"]["status"], "success")
 
 
 if __name__ == "__main__":

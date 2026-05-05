@@ -54,7 +54,14 @@ def get_knowledge_acquisition_status() -> dict[str, Any]:
     records = state.get("records") or []
     gemma_done = _completed_topics(records, "gemma_distillation")
     browser_done = _completed_topics(records, "browser_research_call")
+    brave_done = _completed_topics(records, "brave_llm_context")
     last_records = list(records)[-12:]
+    try:
+        from controller.brave_search import brave_search_status
+
+        brave_status = brave_search_status()
+    except Exception as exc:
+        brave_status = {"status": "unavailable", "configured": False, "reason": str(exc), "fake_success": False}
     return {
         "status": "ready" if parsed.get("status") == "success" else "missing",
         "knowledge_list_path": str(knowledge_list_path()),
@@ -64,12 +71,15 @@ def get_knowledge_acquisition_status() -> dict[str, Any]:
         "gemma_model": state.get("gemma_model", DEFAULT_GEMMA_MODEL),
         "gemma_completed": len(gemma_done),
         "browser_completed": len(browser_done),
+        "brave_completed": len(brave_done),
+        "brave_search": brave_status,
         "total_records": len(records),
         "last_indexed_at": state.get("last_indexed_at"),
         "last_tick_at": state.get("last_tick_at"),
         "last_error": state.get("last_error", ""),
         "next_gemma_topics": _next_topics(topics, gemma_done, limit=5),
         "next_browser_topics": _next_topics(topics, browser_done, limit=5),
+        "next_brave_topics": _next_topics(topics, brave_done, limit=5),
         "recent_records": last_records,
         "curriculum_counts": _curriculum_counts(records),
         "fake_success": False,
@@ -189,15 +199,18 @@ def run_knowledge_tick(
 ) -> dict[str, Any]:
     """Run a bounded knowledge acquisition tick.
 
-    mode can be gemma, browser or both. The browser path uses the existing
-    browser_research function, which reads exactly one page per topic.
+    mode can be gemma, browser, brave, both, gemma_brave or all. The browser
+    path uses the existing browser_research function, which reads exactly one
+    page per topic. The Brave path uses Brave LLM Context for machine-readable
+    grounding and stores it as approved 11D training context after Akkoord.
     """
     if approval != APPROVAL_PHRASE:
         return {"status": "blocked", "reason": "Approval phrase must be 'Akkoord'", "fake_success": False}
 
     clean_mode = (mode or "both").strip().lower()
-    if clean_mode not in {"both", "gemma", "browser"}:
-        return {"status": "error", "reason": "mode must be one of: both, gemma, browser", "fake_success": False}
+    valid_modes = {"both", "gemma", "browser", "brave", "gemma_brave", "all"}
+    if clean_mode not in valid_modes:
+        return {"status": "error", "reason": f"mode must be one of: {', '.join(sorted(valid_modes))}", "fake_success": False}
 
     parsed = parse_knowledge_list()
     if parsed.get("status") != "success":
@@ -211,10 +224,12 @@ def run_knowledge_tick(
     created: list[dict[str, Any]] = []
 
     source_types = []
-    if clean_mode in {"both", "gemma"}:
+    if clean_mode in {"both", "gemma", "gemma_brave", "all"}:
         source_types.append("gemma_distillation")
-    if clean_mode in {"both", "browser"}:
+    if clean_mode in {"both", "browser", "all"}:
         source_types.append("browser_research_call")
+    if clean_mode in {"brave", "gemma_brave", "all"}:
+        source_types.append("brave_llm_context")
 
     parallelism: dict[str, int] = {}
     selected_topics: dict[str, list[dict[str, Any]]] = {}
@@ -324,11 +339,11 @@ def _acquire_topics(
     if not topics:
         return []
 
-    if source_type == "gemma_distillation" and workers > 1:
+    if source_type in {"gemma_distillation", "brave_llm_context"} and workers > 1:
         ordered: list[tuple[dict[str, Any], dict[str, Any], Exception | None] | None] = [None] * len(topics)
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="knowledge-gemma") as executor:
             futures = {
-                executor.submit(distill_gemma_topic, topic, model=model): index
+                executor.submit(_acquire_one_topic, topic, source_type, approval, model): index
                 for index, topic in enumerate(topics)
             }
             for future in as_completed(futures):
@@ -343,25 +358,32 @@ def _acquire_topics(
     acquired: list[tuple[dict[str, Any], dict[str, Any], Exception | None]] = []
     for topic in topics:
         try:
-            if source_type == "gemma_distillation":
-                result = distill_gemma_topic(topic, model=model)
-            else:
-                result = browser_research_topic(topic, approval=approval)
+            result = _acquire_one_topic(topic, source_type, approval, model)
             acquired.append((topic, result, None))
         except Exception as exc:
             acquired.append((topic, {}, exc))
     return acquired
 
 
+def _acquire_one_topic(topic: dict[str, Any], source_type: str, approval: str, model: str) -> dict[str, Any]:
+    if source_type == "gemma_distillation":
+        return distill_gemma_topic(topic, model=model)
+    if source_type == "brave_llm_context":
+        return brave_research_topic(topic, approval=approval)
+    return browser_research_topic(topic, approval=approval)
+
+
 def _parallelism_for_source(source_type: str, selected_count: int) -> int:
-    if source_type != "gemma_distillation" or selected_count <= 1:
+    if source_type not in {"gemma_distillation", "brave_llm_context"} or selected_count <= 1:
         return 1
-    raw = os.getenv("WINTRIP_KNOWLEDGE_PARALLELISM", "2")
+    env_name = "WINTRIP_BRAVE_KNOWLEDGE_PARALLELISM" if source_type == "brave_llm_context" else "WINTRIP_KNOWLEDGE_PARALLELISM"
+    raw = os.getenv(env_name, "6" if source_type == "brave_llm_context" else "2")
     try:
         configured = int(raw)
     except (TypeError, ValueError):
-        configured = 2
-    return max(1, min(configured, selected_count, 4))
+        configured = 6 if source_type == "brave_llm_context" else 2
+    maximum = 50 if source_type == "brave_llm_context" else 4
+    return max(1, min(configured, selected_count, maximum))
 
 
 def distill_gemma_topic(topic: dict[str, Any], model: str = DEFAULT_GEMMA_MODEL) -> dict[str, Any]:
@@ -463,6 +485,27 @@ def browser_research_topic(topic: dict[str, Any], approval: str = "") -> dict[st
         ),
         MAX_RECORD_CHARS,
     )
+    return result
+
+
+def brave_research_topic(topic: dict[str, Any], approval: str = "") -> dict[str, Any]:
+    """Fetch machine-readable Brave LLM Context for one curriculum topic."""
+    if approval != APPROVAL_PHRASE:
+        return {"status": "blocked", "reason": "Approval phrase must be 'Akkoord'", "document": "", "fake_success": False}
+    from controller.brave_search import brave_training_document
+
+    query = str(topic.get("query") or topic.get("title") or "")[:400]
+    result = brave_training_document(
+        query,
+        count=max(1, min(int(os.getenv("WINTRIP_BRAVE_CONTEXT_COUNT", "20") or 20), 50)),
+        maximum_number_of_urls=max(1, min(int(os.getenv("WINTRIP_BRAVE_CONTEXT_URLS", "8") or 8), 50)),
+        maximum_number_of_tokens=max(1024, min(int(os.getenv("WINTRIP_BRAVE_CONTEXT_TOKENS", "8192") or 8192), 32768)),
+    )
+    if result.get("status") == "success":
+        result["browser_action_performed"] = False
+        result["bulk_scraping"] = False
+        result["taint"] = "untrusted_web:brave_llm_context"
+        result["source_url"] = ",".join(list(result.get("source_urls") or [])[:8])
     return result
 
 
@@ -639,8 +682,8 @@ def _record_metadata(
         "source": str(source),
         "source_type": source_type,
         "approval_status": "approved",
-        "trust_level": "local_model_distilled" if source_type == "gemma_distillation" else "external_web_scrubbed",
-        "taint": "local_distillation" if source_type == "gemma_distillation" else str(result.get("taint") or "scrubbed_browser"),
+        "trust_level": _trust_level_for_source(source_type),
+        "taint": _taint_for_source(source_type, result),
         "topic_id": str(topic.get("id") or ""),
         "topic_title": str(topic.get("title") or "")[:500],
         "topic_index": int(topic.get("index") or 0),
@@ -658,6 +701,22 @@ def _record_metadata(
         "resonance_score": 0.7,
         "fake_success": False,
     }
+
+
+def _trust_level_for_source(source_type: str) -> str:
+    if source_type == "gemma_distillation":
+        return "local_model_distilled"
+    if source_type == "brave_llm_context":
+        return "external_web_brave_llm_context"
+    return "external_web_scrubbed"
+
+
+def _taint_for_source(source_type: str, result: dict[str, Any]) -> str:
+    if source_type == "gemma_distillation":
+        return "local_distillation"
+    if source_type == "brave_llm_context":
+        return str(result.get("taint") or "untrusted_web:brave_llm_context")
+    return str(result.get("taint") or "scrubbed_browser")
 
 
 def _training_collection() -> Any:

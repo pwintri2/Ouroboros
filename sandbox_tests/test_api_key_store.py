@@ -29,6 +29,8 @@ class TestApiKeyStore(unittest.TestCase):
                 "XAI_API_KEY": "",
                 "GROK_API_KEY": "",
                 "MISTRAL_API_KEY": "",
+                "BRAVE_SEARCH_API_KEY": "",
+                "BRAVE_API_KEY": "",
             },
             clear=False,
         )
@@ -55,6 +57,12 @@ class TestApiKeyStore(unittest.TestCase):
         deleted = delete_provider_api_key("xai")
         self.assertFalse(deleted["configured"])
         self.assertNotIn("xai", load_provider_api_keys())
+
+        brave = save_provider_api_key("brave_search", "brave-test-secret-123456")
+        self.assertEqual(brave["provider"], "brave")
+        self.assertTrue(provider_key_status()["brave"]["configured"])
+        self.assertEqual(load_provider_api_keys()["brave"], "brave-test-secret-123456")
+        self.assertNotIn("brave-test-secret-123456", json.dumps(provider_key_status()))
 
     def test_rejects_short_or_unknown_keys(self):
         with self.assertRaises(ValueError):

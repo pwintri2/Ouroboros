@@ -103,6 +103,38 @@ class TestLearningAccelerator(unittest.TestCase):
         )
         continuous_tick.assert_called_once()
 
+    def test_accelerate_learning_accepts_gemma_brave_mode(self):
+        from controller.learning_accelerator import accelerate_learning
+
+        with (
+            patch("controller.learning_accelerator.count_approved_records", side_effect=[1, 3, 3]),
+            patch("controller.learning_accelerator.index_knowledge_list", return_value={"status": "success"}),
+            patch(
+                "controller.learning_accelerator.run_knowledge_tick",
+                return_value={"status": "success", "created_count": 2, "error_count": 0},
+            ) as knowledge_tick,
+            patch(
+                "controller.learning_accelerator.run_continuous_tick",
+                return_value={"status": "success", "dataset": {"included_count": 3}},
+            ),
+        ):
+            result = accelerate_learning(
+                approval="Akkoord",
+                knowledge_mode="gemma_brave",
+                knowledge_topics=2,
+                knowledge_passes=1,
+                continuous_methods=["litgpt"],
+            )
+
+        self.assertEqual(result["status"], "success")
+        knowledge_tick.assert_called_once_with(
+            approval="Akkoord",
+            mode="gemma_brave",
+            max_topics=2,
+            start_index=None,
+            model="gemma4:latest",
+        )
+
 
 class TestContinuousTrainerAcceleratorSupport(unittest.TestCase):
     def test_continuous_tick_accepts_max_records_override(self):

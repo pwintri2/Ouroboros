@@ -26,6 +26,13 @@ COMMAND_PREFIX_RE = re.compile(r"(?is)^\s*(?:run|voer uit|execute|shell|command|
 REMEMBER_RE = re.compile(r"(?is)\b(?:onthoud|remember|noteer)\b[:\s]*(.+)")
 OPEN_BROWSER_RE = re.compile(r"(?i)\b(open|start|launch)\b.*\b(browser|url|website|site|tab)\b")
 READ_BROWSER_RE = re.compile(r"(?i)\b(lees|read|onderzoek|research|scrape|haal)\b.*\b(browser|url|website|site|pagina|page)\b")
+CODEX_RUNTIME_RE = re.compile(
+    r"(?is)^\s*(?:codex\s*(?:run|exec|job|runtime)?\s*:|laat\s+codex\s+|gebruik\s+codex\s+(?:voor|om)\s+|delegate\s+to\s+codex\s*:?)\s*(.+)$"
+)
+SECRET_PATTERNS = (
+    re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
+    re.compile(r"(?i)authorization:\s*bearer\s+[A-Za-z0-9._\-]+"),
+)
 
 
 def _workspace_root() -> Path:
@@ -72,6 +79,7 @@ def get_codex_agent_status() -> dict[str, Any]:
             "frontend_open_browser",
             "browser_research",
             "safe_shell",
+            "codex_runtime",
             "capability_gap_backlog",
             "self_extension_plan",
         ],
@@ -128,6 +136,8 @@ def codex_agent_chat(
         result = _handle_browser_research(action_id, clean_message, intent, approval, execute, started)
     elif intent["name"] == "safe_shell":
         result = _handle_safe_shell(action_id, clean_message, intent, approval, execute, started)
+    elif intent["name"] == "codex_runtime":
+        result = _handle_codex_runtime(action_id, clean_message, intent, approval, execute, started)
     else:
         result = _handle_capability_gap(action_id, clean_message, intent, approval, auto_extend, started)
 
@@ -157,9 +167,12 @@ def _detect_intent(message: str) -> dict[str, Any]:
     urls = URL_RE.findall(text)
     command_match = COMMAND_PREFIX_RE.match(text)
     remember_match = REMEMBER_RE.search(text)
+    codex_match = CODEX_RUNTIME_RE.match(text)
 
     if remember_match:
         return {"name": "remember", "text": remember_match.group(1).strip()}
+    if codex_match:
+        return {"name": "codex_runtime", "task": codex_match.group(1).strip()}
     if command_match:
         return {"name": "safe_shell", "command": command_match.group(1).strip()}
     if urls and OPEN_BROWSER_RE.search(text):
@@ -178,7 +191,7 @@ def _handle_remember(action_id: str, message: str, intent: dict[str, Any], start
     item = {
         "id": str(uuid.uuid4()),
         "timestamp": datetime.utcnow().isoformat(),
-        "text": text[:4000],
+        "text": _redact(text)[:4000],
         "source": "codex_agent_chat",
     }
     state = _load_state()
@@ -281,6 +294,73 @@ def _handle_safe_shell(
     )
 
 
+def _handle_codex_runtime(
+    action_id: str,
+    message: str,
+    intent: dict[str, Any],
+    approval: str,
+    execute: bool,
+    started: float,
+) -> dict[str, Any]:
+    task = str(intent.get("task") or message or "").strip()
+    if not task:
+        return _result(action_id, "error", "codex_runtime", "Codex taak ontbreekt.", started)
+    if not execute:
+        return _result(
+            action_id,
+            "planned",
+            "codex_runtime",
+            "Codex runtime job gepland maar niet gestart.",
+            started,
+            task=_redact(task),
+        )
+    if approval != APPROVAL_PHRASE:
+        return _result(
+            action_id,
+            "approval_required",
+            "codex_runtime",
+            "Codex runtime vereist Akkoord.",
+            started,
+            approval_required=True,
+            approval_phrase=APPROVAL_PHRASE,
+            task=_redact(task),
+        )
+
+    try:
+        from controller.agent_runtime.orchestrator import get_orchestrator
+        from controller.slash_agent_router import _agent_prompt
+
+        record = get_orchestrator().submit(
+            agent="codex",
+            task=task,
+            timeout_seconds=240,
+            metadata={
+                "source": "codex_agent",
+                "action_id": action_id,
+                "prompt": _agent_prompt("Codex", task),
+            },
+        )
+    except Exception as exc:
+        return _result(
+            action_id,
+            "error",
+            "codex_runtime",
+            f"Codex runtime kon niet starten: {exc}",
+            started,
+            task=_redact(task),
+        )
+
+    return _result(
+        action_id,
+        "running",
+        "codex_runtime",
+        "Codex job gestart in de agent runtime.",
+        started,
+        task=_redact(task),
+        job=record.to_dict(),
+    )
+
+
 def _handle_capability_gap(
     action_id: str,
     message: str,
@@ -292,7 +372,7 @@ def _handle_capability_gap(
     gap = {
         "id": str(uuid.uuid4()),
         "timestamp": datetime.utcnow().isoformat(),
-        "request": message,
+        "request": _redact(message),
         "requested_capability": intent.get("requested_capability") or "unknown_capability",
         "status": "pending_implementation",
         "docker_first": True,
@@ -347,7 +427,7 @@ def _write_self_extension_plan(gap: dict[str, Any]) -> dict[str, Any]:
 
 def _append_conversation(role: str, content: str) -> None:
     state = _load_state()
-    item = {"timestamp": datetime.utcnow().isoformat(), "role": role, "content": content[:4000]}
+    item = {"timestamp": datetime.utcnow().isoformat(), "role": role, "content": _redact(content)[:4000]}
     state["conversation"] = [item, *list(state.get("conversation") or [])][:500]
     _save_state(state)
 
@@ -440,6 +520,13 @@ def _safe_http_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return candidate
+
+
+def _redact(text: str) -> str:
+    redacted = str(text or "")
+    for pattern in SECRET_PATTERNS:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
 
 
 def _short_capability_name(text: str) -> str:

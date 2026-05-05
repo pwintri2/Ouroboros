@@ -141,9 +141,11 @@ except Exception:
         app.state.browser_research_routes_unavailable = True
 
 try:
+    from controller.ouroboros_model import build_model_runtime_pocket
     from controller.ouroboros_model import MODEL_NAME as OUROBOROS_MODEL_NAME
     from controller.ouroboros_model import prepare_ouroboros_create
 except Exception:
+    build_model_runtime_pocket = None
     OUROBOROS_MODEL_NAME = "ouroboros"
     prepare_ouroboros_create = None
 
@@ -210,6 +212,18 @@ except Exception:
 
     def grok_frontend_url(_question: object = "") -> str:
         return GROK_URL
+
+try:
+    from controller.brave_search import brave_search_status, search_brave_llm_context, search_brave_web
+except Exception:
+    def brave_search_status() -> dict[str, Any]:
+        return {"status": "unavailable", "provider": "brave", "configured": False, "fake_success": False}
+
+    def search_brave_llm_context(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "provider": "brave", "document": "", "fake_success": False}
+
+    def search_brave_web(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "provider": "brave", "matches": [], "fake_success": False}
 
 try:
     from controller.fase8_agent import Fase8ToolDispatcher, get_fase8_runner
@@ -422,6 +436,12 @@ class BrowserResearchRequest(BaseModel):
     limit: Optional[int] = 5
     approval: Optional[str] = None
 
+class BraveSearchRequest(BaseModel):
+    query: str
+    approval: Optional[str] = None
+    limit: Optional[int] = 8
+    llm_context: Optional[bool] = True
+
 class PromptUnderstandingRequest(BaseModel):
     prompt: str
     context: Optional[str] = None
@@ -531,6 +551,14 @@ async def ouroboros_model_create(req: OuroborosModelRequest):
 @app.post("/api/ouroboros/browser/research")
 async def ouroboros_browser_research(req: BrowserResearchRequest):
     return _browser_research_payload(req)
+
+@app.get("/api/ouroboros/search/brave/status")
+async def ouroboros_brave_search_status():
+    return brave_search_status()
+
+@app.post("/api/ouroboros/search/brave")
+async def ouroboros_brave_search(req: BraveSearchRequest):
+    return _brave_search_payload(req)
 
 @app.post("/api/ouroboros/prompt/understand")
 async def ouroboros_prompt_understanding(req: PromptUnderstandingRequest):
@@ -861,6 +889,8 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "model_status": {"method": "GET", "path": "/api/ouroboros/status"},
         "create_or_refresh_model": {"method": "POST", "path": "/api/ouroboros/model/create-flow"},
         "browser_research": {"method": "POST", "path": "/api/ouroboros/research/browser"},
+        "brave_search": {"method": "POST", "path": "/api/ouroboros/search/brave"},
+        "brave_search_status": {"method": "GET", "path": "/api/ouroboros/search/brave/status"},
         "ask_chatgpt_browser": {"method": "POST", "path": "/api/ouroboros/chatgpt/browser"},
         "prompt_understanding": {"method": "POST", "path": "/api/ouroboros/prompt/understand"},
         "training_ingest": {"method": "POST", "path": "/api/ouroboros/training/ingest"},
@@ -1299,7 +1329,7 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         slash_result.setdefault("tool_schemas", [])
         slash_result.setdefault("tool_schema_count", 0)
         slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
-        return _with_cockpit_self_context(slash_result, chat_context, provider, model)
+        return _with_cockpit_self_context(slash_result, chat_context, provider, model, include_living_echo=False)
 
     if _should_route_living_action(req.prompt):
         method = getattr(orchestrator, "levendige_actie", None)
@@ -1566,11 +1596,15 @@ def _with_cockpit_self_context(
     chat_context: dict[str, Any],
     provider: str,
     model: str,
+    *,
+    include_living_echo: bool | None = None,
 ) -> dict[str, Any]:
     response = str(result.get("response") or result.get("message") or "")
     status = str(result.get("status") or "")
     self_context = dict(chat_context.get("self_context") or {})
-    living_echo = _living_chat_echo()
+    route = str(result.get("route") or "")
+    attach_living_echo = route != "slash_agent" if include_living_echo is None else bool(include_living_echo)
+    living_echo = _living_chat_echo() if attach_living_echo else {}
     if living_echo:
         result["living_echo"] = living_echo
     result["conversation_id"] = chat_context.get("conversation_id")
@@ -1712,6 +1746,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
     model_state = _ensure_ouroboros_model_state(models)
     active_base = model_state.get("active_base") or _active_base(models)
     records = _hippocampus_records(limit=3)
+    model_runtime = _model_runtime_pocket(active_base=active_base, records=records)
     last_tool = getattr(agent_tools, "last_tool_result", None) or {}
     research = getattr(app.state, "ouroboros_browser_research", None) or {
         "status": "idle",
@@ -1755,6 +1790,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
             extra={"ollama_router": router_status, "self_context": _self_context_status_payload(), **ecosystem_extra},
         )
         payload["fase8"] = _fase8_status_summary()
+        payload["model_runtime"] = model_runtime
         if extra:
             payload.update(extra)
         return payload
@@ -1775,6 +1811,7 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
         "browser_research": research,
         "geometry_11d": _geometry_11d(records=records),
         "records": records,
+        "model_runtime": model_runtime,
         "stdout": str(last_tool.get("stdout", "")),
         "stderr": str(last_tool.get("stderr") or last_tool.get("error") or ""),
         "ollama_router": router_status,
@@ -1795,6 +1832,22 @@ def _ouroboros_status_payload(extra: Optional[dict[str, Any]] = None) -> dict[st
     if extra:
         payload.update(extra)
     return payload
+
+
+def _model_runtime_pocket(active_base: str = "", records: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    record_count = 0
+    if isinstance(records, dict):
+        record_count = int(records.get("total_count") or records.get("training_collection_count") or 0)
+    if callable(build_model_runtime_pocket):
+        try:
+            return build_model_runtime_pocket(
+                "Ouroboros cockpit status",
+                active_base=active_base,
+                record_count=record_count,
+            )
+        except Exception as exc:
+            return {"status": "error", "reason": str(exc), "dimension_count": 11, "fake_success": False}
+    return {"status": "unavailable", "dimension_count": 11, "fake_success": False}
 
 
 def _fase8_status_summary() -> dict[str, Any]:
@@ -1826,6 +1879,7 @@ def _ecosystem_status_extra() -> dict[str, Any]:
             "program_inventory": ecosystem.get("program_inventory", {}),
             "host_sensory": ecosystem.get("host_sensory", {}),
             "ecosystem_knowledge": ecosystem.get("ecosystem_knowledge", {}),
+            "brave_search": brave_search_status(),
         }
     except Exception as exc:
         return {
@@ -1834,6 +1888,7 @@ def _ecosystem_status_extra() -> dict[str, Any]:
             "program_inventory": {"status": "unavailable", "reason": str(exc), "fake_success": False},
             "host_sensory": {"status": "unavailable", "reason": str(exc), "fake_success": False},
             "ecosystem_knowledge": {"status": "unavailable", "reason": str(exc), "fake_success": False},
+            "brave_search": brave_search_status(),
         }
 
 
@@ -2508,16 +2563,43 @@ def _store_chatgpt_question_context(
         return {"enabled": True, "status": "error", "reason": str(exc), "stored_question": False, "fake_success": False}
 
 
+def _brave_search_payload(req: BraveSearchRequest) -> dict[str, Any]:
+    query = str(req.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is verplicht")
+    if (req.approval or "").strip() != APPROVAL_PHRASE:
+        return {
+            "status": "blocked",
+            "provider": "brave",
+            "approval_required": True,
+            "required_approval_phrase": APPROVAL_PHRASE,
+            "reason": "Brave Search API-call wacht op Akkoord.",
+            "fake_success": False,
+        }
+    if req.llm_context is not False:
+        result = search_brave_llm_context(query, maximum_number_of_urls=max(1, min(req.limit or 8, 50)))
+    else:
+        result = search_brave_web(query, count=max(1, min(req.limit or 8, 20)))
+    result.setdefault("provider", "brave")
+    result.setdefault("route", "brave_search")
+    result.setdefault("fake_success", False)
+    return result
+
+
 def _browser_research_payload(req: BrowserResearchRequest) -> dict[str, Any]:
     query = str(req.query or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query is verplicht")
     understanding = _prompt_understanding_payload(query)
     memory = agent_tools.run_tool("memory_search", {"query": query, "limit": req.limit or 5})
+    brave_result = _brave_companion_search(query, approval=req.approval or "", limit=req.limit or 5)
     ingest = None
     browser_result = None
     flags = list(understanding.get("flags", []))
     status = "needs_browser_capture"
+    brave_status = str(brave_result.get("status") or "")
+    if brave_status and brave_status not in {"success", "blocked"}:
+        flags.append(f"brave_{brave_status}")
     if req.browser_text:
         ingest = _training_ingest_payload(
             TrainingIngestRequest(
@@ -2533,7 +2615,7 @@ def _browser_research_payload(req: BrowserResearchRequest) -> dict[str, Any]:
         try:
             from controller.browser_research import browser_research
 
-            browser_result = browser_research(query=query, url=req.url, approval=req.approval)
+            browser_result = browser_research(query=query, url=req.url, approval=req.approval, include_brave=False)
             flags.extend(browser_result.get("blocked_patterns", []))
             if browser_result.get("status") == "success":
                 status = "browser_observed"
@@ -2549,12 +2631,17 @@ def _browser_research_payload(req: BrowserResearchRequest) -> dict[str, Any]:
             status = "error"
             flags.append("browser_research_error")
 
+    if status not in {"browser_observed", "preview"} and brave_result.get("status") == "success":
+        status = "brave_observed"
+
     research = {
         "status": status,
         "last_query": query,
         "last_url": (browser_result or {}).get("url") or (browser_result or {}).get("source_url") or req.url or "",
         "flags": flags,
         "matches": (memory.get("result") or {}).get("count", 0),
+        "brave_status": brave_result.get("status"),
+        "brave_matches": int(brave_result.get("count") or len(brave_result.get("matches") or brave_result.get("source_urls") or []) or 0),
         "browser_action_performed": bool((browser_result or {}).get("browser_action_performed")),
         "updated_at": time.time(),
     }
@@ -2565,16 +2652,44 @@ def _browser_research_payload(req: BrowserResearchRequest) -> dict[str, Any]:
         "browser_research": research,
         "understanding": understanding,
         "memory": memory.get("result", {}),
+        "brave": brave_result,
         "browser": browser_result,
         "ingest": ingest,
         "diff_view": (ingest or {}).get("diff_view", "") or (browser_result or {}).get("diff_view", ""),
         "flags": flags,
-        "stdout": json.dumps({"memory": memory.get("result", {}), "browser": browser_result}, ensure_ascii=False, indent=2, default=str),
-        "stderr": memory.get("stderr") or memory.get("error", "") or ((browser_result or {}).get("reason") if status not in {"preview", "browser_observed"} else ""),
-        "learned": "Ontbrekende kennis is vergeleken met lokaal geheugen en via een enkele browserobservatie gescrubd." if not req.browser_text else "Browser research staat klaar als gescrubde ingest-preview.",
+        "stdout": json.dumps({"memory": memory.get("result", {}), "brave": brave_result, "browser": browser_result}, ensure_ascii=False, indent=2, default=str),
+        "stderr": memory.get("stderr") or memory.get("error", "") or ((browser_result or {}).get("reason") if status not in {"preview", "browser_observed", "brave_observed"} else ""),
+        "learned": _browser_research_learned(req, brave_result=brave_result),
         "mentor": "Onderzoek leest eerst lokaal geheugen en slaat externe tekst pas op na Akkoord.",
         "next_action": "Preview Ingest" if not req.browser_text else "Akkoord + Store in 11D Memory",
     }
+
+
+def _brave_companion_search(query: str, *, approval: str = "", limit: int = 5) -> dict[str, Any]:
+    if (approval or "").strip() != APPROVAL_PHRASE:
+        return {
+            "status": "blocked",
+            "provider": "brave",
+            "approval_required": True,
+            "reason": "Brave companion search wacht op Akkoord.",
+            "fake_success": False,
+        }
+    try:
+        result = search_brave_llm_context(query, maximum_number_of_urls=max(1, min(int(limit or 5), 20)))
+        result.setdefault("provider", "brave")
+        result.setdefault("route", "brave_companion_search")
+        result.setdefault("fake_success", False)
+        return result
+    except Exception as exc:
+        return {"status": "error", "provider": "brave", "reason": str(exc), "fake_success": False}
+
+
+def _browser_research_learned(req: BrowserResearchRequest, *, brave_result: dict[str, Any]) -> str:
+    if req.browser_text:
+        return "Browser research staat klaar als gescrubde ingest-preview; Brave-context is als companion meegegeven wanneer Akkoord aanwezig was."
+    if brave_result.get("status") == "success":
+        return "Ontbrekende kennis is vergeleken met lokaal geheugen, Brave Search LLM Context en de bestaande browserobservatie."
+    return "Ontbrekende kennis is vergeleken met lokaal geheugen en via een enkele browserobservatie gescrubd."
 
 
 def _self_training_step_payload(req: SelfTrainingStepRequest) -> dict[str, Any]:

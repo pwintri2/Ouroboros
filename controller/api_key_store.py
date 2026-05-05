@@ -23,6 +23,8 @@ PROVIDER_ALIASES: dict[str, str] = {
     "xai": "xai",
     "grok": "xai",
     "mistral": "mistral",
+    "brave": "brave",
+    "brave_search": "brave",
 }
 
 PROVIDER_KEY_ENVS: dict[str, tuple[str, ...]] = {
@@ -31,6 +33,7 @@ PROVIDER_KEY_ENVS: dict[str, tuple[str, ...]] = {
     "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     "xai": ("XAI_API_KEY", "GROK_API_KEY"),
     "mistral": ("MISTRAL_API_KEY",),
+    "brave": ("BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"),
 }
 
 

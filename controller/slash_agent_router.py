@@ -404,9 +404,6 @@ def _write_host_agent_handoff(agent: str, task: str, started: float, bridge_resu
         f"/{agent} is niet inline gestart om de cockpit responsief te houden. "
         f"Taak staat klaar als handoff: {handoff.get('path')}"
     )
-    whisper = ((living_tick or {}).get("whisper") or {}).get("text") if isinstance(living_tick, dict) else ""
-    if whisper:
-        response += f"\nLiving Ouroboros: {whisper}"
     if bridge_result and bridge_result.get("reason"):
         response += f"\nBridge fallback: {bridge_result.get('reason')}"
     return _agent_result(

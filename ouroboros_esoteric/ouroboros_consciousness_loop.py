@@ -370,6 +370,22 @@ def _decide_tool_from_prompt(prompt: object, *, approval: object = "", available
             tools,
         )
 
+    if re.search(r"\b(brave|zoek op|webzoek|internetzoek|actuele kennis|latest|recent)\b", lowered):
+        return _decision(
+            "agent_tool",
+            {
+                "tool": "brave_search",
+                "args": {
+                    "query": subject or text,
+                    "limit": 8,
+                    "llm_context": True,
+                    "approval": str(approval or ""),
+                },
+            },
+            "de prompt vraagt om snelle actuele web-grounding via Brave Search",
+            tools,
+        )
+
     if re.search(r"\b(wat weet|geheugen|memory|herinner)\b", lowered):
         return _decision("world_memory_search", {"query": subject or text, "limit": 5}, "de veiligste eerste stap is geheugen lezen", tools)
 

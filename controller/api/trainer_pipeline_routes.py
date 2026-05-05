@@ -270,7 +270,7 @@ class KnowledgeIndexRequest(BaseModel):
 
 class KnowledgeTickRequest(BaseModel):
     approval: str = Field(..., min_length=1)
-    mode: str = Field(default="both", pattern="^(both|gemma|browser)$")
+    mode: str = Field(default="both", pattern="^(both|gemma|browser|brave|gemma_brave|all)$")
     max_topics: int = Field(default=3, ge=1, le=10)
     start_index: int | None = Field(default=None, ge=0)
     model: str = Field(default="gemma4:latest", min_length=1, max_length=256)
@@ -278,7 +278,7 @@ class KnowledgeTickRequest(BaseModel):
 
 class AccelerateLearningRequest(BaseModel):
     approval: str = Field(..., min_length=1)
-    knowledge_mode: str = Field(default="gemma", pattern="^(off|gemma|browser|both)$")
+    knowledge_mode: str = Field(default="gemma_brave", pattern="^(off|gemma|browser|brave|both|gemma_brave|all)$")
     knowledge_topics: int = Field(default=3, ge=0, le=10)
     knowledge_passes: int = Field(default=3, ge=1, le=5)
     start_index: int | None = Field(default=None, ge=0)

@@ -32,6 +32,7 @@ from controller.stream.storage import _resonance_to_importance
 REGISTERED_TOOLS: tuple[str, ...] = (
     "memory_search",
     "browser_research",
+    "brave_search",
     "chatgpt_browser_ask",
     "scrub_browser_content",
     "training_ingest",
@@ -99,6 +100,13 @@ class AgentToolRegistry:
                     str(args.get("query") or args.get("prompt") or ""),
                     str(args.get("approval") or ""),
                     _int(args.get("limit"), default=3),
+                )
+            elif tool_name == "brave_search":
+                result = self.brave_search(
+                    str(args.get("query") or args.get("prompt") or ""),
+                    str(args.get("approval") or ""),
+                    _int(args.get("limit"), default=5),
+                    bool(args.get("llm_context", True)),
                 )
             elif tool_name == "chatgpt_browser_ask":
                 result = self.chatgpt_browser_ask(
@@ -244,6 +252,23 @@ class AgentToolRegistry:
                         "required": ["query"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "brave_search",
+                    "description": "Zoekt actuele webkennis via Brave Search API en geeft een compacte, 11D-trainbare context terug. VEREIST PHILIP AKKOORD.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "De zoekvraag, max 400 tekens."},
+                            "limit": {"type": "integer", "description": "Aantal webresultaten of contextbronnen."},
+                            "llm_context": {"type": "boolean", "description": "Gebruik Brave LLM Context wanneer true."},
+                            "approval": {"type": "string", "description": "Moet 'Akkoord' bevatten voor externe API-call."}
+                        },
+                        "required": ["query", "approval"]
+                    }
+                }
             }
         ]
 
@@ -324,7 +349,7 @@ class AgentToolRegistry:
             else:
                 from controller.browser_research import browser_research as run_browser_research
 
-                raw = run_browser_research(query=query, approval=approval)
+                raw = run_browser_research(query=query, approval=approval, include_brave=False)
         except Exception as exc:
             return _tool_result(
                 "browser_research",
@@ -334,6 +359,11 @@ class AgentToolRegistry:
                 approval_status="approved",
                 next_action="Retry later or use manual browser_text with scrub_browser_content.",
             )
+
+        brave = _brave_companion_for_browser_research(query, approval=approval, limit=limit)
+        if isinstance(raw, dict):
+            raw = dict(raw)
+            raw["brave"] = brave
 
         stdout = _stringify(raw)
         raw_status = raw.get("status") if isinstance(raw, dict) else None
@@ -346,14 +376,70 @@ class AgentToolRegistry:
         return _tool_result(
             "browser_research",
             status,
-            result={"query": query, "response": raw, "stored": False},
+            result={"query": query, "response": raw, "brave": brave, "stored": False},
             stdout=stdout,
             stderr="" if status == "success" else stdout,
             source="browser_research",
             approval_status=(raw.get("approval_status") if isinstance(raw, dict) else "approved") or "approved",
             stored_to_memory=False,
             metadata_11d={},
-            next_action="Review diff_view/scrubbed_text; use training_ingest with Akkoord for 11D storage.",
+            next_action="Review Brave/browser context; use training_ingest with Akkoord for durable 11D storage.",
+        )
+
+    def brave_search(self, query: str, approval: str, limit: int = 5, llm_context: bool = True) -> dict[str, Any]:
+        if not query.strip():
+            return _tool_result(
+                "brave_search",
+                "error",
+                stderr="Brave query is empty.",
+                source="brave_search",
+                next_action="Provide a concrete query.",
+            )
+        if not approval_matches(approval):
+            return _tool_result(
+                "brave_search",
+                "blocked",
+                result={"query": query, "approval_required": True},
+                source="brave_search",
+                approval_status="pending_philip_akkoord",
+                next_action="Ask Philip for Akkoord before spending Brave Search API quota.",
+            )
+        try:
+            from controller.brave_search import search_brave_llm_context, search_brave_web
+
+            if llm_context:
+                raw = search_brave_llm_context(query, maximum_number_of_urls=max(1, min(limit, 20)))
+            else:
+                raw = search_brave_web(query, count=max(1, min(limit, 20)))
+        except Exception as exc:
+            return _tool_result(
+                "brave_search",
+                "error",
+                stderr=str(exc),
+                source="brave_search",
+                approval_status="approved",
+                next_action="Check Brave key status and retry with a smaller query.",
+            )
+
+        status = str(raw.get("status") or "unknown") if isinstance(raw, dict) else "error"
+        stdout = _stringify(raw)
+        if status == "missing_api_key":
+            next_action = "Configure BRAVE_SEARCH_API_KEY or save provider=brave in cockpit API Keys."
+        elif status == "rate_limited":
+            next_action = "Wait for Brave X-RateLimit-Reset and retry."
+        else:
+            next_action = "Use training_ingest/knowledge accelerator to store durable Brave context in 11D memory."
+        return _tool_result(
+            "brave_search",
+            "success" if status == "success" else status,
+            result={"query": query, "response": raw, "stored": False},
+            stdout=stdout,
+            stderr="" if status == "success" else stdout,
+            source="brave_search",
+            approval_status="approved",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "brave_search", "taint": "untrusted_web"},
+            next_action=next_action,
         )
 
     def chatgpt_browser_ask(self, question: str, approval: str) -> dict[str, Any]:
@@ -823,9 +909,30 @@ class AgentToolRegistry:
             return {"level": "medium", "label": "Medium: approval-gated local action", "memory_first": True}
         if str(tool or "").startswith("roo_"):
             return {"level": "medium", "label": "Medium: Roo adapter under workspace/approval gates", "memory_first": True}
-        if tool in {"browser_research", "chatgpt_browser_ask"}:
+        if tool in {"browser_research", "chatgpt_browser_ask", "brave_search"}:
             return {"level": "guarded", "label": "Guarded: external/browser perimeter", "memory_first": True}
         return {"level": "unknown", "label": "No registered tool result yet", "memory_first": False}
+
+
+def _brave_companion_for_browser_research(query: str, approval: str, limit: int = 5) -> dict[str, Any]:
+    if not approval_matches(approval):
+        return {
+            "status": "blocked",
+            "provider": "brave",
+            "approval_required": True,
+            "reason": "Brave companion search waits for Philip Akkoord.",
+            "fake_success": False,
+        }
+    try:
+        from controller.brave_search import search_brave_llm_context
+
+        result = search_brave_llm_context(query, maximum_number_of_urls=max(1, min(int(limit or 5), 20)))
+        result.setdefault("provider", "brave")
+        result.setdefault("route", "brave_companion_search")
+        result.setdefault("fake_success", False)
+        return result
+    except Exception as exc:
+        return {"status": "error", "provider": "brave", "reason": str(exc), "fake_success": False}
 
 
 def understand_prompt(prompt: str) -> dict[str, Any]:

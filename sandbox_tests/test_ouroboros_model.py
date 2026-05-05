@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from controller.ouroboros_model import (
     MODEL_NAME,
     PREFERRED_BASE_MODEL,
+    build_model_runtime_pocket,
     create_ouroboros_model,
     prepare_ouroboros_create,
     render_modelfile,
@@ -27,7 +28,18 @@ class TestOuroborosModel(unittest.TestCase):
         self.assertIn("ontbrekende kennis", content)
         self.assertIn("approval-gated tools", content)
         self.assertIn("Akkoord", content)
+        self.assertIn("11D-pocket", content)
+        self.assertIn("model-runtime", content)
         self.assertEqual(validate_modelfile(content, base_model=PREFERRED_BASE_MODEL), ())
+
+    def test_model_runtime_pocket_exposes_11_dimensions(self):
+        pocket = build_model_runtime_pocket("denk als model", active_base="gemma4:latest", record_count=7)
+
+        self.assertEqual(pocket["status"], "online")
+        self.assertEqual(pocket["dimension_count"], 11)
+        self.assertEqual(len(pocket["dimensions"]), 11)
+        self.assertEqual(len(pocket["vector"]), 11)
+        self.assertIn("gemma4_as_distillation_partner", pocket["behavior_contract"])
 
     def test_select_base_model_prefers_llama32_when_available(self):
         selected = select_base_model(["phi3:latest", "llama3.2:latest", "llama3:latest"])

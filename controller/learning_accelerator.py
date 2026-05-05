@@ -26,7 +26,7 @@ except Exception:
         return 0
 
 
-KNOWLEDGE_MODES = {"off", "gemma", "browser", "both"}
+KNOWLEDGE_MODES = {"off", "gemma", "browser", "brave", "both", "gemma_brave", "all"}
 
 
 def accelerate_learning(

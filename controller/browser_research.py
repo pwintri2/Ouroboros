@@ -61,7 +61,14 @@ class BrowserActionResult:
         }
 
 
-def browser_research(query: str, url: str | None = None, approval: object = None) -> dict[str, Any]:
+def browser_research(
+    query: str,
+    url: str | None = None,
+    approval: object = None,
+    *,
+    include_brave: bool = True,
+    brave_limit: int = 5,
+) -> dict[str, Any]:
     """
     Read exactly one browser page for a research query.
 
@@ -89,7 +96,30 @@ def browser_research(query: str, url: str | None = None, approval: object = None
             "bulk_scraping": False,
         }
     )
+    if include_brave:
+        result["brave"] = _brave_companion_for_browser_query(clean_query, approval=approval, limit=brave_limit)
     return result
+
+
+def _brave_companion_for_browser_query(query: str, approval: object = None, limit: int = 5) -> dict[str, Any]:
+    if not _has_exact_approval(approval):
+        return {
+            "status": "blocked",
+            "provider": "brave",
+            "approval_required": True,
+            "reason": "Brave companion search wacht op Akkoord.",
+            "fake_success": False,
+        }
+    try:
+        from controller.brave_search import search_brave_llm_context
+
+        result = search_brave_llm_context(query, maximum_number_of_urls=max(1, min(int(limit or 5), 20)))
+        result.setdefault("provider", "brave")
+        result.setdefault("route", "brave_companion_search")
+        result.setdefault("fake_success", False)
+        return result
+    except Exception as exc:
+        return {"status": "error", "provider": "brave", "reason": str(exc), "fake_success": False}
 
 
 def chatgpt_browser_ask(question: str, approval: object = None) -> dict[str, Any]:

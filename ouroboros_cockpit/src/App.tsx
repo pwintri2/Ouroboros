@@ -346,6 +346,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   xai: "Grok",
   mistral: "Mistral",
   google: "Gemini",
+  brave: "Brave Search",
   gemini: "Gemini Legacy",
   claude: "Claude Legacy",
   chatgpt: "ChatGPT Legacy",
@@ -353,6 +354,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const CANONICAL_PROVIDERS = ["ollama", "openai", "anthropic", "xai", "mistral", "google"];
+const API_KEY_PROVIDERS = ["openai", "anthropic", "xai", "mistral", "google", "brave"];
 const API_REQUEST_TIMEOUT_MS = 30_000;
 const CHAT_REQUEST_TIMEOUT_MS = 90_000;
 
@@ -975,8 +977,17 @@ export default function App() {
   const loopResult = loop.last_result ?? loop.last_step ?? loop.loop ?? {};
   const roleEntries = Object.entries(status.role_models ?? {});
   const toolCount = status.roo_adapter?.local_python_adapters?.length ?? 0;
-  const externalProviderChoices = providerChoices.filter((item) => item.kind === "external");
   const apiKeyStatus = config.api_keys?.providers ?? {};
+  const apiKeyChoices = API_KEY_PROVIDERS.map((id) => {
+    const details = (config.provider_options ?? config.providers ?? {})[id] ?? {};
+    return {
+      id,
+      label: PROVIDER_LABELS[id] ?? details.label ?? id,
+      enabled: !!details.enabled,
+      keySource: details.key_source,
+      maskedKey: details.masked_key,
+    };
+  });
   const selectedAgentJob = agentJobs.find((job) => job.job_id === selectedAgentJobId) ?? null;
   const agentJobTerminalStatuses = new Set(["completed", "failed", "cancelled"]);
 
@@ -1156,7 +1167,7 @@ export default function App() {
               />
               <PanelHeader title="API Keys" small />
               <div className="key-list">
-                {externalProviderChoices.map((item) => {
+                {apiKeyChoices.map((item) => {
                   const key = apiKeyStatus[item.id];
                   const configured = !!key?.configured || !!item.enabled;
                   return (
@@ -1358,23 +1369,57 @@ function formatMetric(value: unknown): string {
   return "--";
 }
 
+function summarizeValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(summarizeValue).filter(Boolean).join(", ");
+  if (typeof value === "object") {
+    const data = value as Record<string, unknown>;
+    const direct = [data.name, data.model, data.active_base, data.status]
+      .map(summarizeValue)
+      .filter(Boolean);
+    if (direct.length) return direct.join("/");
+    return JSON.stringify(data);
+  }
+  return String(value);
+}
+
+function shouldSurfaceDiagnostic(data: Record<string, unknown>): boolean {
+  const status = summarizeValue(data.status).toLowerCase();
+  return Boolean(
+    data.error ||
+    ["error", "blocked", "failed", "failure", "disabled", "unavailable", "approval_required", "rate_limited"].includes(status),
+  );
+}
+
 function summarizeResult(raw: unknown): string {
   if (!raw || typeof raw !== "object") return raw ? String(raw) : "";
   const data = raw as Record<string, unknown>;
-  const livingEcho = data.living_echo && typeof data.living_echo === "object" ? (data.living_echo as Record<string, unknown>) : null;
+  const route = summarizeValue(data.route);
+  const agent = summarizeValue(data.agent);
+  const isSlashAgent = route === "slash_agent";
+  if (isSlashAgent && agent === "catalog" && (data.response || data.message)) {
+    return summarizeValue(data.response || data.message).slice(0, 4000);
+  }
+  const livingEcho =
+    !isSlashAgent && data.living_echo && typeof data.living_echo === "object"
+      ? (data.living_echo as Record<string, unknown>)
+      : null;
+  const showDiagnostic = shouldSurfaceDiagnostic(data);
   const parts = [
-    data.status ? `status=${data.status}` : "",
-    data.provider ? `provider=${data.provider}` : "",
-    data.model ? `model=${data.model}` : "",
-    data.next_action ? `next=${data.next_action}` : "",
-    data.response ? String(data.response) : "",
-    data.message ? String(data.message) : "",
-    data.reason ? String(data.reason) : "",
-    data.stderr ? `stderr: ${String(data.stderr).trim()}` : "",
-    data.stdout ? `stdout: ${String(data.stdout).trim()}` : "",
-    data.error ? `error: ${String(data.error).trim()}` : "",
-    livingEcho?.current_thought ? `thought: ${String(livingEcho.current_thought).trim()}` : "",
-    livingEcho?.last_whisper ? `whisper: ${String(livingEcho.last_whisper).trim()}` : "",
+    data.status ? `status=${summarizeValue(data.status)}` : "",
+    !isSlashAgent && data.provider ? `provider=${summarizeValue(data.provider)}` : "",
+    !isSlashAgent && data.model ? `model=${summarizeValue(data.model)}` : "",
+    data.next_action ? `next=${summarizeValue(data.next_action)}` : "",
+    data.response ? summarizeValue(data.response) : "",
+    data.message ? summarizeValue(data.message) : "",
+    data.reason ? summarizeValue(data.reason) : "",
+    showDiagnostic && data.stderr ? `stderr: ${summarizeValue(data.stderr)}` : "",
+    showDiagnostic && data.stdout ? `stdout: ${summarizeValue(data.stdout)}` : "",
+    data.error ? `error: ${summarizeValue(data.error)}` : "",
+    livingEcho?.current_thought ? `thought: ${summarizeValue(livingEcho.current_thought)}` : "",
+    livingEcho?.last_whisper ? `whisper: ${summarizeValue(livingEcho.last_whisper)}` : "",
   ].filter(Boolean);
   return parts.join("\n").slice(0, 4000);
 }

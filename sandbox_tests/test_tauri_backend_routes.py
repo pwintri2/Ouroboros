@@ -223,6 +223,43 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["backend"]["models_available"], 0)
         self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
 
+    def test_browser_research_route_includes_brave_companion_search(self):
+        import controller.browser_research as browser_research
+
+        original_browser = browser_research.browser_research
+        original_brave = self.main.search_brave_llm_context
+        browser_research.browser_research = lambda query, url=None, approval=None, **_kwargs: {
+            "status": "success",
+            "query": query,
+            "url": "https://duckduckgo.com/",
+            "scrubbed_text": "browser observed",
+            "blocked_patterns": [],
+            "browser_action_performed": True,
+            "fake_success": False,
+        }
+        self.main.search_brave_llm_context = lambda query, maximum_number_of_urls=5: {
+            "status": "success",
+            "provider": "brave",
+            "document": f"Brave context for {query}",
+            "source_urls": ["https://example.com/source"],
+            "fake_success": False,
+        }
+        try:
+            response = self.client.post(
+                "/api/ouroboros/research/browser",
+                json={"query": "Ouroboros 11D pockets", "approval": "Akkoord", "limit": 3},
+            )
+        finally:
+            browser_research.browser_research = original_browser
+            self.main.search_brave_llm_context = original_brave
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "browser_observed")
+        self.assertEqual(data["brave"]["status"], "success")
+        self.assertEqual(data["browser_research"]["brave_matches"], 1)
+        self.assertIn("Brave context", data["stdout"])
+
     def test_project_context_routes_include_dash_and_underscore_aliases(self):
         summary = self.client.get("/context/summary")
         file_tree = self.client.get("/context/file-tree?max_depth=2&limit=10")
@@ -263,15 +300,25 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("memory_search", routed_tool_names)
 
     def test_cockpit_chat_slash_agents_are_intercepted_before_provider(self):
-        response = self.client.post(
-            "/api/cockpit/chat",
-            json={"provider": "google", "model": "gemini-test", "prompt": "/agents"},
-        )
+        original_living_echo = self.main._living_chat_echo
+        self.main._living_chat_echo = lambda: {
+            "current_thought": "living thought must stay out of slash catalog",
+            "last_whisper": "living whisper must stay out of slash catalog",
+            "fake_success": False,
+        }
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={"provider": "google", "model": "gemini-test", "prompt": "/agents"},
+            )
+        finally:
+            self.main._living_chat_echo = original_living_echo
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["route"], "slash_agent")
         self.assertEqual(data["agent"], "catalog")
+        self.assertNotIn("living_echo", data)
         self.assertTrue(any(command.startswith("/codex") for command in data["commands"]))
         self.assertEqual(self.main.app.state.multi_api_router.calls, [])
 

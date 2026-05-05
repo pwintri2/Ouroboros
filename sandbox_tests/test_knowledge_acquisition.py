@@ -54,10 +54,12 @@ class KnowledgeAcquisitionEnv:
             "WINTRIP_DB_PATH": os.environ.get("WINTRIP_DB_PATH"),
             "WINTRIP_KNOWLEDGE_LIST_PATH": os.environ.get("WINTRIP_KNOWLEDGE_LIST_PATH"),
             "WINTRIP_KNOWLEDGE_PARALLELISM": os.environ.get("WINTRIP_KNOWLEDGE_PARALLELISM"),
+            "BRAVE_SEARCH_API_KEY": os.environ.get("BRAVE_SEARCH_API_KEY"),
         }
         os.environ["WINTRIP_WORKSPACE"] = str(self.workspace)
         os.environ["WINTRIP_DB_PATH"] = str(self.db)
         os.environ["WINTRIP_KNOWLEDGE_LIST_PATH"] = str(self.knowledge)
+        os.environ.pop("BRAVE_SEARCH_API_KEY", None)
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -123,6 +125,46 @@ class TestKnowledgeAcquisition(unittest.TestCase):
             self.assertEqual(status["gemma_completed"], 2)
             self.assertEqual(status["browser_completed"], 2)
             self.assertGreaterEqual(status["total_records"], 4)
+
+    def test_brave_tick_stores_llm_context_records(self):
+        from controller import knowledge_acquisition as ka
+
+        with KnowledgeAcquisitionEnv():
+            original_brave = ka.brave_research_topic
+            original_store = ka.store_knowledge_record
+            try:
+                ka.brave_research_topic = lambda topic, approval="": {
+                    "status": "success",
+                    "document": f"Brave LLM context for {topic['title']} with fresh web grounding.",
+                    "source": "brave:llm_context",
+                    "source_urls": ["https://example.com/brave"],
+                    "taint": "untrusted_web:brave_llm_context",
+                    "fake_success": False,
+                }
+                seen_metadata = []
+
+                def fake_store(document, metadata):
+                    seen_metadata.append(metadata)
+                    return {
+                        "status": "success",
+                        "stored": True,
+                        "item_id": f"brave_{metadata['topic_id']}",
+                        "fake_success": False,
+                    }
+
+                ka.store_knowledge_record = fake_store
+                tick = ka.run_knowledge_tick(approval="Akkoord", mode="brave", max_topics=2)
+            finally:
+                ka.brave_research_topic = original_brave
+                ka.store_knowledge_record = original_store
+
+            self.assertEqual(tick["status"], "success")
+            self.assertEqual(tick["created_count"], 2)
+            self.assertEqual(tick["parallelism"]["brave_llm_context"], 2)
+            self.assertTrue(all(item["source_type"] == "brave_llm_context" for item in seen_metadata))
+            self.assertTrue(all(item["dimension_count"] == 11 for item in seen_metadata))
+            status = ka.get_knowledge_acquisition_status()
+            self.assertEqual(status["brave_completed"], 2)
 
     def test_gemma_tick_uses_bounded_parallelism(self):
         from controller import knowledge_acquisition as ka

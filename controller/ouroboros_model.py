@@ -12,6 +12,7 @@ import shlex
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -39,7 +40,27 @@ Kern:
 - Je gebruikt alleen approval-gated tools. Shell, opslag, browser-ingest, model-create en mutaties wachten op expliciete toestemming via Akkoord of een later goedgekeurd endpoint.
 - Je verzint geen uitgevoerde commando's, bestanden, tools, endpoints of trainingsresultaten.
 - Je geeft concrete, controleerbare antwoorden in helder Nederlands.
+
+Model-runtime:
+- Je gedraagt je als één lokale modelidentiteit, niet als losse agentnamen. Je mag tools voorstellen of aanroepen via de backend, maar je antwoord blijft de stem van Ouroboros.
+- Elke redenering wordt geprojecteerd door een compacte 11D-pocket: observe, orient, decide, act, reflect, memory, trust, time, resonance, model_state, next_training_delta.
+- Je gebruikt die 11D-pocket als werkgeheugen: markeer onzekerheid, koppel kennis aan bron/taint, en maak nieuwe leerrecords alleen via goedgekeurde 11D opslag.
+- Gemma4/andere lokale modellen zijn distillatiepartners; jij blijft de overkoepelende model-runtime die hun output in 11D curriculumgeheugen plaatst.
 """
+
+MODEL_RUNTIME_DIMENSIONS: tuple[str, ...] = (
+    "observe",
+    "orient",
+    "decide",
+    "act",
+    "reflect",
+    "memory",
+    "trust",
+    "time",
+    "resonance",
+    "model_state",
+    "next_training_delta",
+)
 
 
 @dataclass(frozen=True)
@@ -216,6 +237,59 @@ def prepare_ouroboros_create(
 
 
 SafeShellRunner = Callable[[str, str, int], dict[str, Any]]
+
+
+def build_model_runtime_pocket(
+    prompt: str = "",
+    *,
+    active_base: str = "",
+    record_count: int = 0,
+) -> dict[str, Any]:
+    """Return the compact 11D model-runtime pocket used by status/UI flows."""
+
+    text = "\n".join(
+        part
+        for part in [
+            "ouroboros_model_runtime",
+            active_base,
+            str(record_count),
+            prompt,
+        ]
+        if part
+    )
+    try:
+        from ouroboros_esoteric.apeiron_identity import ApeironField
+
+        field = ApeironField()
+        field.inject_text_intention(text or "ouroboros_model_runtime")
+        vector = [round(float(value), 6) for value in list(field.project_to_11d_pocket())[:11]]
+        metrics = field.metrics().to_dict()
+    except Exception as exc:
+        digest = json.dumps({"text": text, "error": str(exc)}, sort_keys=True).encode("utf-8")
+        import hashlib
+
+        raw = hashlib.sha256(digest).digest()
+        vector = [round((raw[index] / 255.0) * 2.0 - 1.0, 6) for index in range(11)]
+        metrics = {"dimension_count": 11, "coh": 0.0, "fallback": True}
+    return {
+        "status": "online",
+        "mode": "model_runtime_11d_pocket",
+        "dimensions": list(MODEL_RUNTIME_DIMENSIONS),
+        "vector": vector,
+        "dimension_count": 11,
+        "active_base": active_base,
+        "record_count": int(record_count or 0),
+        "metrics": metrics,
+        "behavior_contract": [
+            "one_voice_ouroboros",
+            "local_context_first",
+            "tool_results_never_faked",
+            "approved_11d_storage_only",
+            "gemma4_as_distillation_partner",
+        ],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "fake_success": False,
+    }
 
 
 def create_ouroboros_model(

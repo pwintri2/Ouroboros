@@ -157,6 +157,34 @@ class TestAgentTools(unittest.TestCase):
         self.assertGreaterEqual(result["result"]["count"], 1)
         self.assertEqual(result["result"]["matches"][0]["source"], "wintrip_knowledge")
 
+    def test_browser_research_includes_brave_companion_context(self):
+        def fake_browser(query, approval=""):
+            return {
+                "status": "success",
+                "query": query,
+                "scrubbed_text": "Browser result text",
+                "fake_success": False,
+            }
+
+        registry = AgentToolRegistry(kb=DummyKnowledgeBase(), browser_researcher=fake_browser)
+        with patch(
+            "controller.agent_tools._brave_companion_for_browser_research",
+            return_value={
+                "status": "success",
+                "provider": "brave",
+                "document": "Brave LLM context text",
+                "source_urls": ["https://example.com/source"],
+                "fake_success": False,
+            },
+        ) as brave:
+            result = registry.run_tool("browser_research", {"query": "Ouroboros", "approval": "Akkoord", "limit": 4})
+
+        self.assertToolEnvelope(result, "browser_research")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result"]["brave"]["status"], "success")
+        self.assertIn("Brave LLM context text", result["stdout"])
+        brave.assert_called_once_with("Ouroboros", approval="Akkoord", limit=4)
+
     def test_self_training_plan_uses_expected_phases_and_tools(self):
         registry = make_registry()
         result = registry.run_tool(
