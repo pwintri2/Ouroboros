@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -13,7 +13,10 @@ import {
   FolderTree,
   Globe2,
   Hammer,
+  History,
+  KeyRound,
   Layers,
+  MessageSquare,
   Pause,
   Play,
   Rocket,
@@ -22,6 +25,7 @@ import {
   ShieldCheck,
   TerminalSquare,
   TestTube2,
+  Wrench,
   XCircle,
 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
@@ -51,6 +55,8 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   worldAgentSearch: "/api/world-agent/memory/search",
   approvalPhrase: "Akkoord",
 } as const;
+
+type ActiveTab = "chat" | "tools" | "models" | "agents" | "memory" | "trainer" | "context";
 
 type BackendConfig = {
   backend_url: string;
@@ -102,6 +108,13 @@ type CockpitConfig = {
   required_approval_phrase?: string;
   approval?: { required_phrase?: string; case_sensitive?: boolean };
   api_keys?: ApiKeyStatusPayload;
+  self_context?: {
+    status?: string;
+    enabled?: boolean;
+    conversation_count?: number;
+    lesson_count?: number;
+    recent_lessons?: Array<{ id?: string; text?: string; provider?: string; model?: string; status?: string; at?: number }>;
+  };
   slash_agents?: Record<string, unknown>;
 };
 
@@ -576,7 +589,7 @@ export default function App() {
   const [events, setEvents] = useState<OperationEvent[]>([]);
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<"main" | "trainer" | "context">("main");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [trainerStatus, setTrainerStatus] = useState<any>(null);
   const [trainerJobs, setTrainerJobs] = useState<any[]>([]);
   const [contextData, setContextData] = useState<any>(null);
@@ -827,7 +840,6 @@ export default function App() {
     } catch {
       setLoop((previous) => ({ ...previous, status: previous.status || "idle" }));
     }
-    // Refresh trainer and context data if on those tabs
     if (activeTab === "trainer") {
       try {
         const [trainerData, jobsData] = await Promise.all([
@@ -848,7 +860,7 @@ export default function App() {
         // Context endpoints may not be available yet
       }
     }
-    if (activeTab === "main") {
+    if (activeTab !== "trainer" && activeTab !== "context") {
       try {
         const jobsResponse = await api<{ jobs?: AgentJob[] }>("/api/agent-runtime/jobs?limit=20");
         setAgentJobs(Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs : []);
@@ -928,8 +940,13 @@ export default function App() {
     fitRef.current = fit;
     const onResize = () => fit.fit();
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [backend]);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      terminal.dispose();
+      terminalRef.current = null;
+      fitRef.current = null;
+    };
+  }, [activeTab, backend]);
 
   useEffect(() => {
     if (activeTab === "trainer") {
@@ -1205,6 +1222,22 @@ export default function App() {
       maskedKey: details.masked_key,
     };
   });
+  const selfContext = config.self_context;
+  const localModels = config.available_models?.ollama ?? status.model?.available_bases ?? [];
+  const subscriptionProviderCount = providerChoices.filter((item) => item.kind === "external").length;
+  const configuredKeyCount = apiKeyChoices.filter((item) => {
+    const key = apiKeyStatus[item.id];
+    return !!key?.configured || !!item.enabled;
+  }).length;
+  const navItems: Array<{ id: ActiveTab; label: string; icon: ReactNode; hint: string }> = [
+    { id: "chat", label: "Chat", icon: <MessageSquare size={16} />, hint: `${selfContext?.conversation_count ?? 0} chats` },
+    { id: "tools", label: "Tools", icon: <Wrench size={16} />, hint: "shell + tests" },
+    { id: "models", label: "Models", icon: <KeyRound size={16} />, hint: `${localModels.length} local / ${configuredKeyCount} keys` },
+    { id: "agents", label: "Agents", icon: <Bot size={16} />, hint: `${agentJobs.length} jobs` },
+    { id: "memory", label: "Memory", icon: <History size={16} />, hint: `${records.total_count ?? 0} records` },
+    { id: "trainer", label: "Trainer", icon: <Layers size={16} />, hint: trainerStatus?.status ?? "learning" },
+    { id: "context", label: "Context", icon: <FolderTree size={16} />, hint: "workspace" },
+  ];
   const selectedAgentJob = agentJobs.find((job) => job.job_id === selectedAgentJobId) ?? null;
   const agentJobTerminalStatuses = new Set(["completed", "failed", "cancelled"]);
 
@@ -1220,15 +1253,13 @@ export default function App() {
         </div>
 
         <div className="tab-nav">
-          <button className={activeTab === "main" ? "active" : ""} onClick={() => setActiveTab("main")}>
-            <Cpu size={16} /> Main
-          </button>
-          <button className={activeTab === "trainer" ? "active" : ""} onClick={() => setActiveTab("trainer")}>
-            <Layers size={16} /> Trainer
-          </button>
-          <button className={activeTab === "context" ? "active" : ""} onClick={() => setActiveTab("context")}>
-            <FolderTree size={16} /> Context
-          </button>
+          {navItems.map((item) => (
+            <button className={activeTab === item.id ? "active" : ""} onClick={() => setActiveTab(item.id)} key={item.id}>
+              {item.icon}
+              <span>{item.label}</span>
+              <em>{item.hint}</em>
+            </button>
+          ))}
         </div>
 
         <label>
@@ -1338,71 +1369,141 @@ export default function App() {
           </button>
         </section>
 
-        <section className="prompt-pane">
-          <div className="prompt-stack">
-            <div className="slash-strip">
-              {["/codex", "/ruflo", "/roo", "/claude", "/agents"].map((item) => (
-                <button type="button" key={item} onClick={() => insertSlash(item)}>{item}</button>
-              ))}
-            </div>
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-            {slashPrompt && !approvalReady && (
-              <div className="status-pill warn" style={{ alignSelf: "flex-start" }}>
-                Slash agents have approval needed: type <strong>{approvalPhrase}</strong> in the Akkoord field.
-              </div>
-            )}
-          </div>
-          <button onClick={sendChat} disabled={busy || !prompt.trim() || (!slashPrompt && !canCallSelectedProvider)}>
-            <Send size={15} /> Send
-          </button>
-        </section>
-
-        {activeTab === "main" && (
-          <section className="cockpit-grid">
-            <section className="panel primary-panel">
-              <PanelHeader title="Mission Control" />
-              <div className="action-summary">
-                <div>
-                  <span>Next</span>
-                  <strong>{status.next_action ?? createFlow?.next_action ?? "Ready"}</strong>
+        {activeTab === "chat" && (
+          <>
+            <section className="prompt-pane">
+              <div className="prompt-stack">
+                <div className="slash-strip">
+                  {["/codex", "/ruflo", "/roo", "/claude", "/agents"].map((item) => (
+                    <button type="button" key={item} onClick={() => insertSlash(item)}>{item}</button>
+                  ))}
                 </div>
-                <div>
-                  <span>Base</span>
-                  <strong>{status.model?.active_base ?? model}</strong>
-                </div>
-                <div>
-                  <span>Iteration</span>
-                  <strong>{loop.iteration ?? 0}</strong>
-                </div>
-              </div>
-              <div className="feed">
-                {events.length === 0 ? (
-                  <div className="empty-state">Nog geen cockpitactie in deze sessie. Kies een lokale motor en start een concrete stap.</div>
-                ) : (
-                  events.map((event) => <EventItem event={event} key={event.id} />)
+                <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+                {slashPrompt && !approvalReady && (
+                  <div className="status-pill warn" style={{ alignSelf: "flex-start" }}>
+                    Slash agents have approval needed: type <strong>{approvalPhrase}</strong> in the Akkoord field.
+                  </div>
                 )}
               </div>
+              <button onClick={sendChat} disabled={busy || !prompt.trim() || (!slashPrompt && !canCallSelectedProvider)}>
+                <Send size={15} /> Send
+              </button>
+            </section>
+
+            <section className="cockpit-grid focus-grid">
+              <section className="panel primary-panel">
+                <PanelHeader title="Chat Lane" />
+                <pre className="response-box chat-response">{chatOutput || summarizeResult(loopResult) || "Nog geen response."}</pre>
+              </section>
+
+              <section className="panel">
+                <PanelHeader title="Remembered Chats" />
+                <div className="fact-list">
+                  <Fact label="Self-context" value={selfContext?.status ?? "unknown"} state={selfContext?.enabled ? "enabled" : "disabled"} />
+                  <Fact label="Conversations" value={`${selfContext?.conversation_count ?? 0}`} />
+                  <Fact label="Lessons" value={`${selfContext?.lesson_count ?? 0}`} />
+                </div>
+                <PanelHeader title="Recent Lessons" small />
+                <div className="memory-list">
+                  {(selfContext?.recent_lessons ?? []).slice(0, 4).map((lesson) => (
+                    <div className="memory-row" key={lesson.id ?? lesson.text}>
+                      <strong>{lesson.provider ?? "chat"} / {lesson.model ?? "model"}</strong>
+                      <p>{summarizeValue(lesson.text).slice(0, 260)}</p>
+                    </div>
+                  ))}
+                  {!(selfContext?.recent_lessons ?? []).length && <div className="empty-state">Nog geen server-side chatlessen gevonden.</div>}
+                </div>
+              </section>
+
+              <section className="panel">
+                <PanelHeader title="Session Actions" />
+                <div className="action-summary stacked">
+                  <div>
+                    <span>Motor</span>
+                    <strong>{selectedProvider?.label ?? provider}</strong>
+                  </div>
+                  <div>
+                    <span>Model</span>
+                    <strong>{model}</strong>
+                  </div>
+                  <div>
+                    <span>Approval</span>
+                    <strong>{approvalReady ? "Akkoord" : "locked"}</strong>
+                  </div>
+                </div>
+                <PanelHeader title="Events" small />
+                <div className="feed">
+                  {events.length === 0 ? (
+                    <div className="empty-state">Nog geen cockpitactie in deze sessie.</div>
+                  ) : (
+                    events.map((event) => <EventItem event={event} key={event.id} />)
+                  )}
+                </div>
+              </section>
+            </section>
+          </>
+        )}
+
+        {activeTab === "tools" && (
+          <section className="single-lane">
+            <section className="panel">
+              <PanelHeader title="Shell Commands" />
+              <div className="terminal-bar embedded">
+                <TerminalSquare size={16} />
+                <input value={command} onChange={(event) => setCommand(event.target.value)} onKeyDown={(event) => {
+                  if (event.key === "Enter") runCommand();
+                }} />
+                <button onClick={runCommand} disabled={busy || !command.trim() || !approvalReady}>
+                  Run
+                </button>
+              </div>
+              <div className="terminal-host expanded" ref={terminalHost} />
             </section>
 
             <section className="panel">
-              <PanelHeader title="Runtime" />
-              <div className="fact-list">
-                <Fact label="Ouroboros model" value={status.model?.name ?? "ouroboros"} state={status.model?.status} />
-                <Fact label="Create flow" value={createFlow?.status ?? "idle"} state={createFlow?.created ? "created" : "pending"} />
-                <Fact label="Local models" value={`${status.ollama?.count ?? status.model?.available_bases?.length ?? 0}`} />
-                <Fact label="Roo tools" value={`${toolCount}`} state={status.roo_adapter?.status} />
-                <Fact label="Main memory" value={`${records.main_collection_count ?? 0}`} />
-                <Fact label="Training memory" value={`${records.training_collection_count ?? 0}`} />
+              <PanelHeader title="Tests & Loop Tools" />
+              <div className="tool-grid">
+                <label>
+                  Test selector
+                  <input value={testSelector} onChange={(event) => setTestSelector(event.target.value)} />
+                </label>
+                <button onClick={runTests} disabled={busy || !approvalReady}>
+                  <TestTube2 size={15} /> Run tests
+                </button>
+                <button onClick={selfTrainingStep} disabled={busy || !prompt.trim()}>
+                  <BrainCircuit size={15} /> Self-training step
+                </button>
+                <button onClick={() => loopAction("start")} disabled={busy || !prompt.trim()}>
+                  <Play size={15} /> Start OODA loop
+                </button>
+                <button onClick={() => loopAction("pause")} disabled={busy}>
+                  <Pause size={15} /> Pause
+                </button>
+                <button onClick={() => loopAction("abort")} disabled={busy}>
+                  <CircleStop size={15} /> Abort
+                </button>
               </div>
-              <PanelHeader title="Living Ouroboros" small />
-              <LivingOuroborosPanel
-                living={livingStatus}
-                busy={busy}
-                onStart={() => livingAction("start")}
-                onTick={() => livingAction("tick")}
-                onStop={() => livingAction("stop")}
-              />
-              <PanelHeader title="API Keys" small />
+            </section>
+          </section>
+        )}
+
+        {activeTab === "models" && (
+          <section className="cockpit-grid focus-grid">
+            <section className="panel">
+              <PanelHeader title="Local Models" />
+              <div className="fact-list">
+                <Fact label="Active base" value={status.model?.active_base ?? model} state={status.model?.status} />
+                <Fact label="Ollama inventory" value={`${status.ollama?.count ?? localModels.length}`} state={status.ollama?.online ? "online" : "offline"} />
+                <Fact label="Subscriptions" value={`${subscriptionProviderCount}`} />
+              </div>
+              <PanelHeader title="Available Local Models" small />
+              <div className="model-chip-list">
+                {localModels.map((item) => <button key={item} type="button" onClick={() => { setProvider("ollama"); setModel(item); }}>{item}</button>)}
+              </div>
+            </section>
+
+            <section className="panel primary-panel">
+              <PanelHeader title="Subscription Models & API Keys" />
               <div className="key-list">
                 {apiKeyChoices.map((item) => {
                   const key = apiKeyStatus[item.id];
@@ -1429,17 +1530,25 @@ export default function App() {
                   );
                 })}
               </div>
-              <details>
-                <summary>Raw status</summary>
-                <pre>{JSON.stringify(status, null, 2)}</pre>
-              </details>
             </section>
 
             <section className="panel">
-              <PanelHeader title="World Actions" />
-              <WorldActionsPanel world={worldStatus} />
+              <PanelHeader title="Provider Catalog" />
+              <div className="role-list">
+                {providerChoices.map((item) => (
+                  <div className="role-row" key={item.id}>
+                    <span>{item.kind === "local" ? "local" : "subscription"}</span>
+                    <strong>{item.label}</strong>
+                    <em>{item.status}</em>
+                  </div>
+                ))}
+              </div>
             </section>
+          </section>
+        )}
 
+        {activeTab === "agents" && (
+          <section className="cockpit-grid focus-grid">
             <section className="panel">
               <PanelHeader title="Agent Capabilities" />
               <AgentCapabilitiesPanel
@@ -1464,21 +1573,6 @@ export default function App() {
                 busy={busy}
                 onRun={submitCodexRun}
               />
-            </section>
-
-            <section className="panel">
-              <PanelHeader title="Agent Roles" />
-              <div className="role-list">
-                {roleEntries.length ? roleEntries.map(([role, details]) => (
-                  <div className="role-row" key={role}>
-                    <span>{role}</span>
-                    <strong>{details.model ?? "--"}</strong>
-                    {details.available ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                  </div>
-                )) : <div className="empty-state">Rolrouter nog niet beschikbaar.</div>}
-              </div>
-              <PanelHeader title="Last Response" small />
-              <pre className="response-box">{chatOutput || summarizeResult(loopResult) || "Nog geen response."}</pre>
             </section>
 
             <section className="panel">
@@ -1511,7 +1605,7 @@ export default function App() {
                             </button>
                           )}
                         </div>
-                        {job.task && <div style={{ fontSize: 11, opacity: 0.7 }}>{job.task.slice(0, 160)}{job.task.length > 160 ? "…" : ""}</div>}
+                        {job.task && <div style={{ fontSize: 11, opacity: 0.7 }}>{job.task.slice(0, 160)}{job.task.length > 160 ? "..." : ""}</div>}
                         {pan && (
                           <div className="metric-strip">
                             <span>COH <strong>{formatMetric(metrics.coh)}</strong></span>
@@ -1547,6 +1641,50 @@ export default function App() {
           </section>
         )}
 
+        {activeTab === "memory" && (
+          <section className="cockpit-grid focus-grid">
+            <section className="panel">
+              <PanelHeader title="11D Memory" />
+              <div className="fact-list">
+                <Fact label="Main memory" value={`${records.main_collection_count ?? 0}`} />
+                <Fact label="Training memory" value={`${records.training_collection_count ?? 0}`} />
+                <Fact label="Total" value={`${records.total_count ?? 0}`} state={status.learning_11d?.status} />
+                <Fact label="Geometry" value={`${status.geometry_11d?.dimension_count ?? 11}D`} />
+              </div>
+              <PanelHeader title="Agent Roles" small />
+              <div className="role-list">
+                {roleEntries.length ? roleEntries.map(([role, details]) => (
+                  <div className="role-row" key={role}>
+                    <span>{role}</span>
+                    <strong>{details.model ?? "--"}</strong>
+                    {details.available ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                  </div>
+                )) : <div className="empty-state">Rolrouter nog niet beschikbaar.</div>}
+              </div>
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="Living Ouroboros" />
+              <LivingOuroborosPanel
+                living={livingStatus}
+                busy={busy}
+                onStart={() => livingAction("start")}
+                onTick={() => livingAction("tick")}
+                onStop={() => livingAction("stop")}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="World Actions" />
+              <WorldActionsPanel world={worldStatus} />
+              <details>
+                <summary>Raw status</summary>
+                <pre>{JSON.stringify(status, null, 2)}</pre>
+              </details>
+            </section>
+          </section>
+        )}
+
         {activeTab === "trainer" && (
           <TrainerPanel api={api} trainerStatus={trainerStatus} trainerJobs={trainerJobs} approval={approval} approvalReady={approvalReady} refresh={refresh} />
         )}
@@ -1555,21 +1693,6 @@ export default function App() {
           <ContextPanel api={api} contextData={contextData} />
         )}
 
-        {activeTab === "main" && (
-          <section className="terminal-panel">
-            <div className="terminal-bar">
-              <TerminalSquare size={16} />
-              <input value={command} onChange={(event) => setCommand(event.target.value)} onKeyDown={(event) => {
-                if (event.key === "Enter") runCommand();
-              }} />
-              <input className="test-selector" value={testSelector} onChange={(event) => setTestSelector(event.target.value)} />
-              <button onClick={runCommand} disabled={busy || !command.trim() || !approvalReady}>
-                Run
-              </button>
-            </div>
-            <div className="terminal-host" ref={terminalHost} />
-          </section>
-        )}
       </section>
     </main>
   );
