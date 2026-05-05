@@ -62,6 +62,14 @@ def slash_command_catalog() -> dict[str, Any]:
         "commands": {
             "/agents": "Toon beschikbare agent-routes en context.",
             "/codex <opdracht>": "Laat Codex CLI in WintripAI werken.",
+            "/codex status": "Codex binary, auth en jobs status.",
+            "/codex capabilities": "Inventory van Codex subsystemen in de repo.",
+            "/codex discovery": "Repo + auth evidence overzicht.",
+            "/codex jobs": "Recente codex jobs uit de agent runtime.",
+            "/codex version": "Codex CLI version probe.",
+            "/codex app-status": "Status van de Codex app-server subsystem.",
+            "/codex mcp-status": "Status van de Codex MCP server subsystem.",
+            "/codex run <opdracht>": "Expliciete run van een codex taak.",
             "/ruflo <opdracht>": "Start Ruflo swarm-coordinatie rond de opdracht.",
             "/claude <opdracht>": "Laat Claude Code in WintripAI werken als auth beschikbaar is.",
             "/roo <opdracht>": "Gebruik Roo adapter of maak een Roo IDE-handoff.",
@@ -73,7 +81,7 @@ def slash_command_catalog() -> dict[str, Any]:
     }
 
 
-def handle_slash_command(prompt: str, approval: str = "", timeout_seconds: int = 240) -> dict[str, Any] | None:
+def handle_slash_command(prompt: str, approval: str = "", timeout_seconds: int = 1800) -> dict[str, Any] | None:
     parsed = parse_slash_command(prompt)
     if parsed is None:
         return None
@@ -95,6 +103,10 @@ def handle_slash_command(prompt: str, approval: str = "", timeout_seconds: int =
             "catalog": slash_command_catalog(),
             "fake_success": False,
         }
+    if command == "codex":
+        codex_sub = _codex_subcommand(task, approval=approval, timeout_seconds=timeout_seconds)
+        if codex_sub is not None:
+            return codex_sub
     if command in HOST_AGENT_COMMANDS and task.lower() in {"status", "jobs", "latest", "laatste"}:
         return _agent_jobs_result(command)
     if not task:
@@ -209,6 +221,7 @@ def execute_roo_agent_task(task: str, approval: str = "") -> dict[str, Any]:
 
 def _run_codex_exec(task: str, timeout_seconds: int) -> dict[str, Any]:
     started = time.time()
+    timeout_seconds = max(int(timeout_seconds or 0), int(os.getenv("WINTRIP_CODEX_TIMEOUT_SECONDS", "1800") or 1800))
     if not _command_exists("codex"):
         return _agent_result(
             "codex",
@@ -246,6 +259,194 @@ def _run_codex_exec(task: str, timeout_seconds: int) -> dict[str, Any]:
             f"Codex job {record.job_id} gestart in de agent runtime. "
             "Volg live in Agent Jobs of vraag `/Codex status` voor de laatste samenvatting."
         ),
+    )
+
+
+def _codex_subcommand(task: str, approval: str = "", timeout_seconds: int = 1800) -> dict[str, Any] | None:
+    """Handle `/codex <subcommand>` patterns that don't run a free-form task.
+
+    Returns None when the input is a free-form task (delegated to the existing
+    runtime path). Returns a result dict for known subcommands.
+    """
+
+    text = str(task or "").strip()
+    if not text:
+        return None
+    head, _, rest = text.partition(" ")
+    head_lower = head.lower()
+    rest = rest.strip()
+
+    if head_lower in {"status", "health"}:
+        return _codex_status_subcommand()
+    if head_lower in {"capabilities", "caps", "inventory"}:
+        return _codex_capabilities_subcommand()
+    if head_lower in {"jobs", "latest", "laatste"}:
+        return _agent_jobs_result("codex")
+    if head_lower in {"discovery", "discover", "evidence"}:
+        return _codex_discovery_subcommand()
+    if head_lower in {"version", "--version"}:
+        return _codex_version_subcommand()
+    if head_lower in {"app-status", "app", "app_mode"}:
+        return _codex_subsystem_subcommand("app_mode", "App server / app mode")
+    if head_lower in {"mcp-status", "mcp"}:
+        return _codex_subsystem_subcommand("mcp", "MCP server / client")
+    if head_lower == "run":
+        if not rest:
+            return {
+                "status": "blocked",
+                "route": "slash_agent",
+                "agent": "codex",
+                "response": "Geef een opdracht mee, bijvoorbeeld /codex run voeg test toe voor self-context.",
+                "fake_success": False,
+            }
+        return execute_host_agent_command(
+            agent="codex",
+            task=rest,
+            approval=approval,
+            timeout_seconds=timeout_seconds,
+            prefer_bridge=True,
+        )
+    return None
+
+
+def _codex_status_subcommand() -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.codex_status import codex_overall_status
+
+        overall = codex_overall_status()
+    except Exception as exc:
+        return _agent_result("codex", "codex_status", "error", started, reason=str(exc)[:500])
+    binary_status = (overall.get("binary") or {}).get("status")
+    auth_status = (overall.get("auth") or {}).get("status")
+    version_value = (overall.get("version") or {}).get("version") or "?"
+    summary_lines = [
+        f"/codex status: {overall.get('status')}",
+        f"- repo: {overall.get('repo_path')} (present={overall.get('repo_present')})",
+        f"- binary: {binary_status} ({(overall.get('binary') or {}).get('path') or 'n/a'})",
+        f"- version: {version_value}",
+        f"- auth: {auth_status}",
+        f"- capabilities: {(overall.get('capabilities') or {}).get('summary', {})}",
+        f"- recent codex jobs: {(overall.get('jobs') or {}).get('count', 0)}",
+    ]
+    return _agent_result(
+        "codex",
+        "codex_status",
+        "success",
+        started,
+        codex_status=overall,
+        response="\n".join(summary_lines),
+    )
+
+
+def _codex_capabilities_subcommand() -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.codex_registry import get_codex_capability_inventory
+
+        inventory = get_codex_capability_inventory()
+    except Exception as exc:
+        return _agent_result("codex", "codex_capabilities", "error", started, reason=str(exc)[:500])
+    subsystems = inventory.get("subsystems") or []
+    detected = [item for item in subsystems if item.get("detected")]
+    lines = [
+        f"/codex capabilities: {len(detected)}/{len(subsystems)} detected",
+        f"- repo: {inventory.get('repo_path')}",
+        f"- callable python helpers: {(inventory.get('callable_python') or {}).get('callable_count', 0)}",
+    ]
+    for item in detected[:18]:
+        lines.append(f"- {item.get('label')} ({item.get('invocation')})")
+    return _agent_result(
+        "codex",
+        "codex_capabilities",
+        "success",
+        started,
+        codex_capabilities=inventory,
+        response="\n".join(lines),
+    )
+
+
+def _codex_discovery_subcommand() -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.codex_status import codex_auth_summary, codex_repo_evidence, discover_codex_capabilities
+
+        payload = {
+            "repo": discover_codex_capabilities(),
+            "evidence": codex_repo_evidence(),
+            "auth": codex_auth_summary(),
+        }
+    except Exception as exc:
+        return _agent_result("codex", "codex_discovery", "error", started, reason=str(exc)[:500])
+    repo_summary = payload["repo"].get("summary", {})
+    auth = payload["auth"]
+    evidence_keys = list((payload["evidence"].get("evidence") or {}).keys())
+    lines = [
+        f"/codex discovery: repo={payload['repo'].get('status')} auth={auth.get('status')}",
+        f"- repo: {payload['repo'].get('repo_path')}",
+        f"- detected subsystems: {repo_summary.get('detected', 0)}/{repo_summary.get('total', 0)}",
+        f"- evidence files: {', '.join(evidence_keys[:10]) or '(none)'}",
+        f"- auth home: {auth.get('home')} (auth_present={auth.get('auth_present')}, mode={auth.get('auth_mode')})",
+    ]
+    return _agent_result(
+        "codex",
+        "codex_discovery",
+        "success",
+        started,
+        codex_discovery=payload,
+        response="\n".join(lines),
+    )
+
+
+def _codex_version_subcommand() -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.codex_status import codex_version
+
+        info = codex_version()
+    except Exception as exc:
+        return _agent_result("codex", "codex_version", "error", started, reason=str(exc)[:500])
+    response = (
+        f"/codex version: {info.get('status')}\n"
+        f"- version: {info.get('version') or '?'}\n"
+        f"- binary: {(info.get('binary') or {}).get('path') or 'n/a'}"
+    )
+    return _agent_result("codex", "codex_version", info.get("status") or "unknown", started, codex_version=info, response=response)
+
+
+def _codex_subsystem_subcommand(key: str, label: str) -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.codex_status import discover_codex_capabilities
+
+        inventory = discover_codex_capabilities()
+    except Exception as exc:
+        return _agent_result("codex", f"codex_{key}", "error", started, reason=str(exc)[:500])
+    record = next((item for item in inventory.get("capabilities", []) if item.get("key") == key), None)
+    if not record:
+        return _agent_result(
+            "codex",
+            f"codex_{key}",
+            "missing",
+            started,
+            response=f"/codex {key}: subsystem '{key}' niet bekend in deze inventory.",
+        )
+    detected = record.get("detected")
+    paths = record.get("paths") or []
+    response = (
+        f"/codex {key}: {label}\n"
+        f"- detected: {detected}\n"
+        f"- invocation: {record.get('invocation')}\n"
+        f"- paths: {', '.join(paths) or '(none)'}\n"
+        f"- description: {record.get('description')}"
+    )
+    return _agent_result(
+        "codex",
+        f"codex_{key}",
+        "success" if detected else "missing",
+        started,
+        codex_subsystem=record,
+        response=response,
     )
 
 

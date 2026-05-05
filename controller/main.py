@@ -184,6 +184,24 @@ except Exception:
         app.state.agent_runtime_routes_unavailable = True
 
 try:
+    from controller.api.codex_routes import init_codex_routes
+except Exception:
+    def init_codex_routes(app: Any) -> None:
+        app.state.codex_routes_unavailable = True
+
+try:
+    from controller.api.agents_routes import init_agents_routes
+except Exception:
+    def init_agents_routes(app: Any) -> None:
+        app.state.agents_routes_unavailable = True
+
+try:
+    from controller.api.openhands_routes import init_openhands_routes
+except Exception:
+    def init_openhands_routes(app: Any) -> None:
+        app.state.openhands_routes_unavailable = True
+
+try:
     from controller.api.ouroboros_esoteric_routes import init_ouroboros_esoteric
 except Exception:
     def init_ouroboros_esoteric(app: Any) -> None:
@@ -303,6 +321,9 @@ init_training(app, storage=stream_storage)
 init_browser_research(app)
 init_trainer_pipeline(app)
 init_agent_runtime(app)
+init_codex_routes(app)
+init_agents_routes(app)
+init_openhands_routes(app)
 init_ouroboros_esoteric(app)
 init_world_agent(app)
 app.state.self_modification_pipeline = {

@@ -53,8 +53,24 @@ class TestSlashAgentRouter(unittest.TestCase):
         result = handle_slash_command("/codex status")
 
         self.assertEqual(result["agent"], "codex")
-        self.assertEqual(result["tool"], "agent_jobs")
+        self.assertEqual(result["tool"], "codex_status")
         self.assertEqual(result["status"], "success")
+        self.assertIn("codex_status", result)
+        self.assertIn("repo_path", result["codex_status"])
+
+    def test_codex_jobs_subcommand_lists_jobs(self):
+        result = handle_slash_command("/codex jobs")
+
+        self.assertEqual(result["agent"], "codex")
+        self.assertEqual(result["tool"], "agent_jobs")
+
+    def test_codex_capabilities_subcommand(self):
+        result = handle_slash_command("/codex capabilities")
+
+        self.assertEqual(result["agent"], "codex")
+        self.assertEqual(result["tool"], "codex_capabilities")
+        self.assertIn("codex_capabilities", result)
+        self.assertIn("subsystems", result["codex_capabilities"])
 
     def test_agent_prompt_includes_redacted_self_context(self):
         original_status = slash_agent_router.get_self_context_status

@@ -333,7 +333,7 @@ def _handle_codex_runtime(
         record = get_orchestrator().submit(
             agent="codex",
             task=task,
-            timeout_seconds=240,
+            timeout_seconds=int(os.getenv("WINTRIP_CODEX_TIMEOUT_SECONDS", "1800") or 1800),
             metadata={
                 "source": "codex_agent",
                 "action_id": action_id,

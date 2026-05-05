@@ -209,6 +209,75 @@ type RuntimeToolsStatus = {
   reason?: string;
 };
 
+type CodexCapability = {
+  key?: string;
+  label?: string;
+  description?: string;
+  detected?: boolean;
+  paths?: string[];
+  invocation?: string;
+};
+
+type CodexBinaryInfo = {
+  status?: string;
+  path?: string | null;
+  size_bytes?: number;
+};
+
+type CodexAuthInfo = {
+  status?: string;
+  home?: string;
+  auth_present?: boolean;
+  auth_age_seconds?: number | null;
+  auth_mode?: string | null;
+  config_present?: boolean;
+  session_count?: number;
+  sessions_dir?: string | null;
+  skills_dir?: string | null;
+  plugins_dir?: string | null;
+};
+
+type CodexVersionInfo = {
+  status?: string;
+  version?: string | null;
+  raw?: string | null;
+  exit_code?: number | null;
+  binary?: CodexBinaryInfo;
+};
+
+type CodexJobsInfo = {
+  status?: string;
+  count?: number;
+  jobs?: AgentJob[];
+  reason?: string;
+};
+
+type CodexStatus = {
+  status?: string;
+  repo_path?: string;
+  repo_present?: boolean;
+  binary?: CodexBinaryInfo;
+  version?: CodexVersionInfo;
+  auth?: CodexAuthInfo;
+  capabilities?: {
+    summary?: { detected?: number; total?: number; rust_detected?: number; root_detected?: number };
+    status?: string;
+    rust_workspace?: string | null;
+  };
+  evidence_summary?: Record<string, number>;
+  jobs?: CodexJobsInfo;
+  fake_success?: boolean;
+};
+
+type CodexCapabilityInventory = {
+  status?: string;
+  repo_path?: string;
+  callable_python?: { status?: string; count?: number; callable_count?: number; functions?: Array<{ name?: string; signature?: string; doc?: string; relative_path?: string }> };
+  subsystems?: CodexCapability[];
+  subsystems_summary?: { detected?: number; total?: number; rust_detected?: number; root_detected?: number };
+  rust_workspace?: string | null;
+};
+
 type ProviderChoice = {
   id: string;
   label: string;
@@ -255,6 +324,7 @@ type NexusStatus = {
   };
   last_event?: NexusEvent | null;
   recent_events?: NexusEvent[];
+  operational?: NexusOperationalSummary;
 };
 
 type LivingMemoryEntry = {
@@ -267,6 +337,7 @@ type LivingMemoryEntry = {
 
 type LivingStatus = {
   status?: string;
+  mode?: string;
   version?: string;
   reason?: string;
   running?: boolean;
@@ -274,13 +345,59 @@ type LivingStatus = {
   current_thought?: string;
   current_question?: string;
   last_whisper?: string;
+  last_action?: string;
+  last_tick_at?: string;
+  last_output_at?: string;
+  tick_count?: number;
+  tick_count_24h?: number;
   recent?: LivingMemoryEntry[];
+  needs_attention?: string[];
+  signal_summary?: string;
   memory?: {
     entry_count?: number;
     path?: string;
     counts?: Record<string, number>;
     recent?: LivingMemoryEntry[];
   };
+  memory_count?: number;
+};
+
+type AgentsSubsystemStatus = {
+  status?: string;
+  root?: string;
+  root_exists?: boolean;
+  runtime_reachable?: boolean;
+  launch_test?: string;
+  variant?: string;
+  entrypoints_verified?: number;
+  capabilities?: string[];
+  variants?: string[];
+  reason?: string;
+};
+
+type OpenHandsSubsystemStatus = {
+  status?: string;
+  root?: string;
+  root_exists?: boolean;
+  server_reachable?: boolean;
+  runtime_launch_test?: string;
+  skills_count?: number;
+  frontend_present?: boolean;
+  capabilities?: string[];
+  reason?: string;
+};
+
+type NexusOperationalSummary = {
+  status?: string;
+  event_ingestion?: string;
+  active_job_count?: number;
+  recent_error_count?: number;
+  coherence_score?: number;
+  converged?: boolean;
+  reason?: string;
+  qcn_status?: string;
+  sources_seen?: Record<string, number>;
+  sources_fresh?: Record<string, boolean>;
 };
 
 type WorldAction = {
@@ -471,6 +588,11 @@ export default function App() {
   const [worldStatus, setWorldStatus] = useState<WorldStatus>({ status: "unknown" });
   const [externalCapabilities, setExternalCapabilities] = useState<ExternalCapabilitiesStatus>({ status: "unknown" });
   const [runtimeTools, setRuntimeTools] = useState<RuntimeToolsStatus>({ status: "unknown" });
+  const [codexStatus, setCodexStatus] = useState<CodexStatus>({ status: "unknown" });
+  const [codexCapabilities, setCodexCapabilities] = useState<CodexCapabilityInventory>({ status: "unknown" });
+  const [codexRunPrompt, setCodexRunPrompt] = useState("");
+  const [agentsStatus, setAgentsStatus] = useState<AgentsSubsystemStatus>({ status: "unknown" });
+  const [openhandsStatus, setOpenhandsStatus] = useState<OpenHandsSubsystemStatus>({ status: "unknown" });
   const terminalHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -610,6 +732,85 @@ export default function App() {
     }
   }, [api]);
 
+  const loadCodexStatus = useCallback(async () => {
+    try {
+      const data = await api<CodexStatus>("/api/codex/status");
+      setCodexStatus(data);
+    } catch (error) {
+      setCodexStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+      }));
+    }
+  }, [api]);
+
+  const loadAgentsStatus = useCallback(async () => {
+    try {
+      const data = await api<AgentsSubsystemStatus>("/api/agents/status");
+      setAgentsStatus(data);
+    } catch (error) {
+      setAgentsStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadOpenhandsStatus = useCallback(async () => {
+    try {
+      const data = await api<OpenHandsSubsystemStatus>("/api/openhands/status");
+      setOpenhandsStatus(data);
+    } catch (error) {
+      setOpenhandsStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadCodexCapabilities = useCallback(async () => {
+    try {
+      const data = await api<CodexCapabilityInventory>("/api/codex/capabilities");
+      setCodexCapabilities(data);
+    } catch (error) {
+      setCodexCapabilities((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+      }));
+    }
+  }, [api]);
+
+  const submitCodexRun = useCallback(async () => {
+    const task = codexRunPrompt.trim();
+    if (!task) return;
+    if (!approvalReady) {
+      pushEvent("Codex run", { status: "blocked", reason: `Type ${approvalPhrase} in het Akkoord-veld om Codex te starten.` });
+      return;
+    }
+    try {
+      setBusy(true);
+      const result = await api<unknown>("/api/codex/run", {
+        method: "POST",
+        body: JSON.stringify({ task, approval, timeout_seconds: 1800 }),
+      });
+      pushEvent("Codex run", result);
+      setCodexRunPrompt("");
+      await loadCodexStatus();
+      try {
+        const jobsResponse = await api<{ jobs?: AgentJob[] }>("/api/agent-runtime/jobs?limit=20");
+        setAgentJobs(Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs : []);
+      } catch {
+        // ignore
+      }
+    } catch (error) {
+      pushEvent("Codex run error", { status: "error", reason: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(false);
+    }
+  }, [api, approval, approvalPhrase, approvalReady, codexRunPrompt, loadCodexStatus, pushEvent]);
+
   const refresh = useCallback(async () => {
     const [healthData, configData, statusData] = await Promise.all([
       api<Health>(OUROBOROS_BACKEND_CONTRACT.health),
@@ -656,11 +857,14 @@ export default function App() {
         await loadWorldStatus();
         await loadExternalCapabilities();
         await loadRuntimeTools();
+        await loadCodexStatus();
+        await loadAgentsStatus();
+        await loadOpenhandsStatus();
       } catch {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools]);
+  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -683,15 +887,28 @@ export default function App() {
     loadWorldStatus().catch(() => undefined);
     loadExternalCapabilities().catch(() => undefined);
     loadRuntimeTools().catch(() => undefined);
+    loadCodexStatus().catch(() => undefined);
+    loadCodexCapabilities().catch(() => undefined);
+    loadAgentsStatus().catch(() => undefined);
+    loadOpenhandsStatus().catch(() => undefined);
     const id = window.setInterval(() => {
       loadNexusStatus().catch(() => undefined);
       loadLivingStatus().catch(() => undefined);
       loadWorldStatus().catch(() => undefined);
       loadExternalCapabilities().catch(() => undefined);
       loadRuntimeTools().catch(() => undefined);
+      loadCodexStatus().catch(() => undefined);
+      loadAgentsStatus().catch(() => undefined);
+      loadOpenhandsStatus().catch(() => undefined);
     }, 2000);
-    return () => window.clearInterval(id);
-  }, [loadNexusStatus, loadLivingStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools]);
+    const capabilitiesId = window.setInterval(() => {
+      loadCodexCapabilities().catch(() => undefined);
+    }, 30000);
+    return () => {
+      window.clearInterval(id);
+      window.clearInterval(capabilitiesId);
+    };
+  }, [loadNexusStatus, loadLivingStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -1070,11 +1287,31 @@ export default function App() {
           <StatusPill icon={<Hammer size={16} />} label="Pipeline" value={status.self_modification_pipeline?.status ?? "not configured"} ok={status.self_modification_pipeline?.status === "online"} />
           <StatusPill icon={<Database size={16} />} label="11D" value={`${learning.total_count ?? records.total_count ?? 0}`} ok={!!learning.available} />
           <StatusPill icon={<ShieldCheck size={16} />} label="Approval" value={approvalReady ? "approved" : "locked"} ok={approvalReady} />
-          <StatusPill icon={<Activity size={16} />} label="Ω Nexus" value={nexusStatus.omega_vector?.converged ? "converged" : nexusStatus.status ?? "unknown"} ok={!!nexusStatus.omega_vector?.converged || nexusStatus.status === "online"} />
-          <StatusPill icon={<BrainCircuit size={16} />} label="Living" value={livingStatus.running ? "speaking" : livingStatus.status ?? "idle"} ok={livingStatus.status === "running" || livingStatus.status === "idle"} />
+          <StatusPill
+            icon={<Activity size={16} />}
+            label="Ω Nexus"
+            value={nexusStatus.operational?.status ?? nexusStatus.status ?? "unknown"}
+            ok={nexusStatus.operational?.status === "online" || (nexusStatus.operational?.status !== "degraded" && nexusStatus.status === "online")}
+          />
+          <StatusPill
+            icon={<BrainCircuit size={16} />}
+            label="Living"
+            value={livingStatus.mode ?? livingStatus.status ?? "idle"}
+            ok={livingStatus.mode === "speaking" || livingStatus.mode === "running" || livingStatus.status === "idle"}
+          />
           <StatusPill icon={<Globe2 size={16} />} label="World" value={worldStatus.status ?? "unknown"} ok={worldStatus.status === "online"} />
-          <StatusPill icon={<Bot size={16} />} label="AgentS" value={externalCapabilities.capabilities?.agents?.status ?? "unknown"} ok={externalCapabilities.capabilities?.agents?.status === "available"} />
-          <StatusPill icon={<Hammer size={16} />} label="OpenHands" value={externalCapabilities.capabilities?.openhands?.status ?? "unknown"} ok={externalCapabilities.capabilities?.openhands?.status === "available"} />
+          <StatusPill
+            icon={<Bot size={16} />}
+            label="AgentS"
+            value={agentsStatus.status ?? "unknown"}
+            ok={agentsStatus.status === "online" || agentsStatus.status === "available" || agentsStatus.runtime_reachable === true}
+          />
+          <StatusPill
+            icon={<Hammer size={16} />}
+            label="OpenHands"
+            value={openhandsStatus.status ?? "unknown"}
+            ok={openhandsStatus.status === "online" || openhandsStatus.status === "available"}
+          />
         </header>
 
         <section className="toolbar">
@@ -1210,6 +1447,22 @@ export default function App() {
                 runtimeTools={runtimeTools}
                 rooStatus={status.roo_adapter}
                 codexJobs={agentJobs.filter((job) => job.agent === "codex")}
+                agentsStatus={agentsStatus}
+                openhandsStatus={openhandsStatus}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="Codex Subsystem" />
+              <CodexPanel
+                codexStatus={codexStatus}
+                codexCapabilities={codexCapabilities}
+                codexJobs={agentJobs.filter((job) => job.agent === "codex")}
+                runPrompt={codexRunPrompt}
+                setRunPrompt={setCodexRunPrompt}
+                approvalReady={approvalReady}
+                busy={busy}
+                onRun={submitCodexRun}
               />
             </section>
 
@@ -1462,11 +1715,15 @@ function AgentCapabilitiesPanel({
   runtimeTools,
   rooStatus,
   codexJobs,
+  agentsStatus,
+  openhandsStatus,
 }: {
   external: ExternalCapabilitiesStatus;
   runtimeTools: RuntimeToolsStatus;
   rooStatus?: OuroborosStatus["roo_adapter"];
   codexJobs: AgentJob[];
+  agentsStatus: AgentsSubsystemStatus;
+  openhandsStatus: OpenHandsSubsystemStatus;
 }) {
   const agents = external.capabilities?.agents;
   const openhands = external.capabilities?.openhands;
@@ -1475,14 +1732,22 @@ function AgentCapabilitiesPanel({
   return (
     <div className="world-panel">
       <div className="nexus-stats">
-        <span>AgentS <strong>{agents?.status ?? "unknown"}</strong></span>
-        <span>OpenHands <strong>{openhands?.status ?? "unknown"}</strong></span>
+        <span>AgentS <strong>{agentsStatus.status ?? agents?.status ?? "unknown"}</strong></span>
+        <span>OpenHands <strong>{openhandsStatus.status ?? openhands?.status ?? "unknown"}</strong></span>
         <span>Roo <strong>{rooStatus?.status ?? "unknown"}</strong></span>
         <span>Codex jobs <strong>{codexJobs.length}</strong></span>
       </div>
       <div className="fact-list">
-        <Fact label="AgentS root" value={agents?.root ?? "/home/pwintri2/AgentS"} state={agents?.exists ? "mounted" : agents?.status} />
-        <Fact label="OpenHands root" value={openhands?.root ?? "/home/pwintri2/OpenHands"} state={openhands?.exists ? "mounted" : openhands?.status} />
+        <Fact
+          label="AgentS root"
+          value={agentsStatus.root ?? agents?.root ?? "/home/pwintri2/AgentS"}
+          state={agentsStatus.runtime_reachable ? `runtime ${agentsStatus.launch_test ?? "ok"}` : agentsStatus.status ?? (agents?.exists ? "detected" : agents?.status)}
+        />
+        <Fact
+          label="OpenHands root"
+          value={openhandsStatus.root ?? openhands?.root ?? "/home/pwintri2/OpenHands"}
+          state={openhandsStatus.server_reachable ? "server reachable" : openhandsStatus.status ?? (openhands?.exists ? "detected" : openhands?.status)}
+        />
         <Fact label="Roo tools" value={`${rooStatus?.local_python_adapters?.length ?? 0}`} state={rooStatus?.available ? "available" : rooStatus?.status} />
         <Fact label="Runtime tools" value={toolNames.length ? toolNames.join(", ") : "--"} state={runtimeTools.status} />
         <Fact label="Fase 8 tools" value={schemaNames.length ? schemaNames.join(", ") : "--"} state={external.via_bridge ? "via bridge" : external.status} />
@@ -1506,6 +1771,123 @@ function AgentCapabilitiesPanel({
         <strong>Codex/Roo</strong>
         <span>Gebruik `/codex ...` of `/roo ...` in de chat; jobs verschijnen live in Agent Jobs met events en output.</span>
       </div>
+    </div>
+  );
+}
+
+function CodexPanel({
+  codexStatus,
+  codexCapabilities,
+  codexJobs,
+  runPrompt,
+  setRunPrompt,
+  approvalReady,
+  busy,
+  onRun,
+}: {
+  codexStatus: CodexStatus;
+  codexCapabilities: CodexCapabilityInventory;
+  codexJobs: AgentJob[];
+  runPrompt: string;
+  setRunPrompt: (value: string) => void;
+  approvalReady: boolean;
+  busy: boolean;
+  onRun: () => void;
+}) {
+  const binary = codexStatus.binary ?? {};
+  const auth = codexStatus.auth ?? {};
+  const version = codexStatus.version ?? {};
+  const subsystems = codexCapabilities.subsystems ?? [];
+  const detectedCount = subsystems.filter((item) => item.detected).length;
+  const overall = codexStatus.status ?? "unknown";
+  const overallTone = overall === "online" || overall === "authenticated" ? "good" : overall === "missing" ? "warn" : "warn";
+  const recentJobs = codexJobs.slice(0, 5);
+  return (
+    <div className="world-panel">
+      <div className="world-head">
+        <div>
+          <strong>Codex {version.version ? `v${version.version}` : ""}</strong>
+          <span>{codexStatus.repo_path ?? "/home/pwintri2/Codex"}</span>
+        </div>
+        <i className={overallTone === "good" ? "good" : "warn"} />
+      </div>
+      <div className="nexus-stats">
+        <span>State <strong>{overall}</strong></span>
+        <span>Binary <strong>{binary.status ?? "unknown"}</strong></span>
+        <span>Auth <strong>{auth.status ?? "unknown"}</strong></span>
+        <span>Caps <strong>{detectedCount}/{subsystems.length}</strong></span>
+      </div>
+      <div className="fact-list">
+        <Fact label="Repo" value={codexStatus.repo_path ?? "--"} state={codexStatus.repo_present ? "present" : "missing"} />
+        <Fact label="Binary path" value={binary.path ?? "--"} state={binary.status} />
+        <Fact label="Version" value={version.version ?? "--"} state={version.status} />
+        <Fact label="Auth mode" value={auth.auth_mode ?? "--"} state={auth.status} />
+        <Fact label="Codex home" value={auth.home ?? "--"} state={auth.config_present ? "configured" : "missing"} />
+        <Fact label="Sessions" value={`${auth.session_count ?? 0}`} />
+        <Fact label="Python helpers" value={`${codexCapabilities.callable_python?.callable_count ?? 0}`} state={codexCapabilities.callable_python?.status} />
+      </div>
+      <PanelHeader title="Subsystems" small />
+      <div className="world-action-list">
+        {subsystems.length === 0 ? (
+          <div className="empty-state">Capability inventory wordt nog geladen.</div>
+        ) : (
+          subsystems.map((item) => (
+            <div className="world-action" key={item.key ?? item.label}>
+              <div>
+                <strong>{item.label ?? item.key}</strong>
+                <span>{item.detected ? item.invocation ?? "detected" : "absent"}</span>
+              </div>
+              <p>{item.description ?? ""}</p>
+              {item.paths && item.paths.length > 0 && (
+                <em>{item.paths.slice(0, 3).join(", ")}{item.paths.length > 3 ? " …" : ""}</em>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+      <PanelHeader title="Run Codex task" small />
+      <div className="prompt-stack">
+        <textarea
+          value={runPrompt}
+          onChange={(event) => setRunPrompt(event.target.value)}
+          placeholder="Beschrijf wat Codex moet doen (Akkoord vereist)"
+          rows={3}
+        />
+        <button onClick={onRun} disabled={busy || !approvalReady || !runPrompt.trim() || binary.status !== "found"}>
+          <Send size={14} /> {approvalReady ? "Run codex" : "Akkoord vereist"}
+        </button>
+      </div>
+      <PanelHeader title="Recent codex jobs" small />
+      <div className="world-action-list">
+        {recentJobs.length === 0 ? (
+          <div className="empty-state">Nog geen codex jobs.</div>
+        ) : (
+          recentJobs.map((job) => (
+            <div className="world-action" key={job.job_id}>
+              <div>
+                <strong>{job.status}</strong>
+                <span>{job.job_id}</span>
+              </div>
+              <p>{(job.task ?? "").slice(0, 200)}{job.task && job.task.length > 200 ? "…" : ""}</p>
+              {job.response_preview && <em>{job.response_preview.slice(0, 160)}</em>}
+            </div>
+          ))
+        )}
+      </div>
+      {codexStatus.fake_success === false && overall !== "online" && (
+        <div className="nexus-last">
+          <strong>Status</strong>
+          <span>
+            {overall === "missing"
+              ? "Codex repo niet gevonden — controleer WINTRIP_CODEX_PATH."
+              : overall === "discoverable"
+                ? "Repo aanwezig; geen runtime binary in PATH/extensions gevonden."
+                : overall === "binary_present_no_auth"
+                  ? "Binary aanwezig, geen auth; voer codex login uit op de host."
+                  : "Codex layer wacht nog op alle componenten."}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from controller.agent_runtime.orchestrator import AgentOrchestrator, get_orchestrator
+from controller.nexus_status import nexus_recent, nexus_summary, recompute as nexus_recompute
 from controller.tool_bridge import run_tool_bridge, tool_bridge_status
 from ouroboros_esoteric.quantum_corruption_nexus import quantum_nexus_status
 
@@ -47,8 +48,26 @@ def init_agent_runtime(app: Any) -> None:
 
 
 @agent_runtime_router.get("/nexus/status")
-async def get_nexus_status(limit: int = 20) -> dict[str, Any]:
-    return quantum_nexus_status(limit=limit)
+async def get_nexus_status(limit: int = 20, freshness_seconds: int = 300) -> dict[str, Any]:
+    qcn = quantum_nexus_status(limit=limit)
+    summary = nexus_summary(freshness_seconds=freshness_seconds)
+    return {**qcn, "operational": summary}
+
+
+@agent_runtime_router.get("/nexus/summary")
+async def get_nexus_summary(freshness_seconds: int = 300) -> dict[str, Any]:
+    return nexus_summary(freshness_seconds=freshness_seconds)
+
+
+@agent_runtime_router.get("/nexus/events")
+async def get_nexus_events(limit: int = 50, source: Optional[str] = None) -> dict[str, Any]:
+    events = nexus_recent(limit=limit, source=source)
+    return {"status": "online", "count": len(events), "events": events, "fake_success": False}
+
+
+@agent_runtime_router.post("/nexus/recompute")
+async def post_nexus_recompute() -> dict[str, Any]:
+    return nexus_recompute()
 
 
 @agent_runtime_router.get("/tools/status")

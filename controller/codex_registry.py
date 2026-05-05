@@ -151,6 +151,56 @@ def get_codex_registry_status() -> dict[str, Any]:
     }
 
 
+def get_codex_capability_inventory() -> dict[str, Any]:
+    """Return a layered Codex capability inventory.
+
+    The Codex repo is more than a Python function pile: most of it is Rust
+    crates plus a Node CLI shim. This inventory honestly distinguishes
+    callable Python helpers (handled by `list_codex_functions`) from
+    discoverable subsystems that are only invokable via the Codex CLI/MCP/HTTP
+    interfaces or that are cloud-only.
+    """
+
+    listing = list_codex_functions()
+    callable_functions = listing.get("functions", [])
+    try:
+        from controller.codex_status import discover_codex_capabilities
+
+        repo_inventory = discover_codex_capabilities()
+    except Exception as exc:
+        repo_inventory = {
+            "status": "error",
+            "repo_path": str(codex_root()),
+            "capabilities": [],
+            "summary": {"detected": 0, "total": 0},
+            "reason": f"Failed to discover Codex capabilities: {exc}",
+        }
+    return {
+        "status": repo_inventory.get("status") or listing.get("status") or "unknown",
+        "repo_path": repo_inventory.get("repo_path") or listing.get("path"),
+        "callable_python": {
+            "status": listing.get("status"),
+            "count": listing.get("count", 0),
+            "callable_count": listing.get("callable_count", 0),
+            "functions": [
+                {
+                    "name": item.get("name"),
+                    "module": item.get("module"),
+                    "function": item.get("function"),
+                    "signature": item.get("signature"),
+                    "doc": item.get("doc"),
+                    "relative_path": item.get("relative_path"),
+                }
+                for item in callable_functions[:200]
+            ],
+        },
+        "subsystems": repo_inventory.get("capabilities", []),
+        "subsystems_summary": repo_inventory.get("summary", {}),
+        "rust_workspace": repo_inventory.get("rust_workspace"),
+        "fake_success": False,
+    }
+
+
 def call_codex_function(
     name: str,
     args: list[Any] | None = None,

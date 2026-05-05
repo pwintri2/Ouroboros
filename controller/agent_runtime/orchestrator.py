@@ -33,6 +33,11 @@ try:
 except Exception:
     get_quantum_corruption_nexus = None
 
+try:
+    from controller.nexus_status import ingest_event as _ingest_nexus_event
+except Exception:
+    _ingest_nexus_event = None
+
 
 AdapterFn = Callable[[JobRecord, EventLog, Callable[[dict[str, Any]], None]], dict[str, Any]]
 
@@ -140,6 +145,18 @@ class AgentOrchestrator:
             log.append("ouroboros_esoteric_context", esoteric_context)
         if nexus_created:
             log.append("quantum_corruption_nexus", nexus_created)
+        if _ingest_nexus_event is not None:
+            try:
+                _ingest_nexus_event(
+                    "agent_runtime",
+                    "job_created",
+                    f"{agent_key} job {job_id[-8:]} queued",
+                    job_id=job_id,
+                    agent=agent_key,
+                    timeout_seconds=record.timeout_seconds,
+                )
+            except Exception:
+                pass
         return record
 
     def start_job(self, job: JobRecord) -> threading.Thread:
@@ -314,6 +331,20 @@ class AgentOrchestrator:
                 }
             )
         log.append("status", {"status": updates["status"], "finished_at": finished_at, "exit_code": updates.get("exit_code")})
+        if _ingest_nexus_event is not None:
+            try:
+                _ingest_nexus_event(
+                    "agent_runtime",
+                    "job_finished",
+                    f"{job.agent} job {job.job_id[-8:]} -> {updates['status']}",
+                    job_id=job.job_id,
+                    agent=job.agent,
+                    status=updates["status"],
+                    exit_code=updates.get("exit_code"),
+                    nexus_action=(nexus_event or {}).get("action") if nexus_event else None,
+                )
+            except Exception:
+                pass
 
     def _prompt_markdown(self, job: JobRecord) -> str:
         roots = "\n".join(f"- {root}" for root in job.allowed_roots) or "- (geen)"

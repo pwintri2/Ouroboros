@@ -93,3 +93,24 @@ async def living_ouroboros_memory(limit: int = 50, kind: str | None = None) -> d
         return {"status": "online", "events": events, "count": len(events), "memory": memory.status(limit=5)}
     except Exception as exc:
         return {"status": "unavailable", "events": [], "count": 0, "reason": str(exc), "fake_success": False}
+
+
+@ouroboros_esoteric_router.get("/living/events")
+async def living_ouroboros_events(limit: int = 50, kind: str | None = None) -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.ouroboros_consciousness_loop import living_events
+
+        events = living_events(limit=limit, kind=kind)
+        return {"status": "online", "events": events, "count": len(events), "fake_success": False}
+    except Exception as exc:
+        return {"status": "unavailable", "events": [], "count": 0, "reason": str(exc)[:500], "fake_success": False}
+
+
+@ouroboros_esoteric_router.get("/living/output")
+async def living_ouroboros_output() -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.ouroboros_consciousness_loop import living_output
+
+        return living_output()
+    except Exception as exc:
+        return {"status": "unavailable", "reason": str(exc)[:500], "fake_success": False}
