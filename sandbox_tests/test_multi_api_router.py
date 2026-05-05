@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from controller.multi_api_router import MultiAPIRouter, PROVIDERS
+from controller.multi_api_router import HTTPX_HTTP_ERROR, MultiAPIRouter, PROVIDERS
 
 
 NEUTRAL_TOOL = {
@@ -29,6 +29,23 @@ class FakeResponse:
 
     def json(self):
         return self.payload
+
+
+class FakeHTTPStatusError(HTTPX_HTTP_ERROR):
+    def __init__(self, response, message="Client error"):
+        super().__init__(message)
+        self.response = response
+
+
+class ErrorResponse(FakeResponse):
+    def __init__(self, payload, status_code=400, text=""):
+        super().__init__(payload)
+        self.status_code = status_code
+        self.text = text
+
+    def raise_for_status(self):
+        self.raise_for_status_called = True
+        raise FakeHTTPStatusError(self)
 
 
 class RecordingAsyncClient:
@@ -58,6 +75,37 @@ class RecordingFactory:
     def __call__(self):
         self.calls += 1
         return self.client
+
+
+class SequentialAsyncClient:
+    def __init__(self, factory):
+        self.factory = factory
+
+    async def __aenter__(self):
+        self.factory.entered += 1
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.factory.exited += 1
+
+    async def post(self, url, headers=None, json=None):
+        self.factory.posts.append(
+            {"url": url, "headers": dict(headers or {}), "json": dict(json or {})}
+        )
+        return self.factory.responses.pop(0)
+
+
+class SequentialFactory:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.posts = []
+        self.calls = 0
+        self.entered = 0
+        self.exited = 0
+
+    def __call__(self):
+        self.calls += 1
+        return SequentialAsyncClient(self)
 
 
 class TestMultiAPIRouter(unittest.IsolatedAsyncioTestCase):
@@ -249,6 +297,92 @@ class TestMultiAPIRouter(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(payload["model"], PROVIDERS[expected_provider].default_model)
                     self.assertEqual(payload["tools"][0]["type"], "function")
                     self.assertEqual(payload["tools"][0]["function"]["name"], "memory_search")
+
+    async def test_google_tools_are_deduped_and_schema_sanitized(self):
+        factory = RecordingFactory({"candidates": [{"content": {"parts": [{"text": "gemini ok"}]}}]})
+        router = MultiAPIRouter(api_keys={"google": "google-key"}, client_factory=factory)
+        tools = [
+            NEUTRAL_TOOL,
+            {
+                "name": "memory_search",
+                "description": "Duplicate should be ignored.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"other": {"type": "string"}},
+                    "required": ["other"],
+                },
+            },
+            {
+                "name": "external_capabilities_status",
+                "description": "No-argument status probe.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "remember_thing",
+                    "description": "Remember a short note.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "Note text."},
+                            "empty": {"type": "object", "properties": {}},
+                        },
+                        "required": ["text", "empty"],
+                    },
+                },
+            },
+        ]
+
+        result = await router.route_chat("google", "gemini-test", "Hello", tools=tools)
+
+        self.assertEqual(result["status"], "success")
+        declarations = factory.client.posts[0]["json"]["tools"][0]["functionDeclarations"]
+        names = [tool["name"] for tool in declarations]
+        self.assertEqual(names.count("memory_search"), 1)
+        self.assertEqual(names.count("external_capabilities_status"), 1)
+        self.assertEqual(names.count("remember_thing"), 1)
+
+        status_tool = next(tool for tool in declarations if tool["name"] == "external_capabilities_status")
+        self.assertNotIn("parameters", status_tool)
+
+        remember_tool = next(tool for tool in declarations if tool["name"] == "remember_thing")
+        parameters = remember_tool["parameters"]
+        self.assertEqual(parameters["required"], ["text"])
+        self.assertIn("text", parameters["properties"])
+        self.assertNotIn("empty", parameters["properties"])
+
+    async def test_google_400_with_tools_retries_once_without_tool_schemas(self):
+        factory = SequentialFactory(
+            [
+                ErrorResponse({"error": {"message": "Invalid function declaration"}}),
+                FakeResponse({"candidates": [{"content": {"parts": [{"text": "fallback ok"}]}}]}),
+            ]
+        )
+        router = MultiAPIRouter(api_keys={"google": "google-key"}, client_factory=factory)
+
+        result = await router.route_chat("google", "gemini-test", "Hello", tools=[NEUTRAL_TOOL])
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["response"], "fallback ok")
+        self.assertTrue(result["tool_schemas_dropped"])
+        self.assertEqual(factory.calls, 2)
+        self.assertEqual(factory.entered, 2)
+        self.assertEqual(factory.exited, 2)
+        self.assertIn("tools", factory.posts[0]["json"])
+        self.assertNotIn("tools", factory.posts[1]["json"])
+
+    async def test_provider_error_payload_includes_scrubbed_status_and_body(self):
+        factory = SequentialFactory([ErrorResponse({"error": {"message": "Model not found"}})])
+        router = MultiAPIRouter(api_keys={"google": "google-key"}, client_factory=factory)
+
+        result = await router.route_chat("google", "gemini-test", "Hello")
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["provider"], "google")
+        self.assertEqual(result["provider_status_code"], 400)
+        self.assertEqual(result["provider_error"], "Model not found")
+        self.assertEqual(result["error"], "Model not found")
 
 
 if __name__ == "__main__":

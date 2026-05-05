@@ -56,6 +56,41 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.assertEqual(result["tool"], "agent_jobs")
         self.assertEqual(result["status"], "success")
 
+    def test_agent_prompt_includes_redacted_self_context(self):
+        original_status = slash_agent_router.get_self_context_status
+        slash_agent_router.get_self_context_status = lambda: {
+            "status": "online",
+            "state_path": "/tmp/wintrip/.secrets/ouroboros_self_context.json",
+            "conversation_count": 2,
+            "lesson_count": 3,
+            "latest_conversations": [
+                {
+                    "conversation_id": "cockpit-main",
+                    "turn_count": 4,
+                    "summary": "Philip vroeg Codex zichzelf te verbeteren.",
+                }
+            ],
+            "recent_lessons": [
+                {
+                    "text": "Gebruik server-side context. api_key=supersecret123456789",
+                    "keywords": ["codex", "self-context"],
+                }
+            ],
+            "ruflo": {"status": "online", "path": "/home/pwintri2/ruflo"},
+        }
+        try:
+            prompt = slash_agent_router._agent_prompt("Codex", "verbeter jezelf")
+        finally:
+            slash_agent_router.get_self_context_status = original_status
+
+        self.assertIn("Ouroboros self-context", prompt)
+        self.assertIn("Conversations: 2", prompt)
+        self.assertIn("Lessons: 3", prompt)
+        self.assertIn("cockpit-main", prompt)
+        self.assertIn("Ruflo status: online", prompt)
+        self.assertIn("[REDACTED]", prompt)
+        self.assertNotIn("supersecret123456789", prompt)
+
     def test_codex_login_status_accepts_stderr_output(self):
         original_exists = slash_agent_router._command_exists
         original_run = slash_agent_router._run_command
@@ -116,6 +151,11 @@ class TestSlashAgentRouter(unittest.TestCase):
                 break
             time.sleep(0.02)
         self.assertEqual(adapter_calls, [job_id])
+        for _ in range(50):
+            if (store.get(job_id) or {}).get("status") == "completed":
+                break
+            time.sleep(0.02)
+        self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
 
     def test_ruflo_defaults_to_handoff_instead_of_host_cli(self):
         original_run = slash_agent_router._run_ruflo_swarm
@@ -210,6 +250,12 @@ class TestSlashAgentRouter(unittest.TestCase):
                     break
                 time.sleep(0.02)
             self.assertEqual(calls, ["maak plan"])
+            job_id = result["job"]["job_id"]
+            for _ in range(50):
+                if (store.get(job_id) or {}).get("status") == "completed":
+                    break
+                time.sleep(0.02)
+            self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
         finally:
             slash_agent_router._run_ruflo_swarm = original_run
             self._restore("WINTRIP_SLASH_RUNTIME_HOST_AGENTS", old_runtime)

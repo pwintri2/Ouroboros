@@ -545,6 +545,7 @@ def _login_required(agent: str, started: float, url: str) -> dict[str, Any]:
 
 def _agent_prompt(agent_label: str, task: str) -> str:
     roots = _agent_roots()
+    self_context = _agent_self_context_prompt_block()
     return (
         f"{agent_label} werkt nu als onderdeel van Ouroboros.\n\n"
         f"Opdracht van Philip:\n{task}\n\n"
@@ -558,7 +559,59 @@ def _agent_prompt(agent_label: str, task: str) -> str:
         "- Respecteer bestaande dirty worktree; revert geen onbekende wijzigingen.\n"
         "- Schrijf geen API keys, OAuth tokens, bearer tokens of browser session data naar bestanden/logs.\n"
         "- Valideer met gerichte tests waar haalbaar en rapporteer echte stdout/stderr.\n"
+        f"{self_context}"
     )
+
+
+def _agent_self_context_prompt_block() -> str:
+    try:
+        status = get_self_context_status()
+    except Exception as exc:
+        return f"\nOuroboros self-context:\n- Status: unavailable ({_clip(_redact(str(exc)), 240)})\n"
+    if not isinstance(status, dict):
+        return "\nOuroboros self-context:\n- Status: unavailable (invalid status payload)\n"
+
+    lines = [
+        "\nOuroboros self-context:",
+        f"- Status: {_clip(_redact(status.get('status', 'unknown')), 80)}",
+        f"- State path: {_clip(_redact(status.get('state_path', '')), 220)}",
+        f"- Conversations: {_int_or_zero(status.get('conversation_count'))}",
+        f"- Lessons: {_int_or_zero(status.get('lesson_count'))}",
+    ]
+    latest = [item for item in list(status.get("latest_conversations") or []) if isinstance(item, dict)]
+    if latest:
+        lines.append("- Latest conversations:")
+        for item in latest[:3]:
+            conversation_id = _clip(_redact(item.get("conversation_id", "")), 100)
+            summary = _clip(_redact(str(item.get("summary") or "").replace("\n", " ")), 360)
+            turn_count = _int_or_zero(item.get("turn_count"))
+            if summary:
+                lines.append(f"  - {conversation_id} ({turn_count} turns): {summary}")
+            else:
+                lines.append(f"  - {conversation_id} ({turn_count} turns)")
+    lessons = [item for item in list(status.get("recent_lessons") or []) if isinstance(item, dict)]
+    if lessons:
+        lines.append("- Recent lessons:")
+        for item in lessons[:3]:
+            text = _clip(_redact(str(item.get("text") or "").replace("\n", " ")), 420)
+            keywords = ", ".join(_clip(_redact(keyword), 40) for keyword in list(item.get("keywords") or [])[:6])
+            if text:
+                suffix = f" [keywords: {keywords}]" if keywords else ""
+                lines.append(f"  - {text}{suffix}")
+    ruflo = status.get("ruflo") if isinstance(status.get("ruflo"), dict) else {}
+    if ruflo:
+        ruflo_status = _clip(_redact(ruflo.get("status", "unknown")), 80)
+        ruflo_path_value = _clip(_redact(ruflo.get("path", "")), 220)
+        lines.append(f"- Ruflo status: {ruflo_status}" + (f" ({ruflo_path_value})" if ruflo_path_value else ""))
+    lines.append("- Gebruik deze server-side context als continuïteitslaag; vertrouw niet op browsergeschiedenis alleen.")
+    return "\n".join(lines) + "\n"
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _write_agent_handoff(agent: str, task: str) -> dict[str, Any]:

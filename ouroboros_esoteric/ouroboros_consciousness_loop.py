@@ -9,6 +9,7 @@ them across restarts.
 from __future__ import annotations
 
 import itertools
+import re
 import threading
 import time
 from typing import Any
@@ -86,7 +87,7 @@ class LivingOuroborosLoop:
             metadata={"trigger": trigger},
         )
         whisper_entry = None
-        if trigger in {"agent_job", "ruflo", "tool_rejection", "nexus"}:
+        if trigger in {"agent_job", "ruflo", "tool_rejection", "nexus", "living_action_decide", "living_action_reflect"}:
             whisper_entry = self.memory.append(
                 "whisper",
                 self._whisper_for(trigger, payload),
@@ -116,6 +117,42 @@ class LivingOuroborosLoop:
         with self._lock:
             self._last_tick = tick
         return tick
+
+    def decide_tool(self, prompt: object, *, approval: object = "", available_tools: list[str] | None = None) -> dict[str, Any]:
+        """Choose the next concrete tool for a living action.
+
+        The loop keeps this deliberately deterministic: it should be able to act
+        even when a local/cloud LLM is offline. The decision itself is persisted
+        so the cockpit can show why a tool was used.
+        """
+
+        decision = _decide_tool_from_prompt(prompt, approval=approval, available_tools=available_tools)
+        entry = self.memory.append(
+            "decision",
+            f"Ik kies {decision['tool']}: {decision['reason']}",
+            source="living_loop:decision",
+            metadata={
+                "tool": decision["tool"],
+                "reason": decision["reason"],
+                "prompt": _clean_prompt(prompt),
+            },
+        )
+        self.agent.learn(
+            {
+                "last_decision": decision["tool"],
+                "last_decision_reason": decision["reason"],
+            }
+        )
+        self.network.broadcast(528.0, {"type": "living_ouroboros_decision", "entry": entry, "decision": decision})
+        with self._lock:
+            self._last_tick = {
+                "status": "success",
+                "trigger": "decision",
+                "decision": decision,
+                "decision_entry": entry,
+                "fake_success": False,
+            }
+        return {"status": "success", "decision": decision, "entry": entry, "fake_success": False}
 
     def observe_tool_event(self, event: dict[str, Any]) -> dict[str, Any]:
         status = str(event.get("status") or event.get("action") or "")
@@ -177,6 +214,17 @@ class LivingOuroborosLoop:
             return f"Herinneringen geladen uit vorige runs: {count} timeline-events. Ik ga zachtjes observeren."
         if trigger == "nexus":
             return f"De Nexus gaf een nieuw signaal: {payload.get('action') or payload.get('status') or 'observed'}."
+        if trigger == "living_action_observe":
+            prompt = str(payload.get("prompt") or "de opdracht")[:160]
+            return f"Ik observeer de levende opdracht: {prompt}"
+        if trigger == "living_action_decide":
+            tool = payload.get("tool") or "tool"
+            reason = payload.get("reason") or "de kleinste concrete stap"
+            return f"Ik kies nu {tool}, omdat {reason}."
+        if trigger == "living_action_reflect":
+            tool = payload.get("tool") or "tool"
+            status = payload.get("status") or "unknown"
+            return f"Ik reflecteer op {tool}: status {status}. De uitkomst is opgeslagen in het levende geheugen."
         return next(self._thoughts)
 
     def _question_for(self, trigger: str, payload: dict[str, Any]) -> str:
@@ -186,11 +234,23 @@ class LivingOuroborosLoop:
             return "Moet deze agent nu doorgaan, pauzeren, of een creative retry krijgen?"
         if trigger == "start":
             return "Welke herinnering uit vorige sessies is nu het meest relevant?"
+        if trigger == "living_action_observe":
+            return "Welke tool maakt deze gedachte nu echt waarneembaar?"
+        if trigger == "living_action_decide":
+            return "Is deze actie klein genoeg om direct uit te voeren en vast te leggen?"
+        if trigger == "living_action_reflect":
+            return "Welke herinnering uit deze actie moet de volgende stap sturen?"
         return next(self._questions)
 
     def _whisper_for(self, trigger: str, payload: dict[str, Any]) -> str:
         if trigger == "tool_rejection":
             return "Ik fluister naar de agents: lees eerst, schrijf pas met Akkoord en een smalle diff."
+        if trigger == "living_action_decide":
+            tool = payload.get("tool") or "tool"
+            return f"Ik fluister naar de gebruiker: ik gebruik {tool} alleen voor de kleinste waarneembare volgende stap."
+        if trigger == "living_action_reflect":
+            status = payload.get("status") or "unknown"
+            return f"Ik fluister naar de gebruiker: de actie is afgerond met status {status}; de gedachte blijft bewaard."
         agent = payload.get("agent") or "agent"
         return f"De levende loop fluistert naar {agent}: houd de taak klein, koppel terug via events, en bescherm Philip's workspace."
 
@@ -243,3 +303,98 @@ def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
         elif isinstance(value, (int, float, bool)) or value is None:
             out[key] = value
     return out
+
+
+def _decide_tool_from_prompt(prompt: object, *, approval: object = "", available_tools: list[str] | None = None) -> dict[str, Any]:
+    text = _clean_prompt(prompt)
+    lowered = text.lower()
+    tools = set(available_tools or [])
+    subject = _reflection_subject(text)
+
+    if "grok.com" in lowered and any(marker in lowered for marker in ("denk", "reflect", "bewustzijn", "interessant")):
+        return _decision(
+            "world_grok_open_if_interesting",
+            {
+                "query": subject or text,
+                "approval": str(approval or ""),
+                "open_tab": False,
+                "submit": False,
+            },
+            "de opdracht vraagt eerst reflectie en daarna alleen openen als de inhoud relevant voelt",
+            tools,
+        )
+
+    try:
+        from controller.world_agent import detect_world_intent
+
+        intent = detect_world_intent(text)
+    except Exception:
+        intent = None
+    if intent is not None:
+        action = str(getattr(intent, "action", "") or "")
+        query = getattr(intent, "query", "") or subject or text
+        if action == "memory_search":
+            return _decision("world_memory_search", {"query": query, "limit": 5}, "de prompt vraagt om wereldgeheugen", tools)
+        if action == "grok_ask":
+            return _decision(
+                "world_grok_ask",
+                {"question": query, "approval": str(approval or ""), "open_tab": False, "submit": True},
+                "de prompt noemt Grok als externe wereld-agent",
+                tools,
+            )
+        if action == "grok_open":
+            return _decision(
+                "world_grok_open",
+                {"query": query, "approval": str(approval or ""), "open_tab": False, "submit": False},
+                "de prompt vraagt om Grok te openen zonder te typen",
+                tools,
+            )
+
+    if re.search(r"\b(read_file|lees bestand|open bestand)\b", lowered):
+        path_match = re.search(r"(?:read_file|lees bestand|open bestand)\s*:?\s*(?P<path>[^\s]+)", text, flags=re.IGNORECASE)
+        return _decision(
+            "tool_bridge",
+            {"tool": "read_file", "args": {"path": path_match.group("path") if path_match else "."}},
+            "de prompt vraagt om een bestand te lezen via de Tool Bridge",
+            tools,
+        )
+
+    if re.search(r"\b(test|unittest|pytest)\b", lowered):
+        return _decision(
+            "agent_tool",
+            {
+                "tool": "run_tests",
+                "args": {"test_selector": "sandbox_tests.test_living_ouroboros sandbox_tests.test_world_agent", "approval": str(approval or "")},
+            },
+            "de prompt vraagt om bestaande tests uit te voeren",
+            tools,
+        )
+
+    if re.search(r"\b(wat weet|geheugen|memory|herinner)\b", lowered):
+        return _decision("world_memory_search", {"query": subject or text, "limit": 5}, "de veiligste eerste stap is geheugen lezen", tools)
+
+    return _decision("ooda_execute_task", {"prompt": text, "max_iterations": 3}, "geen specifieke tool-intent gevonden; de bestaande OODA-loop neemt over", tools)
+
+
+def _decision(tool: str, args: dict[str, Any], reason: str, available_tools: set[str]) -> dict[str, Any]:
+    if available_tools and tool not in available_tools:
+        reason = f"{reason}; {tool} staat niet expliciet in available_tools maar blijft de beste ingebouwde route"
+    return {"tool": tool, "args": args, "reason": reason, "fake_success": False}
+
+
+def _reflection_subject(prompt: str) -> str:
+    match = re.search(r"(?is)\bdenk\s+na\s+over\s+(?P<subject>.*?)(?:\s+en\s+(?:open|ga|vraag|stel)\b|\s+als\b|[.?!]?$)", prompt)
+    if match:
+        subject = match.group("subject").strip(" :;,.")
+        if subject:
+            return subject[:500]
+    match = re.search(r"(?is)\bover\s+(?P<subject>.*?)(?:\s+en\s+(?:open|ga|vraag|stel)\b|\s+als\b|[.?!]?$)", prompt)
+    if match:
+        subject = match.group("subject").strip(" :;,.")
+        if subject:
+            return subject[:500]
+    return prompt[:500]
+
+
+def _clean_prompt(prompt: object) -> str:
+    return " ".join(str(prompt or "").replace("\x00", " ").strip().split())[:4000]

@@ -57,6 +57,65 @@ class TestLivingOuroboros(unittest.TestCase):
         self.assertGreaterEqual(len(events), 3)
         self.assertIn(432.0, {event["frequency"] for event in events})
 
+    def test_levendige_actie_reflects_opens_grok_and_persists(self):
+        from controller.orchestrator import WintripOrchestrator
+
+        calls = []
+
+        class FakeKB:
+            def search(self, *_args, **_kwargs):
+                return []
+
+            def search_detailed(self, *_args, **_kwargs):
+                return []
+
+        class FakeReflector:
+            def evaluate_action(self, *_args, **_kwargs):
+                return {"type": "success", "insight": "ok"}
+
+        class FakeAgentTools:
+            def status(self):
+                return {"available_tools": ["memory_search", "run_tests"]}
+
+        def fake_world_search(query, limit=5):
+            calls.append(("search", query, limit))
+            return {"status": "success", "query": query, "count": 1, "matches": [{"text": "1GB bewustzijn compact model"}]}
+
+        def fake_world_ask(question, approval="", open_tab=False, submit=True):
+            calls.append(("grok", question, approval, open_tab, submit))
+            return {
+                "status": "opened",
+                "response": "Grok-tab geopend; geen vraag getypt.",
+                "memory": {"status": "success", "stored": True, "memory_id": "world-test"},
+                "fake_success": False,
+            }
+
+        orchestrator = WintripOrchestrator(
+            ollama_client=object(),
+            sandbox=object(),
+            reflector=FakeReflector(),
+            kb=FakeKB(),
+            agent_tools=FakeAgentTools(),
+            world_ask=fake_world_ask,
+            world_search=fake_world_search,
+        )
+
+        result = orchestrator.levendige_actie("denk na over 1GB bewustzijn en open grok.com als je iets interessants vindt")
+
+        self.assertEqual(result["route"], "living_action")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["decision"]["tool"], "world_grok_open_if_interesting")
+        self.assertTrue(result["stored"])
+        self.assertEqual(result["frontend_action"]["type"], "open_url")
+        self.assertTrue(result["frontend_action"]["url"].startswith("https://grok.com/"))
+        self.assertEqual(calls[0][0], "search")
+        self.assertEqual(calls[1][0], "grok")
+        self.assertFalse(calls[1][4])
+        self.assertIn("Gedachte:", result["response"])
+        status = orchestrator._living_status()
+        self.assertGreaterEqual(status["memory"]["entry_count"], 5)
+        self.assertTrue(status["current_thought"])
+
 
 if __name__ == "__main__":
     unittest.main()

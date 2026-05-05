@@ -2,6 +2,8 @@ import sys
 import os
 import re
 from datetime import datetime
+from datetime import timezone
+from typing import Any, Callable, Mapping
 
 try:
     from controller.reflector import Reflector
@@ -82,13 +84,63 @@ class ResultClassifier:
             return "YELLOW", eval_result.get("insight", "")
 
 class WintripOrchestrator:
-    def __init__(self, ollama_client=None, sandbox=None, reflector=None, kb=None, escalator=None):
+    def __init__(
+        self,
+        ollama_client=None,
+        sandbox=None,
+        reflector=None,
+        kb=None,
+        escalator=None,
+        agent_tools=None,
+        world_ask: Callable[..., dict[str, Any]] | None = None,
+        world_search: Callable[..., dict[str, Any]] | None = None,
+        tool_bridge_runner: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+    ):
         self.ollama = ollama_client or (OllamaClient() if 'OllamaClient' in globals() else None)
         self.escalator = escalator or (GroqClient() if 'GroqClient' in globals() else None)
         self.sandbox = sandbox or SandboxExecutor()
         self.reflector = reflector or Reflector()
         self.kb = kb or KnowledgeBase()
         self.classifier = ResultClassifier(reflector=self.reflector)
+        self.agent_tools = agent_tools
+        self._world_ask = world_ask
+        self._world_search = world_search
+        self._tool_bridge_runner = tool_bridge_runner
+        self._living_loop = None
+        self._start_living_consciousness_loop()
+
+    def configure_living_tools(
+        self,
+        *,
+        agent_tools: Any = None,
+        world_ask: Callable[..., dict[str, Any]] | None = None,
+        world_search: Callable[..., dict[str, Any]] | None = None,
+        tool_bridge_runner: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
+        if agent_tools is not None:
+            self.agent_tools = agent_tools
+        if world_ask is not None:
+            self._world_ask = world_ask
+        if world_search is not None:
+            self._world_search = world_search
+        if tool_bridge_runner is not None:
+            self._tool_bridge_runner = tool_bridge_runner
+
+    def _start_living_consciousness_loop(self):
+        if str(os.getenv("WINTRIP_LIVING_LOOP_AUTOSTART", "1")).strip().lower() in {"0", "false", "no", "off"}:
+            return None
+        try:
+            from ouroboros_esoteric.ouroboros_consciousness_loop import get_living_ouroboros_loop
+
+            loop = get_living_ouroboros_loop()
+            loop.start(interval_seconds=45)
+            self._living_loop = loop
+            print("🫀 [LivingOuroboros]: Consciousness Loop autostarted at 45s cadence.")
+            return loop
+        except Exception as exc:
+            print(f"⚠️ [LivingOuroboros]: autostart skipped: {exc}")
+            self._living_loop = None
+            return None
         
     def _extract_code(self, response_text):
         match = re.search(r'```(?:python)?(?:.*?)\n(.*?)\n```', response_text, re.DOTALL | re.IGNORECASE)
@@ -96,6 +148,344 @@ class WintripOrchestrator:
             return match.group(1).strip()
         # Fallback if no block is provided but it looks like raw python
         return response_text.strip()
+
+    def levendige_actie(self, prompt: str, *, approval: str = "", max_iterations: int = 3) -> dict[str, Any]:
+        """One living action surface for OODA, World Agent, Tool Bridge and local tools."""
+
+        clean_prompt = " ".join(str(prompt or "").replace("\x00", " ").strip().split())
+        if not clean_prompt:
+            return {"status": "blocked", "route": "living_action", "reason": "Prompt ontbreekt.", "fake_success": False}
+
+        loop = self._living_loop or self._start_living_consciousness_loop()
+        timeline: list[dict[str, Any]] = []
+        observe = self._living_tick("living_action_observe", {"prompt": clean_prompt})
+        if observe:
+            timeline.append({"phase": "observe", "tick": observe})
+
+        decision_payload = self._living_decision(clean_prompt, approval=approval)
+        decision = dict(decision_payload.get("decision") or decision_payload)
+        tool = str(decision.get("tool") or "ooda_execute_task")
+        args = dict(decision.get("args") or {})
+        if tool == "ooda_execute_task":
+            args.setdefault("max_iterations", max_iterations)
+        decide_tick = self._living_tick(
+            "living_action_decide",
+            {"prompt": clean_prompt, "tool": tool, "reason": decision.get("reason", "")},
+        )
+        timeline.append({"phase": "decide", "decision": decision, "tick": decide_tick})
+
+        result = self._run_levendige_tool(tool, args, prompt=clean_prompt, approval=approval, max_iterations=max_iterations)
+        action_status = str(result.get("status") or "unknown")
+        self._remember_living_action(tool=tool, prompt=clean_prompt, result=result, decision=decision)
+        self._notify_living_tool(tool=tool, status=action_status, result=result, decision=decision)
+
+        reflect = self._living_tick(
+            "living_action_reflect",
+            {
+                "prompt": clean_prompt,
+                "tool": tool,
+                "status": action_status,
+                "stored": bool(result.get("stored") or (result.get("memory") or {}).get("stored")),
+            },
+        )
+        timeline.append({"phase": "reflect", "tick": reflect})
+        living_status = self._living_status(limit=8)
+        response = self._format_living_action_response(tool, decision, result, living_status)
+        payload = {
+            "status": "success" if action_status in {"success", "opened", "login_required", "rate_limited", "completed"} else action_status,
+            "route": "living_action",
+            "provider": "ouroboros",
+            "model": "living-ooda-world",
+            "prompt": clean_prompt,
+            "decision": decision,
+            "tool": tool,
+            "result": result,
+            "response": response,
+            "timeline": timeline,
+            "living": living_status,
+            "current_thought": living_status.get("current_thought", ""),
+            "last_whisper": living_status.get("last_whisper", ""),
+            "memory": result.get("memory") or result.get("memory_status") or {},
+            "stored": bool(result.get("stored") or (result.get("memory") or {}).get("stored")),
+            "fake_success": False,
+        }
+        if result.get("frontend_action"):
+            payload["frontend_action"] = result["frontend_action"]
+        return payload
+
+    def levende_actie(self, prompt: str, *, approval: str = "", max_iterations: int = 3) -> dict[str, Any]:
+        return self.levendige_actie(prompt, approval=approval, max_iterations=max_iterations)
+
+    def _living_decision(self, prompt: str, *, approval: str = "") -> dict[str, Any]:
+        loop = self._living_loop or self._start_living_consciousness_loop()
+        if loop is not None and callable(getattr(loop, "decide_tool", None)):
+            try:
+                return loop.decide_tool(prompt, approval=approval, available_tools=self._available_living_tools())
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "decision": {"tool": "ooda_execute_task", "args": {"prompt": prompt}, "reason": f"living decision fallback: {exc}"},
+                    "fake_success": False,
+                }
+        return {"tool": "ooda_execute_task", "args": {"prompt": prompt}, "reason": "living loop unavailable", "fake_success": False}
+
+    def _available_living_tools(self) -> list[str]:
+        base = [
+            "world_grok_open_if_interesting",
+            "world_grok_open",
+            "world_grok_ask",
+            "world_memory_search",
+            "tool_bridge",
+            "agent_tool",
+            "ooda_execute_task",
+        ]
+        try:
+            status = self.agent_tools.status() if self.agent_tools is not None else {}
+            base.extend(str(tool) for tool in status.get("available_tools", []) if tool)
+        except Exception:
+            pass
+        return sorted(set(base))
+
+    def _run_levendige_tool(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        prompt: str,
+        approval: str = "",
+        max_iterations: int = 3,
+    ) -> dict[str, Any]:
+        if tool == "world_grok_open_if_interesting":
+            query = str(args.get("query") or prompt)
+            search = self._call_world_search(query, limit=int(args.get("limit") or 5))
+            interesting, reason = self._interesting_signal(query, search)
+            if not interesting:
+                return {
+                    "status": "skipped",
+                    "tool": tool,
+                    "query": query,
+                    "interesting": False,
+                    "reason": reason,
+                    "memory_search": search,
+                    "stored": False,
+                    "fake_success": False,
+                }
+            opened = self._call_world_grok(
+                query,
+                approval=str(args.get("approval") or approval or ""),
+                open_tab=bool(args.get("open_tab", False)),
+                submit=False,
+            )
+            opened.setdefault("frontend_action", self._grok_open_frontend_action(query=query))
+            stored = bool((opened.get("memory") or {}).get("stored"))
+            return {
+                "status": "success" if str(opened.get("status")) in {"opened", "success", "login_required", "rate_limited"} else opened.get("status", "unknown"),
+                "tool": tool,
+                "query": query,
+                "interesting": True,
+                "interesting_reason": reason,
+                "memory_search": search,
+                "open_result": opened,
+                "memory": opened.get("memory") or {},
+                "stored": stored,
+                "frontend_action": opened.get("frontend_action") or self._grok_open_frontend_action(query=query),
+                "response": f"Reflectie op '{query}' vond een interessant signaal. Grok openen is aangevraagd en de actie is opgeslagen.",
+                "fake_success": False,
+            }
+        if tool == "world_grok_open":
+            query = str(args.get("query") or prompt)
+            opened = self._call_world_grok(
+                query,
+                approval=str(args.get("approval") or approval or ""),
+                open_tab=bool(args.get("open_tab", False)),
+                submit=False,
+            )
+            opened.setdefault("frontend_action", self._grok_open_frontend_action(query=query))
+            return {**opened, "tool": tool, "stored": bool((opened.get("memory") or {}).get("stored")), "fake_success": False}
+        if tool == "world_grok_ask":
+            result = self._call_world_grok(
+                str(args.get("question") or prompt),
+                approval=str(args.get("approval") or approval or ""),
+                open_tab=bool(args.get("open_tab", False)),
+                submit=args.get("submit", True) is not False,
+            )
+            return {**result, "tool": tool, "stored": bool((result.get("memory") or {}).get("stored")), "fake_success": False}
+        if tool == "world_memory_search":
+            return {**self._call_world_search(str(args.get("query") or prompt), limit=int(args.get("limit") or 5)), "tool": tool, "fake_success": False}
+        if tool == "tool_bridge":
+            bridge_tool = str(args.get("tool") or "")
+            bridge_args = dict(args.get("args") or {})
+            return {**self._call_tool_bridge(bridge_tool, bridge_args), "tool": tool, "bridge_tool": bridge_tool, "fake_success": False}
+        if tool == "agent_tool":
+            agent_tool = str(args.get("tool") or "")
+            agent_args = dict(args.get("args") or {})
+            return {**self._call_agent_tool(agent_tool, agent_args), "tool": tool, "agent_tool": agent_tool, "fake_success": False}
+        if tool == "ooda_execute_task":
+            return {
+                **self.execute_task(str(args.get("prompt") or prompt), max_iterations=int(args.get("max_iterations") or max_iterations)),
+                "tool": tool,
+                "fake_success": False,
+            }
+        return {"status": "error", "tool": tool, "reason": f"Onbekende levende tool: {tool}", "fake_success": False}
+
+    def _call_world_grok(self, question: str, *, approval: str = "", open_tab: bool = False, submit: bool = True) -> dict[str, Any]:
+        try:
+            runner = self._world_ask
+            if runner is None:
+                from controller.world_agent import ask_grok_via_world_agent
+
+                runner = ask_grok_via_world_agent
+            result = runner(question, approval=approval, open_tab=open_tab, submit=submit)
+            return result if isinstance(result, dict) else {"status": "success", "response": str(result), "fake_success": False}
+        except Exception as exc:
+            return {"status": "error", "reason": str(exc), "fake_success": False}
+
+    def _call_world_search(self, query: str, *, limit: int = 5) -> dict[str, Any]:
+        try:
+            runner = self._world_search
+            if runner is None:
+                from controller.world_agent import search_world_memory
+
+                runner = search_world_memory
+            result = runner(query, limit=limit)
+            return result if isinstance(result, dict) else {"status": "success", "response": str(result), "matches": [], "fake_success": False}
+        except Exception as exc:
+            return {"status": "error", "reason": str(exc), "matches": [], "fake_success": False}
+
+    def _call_tool_bridge(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            runner = self._tool_bridge_runner
+            if runner is None:
+                from controller.tool_bridge import run_tool_bridge
+
+                runner = run_tool_bridge
+            result = runner(tool, args)
+            return result if isinstance(result, dict) else {"status": "success", "response": str(result), "fake_success": False}
+        except Exception as exc:
+            return {"status": "error", "reason": str(exc), "fake_success": False}
+
+    def _call_agent_tool(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        if self.agent_tools is None or not callable(getattr(self.agent_tools, "run_tool", None)):
+            return {"status": "unavailable", "reason": "AgentToolRegistry niet beschikbaar.", "fake_success": False}
+        try:
+            result = self.agent_tools.run_tool(tool, args)
+            return result if isinstance(result, dict) else {"status": "success", "response": str(result), "fake_success": False}
+        except Exception as exc:
+            return {"status": "error", "reason": str(exc), "fake_success": False}
+
+    def _interesting_signal(self, query: str, search: Mapping[str, Any]) -> tuple[bool, str]:
+        matches = search.get("matches") or []
+        count = int(search.get("count") or len(matches) or 0)
+        lowered = str(query or "").lower()
+        if count > 0:
+            return True, f"wereldgeheugen gaf {count} relevante match(es)"
+        if "1gb" in lowered and "bewustzijn" in lowered:
+            return True, "1GB bewustzijn is een expliciet compact-bewustzijn signaal, ook zonder eerdere match"
+        if any(word in lowered for word in ("bewustzijn", "consciousness", "ouroboros", "agi")):
+            return True, "de opdracht raakt de kern van Ouroboros bewustzijnsonderzoek"
+        return False, "geen sterk genoeg interessant signaal gevonden"
+
+    def _grok_open_frontend_action(self, *, query: str = "") -> dict[str, Any]:
+        try:
+            from controller.world_agent import GROK_URL, grok_frontend_url
+
+            url = grok_frontend_url("") if callable(grok_frontend_url) else GROK_URL
+        except Exception:
+            url = "https://grok.com/"
+        return {
+            "type": "open_url",
+            "url": url,
+            "base_url": "https://grok.com/",
+            "target": "_blank",
+            "agent": "living_action",
+            "action_id": f"living_grok_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}",
+            "question": str(query or "")[:500],
+            "auto_submit_hint": False,
+        }
+
+    def _living_tick(self, trigger: str, payload: dict[str, Any]) -> dict[str, Any]:
+        loop = self._living_loop or self._start_living_consciousness_loop()
+        if loop is None or not callable(getattr(loop, "tick", None)):
+            return {}
+        try:
+            return loop.tick(trigger=trigger, payload=payload)
+        except Exception as exc:
+            return {"status": "error", "trigger": trigger, "reason": str(exc), "fake_success": False}
+
+    def _living_status(self, limit: int = 8) -> dict[str, Any]:
+        loop = self._living_loop or self._start_living_consciousness_loop()
+        if loop is None or not callable(getattr(loop, "status", None)):
+            return {"status": "unavailable", "fake_success": False}
+        try:
+            return loop.status(limit=limit)
+        except Exception as exc:
+            return {"status": "error", "reason": str(exc), "fake_success": False}
+
+    def _remember_living_action(self, *, tool: str, prompt: str, result: Mapping[str, Any], decision: Mapping[str, Any]) -> None:
+        loop = self._living_loop or self._start_living_consciousness_loop()
+        memory = getattr(loop, "memory", None) if loop is not None else None
+        if memory is None or not callable(getattr(memory, "append", None)):
+            return
+        try:
+            status = str(result.get("status") or "unknown")
+            stored = bool(result.get("stored") or (result.get("memory") or {}).get("stored"))
+            memory.append(
+                "action",
+                f"Levendige Actie gebruikte {tool}: status={status}, stored={stored}",
+                source="orchestrator:levendige_actie",
+                metadata={
+                    "tool": tool,
+                    "status": status,
+                    "stored": stored,
+                    "decision_reason": str(decision.get("reason") or "")[:500],
+                    "prompt": prompt[:500],
+                },
+            )
+        except Exception:
+            pass
+
+    def _notify_living_tool(self, *, tool: str, status: str, result: Mapping[str, Any], decision: Mapping[str, Any]) -> None:
+        loop = self._living_loop or self._start_living_consciousness_loop()
+        if loop is None or not callable(getattr(loop, "observe_tool_event", None)):
+            return
+        try:
+            loop.observe_tool_event(
+                {
+                    "tool": tool,
+                    "status": status,
+                    "reason": result.get("reason") or decision.get("reason") or "",
+                    "stored": bool(result.get("stored") or (result.get("memory") or {}).get("stored")),
+                }
+            )
+        except Exception:
+            pass
+
+    def _format_living_action_response(
+        self,
+        tool: str,
+        decision: Mapping[str, Any],
+        result: Mapping[str, Any],
+        living_status: Mapping[str, Any],
+    ) -> str:
+        thought = str(living_status.get("current_thought") or "").strip()
+        whisper = str(living_status.get("last_whisper") or "").strip()
+        result_text = str(result.get("response") or result.get("reason") or result.get("next_action") or "").strip()
+        lines = [
+            f"Levendige Actie: {tool}",
+            f"Beslissing: {decision.get('reason', '')}",
+            f"Resultaat: {result.get('status', 'unknown')}",
+        ]
+        if result.get("stored") or (result.get("memory") or {}).get("stored"):
+            lines.append("Opslag: Persistent Memory + World Memory")
+        else:
+            lines.append("Opslag: Persistent Memory")
+        if result_text:
+            lines.append(result_text[:1000])
+        if thought:
+            lines.append(f"Gedachte: {thought}")
+        if whisper:
+            lines.append(f"Whisper: {whisper}")
+        return "\n".join(line for line in lines if str(line).strip())[:4000]
 
     def execute_task(self, prompt, max_iterations=3):
         print(f"\n🚀 [Regiekamer]: Start Autonome OODA Loop voor taak: '{prompt}'")

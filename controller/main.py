@@ -306,8 +306,19 @@ app.state.self_modification_pipeline = {
 agent_tools = AgentToolRegistryClass(kb=kb, storage=stream_storage, app=app)
 
 # Regiekamer / Orchestrator Instantie (Hergebruikt sandbox en reflector uit de router array)
-orchestrator = WintripOrchestrator(ollama_client=ollama, sandbox=router.sandbox, reflector=router.reflector, kb=kb)
+orchestrator = WintripOrchestrator(ollama_client=ollama, sandbox=router.sandbox, reflector=router.reflector, kb=kb, agent_tools=agent_tools)
 orchestrator.active_model = "ollama"
+try:
+    from controller.tool_bridge import run_tool_bridge
+
+    orchestrator.configure_living_tools(
+        agent_tools=agent_tools,
+        world_ask=ask_grok_via_world_agent,
+        world_search=search_world_memory,
+        tool_bridge_runner=run_tool_bridge,
+    )
+except Exception:
+    pass
 
 vergadertafel_state: dict = {}
 
@@ -367,6 +378,11 @@ class PlanExecution(BaseModel):
 
 class OrchestrateRequest(BaseModel):
     task: str
+    max_iterations: Optional[int] = 3
+
+class LivingActionRequest(BaseModel):
+    prompt: str
+    approval: Optional[str] = None
     max_iterations: Optional[int] = 3
 
 class InviteRequest(BaseModel):
@@ -725,6 +741,19 @@ async def orchestrate_task(request: OrchestrateRequest):
     # We returnen direct de status (Success/Failed) plus eventueel final code.
     return result
 
+@app.post("/api/orchestrator/living-action")
+@app.post("/orchestrator/living-action")
+async def orchestrator_living_action(request: LivingActionRequest):
+    method = getattr(orchestrator, "levendige_actie", None)
+    if not callable(method):
+        raise HTTPException(status_code=503, detail="Levendige Actie is niet beschikbaar op deze orchestrator")
+    return await asyncio.to_thread(
+        method,
+        request.prompt,
+        approval=request.approval or "",
+        max_iterations=request.max_iterations or 3,
+    )
+
 @app.post("/team/discuss")
 async def discuss_task(request: TeamTask):
     task = request.task or request.message
@@ -855,6 +884,7 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "fase8_plan": {"method": "POST", "path": "/api/fase8/plan"},
         "fase8_tool_dispatch": {"method": "POST", "path": "/api/fase8/tools/dispatch"},
         "external_capabilities": {"method": "GET", "path": "/api/fase8/external-capabilities"},
+        "living_action": {"method": "POST", "path": "/api/orchestrator/living-action"},
         "orchestrator_run": {"method": "POST", "path": "/orchestrator/run"},
         "orchestrator_status": {"method": "GET", "path": "/orchestrator/status/{task_id}"},
         "orchestrator_stop": {"method": "POST", "path": "/orchestrator/stop/{task_id}"},
@@ -998,6 +1028,7 @@ def _cockpit_config_payload() -> dict[str, Any]:
             "fase8_plan": {"method": "POST", "path": "/api/fase8/plan"},
             "fase8_tool_dispatch": {"method": "POST", "path": "/api/fase8/tools/dispatch"},
             "fase8_external_capabilities": {"method": "GET", "path": "/api/fase8/external-capabilities"},
+            "living_action": {"method": "POST", "path": "/api/orchestrator/living-action"},
             "orchestrator_run": {"method": "POST", "path": "/orchestrator/run"},
             "orchestrator_status": {"method": "GET", "path": "/orchestrator/status/{task_id}"},
             "orchestrator_stop": {"method": "POST", "path": "/orchestrator/stop/{task_id}"},
@@ -1204,6 +1235,20 @@ def _cockpit_slash_dispatch_timeout_seconds() -> float:
     return max(3.0, min(configured, _cockpit_chat_timeout_seconds(), 28.0))
 
 
+def _should_route_living_action(prompt: object) -> bool:
+    method = getattr(orchestrator, "levendige_actie", None)
+    if not callable(method):
+        return False
+    text = str(prompt or "").strip().lower()
+    if not text or text.startswith("/"):
+        return False
+    if "grok.com" in text and "interessant" in text and any(marker in text for marker in ("denk", "reflect", "bewustzijn")):
+        return True
+    if text.startswith(("denk na", "reflecteer", "levendige actie")) and any(marker in text for marker in ("tool", "browser", "grok", "geheugen")):
+        return True
+    return False
+
+
 async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     requested_provider, provider = _normalize_cockpit_provider(req.provider)
     model = _default_cockpit_model(provider, req.model)
@@ -1255,6 +1300,46 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         slash_result.setdefault("tool_schema_count", 0)
         slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
         return _with_cockpit_self_context(slash_result, chat_context, provider, model)
+
+    if _should_route_living_action(req.prompt):
+        method = getattr(orchestrator, "levendige_actie", None)
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    method,
+                    req.prompt,
+                    approval=req.approval or "",
+                    max_iterations=3,
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return _with_cockpit_self_context(
+                _chat_timeout_payload(
+                    requested_provider=requested_provider,
+                    provider="ouroboros",
+                    model="living-ooda-world",
+                    route="living_action",
+                    timeout_seconds=timeout_seconds,
+                    local_only=False,
+                    tools=tools,
+                    return_tools=_should_return_tool_schemas(req),
+                ),
+                chat_context,
+                provider,
+                model,
+            )
+        if not isinstance(result, dict):
+            result = {"status": "success", "response": str(result)}
+        result.setdefault("status", "success")
+        result.setdefault("provider", "ouroboros")
+        result.setdefault("requested_provider", requested_provider)
+        result.setdefault("model", "living-ooda-world")
+        result.setdefault("route", "living_action")
+        result.setdefault("local_only", False)
+        result.setdefault("tool_schemas", tools if _should_return_tool_schemas(req) else [])
+        result.setdefault("tool_schema_count", len(tools) if _should_return_tool_schemas(req) else 0)
+        return _with_cockpit_self_context(result, chat_context, provider, model)
 
     world_intent = detect_world_intent(req.prompt)
     if world_intent is not None:
@@ -1485,6 +1570,9 @@ def _with_cockpit_self_context(
     response = str(result.get("response") or result.get("message") or "")
     status = str(result.get("status") or "")
     self_context = dict(chat_context.get("self_context") or {})
+    living_echo = _living_chat_echo()
+    if living_echo:
+        result["living_echo"] = living_echo
     result["conversation_id"] = chat_context.get("conversation_id")
     if status == "success" and response.strip():
         try:
@@ -1500,6 +1588,27 @@ def _with_cockpit_self_context(
             self_context["last_store"] = {"status": "error", "reason": str(exc), "fake_success": False}
     result["self_context"] = self_context
     return result
+
+
+def _living_chat_echo() -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.ouroboros_consciousness_loop import living_status
+
+        status = living_status(limit=8)
+    except Exception:
+        return {}
+    thought = str(status.get("current_thought") or "").strip()
+    whisper = str(status.get("last_whisper") or "").strip()
+    if not thought and not whisper:
+        return {}
+    return {
+        "current_thought": thought,
+        "last_whisper": whisper,
+        "running": bool(status.get("running")),
+        "status": status.get("status", "unknown"),
+        "memory_entry_count": (status.get("memory") or {}).get("entry_count", 0),
+        "fake_success": False,
+    }
 
 
 def _raw_model_names() -> list[str]:

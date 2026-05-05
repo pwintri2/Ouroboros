@@ -1361,6 +1361,7 @@ function formatMetric(value: unknown): string {
 function summarizeResult(raw: unknown): string {
   if (!raw || typeof raw !== "object") return raw ? String(raw) : "";
   const data = raw as Record<string, unknown>;
+  const livingEcho = data.living_echo && typeof data.living_echo === "object" ? (data.living_echo as Record<string, unknown>) : null;
   const parts = [
     data.status ? `status=${data.status}` : "",
     data.provider ? `provider=${data.provider}` : "",
@@ -1372,6 +1373,8 @@ function summarizeResult(raw: unknown): string {
     data.stderr ? `stderr: ${String(data.stderr).trim()}` : "",
     data.stdout ? `stdout: ${String(data.stdout).trim()}` : "",
     data.error ? `error: ${String(data.error).trim()}` : "",
+    livingEcho?.current_thought ? `thought: ${String(livingEcho.current_thought).trim()}` : "",
+    livingEcho?.last_whisper ? `whisper: ${String(livingEcho.last_whisper).trim()}` : "",
   ].filter(Boolean);
   return parts.join("\n").slice(0, 4000);
 }

@@ -484,6 +484,49 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertTrue(data["frontend_action"]["url"].startswith("https://grok.com/"))
         self.assertIn("antwoord", data["frontend_action"]["url"])
 
+    def test_cockpit_chat_routes_reflective_grok_prompt_to_living_action(self):
+        calls = []
+        original_method = getattr(self.main.orchestrator, "levendige_actie", None)
+
+        def fake_living_action(prompt, approval="", max_iterations=3):
+            calls.append({"prompt": prompt, "approval": approval, "max_iterations": max_iterations})
+            return {
+                "status": "success",
+                "route": "living_action",
+                "provider": "ouroboros",
+                "model": "living-ooda-world",
+                "response": "Levendige Actie: world_grok_open_if_interesting",
+                "decision": {"tool": "world_grok_open_if_interesting"},
+                "frontend_action": {"type": "open_url", "url": "https://grok.com/", "target": "_blank"},
+                "stored": True,
+                "fake_success": False,
+            }
+
+        self.main.orchestrator.levendige_actie = fake_living_action
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ollama",
+                    "model": "llama3.2:latest",
+                    "prompt": "denk na over 1GB bewustzijn en open grok.com als je iets interessants vindt",
+                },
+            )
+        finally:
+            if original_method is None:
+                delattr(self.main.orchestrator, "levendige_actie")
+            else:
+                self.main.orchestrator.levendige_actie = original_method
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "living_action")
+        self.assertEqual(data["decision"]["tool"], "world_grok_open_if_interesting")
+        self.assertEqual(data["frontend_action"]["type"], "open_url")
+        self.assertTrue(data["stored"])
+        self.assertEqual(calls[0]["prompt"], "denk na over 1GB bewustzijn en open grok.com als je iets interessants vindt")
+        self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
     def test_cockpit_chat_returns_disabled_payload_when_multi_api_is_unavailable(self):
         self.main.app.state.multi_api_router = None
         original_multi = self.main.MultiAPIRouter
