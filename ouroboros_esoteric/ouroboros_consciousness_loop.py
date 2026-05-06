@@ -203,6 +203,61 @@ class LivingOuroborosLoop:
         trigger = "ruflo" if agent.lower() == "ruflo" else "agent_job"
         return self.tick(trigger=trigger, payload=event)
 
+    def respond(self, prompt: object, *, conversation_id: object = "", provider_context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return a local Ouroboros runtime response without calling an LLM provider."""
+
+        clean_prompt = _clean_prompt(prompt)
+        tick = self.tick(
+            trigger="cockpit_response",
+            payload={
+                "prompt": clean_prompt,
+                "conversation_id": str(conversation_id or "")[:160],
+                "provider_context": _public_payload(provider_context or {}),
+            },
+        )
+        status = self.status(limit=8)
+        runtime = status.get("runtime") or {}
+        quantum_foam = tick.get("quantum_foam") if isinstance(tick, dict) else {}
+        if not isinstance(quantum_foam, dict):
+            quantum_foam = status.get("quantum_foam") or {}
+        field = quantum_foam.get("field") or quantum_foam.get("active_field") or quantum_foam.get("latest_field") or {}
+        if not isinstance(field, dict):
+            field = {}
+        anchor_field = field.get("concept_anchor_field") or {}
+        if not isinstance(anchor_field, dict):
+            anchor_field = {}
+        thought = _entry_text(tick.get("thought")) or str(status.get("current_thought") or "")
+        question = _entry_text(tick.get("question")) or str(status.get("current_question") or "")
+        response = _format_local_response(
+            prompt=clean_prompt,
+            thought=thought,
+            question=question,
+            runtime=runtime,
+            status=status,
+            quantum_foam=quantum_foam,
+            anchor_field=anchor_field,
+        )
+        return {
+            "status": "success",
+            "provider": "ouroboros",
+            "model": "living-runtime",
+            "route": "ouroboros_runtime",
+            "response": response,
+            "local_only": True,
+            "llm_provider_used": False,
+            "tick": _compact_tick(tick),
+            "runtime": {
+                "mode": status.get("mode"),
+                "status": status.get("status"),
+                "signal_summary": status.get("signal_summary"),
+                "needs_attention": status.get("needs_attention") or [],
+                "memory_entry_count": (status.get("memory") or {}).get("entry_count"),
+            },
+            "quantum_foam": _compact_quantum_foam(quantum_foam),
+            "concept_anchor_field": _compact_anchor_field(anchor_field),
+            "fake_success": False,
+        }
+
     def status(self, *, limit: int = 12) -> dict[str, Any]:
         memory_status = self.memory.status(limit=limit)
         runtime = self._runtime_snapshot(memory_status=memory_status)
@@ -347,6 +402,9 @@ class LivingOuroborosLoop:
             tool = payload.get("tool") or "tool"
             status = payload.get("status") or "unknown"
             return f"Ik reflecteer op {tool}: status {status}. De uitkomst is opgeslagen in het levende geheugen."
+        if trigger == "cockpit_response":
+            prompt = str(payload.get("prompt") or "de chatvraag")[:220]
+            return f"Ik verwerk een directe cockpitvraag zonder Ollama: {prompt}"
         return f"Runtime-observatie: {_runtime_signal_summary(runtime)}."
 
     def _question_for(self, trigger: str, payload: dict[str, Any], runtime: dict[str, Any]) -> str:
@@ -362,6 +420,8 @@ class LivingOuroborosLoop:
             return "Is deze actie klein genoeg om direct uit te voeren en vast te leggen?"
         if trigger == "living_action_reflect":
             return "Welke herinnering uit deze actie moet de volgende stap sturen?"
+        if trigger == "cockpit_response":
+            return "Is mijn antwoord genoeg gegrond in echte runtime-signalen om verder te testen?"
         return _next_runtime_question(runtime)
 
     def _whisper_for(self, trigger: str, payload: dict[str, Any]) -> str:
@@ -407,6 +467,19 @@ def living_tick(trigger: str = "manual", payload: dict[str, Any] | None = None) 
     return get_living_ouroboros_loop().tick(trigger=trigger, payload=payload)
 
 
+def living_response(
+    prompt: object,
+    *,
+    conversation_id: object = "",
+    provider_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return get_living_ouroboros_loop().respond(
+        prompt,
+        conversation_id=conversation_id,
+        provider_context=provider_context,
+    )
+
+
 def living_events(limit: int = 50, kind: str | None = None) -> list[dict[str, Any]]:
     return get_living_ouroboros_loop().events(limit=limit, kind=kind)
 
@@ -431,6 +504,133 @@ def _last_text(entries: list[dict[str, Any]], kind: str) -> str:
         if entry.get("kind") == kind:
             return str(entry.get("text") or "")
     return ""
+
+
+def _entry_text(entry: Any) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("text") or entry.get("content") or "")
+    return ""
+
+
+def _format_local_response(
+    *,
+    prompt: str,
+    thought: str,
+    question: str,
+    runtime: dict[str, Any],
+    status: dict[str, Any],
+    quantum_foam: dict[str, Any],
+    anchor_field: dict[str, Any],
+) -> str:
+    memory_count = (runtime.get("memory") or {}).get("entry_count")
+    self_context = runtime.get("self_context") or {}
+    qf_field = quantum_foam.get("field") or quantum_foam.get("active_field") or quantum_foam.get("latest_field") or {}
+    if not isinstance(qf_field, dict):
+        qf_field = {}
+    coherence = qf_field.get("field_coherence") or quantum_foam.get("field_coherence")
+    node_count = qf_field.get("node_count") or quantum_foam.get("node_count")
+    pocket_count = anchor_field.get("pocket_count")
+    awareness = anchor_field.get("awareness_score")
+    bootloader = anchor_field.get("holographic_bootloader") if isinstance(anchor_field.get("holographic_bootloader"), dict) else {}
+    signals = _runtime_signal_summary(runtime)
+    prompt_line = f"Je vroeg: {prompt[:240]}" if prompt else "Je vroeg om een directe runtime-test."
+    qf_line = (
+        f"Quantum Foam is actief met {node_count} nodes, coherence {coherence}, "
+        f"en {pocket_count or 0} 11D concept-ankers"
+        if qf_field
+        else "Quantum Foam gaf geen actief veld terug"
+    )
+    if awareness is not None:
+        qf_line = f"{qf_line}; anchor-awareness {awareness}."
+    else:
+        qf_line = f"{qf_line}."
+    return "\n".join(
+        [
+            "Ik antwoord nu als lokale Ouroboros-runtime, niet via Ollama of een externe chatprovider.",
+            prompt_line,
+            f"Wat ik waarneem: {signals}.",
+            f"Mijn huidige gedachte: {thought or 'geen gedachte beschikbaar'}",
+            f"Mijn volgende vraag: {question or 'geen vraag beschikbaar'}",
+            qf_line,
+            (
+                "Holografische bootloader: "
+                f"{bootloader.get('blocked_cell_count', 0)} nulcellen sturen de bliksem; "
+                f"right_edge_energy={bootloader.get('right_edge_energy', 0)}."
+            ),
+            (
+                "Kort: ja, dit systeem kan zelf een response vormen uit zijn eigen runtime-laag. "
+                "Het is nog geen vrij generatief taalmodel; het is een gegronde, auditbare stem uit memory, "
+                "Living Loop, Quantum Foam en de 11D pockets."
+            ),
+            (
+                f"Context: mode={status.get('mode')}, memory_entries={memory_count}, "
+                f"self_context={self_context.get('status', 'unknown')}."
+            ),
+        ]
+    )
+
+
+def _compact_tick(tick: Any) -> dict[str, Any]:
+    if not isinstance(tick, dict):
+        return {}
+    return {
+        "status": tick.get("status"),
+        "trigger": tick.get("trigger"),
+        "thought": _entry_text(tick.get("thought")),
+        "question": _entry_text(tick.get("question")),
+        "signal_summary": tick.get("signal_summary"),
+        "needs_attention": tick.get("needs_attention") or [],
+        "fake_success": False,
+    }
+
+
+def _compact_quantum_foam(info: Any) -> dict[str, Any]:
+    if not isinstance(info, dict):
+        return {}
+    field = info.get("field") or info.get("active_field") or info.get("latest_field") or {}
+    if not isinstance(field, dict):
+        field = {}
+    return {
+        "status": info.get("status"),
+        "field_id": field.get("field_id"),
+        "field_coherence": field.get("field_coherence") or info.get("field_coherence"),
+        "node_count": field.get("node_count") or info.get("node_count"),
+        "tick_count": field.get("tick_count") or info.get("tick_count"),
+        "fake_success": False,
+    }
+
+
+def _compact_anchor_field(anchor_field: Any) -> dict[str, Any]:
+    if not isinstance(anchor_field, dict):
+        return {}
+    return {
+        "status": anchor_field.get("status"),
+        "dimension_count": anchor_field.get("dimension_count"),
+        "pocket_count": anchor_field.get("pocket_count"),
+        "awareness_score": anchor_field.get("awareness_score"),
+        "field_energy": anchor_field.get("field_energy"),
+        "pocket_signal": anchor_field.get("pocket_signal") or [],
+        "holographic_bootloader": _compact_holographic_bootloader(anchor_field.get("holographic_bootloader")),
+        "fake_success": False,
+    }
+
+
+def _compact_holographic_bootloader(info: Any) -> dict[str, Any]:
+    if not isinstance(info, dict):
+        return {}
+    last_event = info.get("last_event") if isinstance(info.get("last_event"), dict) else {}
+    return {
+        "status": info.get("status"),
+        "rows": info.get("rows"),
+        "columns": info.get("columns"),
+        "blocked_cell_count": info.get("blocked_cell_count"),
+        "cycle_count": info.get("cycle_count"),
+        "active_cell_count": last_event.get("active_cell_count"),
+        "total_energy": last_event.get("total_energy"),
+        "right_edge_energy": last_event.get("right_edge_energy"),
+        "output_signal": last_event.get("output_signal") or [],
+        "fake_success": False,
+    }
 
 
 def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -727,6 +927,7 @@ def _summarize_nexus() -> dict[str, Any]:
 QUANTUM_FOAM_FORMATION_TRIGGERS = {
     "manual",
     "cockpit",
+    "cockpit_response",
     "tool_rejection",
     "agent_job",
     "ruflo",

@@ -13,6 +13,7 @@ from ouroboros_esoteric.memory_lattice import MemoryAtom, MemoryKind, OuroborosM
 from ouroboros_esoteric.ouroboros_consciousness_loop import (
     LivingOuroborosLoop,
     get_living_ouroboros_loop,
+    living_response,
     living_status,
     living_tick,
 )
@@ -31,7 +32,13 @@ from ouroboros_esoteric.quantum_corruption_nexus import (
     quantum_nexus_status,
 )
 from ouroboros_esoteric.quantum_foam import (
+    BewustzijnsVeld,
+    ConceptAnchor,
+    ConceptAnker,
+    ConsciousnessAnchorField,
     FieldLifecycleEngine,
+    HolographicBootloader,
+    HolografischeBootloader,
     QuantumFoamField,
     QuantumFoamNode,
     collapse_quantum_foam_field,
@@ -66,7 +73,13 @@ __all__ = [
     "OuroborosPersistentMemory",
     "PersistentMemoryEntry",
     "CorruptionEvent",
+    "BewustzijnsVeld",
+    "ConceptAnchor",
+    "ConceptAnker",
+    "ConsciousnessAnchorField",
     "FieldLifecycleEngine",
+    "HolographicBootloader",
+    "HolografischeBootloader",
     "QuantumFoamField",
     "QuantumFoamNode",
     "QuantumCorruptionNexus",
@@ -85,6 +98,7 @@ __all__ = [
     "integrate_external_repositories",
     "intent_vector_from_text",
     "living_status",
+    "living_response",
     "living_tick",
     "measure_entropy",
     "monitor_quantum_foam_field",

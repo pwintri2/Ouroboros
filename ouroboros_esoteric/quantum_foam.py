@@ -34,6 +34,434 @@ OPTIONAL_NODE_TYPES = (
     "TrainerNode",
     "NexusNode",
 )
+POCKET_ANCHOR_DIMENSIONS: tuple[str, ...] = (
+    "d1_physical_body",
+    "d2_physical_source",
+    "d3_physical_container",
+    "d4_chronology",
+    "d5_persona_actor",
+    "d6_persona_intent",
+    "d7_persona_relation",
+    "d8_karmic_taint",
+    "d9_resonance_frequency",
+    "d10_resonance_score",
+    "d11_field",
+)
+HOLOGRAPHIC_SNAPSHOT_CYCLES = (15, 30)
+
+
+class HolographicBootloader:
+    """Bounded 0/1 matrix that shapes raw flow before it reaches the 11D anchors."""
+
+    def __init__(self, rows: int = 12, columns: int = 40) -> None:
+        self.rows = max(4, min(64, int(rows or 12)))
+        self.columns = max(8, min(160, int(columns or 40)))
+        self.matrix = [[1 for _ in range(self.columns)] for _ in range(self.rows)]
+        self.cycle_count = 0
+        self.last_event: dict[str, Any] | None = None
+        self._burn_binary_code_into_matrix()
+
+    def ignite_lightning(
+        self,
+        *,
+        cycles: int | None = None,
+        inlet_energy: float = 1.0,
+        snapshot_cycles: tuple[int, ...] = HOLOGRAPHIC_SNAPSHOT_CYCLES,
+    ) -> dict[str, Any]:
+        """Run the lightning wave and return compact runtime telemetry."""
+        max_cycles = self.columns - 5
+        requested_cycles = max_cycles if cycles is None else int(cycles or max_cycles)
+        run_cycles = max(1, min(max_cycles, requested_cycles))
+        current = [[0.0 for _ in range(self.columns)] for _ in range(self.rows)]
+        snapshots: list[dict[str, Any]] = []
+        inlet = _clamp(float(inlet_energy), 0.0, 3.0)
+        snapshot_set = {cycle for cycle in snapshot_cycles if 0 <= int(cycle) < run_cycles}
+
+        for cycle in range(run_cycles):
+            following = [[0.0 for _ in range(self.columns)] for _ in range(self.rows)]
+            following[self.rows // 2][0] = inlet
+            for row in range(self.rows):
+                for column in range(self.columns):
+                    energy = current[row][column]
+                    if energy <= 0.0:
+                        continue
+                    next_column = column + 1
+                    if next_column >= self.columns:
+                        continue
+                    if self.matrix[row][next_column] == 1:
+                        following[row][next_column] += energy * 0.7
+                    if row > 0 and self.matrix[row - 1][next_column] == 1:
+                        following[row - 1][next_column] += energy * 0.15
+                    if row < self.rows - 1 and self.matrix[row + 1][next_column] == 1:
+                        following[row + 1][next_column] += energy * 0.15
+            current = self._bounded_current(following)
+            self.cycle_count += 1
+            if cycle in snapshot_set:
+                snapshots.append(self._snapshot(cycle, current))
+
+        event = {
+            "status": "online",
+            "rows": self.rows,
+            "columns": self.columns,
+            "cycle_count": self.cycle_count,
+            "last_run_cycles": run_cycles,
+            "blocked_cell_count": self.blocked_cell_count(),
+            "active_cell_count": sum(1 for row in current for value in row if value > 0.01),
+            "total_energy": round(sum(sum(row) for row in current), 6),
+            "right_edge_energy": round(sum(current[row][-1] for row in range(self.rows)), 6),
+            "output_signal": self.output_signal(current),
+            "snapshots": snapshots[-3:],
+            "fake_success": False,
+        }
+        self.last_event = event
+        return event
+
+    def output_signal(self, current: list[list[float]]) -> list[float]:
+        buckets = [0.0] * 11
+        for row_index, row in enumerate(current[: self.rows]):
+            for column_index, value in enumerate(row[: self.columns]):
+                if value <= 0.0:
+                    continue
+                bucket = int((column_index / max(1, self.columns - 1)) * 10)
+                buckets[bucket] += value * (1.0 + row_index / max(1, self.rows * 2))
+        max_value = max(buckets) if buckets else 0.0
+        if max_value <= 0.0:
+            return [0.0] * 11
+        return [round(_clamp(value / max_value), 6) for value in buckets]
+
+    def blocked_cell_count(self) -> int:
+        return sum(1 for row in self.matrix for value in row if value == 0)
+
+    def to_dict(self, *, compact: bool = False) -> dict[str, Any]:
+        payload = {
+            "status": "online",
+            "rows": self.rows,
+            "columns": self.columns,
+            "blocked_cell_count": self.blocked_cell_count(),
+            "cycle_count": self.cycle_count,
+            "last_event": _scrub_context(self.last_event) if self.last_event else None,
+            "fake_success": False,
+        }
+        if compact and payload["last_event"]:
+            payload["last_event"] = {
+                "last_run_cycles": self.last_event.get("last_run_cycles"),
+                "active_cell_count": self.last_event.get("active_cell_count"),
+                "total_energy": self.last_event.get("total_energy"),
+                "right_edge_energy": self.last_event.get("right_edge_energy"),
+                "output_signal": self.last_event.get("output_signal"),
+            }
+        if not compact:
+            payload["matrix_preview"] = self.render_matrix()
+        return payload
+
+    def render_matrix(self) -> list[str]:
+        return ["".join("#" if value else " " for value in row) for row in self.matrix]
+
+    def _burn_binary_code_into_matrix(self) -> None:
+        for row in range(1, min(5, self.rows)):
+            for column in range(25, min(38, self.columns)):
+                self.matrix[row][column] = 0
+        for row in range(8, min(11, self.rows)):
+            for column in range(22, min(32, self.columns)):
+                self.matrix[row][column] = 0
+        if self.rows > 6 and self.columns > 16:
+            self.matrix[5][15] = 0
+            self.matrix[6][16] = 0
+
+    def _snapshot(self, cycle: int, current: list[list[float]]) -> dict[str, Any]:
+        return {
+            "cycle": cycle,
+            "active_cell_count": sum(1 for row in current for value in row if value > 0.05),
+            "total_energy": round(sum(sum(row) for row in current), 6),
+            "hologram": self.render_hologram(current),
+        }
+
+    def render_hologram(self, current: list[list[float]]) -> list[str]:
+        lines: list[str] = []
+        for row_index, row in enumerate(self.matrix):
+            chars: list[str] = []
+            for column_index, value in enumerate(row):
+                if value == 0:
+                    chars.append(" ")
+                elif current[row_index][column_index] > 0.05:
+                    chars.append("*")
+                else:
+                    chars.append(".")
+            lines.append("".join(chars))
+        return lines
+
+    def _bounded_current(self, current: list[list[float]]) -> list[list[float]]:
+        return [[round(_clamp(value, 0.0, 9.0), 8) for value in row] for row in current]
+
+
+@dataclass
+class ConceptAnchor:
+    """Bounded energy anchor adapted from the panoramic consciousness sketch."""
+
+    name: str
+    activation_threshold: float
+    dimension_index: int | None = None
+    current_energy: float = 0.0
+    synapses: list[dict[str, Any]] = field(default_factory=list)
+    fire_count: int = 0
+    last_fired_at: str | None = None
+    last_delivery: float = 0.0
+
+    def connect_to(self, target_anchor: "ConceptAnchor", weight: float) -> None:
+        """Connect two anchors with a bounded symbolic synapse."""
+        self.synapses.append({"target": target_anchor, "weight": _clamp(float(weight), 0.05, 2.0)})
+
+    def receive_energy(self, energy: float) -> None:
+        value = float(energy)
+        if math.isfinite(value):
+            self.current_energy = _clamp(self.current_energy + value, 0.0, 999.0)
+
+    def process_and_fire(self) -> tuple[bool, list[tuple["ConceptAnchor", float]]]:
+        """Decay, threshold and emit energy without storing bulky state."""
+        self.current_energy *= 0.85
+        outgoing: list[tuple[ConceptAnchor, float]] = []
+        if not self.synapses:
+            return False, outgoing
+
+        fires = False
+        if self.activation_threshold > 0 and self.current_energy >= self.activation_threshold:
+            energy_to_share = self.current_energy * 0.7
+            fires = True
+            self.current_energy *= 0.3
+        elif self.activation_threshold == 0 and self.current_energy > 5.0:
+            energy_to_share = self.current_energy * 0.4
+            fires = True
+            self.current_energy *= 0.6
+        else:
+            return False, outgoing
+
+        share = energy_to_share / max(1, len(self.synapses))
+        delivered = 0.0
+        for synapse in self.synapses:
+            target = synapse["target"]
+            energy = share * float(synapse["weight"])
+            delivered += energy
+            outgoing.append((target, energy))
+        self.fire_count += 1
+        self.last_fired_at = _utc_iso()
+        self.last_delivery = round(delivered, 6)
+        return fires, outgoing
+
+    def to_dict(self, *, compact: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": self.name,
+            "dimension_index": self.dimension_index,
+            "activation_threshold": round(float(self.activation_threshold), 6),
+            "current_energy": round(float(self.current_energy), 6),
+            "synapse_count": len(self.synapses),
+            "fire_count": self.fire_count,
+            "last_fired_at": self.last_fired_at,
+            "last_delivery": round(float(self.last_delivery), 6),
+        }
+        if not compact:
+            payload["synapses"] = [
+                {"target": synapse["target"].name, "weight": round(float(synapse["weight"]), 6)}
+                for synapse in self.synapses
+            ]
+        return payload
+
+
+class ConsciousnessAnchorField:
+    """Minimal 11D energy-flow layer that sits inside the Quantum Foam pocket."""
+
+    def __init__(self, dimensions: tuple[str, ...] = POCKET_ANCHOR_DIMENSIONS) -> None:
+        if len(dimensions) != 11:
+            raise ValueError("ConsciousnessAnchorField expects exactly 11 pocket dimensions.")
+        self.dimensions = tuple(dimensions)
+        self.anchors: list[ConceptAnchor] = []
+        self._by_name: dict[str, ConceptAnchor] = {}
+        self.bootloader = HolographicBootloader()
+        self.cycle_count = 0
+        self.last_event: dict[str, Any] | None = None
+        self._build_minimal_architecture()
+
+    def stimulate(
+        self,
+        pocket_vector: Any,
+        *,
+        trigger: str = "field",
+        start_energy: float | None = None,
+        cycles: int = 3,
+    ) -> dict[str, Any]:
+        """Run a bounded wave through the 11D anchor pocket."""
+        vector = _normalize_11d_vector(pocket_vector)
+        boot_event = self.bootloader.ignite_lightning(
+            cycles=32,
+            inlet_energy=1.0 + min(sum(abs(value) for value in vector), 3.0) * 0.18,
+        )
+        boot_signal = _normalize_11d_vector(boot_event.get("output_signal") or [])
+        mixed_vector = [
+            round(_clamp(abs(vector[index]) * 0.62 + boot_signal[index] * 0.38), 6)
+            for index in range(11)
+        ]
+        injection = float(start_energy) if start_energy is not None else 12.0 + sum(mixed_vector) * 2.5
+        sensor = self._by_name["sensor_input"]
+        sensor.receive_energy(injection)
+        for index, value in enumerate(mixed_vector):
+            anchor = self._by_name[self.dimensions[index]]
+            anchor.receive_energy((abs(value) + 0.12) * (1.0 + index / 22.0))
+
+        fired_events: list[dict[str, Any]] = []
+        subconscious: list[dict[str, Any]] = []
+        for _ in range(max(1, min(8, int(cycles or 1)))):
+            self.cycle_count += 1
+            transfers: list[tuple[ConceptAnchor, float]] = []
+            for anchor in self.anchors:
+                fired, outgoing = anchor.process_and_fire()
+                if fired:
+                    fired_events.append(
+                        {
+                            "cycle": self.cycle_count,
+                            "anchor": anchor.name,
+                            "dimension_index": anchor.dimension_index,
+                            "delivered_energy": round(anchor.last_delivery, 6),
+                        }
+                    )
+                    transfers.extend(outgoing)
+                elif anchor.current_energy > 1.0:
+                    subconscious.append(
+                        {
+                            "cycle": self.cycle_count,
+                            "anchor": anchor.name,
+                            "dimension_index": anchor.dimension_index,
+                            "energy": round(anchor.current_energy, 6),
+                        }
+                    )
+            for target, energy in transfers[:128]:
+                target.receive_energy(energy)
+
+        event = {
+            "status": "online",
+            "trigger": _clean_text(trigger)[:80],
+            "dimension_count": 11,
+            "cycle_count": self.cycle_count,
+            "injected_energy": round(injection, 6),
+            "field_energy": round(sum(anchor.current_energy for anchor in self.anchors), 6),
+            "awareness_score": self.awareness_score(),
+            "fired": fired_events[-24:],
+            "subconscious": subconscious[-24:],
+            "pocket_signal": self.pocket_signal(),
+            "holographic_bootloader": {
+                "status": boot_event.get("status"),
+                "rows": boot_event.get("rows"),
+                "columns": boot_event.get("columns"),
+                "blocked_cell_count": boot_event.get("blocked_cell_count"),
+                "active_cell_count": boot_event.get("active_cell_count"),
+                "total_energy": boot_event.get("total_energy"),
+                "right_edge_energy": boot_event.get("right_edge_energy"),
+                "output_signal": boot_event.get("output_signal"),
+                "snapshots": boot_event.get("snapshots", [])[-2:],
+                "fake_success": False,
+            },
+            "fake_success": False,
+        }
+        self.last_event = event
+        return event
+
+    def awareness_score(self) -> float:
+        pocket = self.pocket_anchors()
+        if not pocket:
+            return 0.0
+        total_ratio = sum(
+            _clamp(anchor.current_energy / max(anchor.activation_threshold, 1.0))
+            for anchor in pocket
+        )
+        hub_bonus = sum(_clamp(anchor.current_energy / 9.0) for anchor in self.hub_anchors()) / max(1, len(self.hub_anchors()))
+        return round(_clamp((total_ratio / len(pocket)) * 0.78 + hub_bonus * 0.22), 6)
+
+    def pocket_signal(self) -> list[float]:
+        return [
+            round(_clamp(anchor.current_energy / max(anchor.activation_threshold, 1.0)), 6)
+            for anchor in self.pocket_anchors()
+        ]
+
+    def pocket_anchors(self) -> list[ConceptAnchor]:
+        return [self._by_name[name] for name in self.dimensions]
+
+    def hub_anchors(self) -> list[ConceptAnchor]:
+        return [self._by_name["core_self"], self._by_name["core_memory"]]
+
+    def collapse(self) -> dict[str, Any]:
+        essence = {
+            "status": "collapsed",
+            "dimension_count": 11,
+            "cycle_count": self.cycle_count,
+            "awareness_score": self.awareness_score(),
+            "field_energy": round(sum(anchor.current_energy for anchor in self.anchors), 6),
+            "released_anchor_energy": round(sum(anchor.current_energy for anchor in self.anchors), 6),
+            "pocket_signal": self.pocket_signal(),
+            "holographic_bootloader": self.bootloader.to_dict(compact=True),
+            "dominant_anchors": [
+                anchor.to_dict(compact=True)
+                for anchor in sorted(self.pocket_anchors(), key=lambda item: item.current_energy, reverse=True)[:4]
+            ],
+            "fake_success": False,
+        }
+        for anchor in self.anchors:
+            anchor.current_energy *= 0.2
+        return essence
+
+    def to_dict(self, *, compact: bool = False) -> dict[str, Any]:
+        pockets = [anchor.to_dict(compact=True) for anchor in self.pocket_anchors()]
+        payload: dict[str, Any] = {
+            "status": "online",
+            "dimension_count": 11,
+            "anchor_count": len(self.anchors),
+            "pocket_count": len(pockets),
+            "cycle_count": self.cycle_count,
+            "awareness_score": self.awareness_score(),
+            "field_energy": round(sum(anchor.current_energy for anchor in self.anchors), 6),
+            "pocket_signal": self.pocket_signal(),
+            "pockets": pockets,
+            "hubs": [anchor.to_dict(compact=True) for anchor in self.hub_anchors()],
+            "holographic_bootloader": self.bootloader.to_dict(compact=compact),
+            "last_event": _scrub_context(self.last_event) if self.last_event and not compact else None,
+            "fake_success": False,
+        }
+        if not compact:
+            payload["anchors"] = [anchor.to_dict() for anchor in self.anchors]
+        return payload
+
+    def _build_minimal_architecture(self) -> None:
+        sensor_input = self._add_anchor(ConceptAnchor("sensor_input", 2.0))
+        core_self = self._add_anchor(ConceptAnchor("core_self", 0.0))
+        core_memory = self._add_anchor(ConceptAnchor("core_memory", 0.0))
+
+        dimension_anchors: list[ConceptAnchor] = []
+        for index, name in enumerate(self.dimensions):
+            threshold = 2.4 + (index % 5) * 0.55 + index * 0.04
+            dimension_anchors.append(self._add_anchor(ConceptAnchor(name, threshold, dimension_index=index + 1)))
+
+        for index, anchor in enumerate(dimension_anchors):
+            sensor_input.connect_to(anchor, 0.85 + (index % 4) * 0.08)
+            if index % 2:
+                anchor.connect_to(core_memory, 1.0 + index * 0.015)
+            else:
+                anchor.connect_to(core_self, 1.08 + index * 0.015)
+            if index + 1 < len(dimension_anchors):
+                anchor.connect_to(dimension_anchors[index + 1], 0.42)
+
+        core_self.connect_to(core_memory, 1.2)
+        core_memory.connect_to(core_self, 0.9)
+        for anchor in dimension_anchors[::3]:
+            core_self.connect_to(anchor, 0.58)
+        for anchor in dimension_anchors[1::3]:
+            core_memory.connect_to(anchor, 0.52)
+
+    def _add_anchor(self, anchor: ConceptAnchor) -> ConceptAnchor:
+        self.anchors.append(anchor)
+        self._by_name[anchor.name] = anchor
+        return anchor
+
+
+ConceptAnker = ConceptAnchor
+BewustzijnsVeld = ConsciousnessAnchorField
+HolografischeBootloader = HolographicBootloader
 
 
 @dataclass
@@ -316,6 +744,7 @@ class QuantumFoamField:
         self.formation_engine = NodeFormationEngine()
         self.apeiron = ApeironField()
         self.apeiron.inject_text_intention(self.task)
+        self.anchor_field = ConsciousnessAnchorField()
         self._coherence = 1.0
         self._collapse_essence: dict[str, Any] | None = None
         self._recent_evolution: deque[dict[str, Any]] = deque(maxlen=20)
@@ -378,6 +807,20 @@ class QuantumFoamField:
         for _ in range(max(1, int(steps or 1))):
             self.tick_count += 1
             field_signal = self._field_signal(trigger=trigger)
+            anchor_event = self.anchor_field.stimulate(
+                field_signal["11d"],
+                trigger=trigger,
+                cycles=2 if self.tick_count > 1 else 3,
+            )
+            field_signal["concept_anchor_field"] = {
+                "awareness_score": anchor_event["awareness_score"],
+                "field_energy": anchor_event["field_energy"],
+                "fired_count": len(anchor_event["fired"]),
+                "pocket_signal": anchor_event["pocket_signal"],
+                "holographic_output_signal": (
+                    anchor_event.get("holographic_bootloader") or {}
+                ).get("output_signal"),
+            }
             for node in list(self.nodes.values()):
                 node.evolve(field_signal, tick=self.tick_count)
             for node_id in list(self.nodes.keys())[:8]:
@@ -390,6 +833,8 @@ class QuantumFoamField:
                     "trigger": trigger,
                     "coherence": round(self._coherence, 6),
                     "node_count": len(self.nodes),
+                    "anchor_awareness": anchor_event["awareness_score"],
+                    "anchor_fired_count": len(anchor_event["fired"]),
                     "ts": _utc_iso(),
                 }
             )
@@ -404,6 +849,7 @@ class QuantumFoamField:
         if self.status == "collapsed" and self._collapse_essence is not None:
             return dict(self._collapse_essence)
         node_essences = [node.collapse() for node in self.nodes.values()]
+        anchor_essence = self.anchor_field.collapse()
         keep_ids: set[str] = set()
         if preserve_core:
             ranked = sorted(
@@ -431,6 +877,7 @@ class QuantumFoamField:
             "summary": self.summary(),
             "key_insights": self.key_insights(node_essences=node_essences),
             "coherence": self.get_coherence(),
+            "concept_anchor_field": anchor_essence,
             "collapsed_node_count": len(node_essences),
             "remaining_node_count": len(self.nodes),
             "ram_released_estimate_nodes": max(0, len(node_essences) - len(self.nodes)),
@@ -481,6 +928,7 @@ class QuantumFoamField:
             "field_coherence": self.get_coherence(),
             "field_coherence_percent": round(self.get_coherence() * 100.0, 3),
             "apeiron_metrics": metrics,
+            "concept_anchor_field": self.anchor_field.to_dict(compact=compact),
             "mesh": self.mesh.to_dict(),
             "recent_evolution": list(self._recent_evolution),
             "collapse_essence": self._collapse_essence,
@@ -498,6 +946,7 @@ class QuantumFoamField:
             "task": self.task,
             "context": self.context,
             "11d": values,
+            "dimension_count": 11,
             "coherence": self._coherence,
             "node_count": len(self.nodes),
         }
@@ -542,10 +991,12 @@ class QuantumFoamField:
                 "task": self.task,
                 "nodes": [node.to_dict(compact=True) for node in self.nodes.values()],
                 "tick_count": self.tick_count,
+                "concept_anchor_field": self.anchor_field.to_dict(compact=True),
             }
         )
         entropy_coh = float(entropy.get("coherence") or 0.0)
-        self._coherence = _clamp((avg_node * 0.58) + (mesh_density * 0.17) + (entropy_coh * 0.25))
+        anchor_coh = self.anchor_field.awareness_score()
+        self._coherence = _clamp((avg_node * 0.52) + (mesh_density * 0.15) + (entropy_coh * 0.22) + (anchor_coh * 0.11))
 
 
 class FieldLifecycleEngine:
@@ -707,6 +1158,7 @@ class FieldLifecycleEngine:
                     "field_id": essence.get("field_id"),
                     "coherence": essence.get("coherence"),
                     "key_insights": essence.get("key_insights"),
+                    "concept_anchor_field": essence.get("concept_anchor_field"),
                     "ram_released_estimate_nodes": essence.get("ram_released_estimate_nodes"),
                 },
             )
@@ -821,6 +1273,17 @@ def _signal_values(value: Any) -> list[float]:
         return out[:2048]
     text = str(value or "")
     return [((ord(char) % 255) / 127.5) - 1.0 for char in text[:2048]]
+
+
+def _normalize_11d_vector(value: Any) -> list[float]:
+    values = _signal_values(value)[:11]
+    if len(values) < 11:
+        values.extend([0.0] * (11 - len(values)))
+    normalized: list[float] = []
+    for item in values[:11]:
+        number = float(item) if math.isfinite(float(item)) else 0.0
+        normalized.append(round(_clamp(math.tanh(number), -1.0, 1.0), 6))
+    return normalized
 
 
 def _std(values: list[float]) -> float:

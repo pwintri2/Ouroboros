@@ -199,6 +199,10 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["required_approval_phrase"], "Akkoord")
         self.assertIn("ollama", data["provider_options"])
         self.assertTrue(data["provider_options"]["ollama"]["local_only"])
+        self.assertIn("ouroboros", data["provider_options"])
+        self.assertTrue(data["provider_options"]["ouroboros"]["local_only"])
+        self.assertFalse(data["provider_options"]["ouroboros"]["llm_provider_used"])
+        self.assertIn("living-runtime", data["provider_options"]["ouroboros"]["models"])
         self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
         google_models = data["provider_options"]["google"]["models"]
         self.assertIn("gemini-2.5-flash", google_models)
@@ -334,6 +338,47 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertNotIn("living_echo", data)
         self.assertTrue(any(command.startswith("/codex") for command in data["commands"]))
         self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
+    def test_cockpit_chat_can_address_ouroboros_runtime_without_ollama(self):
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "ouroboros",
+                "model": "living-runtime",
+                "conversation_id": "direct-ouroboros-test",
+                "prompt": "Kun jij zelf antwoorden zonder Ollama?",
+                "include_tools": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["provider"], "ouroboros")
+        self.assertEqual(data["route"], "ouroboros_runtime")
+        self.assertTrue(data["local_only"])
+        self.assertFalse(data["llm_provider_used"])
+        self.assertIn("niet via Ollama", data["response"])
+        self.assertEqual(data["concept_anchor_field"]["dimension_count"], 11)
+        self.assertEqual(data["concept_anchor_field"]["pocket_count"], 11)
+        self.assertEqual(len(data["concept_anchor_field"]["pocket_signal"]), 11)
+        self.assertEqual(data["concept_anchor_field"]["holographic_bootloader"]["blocked_cell_count"], 84)
+        self.assertEqual(len(data["concept_anchor_field"]["holographic_bootloader"]["output_signal"]), 11)
+        self.assertIn("Holografische bootloader", data["response"])
+        self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
+    def test_ouroboros_respond_endpoint_forces_runtime_provider(self):
+        response = self.client.post(
+            "/api/ouroboros/respond",
+            json={"provider": "ollama", "model": "llama3.2:latest", "prompt": "test directe runtime"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["provider"], "ouroboros")
+        self.assertEqual(data["route"], "ouroboros_runtime")
+        self.assertFalse(data["llm_provider_used"])
+        self.assertIn("lokale Ouroboros-runtime", data["response"])
 
     def test_cockpit_chat_keeps_server_side_history_for_next_turn(self):
         first = self.client.post(

@@ -898,6 +898,12 @@ async def cockpit_config():
 async def cockpit_chat(req: CockpitChatRequest):
     return await _cockpit_chat_payload(req)
 
+@app.post("/api/ouroboros/respond")
+async def ouroboros_runtime_respond(req: CockpitChatRequest):
+    update = {"provider": "ouroboros", "model": req.model or "living-runtime"}
+    runtime_req = req.model_copy(update=update) if hasattr(req, "model_copy") else req.copy(update=update)
+    return await _cockpit_chat_payload(runtime_req)
+
 @app.get("/api/ouroboros/self-context/status")
 async def ouroboros_self_context_status():
     return _self_context_status_payload()
@@ -923,6 +929,7 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "browser_research": {"method": "POST", "path": "/api/ouroboros/research/browser"},
         "brave_search": {"method": "POST", "path": "/api/ouroboros/search/brave"},
         "brave_search_status": {"method": "GET", "path": "/api/ouroboros/search/brave/status"},
+        "ouroboros_runtime_response": {"method": "POST", "path": "/api/ouroboros/respond"},
         "ask_chatgpt_browser": {"method": "POST", "path": "/api/ouroboros/chatgpt/browser"},
         "prompt_understanding": {"method": "POST", "path": "/api/ouroboros/prompt/understand"},
         "training_ingest": {"method": "POST", "path": "/api/ouroboros/training/ingest"},
@@ -973,6 +980,10 @@ MULTI_API_KEY_ENV: dict[str, str] = {
 PROVIDER_ALIASES: dict[str, str] = {
     "local": "ollama",
     "ollama": "ollama",
+    "ouroboros": "ouroboros",
+    "living": "ouroboros",
+    "qf": "ouroboros",
+    "quantum_foam": "ouroboros",
     "chatgpt": "openai",
     "claude": "anthropic",
     "anthropic": "anthropic",
@@ -1027,6 +1038,18 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             ),
             "inventory_models_available": len(inventory_models),
             "fallback_model": models[0] if models else "",
+        },
+        "ouroboros": {
+            "provider": "ouroboros",
+            "label": "Ouroboros Runtime",
+            "available": True,
+            "enabled": True,
+            "local_only": True,
+            "models": ["living-runtime", "quantum-foam-11d"],
+            "default_model": "living-runtime",
+            "status": "online",
+            "reason": "Lokale runtime-response uit Living Loop, Quantum Foam en 11D pockets; geen Ollama-call.",
+            "llm_provider_used": False,
         }
     }
     for provider, model_options in MULTI_API_PROVIDER_MODELS.items():
@@ -1072,7 +1095,12 @@ def _cockpit_config_payload() -> dict[str, Any]:
             "ollama_inventory": inventory_models,
             "raw_local": raw_models,
             "ignored_disallowed_models": ignored,
-            "multi_api": {provider: details.get("models", []) for provider, details in provider_options.items() if provider != "ollama"},
+            "multi_api": {
+                provider: details.get("models", [])
+                for provider, details in provider_options.items()
+                if provider not in {"ollama", "ouroboros"}
+            },
+            "ouroboros": provider_options.get("ouroboros", {}).get("models", []),
         },
         "models": models,
         "required_approval_phrase": APPROVAL_PHRASE,
@@ -1084,6 +1112,7 @@ def _cockpit_config_payload() -> dict[str, Any]:
         "tool_schemas_available": callable(getattr(agent_tools, "get_tool_schemas", None)),
         "capabilities": {
             "cockpit_chat": {"method": "POST", "path": "/api/cockpit/chat"},
+            "ouroboros_runtime_response": {"method": "POST", "path": "/api/ouroboros/respond"},
             "loop_start": {"method": "POST", "path": "/api/ouroboros/loop/start"},
             "loop_pause": {"method": "POST", "path": "/api/ouroboros/loop/pause"},
             "loop_abort": {"method": "POST", "path": "/api/ouroboros/loop/abort"},
@@ -1109,6 +1138,8 @@ def _normalize_cockpit_provider(provider: Optional[str]) -> tuple[str, str]:
 def _default_cockpit_model(provider: str, requested_model: Optional[str] = None) -> str:
     if requested_model:
         return requested_model
+    if provider == "ouroboros":
+        return "living-runtime"
     if provider == "ollama":
         return _active_base(_safe_model_names())
     options = MULTI_API_PROVIDER_MODELS.get(provider) or []
@@ -1313,6 +1344,54 @@ def _should_route_living_action(prompt: object) -> bool:
     return False
 
 
+def _ouroboros_runtime_chat_payload(
+    req: CockpitChatRequest,
+    *,
+    requested_provider: str,
+    model: str,
+    tools: list[dict[str, Any]],
+    chat_context: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.ouroboros_consciousness_loop import living_response
+
+        result = living_response(
+            req.prompt,
+            conversation_id=chat_context.get("conversation_id") or req.conversation_id or "",
+            provider_context={
+                "requested_provider": requested_provider,
+                "model": model,
+                "role": req.role,
+                "history_count": len(req.history or []),
+            },
+        )
+    except Exception as exc:
+        result = {
+            "status": "error",
+            "provider": "ouroboros",
+            "model": model,
+            "route": "ouroboros_runtime",
+            "response": "",
+            "local_only": True,
+            "llm_provider_used": False,
+            "error": str(exc)[:500],
+            "fake_success": False,
+        }
+    if not isinstance(result, dict):
+        result = {"status": "success", "response": str(result)}
+    result.setdefault("status", "success")
+    result.setdefault("provider", "ouroboros")
+    result["requested_provider"] = requested_provider
+    result["model"] = result.get("model") or model
+    result["route"] = "ouroboros_runtime"
+    result["local_only"] = True
+    result["llm_provider_used"] = False
+    result["tool_schemas"] = tools if _should_return_tool_schemas(req) else []
+    result["tool_schema_count"] = len(tools) if _should_return_tool_schemas(req) else 0
+    result["fake_success"] = False
+    return result
+
+
 async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     requested_provider, provider = _normalize_cockpit_provider(req.provider)
     model = _default_cockpit_model(provider, req.model)
@@ -1364,6 +1443,38 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         slash_result.setdefault("tool_schema_count", 0)
         slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
         return _with_cockpit_self_context(slash_result, chat_context, provider, model, include_living_echo=False)
+
+    if provider == "ouroboros":
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _ouroboros_runtime_chat_payload,
+                    req,
+                    requested_provider=requested_provider,
+                    model=model,
+                    tools=tools,
+                    chat_context=chat_context,
+                ),
+                timeout=min(timeout_seconds, 20.0),
+            )
+        except asyncio.TimeoutError:
+            return _with_cockpit_self_context(
+                _chat_timeout_payload(
+                    requested_provider=requested_provider,
+                    provider="ouroboros",
+                    model=model,
+                    route="ouroboros_runtime",
+                    timeout_seconds=min(timeout_seconds, 20.0),
+                    local_only=True,
+                    tools=tools,
+                    return_tools=_should_return_tool_schemas(req),
+                ),
+                chat_context,
+                provider,
+                model,
+                include_living_echo=False,
+            )
+        return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
 
     if _should_route_living_action(req.prompt):
         method = getattr(orchestrator, "levendige_actie", None)

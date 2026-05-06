@@ -526,7 +526,8 @@ const DEFAULT_BACKEND = import.meta.env.VITE_BACKEND_URL ?? import.meta.env.TAUR
 const LEGACY_BACKEND_HINT = "http://localhost:8000";
 
 const PROVIDER_LABELS: Record<string, string> = {
-  ollama: "Ouroboros Local",
+  ouroboros: "Ouroboros Runtime",
+  ollama: "Ollama Local",
   openai: "ChatGPT Pro",
   anthropic: "Claude Opus",
   xai: "Grok",
@@ -539,7 +540,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   groq: "Groq Legacy",
 };
 
-const CANONICAL_PROVIDERS = ["ollama", "openai", "anthropic", "xai", "mistral", "google"];
+const CANONICAL_PROVIDERS = ["ouroboros", "ollama", "openai", "anthropic", "xai", "mistral", "google"];
 const API_KEY_PROVIDERS = ["openai", "anthropic", "xai", "mistral", "google", "brave"];
 const API_REQUEST_TIMEOUT_MS = 30_000;
 const CHAT_REQUEST_TIMEOUT_MS = 90_000;
@@ -1062,11 +1063,14 @@ export default function App() {
 
   useEffect(() => {
     if (providerInitialized.current || providerChoices.length === 0) return;
-    const local = providerChoices.find((item) => item.id === "ollama" && item.enabled) ?? providerChoices.find((item) => item.enabled);
+    const local =
+      providerChoices.find((item) => item.id === "ouroboros" && item.enabled) ??
+      providerChoices.find((item) => item.id === "ollama" && item.enabled) ??
+      providerChoices.find((item) => item.enabled);
     if (!local) return;
     providerInitialized.current = true;
     setProvider(local.id);
-    setModel(status.model?.active_base || local.defaultModel || local.models[0] || "llama3.2:latest");
+    setModel(local.id === "ollama" ? status.model?.active_base || local.defaultModel || local.models[0] || "llama3.2:latest" : local.defaultModel || local.models[0] || "living-runtime");
   }, [providerChoices, status.model?.active_base]);
 
   function onProviderChange(nextProvider: string) {
@@ -1840,12 +1844,13 @@ function buildProviderChoices(config: CockpitConfig, status: OuroborosStatus): P
   const localModels = configuredLocalModels.length ? configuredLocalModels : [localFallbackModel].filter(Boolean);
   const choices: ProviderChoice[] = CANONICAL_PROVIDERS.map((id) => {
     const details = options[id] ?? { provider: id };
+    const isLocalRuntime = id === "ollama" || id === "ouroboros";
     const models = id === "ollama" ? localModels : details.models ?? config.available_models?.multi_api?.[id] ?? [];
     const enabled = id === "ollama" ? Boolean(details.enabled ?? true) && models.length > 0 : !!details.enabled;
     return {
       id,
       label: PROVIDER_LABELS[id] ?? details.label ?? id,
-      kind: id === "ollama" ? "local" : "external",
+      kind: isLocalRuntime ? "local" : "external",
       enabled,
       status: details.status ?? (enabled ? "online" : "disabled"),
       models,
