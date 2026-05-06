@@ -86,12 +86,16 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         self.assertIn("gpu", tick["last_event"]["qif"]["state"])
         self.assertIn("expectation", tick["last_event"]["quantum"])
         self.assertIn("mini_router", tick["last_event"]["network"])
-        self.assertEqual(tick["last_event"]["network"]["mini_router"]["mode"], "simulated_read_only")
+        self.assertEqual(tick["last_event"]["network"]["mini_router"]["mode"], "docker_procfs_read_only")
+        self.assertTrue(tick["last_event"]["reality"]["real_observation"])
+        self.assertEqual(tick["last_event"]["reality"]["real_packet_capture"], False)
 
         status = get_streaming_status()
         self.assertGreaterEqual(status["step_count"], 12)
         self.assertEqual(status["fake_success"], False)
         self.assertEqual(status["quantum_collapse"]["sdk"], "none_numpy_classical")
+        self.assertEqual(status["quantum_collapse"]["physical_quantum_hardware"], False)
+        self.assertTrue(status["runtime_input"]["real_observation"])
 
         exported = export_streaming_dataset("Akkoord", n_samples=12)
         self.assertEqual(exported["status"], "success")
@@ -174,7 +178,7 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         self.assertEqual(qif_status["sdk"], "none_numpy_classical_complex")
         self.assertFalse(qif_status["gpu"]["enabled"])
 
-    def test_mini_router_observes_simulated_packets_and_applies_pull(self):
+    def test_mini_router_observes_runtime_metadata_packets_and_applies_pull(self):
         from controller.streaming_consciousness_adapter import NetworkPacket, StreamingConsciousness11DPocket
 
         pocket = StreamingConsciousness11DPocket(n_samples=160, seed=7)
@@ -185,7 +189,7 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         before_entanglement_dim = float(pocket.X_base[row_index, 9])
 
         pocket.mini_router.discover_devices()
-        self.assertGreaterEqual(len(pocket.mini_router.connections), 3)
+        self.assertGreaterEqual(len(pocket.mini_router.connections), 1)
 
         packet = NetworkPacket(
             src_ip="192.168.42.102",
@@ -198,10 +202,12 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         status = pocket.mini_router.status()
 
         self.assertEqual(status["status"], "active")
-        self.assertEqual(status["mode"], "simulated_read_only")
+        self.assertEqual(status["mode"], "docker_procfs_read_only")
         self.assertEqual(status["packets_processed"], 1)
         self.assertFalse(status["real_packet_capture"])
         self.assertFalse(status["real_forwarding"])
+        self.assertGreaterEqual(status["real_observations"], 1)
+        self.assertIn("docker_procfs_read_only", status["observation_sources"])
         self.assertGreater(status["rotation_pull"], 0.0)
         self.assertGreaterEqual(float(pocket.X_base[row_index, 7]), before_pull_dim)
         self.assertGreaterEqual(float(pocket.X_base[row_index, 9]), before_entanglement_dim)

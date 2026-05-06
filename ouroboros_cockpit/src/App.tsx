@@ -3108,10 +3108,12 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           <Metric label="Status" value={trainerStatus?.streaming_consciousness?.status ?? "--"} tone={trainerStatus?.streaming_consciousness?.enabled ? "good" : "warn"} />
           <Metric label="Steps" value={trainerStatus?.streaming_consciousness?.step_count ?? 0} />
           <Metric label="Steps/s" value={trainerStatus?.streaming_consciousness?.steps_per_second ? Number(trainerStatus.streaming_consciousness.steps_per_second).toFixed(1) : "--"} />
-          <Metric label="DHCP" value={trainerStatus?.streaming_consciousness?.last_event?.network?.dhcp ?? "--"} />
+          <Metric label="Input" value={trainerStatus?.streaming_consciousness?.last_event?.reality?.input_mode ?? trainerStatus?.streaming_consciousness?.runtime_input?.source ?? "--"} tone={(trainerStatus?.streaming_consciousness?.last_event?.reality?.real_observation ?? trainerStatus?.streaming_consciousness?.runtime_input?.real_observation) ? "good" : "warn"} />
+          <Metric label="Flows" value={trainerStatus?.streaming_consciousness?.runtime_input?.active_flow_count ?? trainerStatus?.streaming_consciousness?.last_event?.network?.mini_router?.real_observations ?? 0} />
+          <Metric label="Bind" value={trainerStatus?.streaming_consciousness?.last_event?.network?.dhcp ?? "--"} />
           <Metric label="IP" value={trainerStatus?.streaming_consciousness?.last_event?.network?.local_ip ?? "--"} />
           <Metric label="V avg" value={trainerStatus?.streaming_consciousness?.last_event?.elec?.v_avg ? `${Number(trainerStatus.streaming_consciousness.last_event.elec.v_avg).toFixed(1)}mV` : "--"} />
-          <Metric label="Quantum" value={trainerStatus?.streaming_consciousness?.last_event?.quantum?.expectation !== undefined ? Number(trainerStatus.streaming_consciousness.last_event.quantum.expectation).toFixed(4) : "--"} tone={trainerStatus?.streaming_consciousness?.quantum_collapse?.enabled ? "good" : undefined} />
+          <Metric label="Projection" value={trainerStatus?.streaming_consciousness?.last_event?.quantum?.expectation !== undefined ? Number(trainerStatus.streaming_consciousness.last_event.quantum.expectation).toFixed(4) : "--"} tone={trainerStatus?.streaming_consciousness?.quantum_collapse?.enabled ? "good" : undefined} />
           <Metric label="Bytes" value={trainerStatus?.streaming_consciousness?.latest_state?.total_bytes ?? 0} />
           <Metric label="Packets" value={trainerStatus?.streaming_consciousness?.last_event?.network?.total_received ?? 0} />
         </div>

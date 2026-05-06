@@ -13,10 +13,12 @@ Why this change:
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import logging
+import math
 import os
-import random
+import socket
 import struct
 import threading
 import time
@@ -39,11 +41,28 @@ DIM_INFO = 3
 DIM_NETWORK = 5
 DIM_ROUTER_PULL = 7
 DIM_ENTANGLEMENT = 9
+DOCKER_REALITY_SOURCE = "docker_procfs_read_only"
+SOFTWARE_FALLBACK_SOURCE = "software_fallback_read_only"
 _STATE_LOCK = threading.Lock()
 _WORKER_THREAD: threading.Thread | None = None
 _WORKER_STOP = threading.Event()
 _POCKET: StreamingConsciousness11DPocket | None = None
 LOGGER = logging.getLogger(__name__)
+
+
+TCP_STATES = {
+    "01": "ESTABLISHED",
+    "02": "SYN_SENT",
+    "03": "SYN_RECV",
+    "04": "FIN_WAIT1",
+    "05": "FIN_WAIT2",
+    "06": "TIME_WAIT",
+    "07": "CLOSE",
+    "08": "CLOSE_WAIT",
+    "09": "LAST_ACK",
+    "0A": "LISTEN",
+    "0B": "CLOSING",
+}
 
 
 class DHCPState(Enum):
@@ -230,7 +249,7 @@ class MiniGPUEngine:
         with self.torch.no_grad():
             vector = self.as_11d_tensor(incoming_11d_vector)
             # This is the only intentional GPU->CPU transfer in the QIF path:
-            # the classical 11D spike output leaves the quantum simulation.
+            # the classical 11D spike output leaves the complex-state model.
             spike = (vector * float(expectation)).detach().to("cpu", dtype=self.torch.float32)
             return [round(float(value), 6) for value in spike.tolist()]
 
@@ -309,11 +328,11 @@ class MiniGPUEngine:
 
 
 class SimulatedElectronNeuron:
-    """Quantum Integrate-and-Fire neuron backed by a simulated electron spin.
+    """Quantum Integrate-and-Fire style neuron backed by a software spinor.
 
-    The state is a two-amplitude spinor. Integration is continuous and unitary;
-    the classical spike is isolated in process_stream(), where measurement-like
-    thresholding bridges the quantum state to the 11D stream.
+    The state is a two-amplitude classical complex vector. Integration is
+    continuous and unitary; the spike is isolated in process_stream(), where
+    thresholding bridges the software state to the real 11D runtime stream.
     """
 
     def __init__(
@@ -441,7 +460,7 @@ class SimulatedElectronNeuron:
             unitarity_error = self.last_unitarity_error
             sdk = "none_numpy_classical_complex"
         return {
-            "type": "simulated_electron_qif",
+            "type": "software_qif_complex_state",
             "state_vector": state_vector,
             "probabilities": probabilities,
             "expectation_z": round(float(self.last_expectation_z), 8),
@@ -453,6 +472,11 @@ class SimulatedElectronNeuron:
             "unitarity_error": round(float(unitarity_error), 12),
             "sdk": sdk,
             "gpu": self.gpu_engine.status(),
+            "reality_boundary": {
+                "physical_electron_spin": False,
+                "model": "classical_complex_unitary",
+                "source": "11d_runtime_stream",
+            },
         }
 
     def _rotation(self, sigma: Any, theta: float) -> Any:
@@ -482,11 +506,12 @@ class SimulatedElectronNeuron:
 
 
 class MiniRouter:
-    """Self-attracting, simulated router at the centre of the 11D pocket.
+    """Self-attracting, read-only router at the centre of the 11D pocket.
 
     The router does not bind TUN/TAP, sniff host packets, run DHCP on the LAN or
-    forward traffic. It works on the pocket's simulated packet stream and can
-    optionally ask a local Ollama model for read-only context labels.
+    forward traffic. Its primary input is Docker/procfs and host-sensory network
+    metadata; when those sources are absent it reports a bounded software
+    fallback instead of pretending to observe real packets.
     """
 
     def __init__(self, pocket: "StreamingConsciousness11DPocket") -> None:
@@ -520,47 +545,89 @@ class MiniRouter:
         self.last_packet_route: dict[str, Any] = {}
         self.last_host_sensory_at = ""
         self.host_sensory_absorptions = 0
+        self.real_observation_count = 0
+        self.software_fallback_packets = 0
+        self.observation_sources: set[str] = set()
         self.last_gemma_attempt_monotonic = 0.0
         self.gemma_call_count = 0
         self.gemma_cooldown_skips = 0
-        self.mode = "simulated_read_only"
+        self.mode = DOCKER_REALITY_SOURCE
 
     def discover_devices(self) -> None:
-        """Simulate DHCP + mDNS/SSDP discovery inside the pocket subnet."""
-        fake_devices = [
-            {"id": "phone-01", "ip": "192.168.42.101", "mac": "aa:bb:cc:dd:ee:01", "protocol": "mDNS"},
-            {"id": "laptop-01", "ip": "192.168.42.102", "mac": "aa:bb:cc:dd:ee:02", "protocol": "SSDP"},
-            {"id": "iot-thermostat", "ip": "192.168.42.50", "mac": "aa:bb:cc:dd:ee:50", "protocol": "DHCP"},
-        ]
-        for device in fake_devices:
-            conn = self.connections.get(device["id"])
+        """Observe real Docker/procfs interfaces as read-only router devices."""
+        snapshot = self.pocket.runtime_observation()
+        self.observe_runtime_snapshot(snapshot)
+
+    def observe_runtime_snapshot(self, snapshot: dict[str, Any]) -> None:
+        source = str(snapshot.get("source") or SOFTWARE_FALLBACK_SOURCE)
+        self.mode = source
+        self.observation_sources.add(source)
+        if snapshot.get("real_observation"):
+            self.real_observation_count += 1
+        else:
+            self.software_fallback_packets += 1
+        interfaces = sorted(
+            [item for item in list(snapshot.get("interfaces") or []) if isinstance(item, dict)],
+            key=lambda item: int(item.get("rx_bytes") or 0) + int(item.get("tx_bytes") or 0),
+            reverse=True,
+        )[:12]
+        for interface in interfaces:
+            name = str(interface.get("name") or "iface")[:80]
+            device_id = f"iface:{name}"
+            rx_bytes = int(interface.get("rx_bytes") or 0)
+            tx_bytes = int(interface.get("tx_bytes") or 0)
+            packet_count = int(interface.get("rx_packets") or 0) + int(interface.get("tx_packets") or 0)
+            context = {
+                "device_type": "network_interface",
+                "intent": "read_only_runtime_interface_observation",
+                "sensitivity": "low",
+                "protocol": "PROCFS_IFACE",
+                "protocol_meaning": "Docker/procfs interface counters folded into the 11D pocket",
+                "emotional_tone": "attentive",
+                "security_risk": 1,
+                "source": f"{source}:interface",
+                "rx_bytes": rx_bytes,
+                "tx_bytes": tx_bytes,
+            }
+            pull = min(1.0, 0.18 + math.log1p(max(rx_bytes + tx_bytes, 0)) / 90.0)
+            conn = self.connections.get(device_id)
             if conn is None:
-                self.connections[device["id"]] = NetworkConnection(
-                    device_id=device["id"],
-                    ip=device["ip"],
-                    mac=device["mac"],
-                    protocol=device["protocol"],
+                self.connections[device_id] = NetworkConnection(
+                    device_id=device_id,
+                    ip=str(interface.get("ip") or self.pocket.local_ip or f"iface:{name}"),
+                    mac=str(interface.get("mac") or "unknown"),
+                    protocol="PROCFS_IFACE",
                     last_seen=self.pocket.time,
-                    gemma_context={
-                        "device_type": _device_type_from_id(device["id"]),
-                        "intent": "presence_announcement",
-                        "sensitivity": "low",
-                        "protocol_meaning": f"{device['protocol']} discovery beacon",
-                        "emotional_tone": "neutral",
-                        "security_risk": 1,
-                        "source": "simulated_discovery",
-                    },
-                    pull_strength=0.3,
-                    route_superposition=["local_pocket", "observe_only"],
-                    observed_route="local_pocket",
+                    gemma_context=context,
+                    pull_strength=pull,
+                    packet_count=packet_count,
+                    route_superposition=["observe_only", source, "consciousness_buffer"],
+                    observed_route=f"{source}_observed",
                 )
             else:
                 conn.last_seen = self.pocket.time
-                conn.pull_strength = min(1.0, conn.pull_strength + 0.01)
+                conn.gemma_context = context
+                conn.packet_count = max(conn.packet_count, packet_count)
+                conn.pull_strength = min(1.0, 0.85 * conn.pull_strength + 0.15 * pull + 0.01)
+                conn.route_superposition = ["observe_only", source, "consciousness_buffer"]
+                conn.observed_route = f"{source}_observed"
 
     def process_packet(self, packet: NetworkPacket) -> None:
-        """Observe a simulated packet and fold its context into the pocket."""
+        """Observe a read-only metadata packet and fold its context into the pocket."""
         context = self._context_for_packet(packet)
+        source = str(context.get("source") or "")
+        if "docker_procfs" in source:
+            self.mode = DOCKER_REALITY_SOURCE
+            self.observation_sources.add(DOCKER_REALITY_SOURCE)
+            self.real_observation_count += 1
+        elif "host_sensory" in source:
+            self.mode = "host_sensory_read_only"
+            self.observation_sources.add("host_sensory_adapter")
+            self.real_observation_count += 1
+        elif "fallback" in source:
+            self.mode = SOFTWARE_FALLBACK_SOURCE
+            self.observation_sources.add(SOFTWARE_FALLBACK_SOURCE)
+            self.software_fallback_packets += 1
         conn_id = f"{packet.src_ip}->{packet.dst_ip}:{packet.protocol}"
         conn = self.connections.get(conn_id)
         if conn is None:
@@ -598,7 +665,7 @@ class MiniRouter:
         self._encode_into_consciousness(packet, context, conn)
 
     def absorb_host_sensory(self, sensory: dict[str, Any]) -> None:
-        """Fold real host flow/process metadata into the simulated router."""
+        """Fold real host flow/process metadata into the read-only router."""
         captured_at = str(sensory.get("last_snapshot_at") or sensory.get("captured_at") or "")
         if captured_at and captured_at == self.last_host_sensory_at:
             return
@@ -616,6 +683,8 @@ class MiniRouter:
                 f"local={flow.get('local','')} peer={flow.get('peer','')} process={flow.get('process','')}"
             ).encode("utf-8", errors="replace")
             self.process_packet(NetworkPacket(src_ip, dst_ip, proto, payload[:512], self.pocket.time))
+        self.mode = "host_sensory_read_only"
+        self.observation_sources.add("host_sensory_adapter")
         self.last_host_sensory_at = captured_at
         self.host_sensory_absorptions += 1
 
@@ -639,6 +708,9 @@ class MiniRouter:
                 "cooldown_skips": int(self.gemma_cooldown_skips),
             },
             "host_flow_limit": int(self.host_flow_limit),
+            "observation_sources": sorted(self.observation_sources),
+            "real_observations": int(self.real_observation_count),
+            "software_fallback_packets": int(self.software_fallback_packets),
             "strongest_connections": [
                 {
                     "device_id": conn.device_id,
@@ -656,6 +728,12 @@ class MiniRouter:
             "last_route": dict(self.last_packet_route),
             "real_forwarding": False,
             "real_packet_capture": False,
+            "reality_boundary": {
+                "real_forwarding": False,
+                "real_packet_capture": False,
+                "real_source": "Docker/procfs and approved host-sensory metadata only",
+                "payloads": "not captured",
+            },
             "fake_success": False,
         }
 
@@ -665,7 +743,7 @@ class MiniRouter:
             cached = dict(self.context_cache[cache_key])
             cached["source"] = f"{cached.get('source', 'context')}:cache"
             return cached
-        if packet.payload.startswith(b"HOST_FLOW") and not self.gemma_host_sensory:
+        if packet.payload.startswith(b"PROCFS_") or (packet.payload.startswith(b"HOST_FLOW") and not self.gemma_host_sensory):
             context = _heuristic_packet_context(packet)
             self.context_cache[cache_key] = dict(context)
             return context
@@ -689,7 +767,7 @@ class MiniRouter:
 
     def _ask_gemma(self, packet: NetworkPacket) -> dict[str, Any]:
         prompt = (
-            "Return ONLY valid JSON. Fill this exact schema for a synthetic/read-only packet observation:\n"
+            "Return ONLY valid JSON. Fill this exact schema for a read-only runtime flow observation:\n"
             '{"device_type":"web_client|server|iot|unknown_device","intent":"short intent",'
             '"sensitivity":"low|medium|high|critical","protocol":"TCP|UDP|DHCP|HTTP",'
             '"protocol_meaning":"short meaning","emotional_tone":"neutral|curious|calm|seeking","security_risk":0}\n'
@@ -722,8 +800,13 @@ class MiniRouter:
 
     def _route_superposition(self, packet: NetworkPacket, context: dict[str, Any]) -> list[str]:
         routes = ["observe_only", "local_pocket"]
-        if packet.dst_ip == "255.255.255.255" or packet.protocol == "DHCP":
-            routes.append("pocket_dhcp_sim")
+        source = str(context.get("source") or "")
+        if "docker_procfs" in source:
+            routes.append(DOCKER_REALITY_SOURCE)
+        elif "host_sensory" in source:
+            routes.append("host_sensory_read_only")
+        elif packet.dst_ip == "255.255.255.255" or packet.protocol == "DHCP":
+            routes.append("address_metadata")
         if context.get("sensitivity") in {"high", "critical"} or float(context.get("security_risk") or 0) >= 7:
             routes.append("quarantine_shadow")
         elif packet.protocol in {"TCP", "UDP"}:
@@ -733,8 +816,12 @@ class MiniRouter:
     def _observe_route(self, routes: list[str], context: dict[str, Any]) -> str:
         if "quarantine_shadow" in routes:
             return "quarantine_shadow"
-        if context.get("intent") == "presence_announcement" and "pocket_dhcp_sim" in routes:
-            return "pocket_dhcp_sim"
+        if DOCKER_REALITY_SOURCE in routes:
+            return "docker_procfs_observed"
+        if "host_sensory_read_only" in routes:
+            return "host_sensory_observed"
+        if context.get("intent") == "presence_announcement" and "address_metadata" in routes:
+            return "address_metadata"
         return "consciousness_buffer" if "consciousness_buffer" in routes else routes[0]
 
     def _update_entanglement(self, src_ip: str, dst_ip: str) -> None:
@@ -811,10 +898,37 @@ def _heuristic_packet_context(packet: NetworkPacket) -> dict[str, Any]:
             "intent": "address_negotiation",
             "sensitivity": "low",
             "protocol": "DHCP",
-            "protocol_meaning": "simulated address discovery/offer inside the pocket",
+            "protocol_meaning": "address negotiation metadata folded into the pocket",
             "emotional_tone": "seeking",
             "security_risk": 2,
             "source": "heuristic",
+        }
+    if lower.startswith(b"procfs_flow") or lower.startswith(b"procfs_heartbeat"):
+        risk = 1
+        if b":22" in lower or b":3389" in lower or b":5900" in lower:
+            risk = 4
+        if b"listen" in lower:
+            risk = max(risk, 3)
+        return {
+            "device_type": "docker_runtime",
+            "intent": "read_only_procfs_flow_observation",
+            "sensitivity": "low",
+            "protocol": protocol,
+            "protocol_meaning": "Docker/procfs network metadata folded into the 11D pocket without packet capture",
+            "emotional_tone": "attentive",
+            "security_risk": risk,
+            "source": "heuristic:docker_procfs",
+        }
+    if lower.startswith(b"software_fallback"):
+        return {
+            "device_type": "software_runtime",
+            "intent": "fallback_heartbeat_when_procfs_unavailable",
+            "sensitivity": "low",
+            "protocol": protocol,
+            "protocol_meaning": "bounded software fallback because Docker/procfs telemetry was unavailable",
+            "emotional_tone": "neutral",
+            "security_risk": 1,
+            "source": "heuristic:software_fallback",
         }
     if lower.startswith(b"host_flow"):
         risk = 2
@@ -859,7 +973,7 @@ def _heuristic_packet_context(packet: NetworkPacket) -> dict[str, Any]:
         "intent": "data_transfer",
         "sensitivity": "medium",
         "protocol": protocol,
-        "protocol_meaning": "opaque simulated packet payload",
+        "protocol_meaning": "opaque read-only metadata packet",
         "emotional_tone": "neutral",
         "security_risk": 4,
         "source": "heuristic",
@@ -942,13 +1056,288 @@ def _ollama_chat_url() -> str:
     return f"{base}/api/chat"
 
 
-class StreamingConsciousnessAdapter:
-    """Simulate quantum unit operations for one observable 11D stream vector.
+def _docker_runtime_observation(flow_limit: int = 12) -> dict[str, Any]:
+    """Read bounded Docker/Linux runtime telemetry without packet capture."""
+    captured_at = datetime.utcnow().isoformat()
+    interfaces = _procfs_interfaces()
+    routes = _procfs_routes()
+    flows = _procfs_flows(max_items=flow_limit)
+    local_ips = _procfs_local_ips()
+    load = _loadavg()
+    mem = _meminfo()
+    cpu = _cpu_pressure()
+    uptime = _uptime_seconds()
+    process_count = _process_count()
+    fd_count = _fd_count()
+    rx_total = sum(int(item.get("rx_bytes") or 0) for item in interfaces)
+    tx_total = sum(int(item.get("tx_bytes") or 0) for item in interfaces)
+    listen_count = sum(1 for item in flows if str(item.get("state") or "").upper() == "LISTEN")
+    established_count = sum(1 for item in flows if str(item.get("state") or "").upper() == "ESTABLISHED")
+    default_routes = [item for item in routes if item.get("destination") == "0.0.0.0"]
+    if local_ips:
+        local_ip = local_ips[0]
+    elif flows:
+        local_ip = _endpoint_ip(str(flows[0].get("local") or "0.0.0.0"))
+    else:
+        local_ip = "0.0.0.0"
+    cpus = max(1, os.cpu_count() or 1)
+    signals = [
+        _clamp(float(load.get("load1") or 0.0) / cpus),
+        _clamp(float(mem.get("used_ratio") or 0.0)),
+        _clamp(math.log1p(rx_total) / 32.0),
+        _clamp(math.log1p(tx_total) / 32.0),
+        _clamp(len(flows) / 64.0),
+        _clamp(established_count / 32.0),
+        _clamp(listen_count / 32.0),
+        _clamp(len(interfaces) / 16.0),
+        _clamp(len(routes) / 32.0),
+        _clamp(process_count / 600.0),
+        _clamp((fd_count / 256.0) * 0.5 + (float(cpu.get("active_ratio") or 0.0) * 0.5)),
+    ]
+    real_observation = bool(interfaces or routes or flows or mem.get("available"))
+    source = DOCKER_REALITY_SOURCE if real_observation else SOFTWARE_FALLBACK_SOURCE
+    digest_source = json.dumps(
+        {
+            "interfaces": [(item.get("name"), item.get("rx_bytes"), item.get("tx_bytes")) for item in interfaces[:16]],
+            "routes": [(item.get("iface"), item.get("destination"), item.get("gateway")) for item in routes[:16]],
+            "flows": [(item.get("proto"), item.get("state"), item.get("local"), item.get("peer")) for item in flows[:flow_limit]],
+            "signals": [round(float(value), 6) for value in signals],
+        },
+        sort_keys=True,
+    )
+    return {
+        "status": "success" if real_observation else "degraded",
+        "source": source,
+        "captured_at": captured_at,
+        "snapshot_id": hashlib.sha256(digest_source.encode("utf-8", errors="replace")).hexdigest()[:16],
+        "real_observation": real_observation,
+        "scope": "docker_procfs",
+        "hostname": _read_text(Path("/etc/hostname")).strip()[:80],
+        "container_hint": _container_hint(),
+        "interfaces": interfaces[:16],
+        "routes": routes[:24],
+        "local_ips": local_ips[:8],
+        "local_ip": local_ip,
+        "sample_flows": flows[:flow_limit],
+        "active_flow_count": len(flows),
+        "listener_count": listen_count,
+        "established_count": established_count,
+        "default_route_count": len(default_routes),
+        "process_count": process_count,
+        "fd_count": fd_count,
+        "load": load,
+        "memory": mem,
+        "cpu": cpu,
+        "uptime_seconds": round(float(uptime), 3),
+        "signals_11d": [round(float(value), 6) for value in signals],
+        "real_packet_capture": False,
+        "real_forwarding": False,
+        "payloads": "not captured",
+        "fake_success": False,
+    }
 
-    The simulation is intentionally classical: NumPy complex matrices emulate a
-    two-state quantum subsystem, then collapse that observation back into the
-    existing 11D Blue Brain/streaming vector. No quantum SDK or hardware access
-    is used.
+
+def _procfs_interfaces() -> list[dict[str, Any]]:
+    path = Path("/proc/net/dev")
+    rows: list[dict[str, Any]] = []
+    text = _read_text(path)
+    for line in text.splitlines()[2:]:
+        if ":" not in line:
+            continue
+        name, rest = line.split(":", 1)
+        iface = name.strip()
+        values = rest.split()
+        if len(values) < 16:
+            continue
+        mac = _read_text(Path("/sys/class/net") / iface / "address").strip()
+        state = _read_text(Path("/sys/class/net") / iface / "operstate").strip()
+        rows.append(
+            {
+                "name": iface,
+                "mac": mac[:64],
+                "state": state[:32],
+                "rx_bytes": _int(values[0]),
+                "rx_packets": _int(values[1]),
+                "rx_errors": _int(values[2]),
+                "rx_drop": _int(values[3]),
+                "tx_bytes": _int(values[8]),
+                "tx_packets": _int(values[9]),
+                "tx_errors": _int(values[10]),
+                "tx_drop": _int(values[11]),
+            }
+        )
+    return rows
+
+
+def _procfs_routes() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    text = _read_text(Path("/proc/net/route"))
+    for index, line in enumerate(text.splitlines()):
+        if index == 0:
+            continue
+        parts = line.split()
+        if len(parts) < 8:
+            continue
+        rows.append(
+            {
+                "iface": parts[0],
+                "destination": _hex_ipv4_to_dotted(parts[1]),
+                "gateway": _hex_ipv4_to_dotted(parts[2]),
+                "flags": parts[3],
+                "metric": _int(parts[6]) if len(parts) > 6 else 0,
+                "mask": _hex_ipv4_to_dotted(parts[7]),
+            }
+        )
+    return rows
+
+
+def _procfs_local_ips() -> list[str]:
+    text = _read_text(Path("/proc/net/fib_trie"))
+    ips: list[str] = []
+    candidate = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|-- "):
+            candidate = stripped[4:].strip()
+            continue
+        if candidate and "/32 host LOCAL" in stripped:
+            if not candidate.startswith("127.") and candidate not in {"0.0.0.0", "255.255.255.255"} and candidate not in ips:
+                ips.append(candidate)
+            candidate = ""
+    return ips
+
+
+def _procfs_flows(max_items: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for proto, path in (("TCP", Path("/proc/net/tcp")), ("UDP", Path("/proc/net/udp"))):
+        text = _read_text(path)
+        for index, line in enumerate(text.splitlines()):
+            if index == 0 or len(rows) >= max_items:
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            local = _parse_procfs_endpoint(parts[1])
+            peer = _parse_procfs_endpoint(parts[2])
+            state = TCP_STATES.get(parts[3].upper(), parts[3].upper()) if proto == "TCP" else "UDP"
+            rows.append(
+                {
+                    "proto": proto.lower(),
+                    "state": state,
+                    "local": local,
+                    "peer": peer,
+                    "inode": parts[9] if len(parts) > 9 else "",
+                    "process": "procfs",
+                }
+            )
+        if len(rows) >= max_items:
+            break
+    return rows[:max_items]
+
+
+def _parse_procfs_endpoint(value: str) -> str:
+    if ":" not in value:
+        return value
+    ip_hex, port_hex = value.split(":", 1)
+    ip = _hex_ipv4_to_dotted(ip_hex)
+    try:
+        port = int(port_hex, 16)
+    except ValueError:
+        port = 0
+    return f"{ip}:{port}"
+
+
+def _hex_ipv4_to_dotted(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) != 8:
+        return text or "0.0.0.0"
+    try:
+        return socket.inet_ntoa(bytes.fromhex(text)[::-1])
+    except Exception:
+        return "0.0.0.0"
+
+
+def _loadavg() -> dict[str, Any]:
+    parts = _read_text(Path("/proc/loadavg")).split()
+    return {
+        "load1": _float(parts[0]) if len(parts) > 0 else 0.0,
+        "load5": _float(parts[1]) if len(parts) > 1 else 0.0,
+        "load15": _float(parts[2]) if len(parts) > 2 else 0.0,
+        "running": parts[3] if len(parts) > 3 else "",
+    }
+
+
+def _meminfo() -> dict[str, Any]:
+    values: dict[str, int] = {}
+    text = _read_text(Path("/proc/meminfo"))
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        values[key] = _int(rest.split()[0] if rest.split() else 0)
+    total = max(1, values.get("MemTotal", 0))
+    available = values.get("MemAvailable", 0)
+    used_ratio = _clamp((total - available) / total)
+    return {
+        "available": bool(text),
+        "total_kb": total,
+        "available_kb": available,
+        "used_ratio": round(float(used_ratio), 6),
+    }
+
+
+def _cpu_pressure() -> dict[str, Any]:
+    first = next((line for line in _read_text(Path("/proc/stat")).splitlines() if line.startswith("cpu ")), "")
+    parts = [_float(value) for value in first.split()[1:]]
+    if not parts:
+        return {"active_ratio": 0.0}
+    idle = (parts[3] if len(parts) > 3 else 0.0) + (parts[4] if len(parts) > 4 else 0.0)
+    total = max(1.0, sum(parts))
+    return {"active_ratio": round(float(_clamp((total - idle) / total)), 6)}
+
+
+def _uptime_seconds() -> float:
+    parts = _read_text(Path("/proc/uptime")).split()
+    return _float(parts[0]) if parts else 0.0
+
+
+def _process_count() -> int:
+    try:
+        return sum(1 for item in Path("/proc").iterdir() if item.name.isdigit())
+    except OSError:
+        return 0
+
+
+def _fd_count() -> int:
+    try:
+        return sum(1 for _ in Path("/proc/self/fd").iterdir())
+    except OSError:
+        return 0
+
+
+def _container_hint() -> str:
+    text = _read_text(Path("/proc/self/cgroup"))
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12] if text else ""
+    if not text:
+        return ""
+    if "docker" in text.lower() or "kubepods" in text.lower() or "containerd" in text.lower():
+        return f"containerized:{digest}"
+    return f"host_or_shared_procfs:{digest}"
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+class StreamingConsciousnessAdapter:
+    """Classical complex-state projection for one observable 11D stream vector.
+
+    NumPy complex matrices provide a bounded software model, then project that
+    observation back into the 11D runtime vector. No quantum SDK or physical
+    quantum hardware access is used inside Docker.
     """
 
     def __init__(self) -> None:
@@ -964,6 +1353,7 @@ class StreamingConsciousnessAdapter:
             "operator": "B0/sigma_z",
             "input_norm": 0.0,
             "state_prepared": [1.0, 0.0],
+            "physical_quantum_hardware": False,
         }
 
     def calculate_tensor_product(self, operator_a: Any, operator_b: Any) -> Any:
@@ -983,7 +1373,7 @@ class StreamingConsciousnessAdapter:
         return float(self.np.real(expectation_value))
 
     def trigger_quantum_collapse(self, incoming_data_array: Any) -> Any:
-        """Collapse a classical 11D vector through simulated Hamiltonian evolution."""
+        """Project a classical 11D vector through bounded complex matrix math."""
         vector = self.np.asarray(incoming_data_array, dtype=float)
         if vector.size != 11:
             raise ValueError("Exacte invoer vereist: De array moet een 11D vector zijn.")
@@ -1008,8 +1398,10 @@ class StreamingConsciousnessAdapter:
                 round(float(self.np.real(psi_state[1])), 8),
             ],
             "output_norm": round(float(self.np.linalg.norm(collapsed_11d_vector)), 8),
-            "dtype": "complex128_simulated",
+            "dtype": "complex128_software_model",
             "sdk": "none_numpy_classical",
+            "physical_quantum_hardware": False,
+            "reality_boundary": "Docker can run the classical complex projection, not a real quantum substrate.",
         }
         return collapsed_11d_vector
 
@@ -1024,10 +1416,14 @@ class StreamingConsciousness11DPocket:
 
         self.np = np
         self.rng = np.random.default_rng(int(seed))
-        self.random = random.Random(int(seed))
         self.e_types = list(E_TYPES)
         self.n_types = len(self.e_types)
         self.seed = int(seed)
+        self.last_runtime_observation: dict[str, Any] = _docker_runtime_observation()
+        self.runtime_observation_count = 1 if self.last_runtime_observation.get("real_observation") else 0
+        self.software_fallback_count = 0 if self.last_runtime_observation.get("real_observation") else 1
+        self.dataset_source = str(self.last_runtime_observation.get("source") or SOFTWARE_FALLBACK_SOURCE)
+        self._last_runtime_observation_monotonic = time.monotonic()
         self.X_base, self.y_regime = self._generate_base_pocket(n_samples)
         self.quantum_adapter = StreamingConsciousnessAdapter()
         self.last_quantum_observation: dict[str, Any] = dict(self.quantum_adapter.last_observation)
@@ -1039,8 +1435,9 @@ class StreamingConsciousness11DPocket:
         )
         self.consciousness_buffer = bytearray()
         self.max_buffer = 8192
-        self.local_ip = local_ip
-        self.dhcp_state = DHCPState.INIT
+        observed_ip = str(self.last_runtime_observation.get("local_ip") or "")
+        self.local_ip = observed_ip if observed_ip and observed_ip != "0.0.0.0" else local_ip
+        self.dhcp_state = DHCPState.BOUND if self.local_ip and self.local_ip != "0.0.0.0" else DHCPState.INIT
         self.packet_queue: list[NetworkPacket] = []
         self.total_packets_received = 0
         self.total_bytes_streamed = 0
@@ -1078,23 +1475,84 @@ class StreamingConsciousness11DPocket:
         self._last_host_sensory_check = -999.0
 
     def _generate_base_pocket(self, n_samples: int) -> tuple[Any, Any]:
+        snapshot = self.last_runtime_observation
+        if snapshot.get("real_observation") and len(snapshot.get("signals_11d") or []) == 11:
+            return self._generate_observed_pocket(n_samples, snapshot)
         try:
             from controller.blue_brain_adapter import generate_dataset
 
+            self.dataset_source = "blue_brain_synthetic_prior_fallback"
             return generate_dataset(n_samples=max(100, int(n_samples)), n_features=11, random_state=self.seed)
         except Exception:
+            self.dataset_source = SOFTWARE_FALLBACK_SOURCE
             X = self.rng.normal(0, 1, size=(max(100, int(n_samples)), 11)).astype(self.np.float32)
             y = (self.rng.random(max(100, int(n_samples))) > 0.65).astype(self.np.int32)
             return X, y
 
+    def _generate_observed_pocket(self, n_samples: int, snapshot: dict[str, Any]) -> tuple[Any, Any]:
+        np = self.np
+        count = max(100, int(n_samples))
+        base = np.asarray(snapshot.get("signals_11d") or [0.0] * 11, dtype=np.float32).reshape(11)
+        flow_pressure = float(snapshot.get("active_flow_count") or 0) / 64.0
+        mem_pressure = float((snapshot.get("memory") or {}).get("used_ratio") or 0.0)
+        rows = np.zeros((count, 11), dtype=np.float32)
+        labels = np.zeros(count, dtype=np.int32)
+        axis = np.arange(11, dtype=np.float32) + 1.0
+        for index in range(count):
+            phase = (index + 1) / max(1, count)
+            drift = np.sin(axis * phase * np.pi * 2.0) * 0.035
+            route_bias = ((index % 11) / 10.0) * float(snapshot.get("default_route_count") or 0) * 0.015
+            row = np.clip(base + drift + route_bias, -3.0, 3.5)
+            rows[index] = row.astype(np.float32)
+            labels[index] = 1 if float(np.mean(row)) + flow_pressure * 0.2 + mem_pressure * 0.25 > 0.48 else 0
+        self.dataset_source = "docker_procfs_observation_expanded"
+        return rows, labels
+
+    def runtime_observation(self, *, force: bool = False) -> dict[str, Any]:
+        now = time.monotonic()
+        if not force and self.last_runtime_observation and now - self._last_runtime_observation_monotonic < 1.0:
+            return dict(self.last_runtime_observation)
+        snapshot = _docker_runtime_observation()
+        self.last_runtime_observation = snapshot
+        self._last_runtime_observation_monotonic = now
+        if snapshot.get("real_observation"):
+            self.runtime_observation_count += 1
+            self.dataset_source = self.dataset_source if self.dataset_source else DOCKER_REALITY_SOURCE
+        else:
+            self.software_fallback_count += 1
+        observed_ip = str(snapshot.get("local_ip") or "")
+        if observed_ip and observed_ip != "0.0.0.0":
+            self.local_ip = observed_ip
+            self.dhcp_state = DHCPState.BOUND
+        return dict(snapshot)
+
+    def reality_status(self) -> dict[str, Any]:
+        snapshot = self.last_runtime_observation or {}
+        return {
+            "input_mode": str(snapshot.get("source") or self.dataset_source or SOFTWARE_FALLBACK_SOURCE),
+            "dataset_source": self.dataset_source,
+            "real_observation": bool(snapshot.get("real_observation")),
+            "runtime_observations": int(self.runtime_observation_count),
+            "software_fallbacks": int(self.software_fallback_count),
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "captured_at": snapshot.get("captured_at"),
+            "signals_11d": list(snapshot.get("signals_11d") or []),
+            "real_packet_capture": False,
+            "real_forwarding": False,
+            "physical_quantum_hardware": False,
+            "boundary": "Real Docker/procfs counters and flow metadata drive the pocket; packet payload capture, LAN routing and physical quantum effects remain outside this container.",
+        }
+
     def electrical_step(self, dt: float | None = None) -> None:
         np = self.np
         step_dt = self.dt if dt is None else float(dt)
+        snapshot = self.runtime_observation()
+        signals = np.asarray(snapshot.get("signals_11d") or [0.0] * 11, dtype=np.float32)
         for index in range(self.n_types):
-            dv = (-self.elec.v_m[index] + 0.0) / self.elec.tau * step_dt
-            self.elec.i_inj[index] *= 0.85
-            if self.random.random() < 0.03:
-                self.elec.i_inj[index] += self.random.uniform(8.0, 25.0)
+            drive = float(signals[index % max(1, len(signals))])
+            target_voltage = -72.0 + drive * 30.0
+            dv = (target_voltage - self.elec.v_m[index]) / self.elec.tau * step_dt
+            self.elec.i_inj[index] = 0.88 * self.elec.i_inj[index] + max(0.0, drive - 0.35) * 9.0
             dv += self.elec.i_inj[index] * step_dt * 0.8
             self.elec.v_m[index] += dv
             if self.elec.v_m[index] > -40.0:
@@ -1122,46 +1580,60 @@ class StreamingConsciousness11DPocket:
     def network_step(self) -> None:
         np = self.np
         row_index = self.current_idx % len(self.X_base)
+        snapshot = self.runtime_observation(force=True)
         self.mini_router.discover_devices()
         self._absorb_host_sensory_if_due()
-        if self.dhcp_state == DHCPState.INIT and self.random.random() < 0.08:
-            self._enqueue_packet(NetworkPacket("0.0.0.0", "255.255.255.255", "DHCP", b"DHCPDISCOVER", self.time))
-            self.dhcp_state = DHCPState.DISCOVER_SENT
-            self.X_base[row_index, DIM_NETWORK] = min(3.0, self.X_base[row_index, DIM_NETWORK] + 0.8)
-        elif self.dhcp_state == DHCPState.DISCOVER_SENT and self.random.random() < 0.25:
-            offered_ip = f"192.168.42.{self.random.randint(10, 250)}"
-            self.local_ip = offered_ip
-            self._enqueue_packet(
-                NetworkPacket("192.168.42.1", offered_ip, "DHCP", f"DHCPOFFER {offered_ip}".encode(), self.time)
-            )
-            self.dhcp_state = DHCPState.BOUND
-            self.X_base[row_index, DIM_NETWORK] = min(3.5, self.X_base[row_index, DIM_NETWORK] + 1.2)
-
-        if self.random.random() < 0.18:
-            src_ip = f"8.8.8.{self.random.randint(1, 254)}"
-            payload = (
-                f"GET /stream/consciousness?time={self.time:.3f} HTTP/1.1\r\n"
-                "Host: ouroboros.wintrip.ai\r\n"
-                f"X-11D-State: {self.current_idx}\r\n\r\n"
-            ).encode() + self.rng.bytes(self.random.randint(16, 64))
-            self._enqueue_packet(NetworkPacket(src_ip, self.local_ip, "TCP", payload, self.time))
-            self.total_packets_received += 1
-            info_load = min(2.5, len(payload) / 80.0)
-            self.X_base[row_index, DIM_INFO] = np.clip(self.X_base[row_index, DIM_INFO] + info_load * 0.15, -3.0, 3.5)
-            if self.random.random() < 0.4:
-                self._enqueue_packet(
-                    NetworkPacket(
-                        self.local_ip,
-                        src_ip,
-                        "TCP",
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 42\r\n\r\n[Ouroboros ACK]",
-                        self.time + 0.01,
-                    )
-                )
+        signals = np.asarray(snapshot.get("signals_11d") or [0.0] * 11, dtype=np.float32)
+        if signals.size == 11:
+            self.X_base[row_index, :11] = np.clip(0.82 * self.X_base[row_index, :11] + 0.18 * signals, -3.0, 3.5)
+        packets = self._enqueue_runtime_packets(snapshot, row_index)
+        if packets == 0:
+            self._enqueue_runtime_heartbeat(snapshot, row_index)
 
     def _enqueue_packet(self, packet: NetworkPacket) -> None:
         self.packet_queue.append(packet)
         self.mini_router.process_packet(packet)
+
+    def _enqueue_runtime_packets(self, snapshot: dict[str, Any], row_index: int) -> int:
+        np = self.np
+        flows = [flow for flow in list(snapshot.get("sample_flows") or []) if isinstance(flow, dict)]
+        if not flows:
+            return 0
+        count = min(2, len(flows))
+        for offset in range(count):
+            flow = flows[(self.current_idx + offset) % len(flows)]
+            proto = str(flow.get("proto") or "tcp").upper()
+            local = str(flow.get("local") or self.local_ip or "0.0.0.0")
+            peer = str(flow.get("peer") or "0.0.0.0:0")
+            src_ip = _endpoint_ip(peer)
+            dst_ip = _endpoint_ip(local)
+            if src_ip in {"0.0.0.0", "host-sensory"}:
+                src_ip = dst_ip or self.local_ip or "0.0.0.0"
+            payload = (
+                f"PROCFS_FLOW source={snapshot.get('source')} proto={proto} state={flow.get('state','')} "
+                f"local={local} peer={peer} inode={flow.get('inode','')}"
+            ).encode("utf-8", errors="replace")
+            self._enqueue_packet(NetworkPacket(src_ip, dst_ip, proto, payload[:512], self.time))
+            self.total_packets_received += 1
+            info_load = min(2.5, len(payload) / 120.0)
+            self.X_base[row_index, DIM_INFO] = np.clip(self.X_base[row_index, DIM_INFO] + info_load * 0.11, -3.0, 3.5)
+        return count
+
+    def _enqueue_runtime_heartbeat(self, snapshot: dict[str, Any], row_index: int) -> None:
+        np = self.np
+        interfaces = [item for item in list(snapshot.get("interfaces") or []) if isinstance(item, dict)]
+        source = str(snapshot.get("source") or SOFTWARE_FALLBACK_SOURCE)
+        if interfaces:
+            interface = max(interfaces, key=lambda item: int(item.get("rx_bytes") or 0) + int(item.get("tx_bytes") or 0))
+            payload = (
+                f"PROCFS_HEARTBEAT source={source} iface={interface.get('name','')} "
+                f"rx={interface.get('rx_bytes',0)} tx={interface.get('tx_bytes',0)}"
+            ).encode("utf-8", errors="replace")
+        else:
+            payload = f"SOFTWARE_FALLBACK source={source} t={self.time:.3f}".encode("utf-8", errors="replace")
+        self._enqueue_packet(NetworkPacket(self.local_ip or "0.0.0.0", "docker-procfs", "PROCFS", payload[:512], self.time))
+        self.total_packets_received += 1
+        self.X_base[row_index, DIM_NETWORK] = np.clip(self.X_base[row_index, DIM_NETWORK] + 0.08, -3.0, 3.5)
 
     def _absorb_host_sensory_if_due(self) -> None:
         if self.time - self._last_host_sensory_check < 1.0:
@@ -1216,6 +1688,7 @@ class StreamingConsciousness11DPocket:
                 "total_received": int(self.total_packets_received),
                 "mini_router": self.mini_router.status(),
             },
+            "reality": self.reality_status(),
             "regime": int(self.y_regime[row_index]),
         }
         self.stream_log.append(event)
@@ -1261,9 +1734,10 @@ class StreamingConsciousness11DPocket:
             ],
             "meta": meta[:100],
             "n_samples": len(rows),
-            "description": "11D Blue Brain + electrical + digital + network streaming consciousness",
+            "description": "11D runtime pocket driven by Docker/procfs telemetry, electrical software dynamics and read-only network metadata",
             "created_at": datetime.utcnow().isoformat(),
-            "source": "streaming_consciousness_11d_pocket",
+            "source": self.dataset_source,
+            "reality": self.reality_status(),
         }
         if path:
             target = Path(path)
@@ -1290,6 +1764,7 @@ class StreamingConsciousness11DPocket:
                 "total_received": int(self.total_packets_received),
                 "mini_router": self.mini_router.status(),
             },
+            "reality": self.reality_status(),
             "buffer_len": len(self.consciousness_buffer),
             "total_bytes": int(self.total_bytes_streamed),
             "current_idx": int(self.current_idx),
@@ -1310,6 +1785,7 @@ def dependencies_ready() -> bool:
 
 def get_streaming_status() -> dict[str, Any]:
     state = _load_state()
+    runtime_observation = _docker_runtime_observation(flow_limit=6)
     state.update(
         {
             "dependencies": {name: importlib.util.find_spec(name) is not None for name in REQUIRED_PACKAGES},
@@ -1318,6 +1794,25 @@ def get_streaming_status() -> dict[str, Any]:
                 "enabled": True,
                 "operator": "B0/sigma_z",
                 "sdk": "none_numpy_classical",
+                "model": "classical_complex_projection",
+                "physical_quantum_hardware": False,
+                "reality_boundary": "Classical math only; no quantum substrate is claimed inside Docker.",
+            },
+            "runtime_input": {
+                "status": runtime_observation.get("status"),
+                "source": runtime_observation.get("source"),
+                "real_observation": runtime_observation.get("real_observation"),
+                "snapshot_id": runtime_observation.get("snapshot_id"),
+                "active_flow_count": runtime_observation.get("active_flow_count"),
+                "interface_count": len(runtime_observation.get("interfaces") or []),
+                "signals_11d": runtime_observation.get("signals_11d"),
+                "real_packet_capture": False,
+                "real_forwarding": False,
+            },
+            "reality_boundary": {
+                "real_inputs": ["Docker/procfs counters", "Docker/procfs socket metadata", "approved host-sensory summaries"],
+                "not_done": ["packet payload capture", "LAN forwarding", "DHCP server", "physical quantum hardware", "actual electron spin control"],
+                "fake_success": False,
             },
             "thread_alive": bool(_WORKER_THREAD and _WORKER_THREAD.is_alive()),
             "state_path": str(streaming_state_path()),
@@ -1495,6 +1990,8 @@ def _default_state() -> dict[str, Any]:
         "recent_events": [],
         "last_dataset_path": None,
         "last_dataset_samples": 0,
+        "runtime_input": {},
+        "reality_boundary": {},
         "ecosystem_overlay": {},
         "events": [],
     }
@@ -1590,6 +2087,31 @@ def _clamp_int(value: Any, minimum: int, maximum: int) -> int:
 
 def _clamp_float(value: Any, minimum: float, maximum: float) -> float:
     return max(minimum, min(float(value), maximum))
+
+
+def _clamp(value: Any, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = minimum
+    if not math.isfinite(number):
+        number = minimum
+    return max(float(minimum), min(number, float(maximum)))
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float(value: Any) -> float:
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def _jsonable(value: Any) -> Any:

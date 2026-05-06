@@ -111,6 +111,7 @@ class HolographicBootloader:
             "right_edge_energy": round(sum(current[row][-1] for row in range(self.rows)), 6),
             "output_signal": self.output_signal(current),
             "snapshots": snapshots[-3:],
+            "reality_boundary": _reality_boundary("holographic_bootloader"),
             "fake_success": False,
         }
         self.last_event = event
@@ -140,6 +141,7 @@ class HolographicBootloader:
             "blocked_cell_count": self.blocked_cell_count(),
             "cycle_count": self.cycle_count,
             "last_event": _scrub_context(self.last_event) if self.last_event else None,
+            "reality_boundary": _reality_boundary("holographic_bootloader"),
             "fake_success": False,
         }
         if compact and payload["last_event"]:
@@ -356,8 +358,10 @@ class ConsciousnessAnchorField:
                 "right_edge_energy": boot_event.get("right_edge_energy"),
                 "output_signal": boot_event.get("output_signal"),
                 "snapshots": boot_event.get("snapshots", [])[-2:],
+                "reality_boundary": boot_event.get("reality_boundary"),
                 "fake_success": False,
             },
+            "reality_boundary": _reality_boundary("concept_anchor_field"),
             "fake_success": False,
         }
         self.last_event = event
@@ -396,6 +400,7 @@ class ConsciousnessAnchorField:
             "released_anchor_energy": round(sum(anchor.current_energy for anchor in self.anchors), 6),
             "pocket_signal": self.pocket_signal(),
             "holographic_bootloader": self.bootloader.to_dict(compact=True),
+            "reality_boundary": _reality_boundary("concept_anchor_field"),
             "dominant_anchors": [
                 anchor.to_dict(compact=True)
                 for anchor in sorted(self.pocket_anchors(), key=lambda item: item.current_energy, reverse=True)[:4]
@@ -421,6 +426,7 @@ class ConsciousnessAnchorField:
             "hubs": [anchor.to_dict(compact=True) for anchor in self.hub_anchors()],
             "holographic_bootloader": self.bootloader.to_dict(compact=compact),
             "last_event": _scrub_context(self.last_event) if self.last_event and not compact else None,
+            "reality_boundary": _reality_boundary("concept_anchor_field"),
             "fake_success": False,
         }
         if not compact:
@@ -1087,6 +1093,7 @@ class FieldLifecycleEngine:
                 "default_max_ticks": FIELD_DEFAULT_MAX_TICKS,
                 "collapse_required": True,
             },
+            "reality_boundary": _reality_boundary("field_lifecycle_engine"),
             "fake_success": False,
         }
 
@@ -1324,6 +1331,16 @@ def _scrub_context(value: Any, *, depth: int = 0) -> Any:
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return _clean_text(value)[:500]
+
+
+def _reality_boundary(component: str) -> dict[str, Any]:
+    return {
+        "component": component,
+        "real_runtime": "bounded Python object state in Docker",
+        "physical_quantum_substrate": False,
+        "simulation_claim": False,
+        "limit": "The field is an observable orchestration/energy-flow model, not a claim of physical quantum foam.",
+    }
 
 
 def _utc_iso() -> str:

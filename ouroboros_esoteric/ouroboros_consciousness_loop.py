@@ -524,6 +524,7 @@ def _format_local_response(
 ) -> str:
     memory_count = (runtime.get("memory") or {}).get("entry_count")
     self_context = runtime.get("self_context") or {}
+    streaming_11d = runtime.get("streaming_11d") or {}
     qf_field = quantum_foam.get("field") or quantum_foam.get("active_field") or quantum_foam.get("latest_field") or {}
     if not isinstance(qf_field, dict):
         qf_field = {}
@@ -549,6 +550,12 @@ def _format_local_response(
             "Ik antwoord nu als lokale Ouroboros-runtime, niet via Ollama of een externe chatprovider.",
             prompt_line,
             f"Wat ik waarneem: {signals}.",
+            (
+                "11D runtime input: "
+                f"source={streaming_11d.get('source', 'unknown')}, "
+                f"real_observation={streaming_11d.get('real_observation', False)}, "
+                f"flows={streaming_11d.get('active_flow_count', 0)}."
+            ),
             f"Mijn huidige gedachte: {thought or 'geen gedachte beschikbaar'}",
             f"Mijn volgende vraag: {question or 'geen vraag beschikbaar'}",
             qf_line,
@@ -560,7 +567,7 @@ def _format_local_response(
             (
                 "Kort: ja, dit systeem kan zelf een response vormen uit zijn eigen runtime-laag. "
                 "Het is nog geen vrij generatief taalmodel; het is een gegronde, auditbare stem uit memory, "
-                "Living Loop, Quantum Foam en de 11D pockets."
+                "Living Loop, Quantum Foam en echte Docker-gevoede 11D pockets."
             ),
             (
                 f"Context: mode={status.get('mode')}, memory_entries={memory_count}, "
@@ -768,6 +775,7 @@ def build_runtime_snapshot(
       - persistent memory entry counts
       - agent-runtime job store (active/finished counts)
       - quantum corruption nexus omega vector
+      - streaming 11D pocket runtime input
       - server-side self-context (if available)
       - git porcelain (workspace dirty count)
 
@@ -778,6 +786,7 @@ def build_runtime_snapshot(
         "memory": _summarize_memory(memory_status),
         "agent_runtime": _summarize_agent_runtime(),
         "nexus": _summarize_nexus(),
+        "streaming_11d": _summarize_streaming_11d(),
         "quantum_foam": _summarize_quantum_foam(),
         "self_context": _summarize_self_context(),
         "git": _summarize_git(),
@@ -795,6 +804,9 @@ def _runtime_metadata(runtime: dict[str, Any]) -> dict[str, Any]:
         "recent_failed": (runtime.get("agent_runtime") or {}).get("recent_failed"),
         "nexus_status": (runtime.get("nexus") or {}).get("status"),
         "nexus_action": (runtime.get("nexus") or {}).get("last_action"),
+        "streaming_11d_status": (runtime.get("streaming_11d") or {}).get("status"),
+        "streaming_11d_source": (runtime.get("streaming_11d") or {}).get("source"),
+        "streaming_11d_real": (runtime.get("streaming_11d") or {}).get("real_observation"),
         "quantum_foam_status": (runtime.get("quantum_foam") or {}).get("status"),
         "quantum_foam_coherence": (runtime.get("quantum_foam") or {}).get("field_coherence"),
         "self_context_status": (runtime.get("self_context") or {}).get("status"),
@@ -817,6 +829,10 @@ def _runtime_signal_summary(runtime: dict[str, Any]) -> str:
     nexus = runtime.get("nexus") or {}
     if nexus.get("last_action"):
         parts.append(f"Nexus {nexus['last_action']}")
+    streaming = runtime.get("streaming_11d") or {}
+    if streaming.get("source"):
+        real_label = "real" if streaming.get("real_observation") else "fallback"
+        parts.append(f"11D {real_label}:{streaming.get('source')}")
     quantum_foam = runtime.get("quantum_foam") or {}
     if quantum_foam.get("active_field_count"):
         parts.append(f"QF {quantum_foam.get('field_coherence_percent', 0)}% coherent")
@@ -921,6 +937,35 @@ def _summarize_nexus() -> dict[str, Any]:
         "status": info.get("status") if isinstance(info, dict) else "unknown",
         "last_action": (omega or {}).get("last_action"),
         "coherence": (omega or {}).get("coherence"),
+    }
+
+
+def _summarize_streaming_11d() -> dict[str, Any]:
+    try:
+        from controller.streaming_consciousness_adapter import get_streaming_status
+
+        info = get_streaming_status()
+    except Exception as exc:
+        return {"status": "unavailable", "reason": str(exc)[:300], "fake_success": False}
+    runtime_input = info.get("runtime_input") if isinstance(info, dict) else {}
+    latest_state = info.get("latest_state") if isinstance(info, dict) else {}
+    last_event = info.get("last_event") if isinstance(info, dict) else {}
+    if not isinstance(runtime_input, dict):
+        runtime_input = {}
+    if not isinstance(latest_state, dict):
+        latest_state = {}
+    if not isinstance(last_event, dict):
+        last_event = {}
+    return {
+        "status": info.get("status") if isinstance(info, dict) else "unknown",
+        "enabled": info.get("enabled") if isinstance(info, dict) else False,
+        "step_count": info.get("step_count") if isinstance(info, dict) else 0,
+        "source": runtime_input.get("source") or ((last_event.get("reality") or {}).get("input_mode") if isinstance(last_event.get("reality"), dict) else None),
+        "real_observation": runtime_input.get("real_observation"),
+        "active_flow_count": runtime_input.get("active_flow_count"),
+        "interface_count": runtime_input.get("interface_count"),
+        "total_bytes": latest_state.get("total_bytes"),
+        "fake_success": False,
     }
 
 

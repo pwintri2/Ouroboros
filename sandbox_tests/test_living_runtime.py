@@ -51,6 +51,7 @@ class TestLivingRuntimeMode(unittest.TestCase):
         self.assertIn("memory", snapshot)
         self.assertIn("agent_runtime", snapshot)
         self.assertIn("nexus", snapshot)
+        self.assertIn("streaming_11d", snapshot)
         # Empty workspace ought to flag empty persistent memory at minimum.
         markers = _attention_markers(snapshot)
         self.assertIsInstance(markers, list)
