@@ -13,29 +13,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import chromadb
-
+from controller.chroma_runtime import default_chroma_path, get_or_create_collection
 from controller.training_curriculum import classify_record, coverage_from_records
 
 
 def chroma_path() -> Path:
     """Path to the ChromaDB persistent storage."""
-    configured_db_path = os.getenv("WINTRIP_DB_PATH")
-    if configured_db_path:
-        return Path(configured_db_path).resolve()
-    workspace = Path(os.getenv("WINTRIP_WORKSPACE") or os.getenv("WORKSPACE_ROOT") or "/workspace")
-    if not workspace.exists():
-        workspace = Path(os.getenv("WINTRIP_PROJECT_ROOT") or Path.cwd())
-    return (workspace / "wintrip_brain").resolve()
+    return default_chroma_path()
 
 
-def get_training_collection() -> chromadb.Collection | None:
+def get_training_collection() -> Any | None:
     """Get the ChromaDB training collection."""
     try:
-        client = chromadb.PersistentClient(path=str(chroma_path()))
         collection_name = os.getenv("WINTRIP_TRAINING_COLLECTION", "wintrip_training_11d")
-        collection = client.get_or_create_collection(name=collection_name)
-        return collection
+        return get_or_create_collection(name=collection_name)
     except Exception:
         return None
 

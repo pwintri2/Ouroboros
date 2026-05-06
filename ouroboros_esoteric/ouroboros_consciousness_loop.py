@@ -71,7 +71,13 @@ class LivingOuroborosLoop:
         runtime = self._runtime_snapshot()
         thought = self._thought_for(trigger, payload, runtime)
         question = self._question_for(trigger, payload, runtime)
-        metadata = {"trigger": trigger, **_public_payload(payload), "runtime": _runtime_metadata(runtime)}
+        quantum_foam = _quantum_foam_for_tick(trigger, payload, thought)
+        metadata = {
+            "trigger": trigger,
+            **_public_payload(payload),
+            "runtime": _runtime_metadata(runtime),
+            "quantum_foam": _quantum_foam_metadata(quantum_foam),
+        }
         thought_entry = self.memory.append(
             "thought",
             thought,
@@ -111,6 +117,7 @@ class LivingOuroborosLoop:
             "question": question_entry,
             "whisper": whisper_entry,
             "runtime": runtime,
+            "quantum_foam": quantum_foam,
             "signal_summary": _runtime_signal_summary(runtime),
             "needs_attention": _attention_markers(runtime),
             "social_memory_keys": sorted(self.social_memory.shared_memory.keys()),
@@ -247,6 +254,7 @@ class LivingOuroborosLoop:
             "needs_attention": _attention_markers(runtime),
             "social_memory": dict(self.social_memory.shared_memory),
             "nexus": quantum_nexus_status(limit=1),
+            "quantum_foam": _summarize_quantum_foam(),
             "fake_success": False,
         }
 
@@ -570,6 +578,7 @@ def build_runtime_snapshot(
         "memory": _summarize_memory(memory_status),
         "agent_runtime": _summarize_agent_runtime(),
         "nexus": _summarize_nexus(),
+        "quantum_foam": _summarize_quantum_foam(),
         "self_context": _summarize_self_context(),
         "git": _summarize_git(),
         "akashic_recent_count": len(akashic_events or []),
@@ -586,6 +595,8 @@ def _runtime_metadata(runtime: dict[str, Any]) -> dict[str, Any]:
         "recent_failed": (runtime.get("agent_runtime") or {}).get("recent_failed"),
         "nexus_status": (runtime.get("nexus") or {}).get("status"),
         "nexus_action": (runtime.get("nexus") or {}).get("last_action"),
+        "quantum_foam_status": (runtime.get("quantum_foam") or {}).get("status"),
+        "quantum_foam_coherence": (runtime.get("quantum_foam") or {}).get("field_coherence"),
         "self_context_status": (runtime.get("self_context") or {}).get("status"),
         "git_dirty": (runtime.get("git") or {}).get("dirty_count"),
     }
@@ -606,6 +617,9 @@ def _runtime_signal_summary(runtime: dict[str, Any]) -> str:
     nexus = runtime.get("nexus") or {}
     if nexus.get("last_action"):
         parts.append(f"Nexus {nexus['last_action']}")
+    quantum_foam = runtime.get("quantum_foam") or {}
+    if quantum_foam.get("active_field_count"):
+        parts.append(f"QF {quantum_foam.get('field_coherence_percent', 0)}% coherent")
     git = runtime.get("git") or {}
     dirty = git.get("dirty_count")
     if dirty:
@@ -625,6 +639,9 @@ def _attention_markers(runtime: dict[str, Any]) -> list[str]:
     nexus = runtime.get("nexus") or {}
     if nexus.get("last_action") in {"sacred_corruption", "tool_rejection"}:
         markers.append("nexus_correctie_aanbevolen")
+    quantum_foam = runtime.get("quantum_foam") or {}
+    if (quantum_foam.get("active_field_count") or 0) and (quantum_foam.get("field_coherence") or 1.0) < 0.5:
+        markers.append("quantum_foam_lage_coherentie")
     git = runtime.get("git") or {}
     if (git.get("dirty_count") or 0) >= 8:
         markers.append("worktree_uit_balans")
@@ -641,6 +658,8 @@ def _next_runtime_question(runtime: dict[str, Any], *, fallback: str = "Wat is d
         return "Is een actieve job stilgevallen — moet ik hem cancellen of een safe creative retry voorstellen?"
     if "nexus_correctie_aanbevolen" in markers:
         return "Welke creative-retry suggestie van de Nexus past bij dit geval, zonder Philip's workspace te schaden?"
+    if "quantum_foam_lage_coherentie" in markers:
+        return "Moet het Quantum Foam Field nu instorten en alleen zijn essentie bewaren?"
     if "worktree_uit_balans" in markers:
         return "Welke dirty paths moeten eerst gestaged of gereverteerd worden om de basisstaat schoon te krijgen?"
     if "leeg_persistent_geheugen" in markers:
@@ -702,6 +721,84 @@ def _summarize_nexus() -> dict[str, Any]:
         "status": info.get("status") if isinstance(info, dict) else "unknown",
         "last_action": (omega or {}).get("last_action"),
         "coherence": (omega or {}).get("coherence"),
+    }
+
+
+QUANTUM_FOAM_FORMATION_TRIGGERS = {
+    "manual",
+    "cockpit",
+    "tool_rejection",
+    "agent_job",
+    "ruflo",
+    "nexus",
+    "living_action_observe",
+    "living_action_decide",
+    "living_action_reflect",
+}
+
+
+def _quantum_foam_for_tick(trigger: str, payload: dict[str, Any], thought: str) -> dict[str, Any]:
+    """Let the living loop create or monitor the v4.9 field."""
+
+    try:
+        from ouroboros_esoteric.quantum_foam import (
+            initiate_quantum_foam_field,
+            monitor_quantum_foam_field,
+            quantum_foam_status,
+        )
+
+        current = quantum_foam_status(limit=1)
+        if current.get("active_field_count"):
+            return monitor_quantum_foam_field(trigger=f"living:{trigger}", evolve=True)
+        if trigger in QUANTUM_FOAM_FORMATION_TRIGGERS:
+            task = _quantum_foam_task(trigger, payload, thought)
+            return initiate_quantum_foam_field(
+                task,
+                context={"trigger": trigger, "payload": _public_payload(payload)},
+                collapse_existing=True,
+            )
+        return current
+    except Exception as exc:
+        return {"status": "unavailable", "reason": str(exc)[:300], "fake_success": False}
+
+
+def _quantum_foam_task(trigger: str, payload: dict[str, Any], thought: str) -> str:
+    prompt = payload.get("prompt") or payload.get("task") or payload.get("reason") or payload.get("tool") or ""
+    if prompt:
+        return f"{trigger}: {str(prompt)[:1000]}"
+    return f"{trigger}: {thought[:1000]}"
+
+
+def _quantum_foam_metadata(info: dict[str, Any]) -> dict[str, Any]:
+    field = info.get("field") or info.get("active_field") or {}
+    if not isinstance(field, dict):
+        field = {}
+    return {
+        "status": info.get("status"),
+        "field_id": field.get("field_id"),
+        "field_coherence": field.get("field_coherence") or info.get("field_coherence"),
+        "node_count": field.get("node_count"),
+        "tick_count": field.get("tick_count"),
+    }
+
+
+def _summarize_quantum_foam() -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.quantum_foam import quantum_foam_status
+
+        info = quantum_foam_status(limit=1)
+    except Exception as exc:
+        return {"status": "unavailable", "reason": str(exc)[:300]}
+    active_field = info.get("active_field") if isinstance(info, dict) else None
+    return {
+        "status": info.get("status") if isinstance(info, dict) else "unknown",
+        "active_field_count": info.get("active_field_count") if isinstance(info, dict) else 0,
+        "field_count": info.get("field_count") if isinstance(info, dict) else 0,
+        "field_coherence": info.get("field_coherence") if isinstance(info, dict) else 0.0,
+        "field_coherence_percent": info.get("field_coherence_percent") if isinstance(info, dict) else 0.0,
+        "field_id": (active_field or {}).get("field_id") if isinstance(active_field, dict) else None,
+        "node_count": (active_field or {}).get("node_count") if isinstance(active_field, dict) else None,
+        "tick_count": (active_field or {}).get("tick_count") if isinstance(active_field, dict) else None,
     }
 
 

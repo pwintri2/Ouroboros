@@ -63,7 +63,13 @@ UNSAFE_IMPORTS = {"subprocess", "socket", "http.server", "shutil"}
 
 
 def codex_root() -> Path:
-    return Path(os.getenv("WINTRIP_CODEX_PATH") or DEFAULT_CODEX_PATH).expanduser().resolve()
+    raw = os.getenv("WINTRIP_CODEX_PATH") or DEFAULT_CODEX_PATH
+    path = Path(raw).expanduser().resolve()
+    if not path.exists() and str(raw) == DEFAULT_CODEX_PATH:
+        docker_mount = Path("/codex")
+        if docker_mount.exists():
+            return docker_mount.resolve()
+    return path
 
 
 def _workspace_root() -> Path:

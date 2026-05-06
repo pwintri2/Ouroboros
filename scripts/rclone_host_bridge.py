@@ -98,6 +98,26 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
         if path == "/agents/status":
             self._json({"status": "online", "agents": ["codex", "ruflo", "claude"], "fake_success": False})
             return
+        if path == "/agents/agents-status":
+            from controller.agent_runtime.adapters.agents_cli import agents_status
+
+            self._json(agents_status())
+            return
+        if path == "/agents/agents-capabilities":
+            from controller.agent_runtime.adapters.agents_cli import discover_capabilities as agents_capabilities
+
+            self._json(agents_capabilities())
+            return
+        if path == "/openhands/status":
+            from controller.agent_runtime.adapters.openhands_adapter import openhands_status
+
+            self._json(openhands_status())
+            return
+        if path == "/openhands/capabilities":
+            from controller.agent_runtime.adapters.openhands_adapter import discover_capabilities as openhands_capabilities
+
+            self._json(openhands_capabilities())
+            return
         if path == "/world/status":
             result = world_agent_status()
             result["via_bridge"] = False

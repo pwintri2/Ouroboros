@@ -1,0 +1,31 @@
+services:
+  chroma:
+    image: chromadb/chroma:latest
+    restart: unless-stopped
+    volumes:
+      - ./wintrip_brain:/data
+    ports:
+      - "127.0.0.1:18000:8000"
+
+  ouroboros-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.ouroboros-backend
+    restart: unless-stopped
+    depends_on:
+      - chroma
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      PYTHONPATH: /workspace
+      WINTRIP_WORKSPACE: /workspace
+      WINTRIP_DB_PATH: /workspace/wintrip_brain
+      WINTRIP_CHROMA_HTTP_URL: http://chroma:8000
+      WINTRIP_LIVING_LOOP_AUTOSTART: "1"
+      WINTRIP_QIF_GPU: "0"
+    ports:
+      - "127.0.0.1:8010:8010"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["uvicorn", "controller.main:app", "--host", "0.0.0.0", "--port", "8010"]

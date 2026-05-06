@@ -180,6 +180,11 @@ def openhands_status() -> dict[str, Any]:
     capabilities = discover_capabilities()
     root = openhands_root()
     if not root.exists():
+        bridge = _bridge_get("/openhands/status", timeout=5)
+        if bridge and not os.getenv("WINTRIP_OPENHANDS_PATH"):
+            bridge["via_bridge"] = True
+            bridge.setdefault("fake_success", False)
+            return bridge
         return {
             "status": "missing",
             "root": str(root),
@@ -223,6 +228,33 @@ def openhands_status() -> dict[str, Any]:
         ),
         "fake_success": False,
     }
+
+
+def _bridge_get(path: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    base_url = str(os.getenv("WINTRIP_RCLONE_BRIDGE_URL") or "").rstrip("/")
+    token_path = os.getenv("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH")
+    if not base_url or not token_path:
+        return {}
+    try:
+        token = Path(token_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return {}
+    request = urllib.request.Request(
+        f"{base_url}{path}",
+        method="GET",
+        headers={"X-Ouroboros-Bridge-Token": token, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            return {}
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def openhands_adapter(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:

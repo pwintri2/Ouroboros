@@ -38,11 +38,11 @@ from typing import Iterable, Iterator, List, Sequence
 
 from dotenv import load_dotenv
 
-import chromadb
 import docx
 import PyPDF2
 from chromadb.api.models.Collection import Collection
 from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
+from controller.chroma_runtime import chroma_client, get_or_create_collection
 
 
 # =========================
@@ -315,7 +315,7 @@ class WintripIngestor:
         batch_size: int,
         reset_collection: bool = False,
     ) -> None:
-        self.client = chromadb.PersistentClient(path=str(db_path))
+        self.client = chroma_client(persist_dir=db_path)
         self.embedding_fn = OllamaEmbeddingFunction(
             url=ollama_url,
             model_name=embed_model,
@@ -328,9 +328,10 @@ class WintripIngestor:
             except Exception:
                 pass
 
-        self.collection: Collection = self.client.get_or_create_collection(
+        self.collection: Collection = get_or_create_collection(
             name=collection_name,
             embedding_function=self.embedding_fn,
+            persist_dir=db_path,
             metadata={"owner": "wintrip", "embedding_model": embed_model},
         )
         self.batch_size = batch_size

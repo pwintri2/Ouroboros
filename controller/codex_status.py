@@ -89,7 +89,12 @@ class CapabilityRecord:
 
 def codex_repo_path() -> Path:
     raw = os.getenv("WINTRIP_CODEX_PATH") or DEFAULT_CODEX_REPO_PATH
-    return Path(raw).expanduser().resolve()
+    path = Path(raw).expanduser().resolve()
+    if not path.exists() and str(raw) == DEFAULT_CODEX_REPO_PATH:
+        docker_mount = Path("/codex")
+        if docker_mount.exists():
+            return docker_mount.resolve()
+    return path
 
 
 def codex_home_path() -> Path:
@@ -117,6 +122,7 @@ def candidate_binary_paths() -> list[Path]:
     env_override = os.getenv("WINTRIP_CODEX_BINARY") or os.getenv("CODEX_BINARY")
     if env_override:
         add(Path(env_override))
+        return candidates
 
     which = shutil.which("codex")
     if which:
@@ -126,6 +132,7 @@ def candidate_binary_paths() -> list[Path]:
     add(repo / "codex-rs" / "target" / "release" / "codex")
     add(repo / "codex-rs" / "target" / "debug" / "codex")
     add(repo / "codex-cli" / "bin" / "codex")
+    add(Path("/codex_native/bin/linux-x86_64/codex"))
 
     # IDE/extension distributions ship the real native binary; prefer those over
     # the codex.js shim which only forwards to a packaged binary.

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from controller.browser_research import BrowserActionResult
+from controller.chroma_runtime import chroma_runtime_config, get_or_create_collection
 from controller.scrubber import scrub_data
 from controller.stream.browser_scrubber import DEFAULT_APPROVAL_PHRASE, prepare_browser_ingest
 
@@ -124,6 +125,7 @@ class WorldMemory:
 
     def status(self) -> dict[str, Any]:
         collection = self._get_collection()
+        runtime = chroma_runtime_config(persist_dir=self.persist_dir)
         count = 0
         if collection is not None:
             try:
@@ -133,7 +135,9 @@ class WorldMemory:
         return {
             "available": collection is not None,
             "collection": self.collection_name,
-            "persist_dir": str(self.persist_dir),
+            "persist_dir": runtime.get("persist_dir") or str(self.persist_dir),
+            "runtime_mode": runtime.get("mode"),
+            "remote_url": runtime.get("remote_url", ""),
             "count": count,
             "embedding_mode": _embedding_mode(),
             "reason": self._init_error,
@@ -253,12 +257,11 @@ class WorldMemory:
             self._init_error = f"ChromaDB niet beschikbaar: {exc}"
             return None
 
-        self.persist_dir.mkdir(parents=True, exist_ok=True)
         try:
-            client = chromadb.PersistentClient(path=str(self.persist_dir))
-            self._collection = client.get_or_create_collection(
+            self._collection = get_or_create_collection(
                 name=self.collection_name,
                 embedding_function=_embedding_function(),
+                persist_dir=self.persist_dir,
             )
             self._init_error = ""
         except Exception as exc:

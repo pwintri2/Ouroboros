@@ -1135,13 +1135,11 @@ def _safe_training_collection_count() -> int:
 
 def _training_collection():
     try:
-        import chromadb
+        from controller.chroma_runtime import get_or_create_collection
     except Exception as exc:
-        raise RuntimeError(f"chromadb is not available: {exc}") from exc
-    persist_dir = os.getenv("WINTRIP_DB_PATH", "wintrip_brain")
+        raise RuntimeError(f"chroma runtime is not available: {exc}") from exc
     collection_name = os.getenv("WINTRIP_TRAINING_COLLECTION", "wintrip_training_11d")
-    client = chromadb.PersistentClient(path=persist_dir)
-    return client.get_or_create_collection(name=collection_name)
+    return get_or_create_collection(name=collection_name, persist_dir=os.getenv("WINTRIP_DB_PATH", "wintrip_brain"))
 
 
 def _frequency_samples(seed: str, target_hz: float | None = None) -> list[dict[str, float]]:

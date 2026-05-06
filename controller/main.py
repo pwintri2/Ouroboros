@@ -26,6 +26,12 @@ if project_root not in sys.path:
 
 from controller.knowledge_base import KnowledgeBase
 try:
+    from controller.chroma_runtime import chroma_runtime_status
+except Exception:
+    def chroma_runtime_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "error", "available": False, "reason": "controller.chroma_runtime unavailable", "fake_success": False}
+
+try:
     from controller.ollama_client import OllamaClient
     from controller.router import AIRouter
     from controller.mail_executor import MailExecutor
@@ -896,6 +902,11 @@ async def cockpit_chat(req: CockpitChatRequest):
 async def ouroboros_self_context_status():
     return _self_context_status_payload()
 
+@app.get("/api/ouroboros/chroma/status")
+@app.get("/api/chroma/status")
+async def ouroboros_chroma_status():
+    return chroma_runtime_status()
+
 @app.get("/api/cockpit/api-keys")
 async def cockpit_api_keys():
     return _api_key_status_payload()
@@ -920,6 +931,7 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "inspect_hippocampus": {"method": "POST", "path": "/api/ouroboros/hippocampus/inspect"},
         "self_training_step": {"method": "POST", "path": "/api/ouroboros/self-training/step"},
         "self_context": {"method": "GET", "path": "/api/ouroboros/self-context/status"},
+        "chroma_status": {"method": "GET", "path": "/api/ouroboros/chroma/status"},
         "esoteric_status": {"method": "GET", "path": "/api/ouroboros/esoteric/status"},
         "akashic_recent": {"method": "GET", "path": "/api/ouroboros/esoteric/akashic/recent"},
         "living_ouroboros_status": {"method": "GET", "path": "/api/ouroboros/esoteric/living/status"},
@@ -1067,6 +1079,7 @@ def _cockpit_config_payload() -> dict[str, Any]:
         "approval": {"required_phrase": APPROVAL_PHRASE, "case_sensitive": True},
         "api_keys": _api_key_status_payload(),
         "self_context": _self_context_status_payload(),
+        "chroma": chroma_runtime_status(),
         "slash_agents": slash_command_catalog(),
         "tool_schemas_available": callable(getattr(agent_tools, "get_tool_schemas", None)),
         "capabilities": {

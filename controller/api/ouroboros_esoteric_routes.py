@@ -18,6 +18,24 @@ class LivingTickRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class QuantumFoamInitiateRequest(BaseModel):
+    task: str = Field(..., min_length=1, max_length=16000)
+    context: dict[str, Any] = Field(default_factory=dict)
+    collapse_existing: bool = True
+    max_ticks: int = Field(default=12, ge=1, le=120)
+
+
+class QuantumFoamTickRequest(BaseModel):
+    field_id: str | None = None
+    evolve: bool = True
+    trigger: str = Field(default="cockpit", min_length=1, max_length=64)
+
+
+class QuantumFoamCollapseRequest(BaseModel):
+    field_id: str | None = None
+    reason: str = Field(default="manual", min_length=1, max_length=240)
+
+
 def init_ouroboros_esoteric(app: Any) -> None:
     app.include_router(ouroboros_esoteric_router)
 
@@ -41,6 +59,53 @@ async def akashic_recent(limit: int = 50) -> dict[str, Any]:
         return {"status": "online", "events": events, "count": len(events)}
     except Exception as exc:
         return {"status": "unavailable", "events": [], "count": 0, "reason": str(exc)}
+
+
+@ouroboros_esoteric_router.get("/quantum-foam/status")
+async def quantum_foam_status_route(limit: int = 5) -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.quantum_foam import quantum_foam_status
+
+        return quantum_foam_status(limit=limit)
+    except Exception as exc:
+        return {"status": "unavailable", "reason": str(exc)[:500], "fake_success": False}
+
+
+@ouroboros_esoteric_router.post("/quantum-foam/initiate")
+async def quantum_foam_initiate(req: QuantumFoamInitiateRequest) -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.quantum_foam import initiate_quantum_foam_field
+
+        return initiate_quantum_foam_field(
+            req.task,
+            context=req.context,
+            collapse_existing=req.collapse_existing,
+            max_ticks=req.max_ticks,
+        )
+    except ValueError as exc:
+        return {"status": "blocked", "reason": str(exc), "fake_success": False}
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)[:500], "fake_success": False}
+
+
+@ouroboros_esoteric_router.post("/quantum-foam/tick")
+async def quantum_foam_tick(req: QuantumFoamTickRequest) -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.quantum_foam import monitor_quantum_foam_field
+
+        return monitor_quantum_foam_field(field_id=req.field_id, evolve=req.evolve, trigger=req.trigger)
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)[:500], "fake_success": False}
+
+
+@ouroboros_esoteric_router.post("/quantum-foam/collapse")
+async def quantum_foam_collapse(req: QuantumFoamCollapseRequest) -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.quantum_foam import collapse_quantum_foam_field
+
+        return collapse_quantum_foam_field(field_id=req.field_id, reason=req.reason)
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)[:500], "fake_success": False}
 
 
 @ouroboros_esoteric_router.get("/living/status")

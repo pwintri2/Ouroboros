@@ -14,6 +14,11 @@ target/
 *.tsbuildinfo
 .secrets/
 *.log
+*.docx
+*.odt
+.~lock.*
+*.bak
+*.bak*
 
 # Xcode / Swift
 .build/
@@ -37,6 +42,8 @@ artifacts/ecosystem_knowledge/
 artifacts/host_program_inventory/
 artifacts/host_sensory/
 artifacts/popos_diagnostics_output/
+Codex-repo_integration.md
+Make_Reals_Build.md
 token_drop/*
 !token_drop/README.md
 

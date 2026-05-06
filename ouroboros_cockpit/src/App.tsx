@@ -115,6 +115,14 @@ type CockpitConfig = {
     lesson_count?: number;
     recent_lessons?: Array<{ id?: string; text?: string; provider?: string; model?: string; status?: string; at?: number }>;
   };
+  chroma?: {
+    status?: string;
+    available?: boolean;
+    mode?: string;
+    remote_url?: string;
+    persist_dir?: string;
+    collections?: Record<string, { status?: string; count?: number; reason?: string }>;
+  };
   slash_agents?: Record<string, unknown>;
 };
 
@@ -375,6 +383,54 @@ type LivingStatus = {
   memory_count?: number;
 };
 
+type QuantumFoamFieldSummary = {
+  field_id?: string;
+  status?: string;
+  task?: string;
+  tick_count?: number;
+  max_ticks?: number;
+  node_count?: number;
+  active_node_count?: number;
+  field_coherence?: number;
+  field_coherence_percent?: number;
+  mesh?: { edge_count?: number };
+  nodes?: Array<{
+    node_id?: string;
+    node_type?: string;
+    weight?: number;
+    coherence?: number;
+    active?: boolean;
+    connection_count?: number;
+    thoughts?: string[];
+  }>;
+  collapse_essence?: {
+    summary?: string;
+    key_insights?: string[];
+    ram_released_estimate_nodes?: number;
+  } | null;
+};
+
+type QuantumFoamStatus = {
+  status?: string;
+  version?: string;
+  reason?: string;
+  active_field_count?: number;
+  field_count?: number;
+  field_coherence?: number;
+  field_coherence_percent?: number;
+  active_field?: QuantumFoamFieldSummary | null;
+  latest_field?: QuantumFoamFieldSummary | null;
+  last_event?: {
+    action?: string;
+    field_id?: string;
+    field_coherence?: number;
+    node_count?: number;
+    tick_count?: number;
+  } | null;
+  history?: Array<{ action?: string; field_id?: string; field_coherence?: number; ts?: string }>;
+  lifecycle?: { max_nodes?: number; default_max_ticks?: number; collapse_required?: boolean };
+};
+
 type AgentsSubsystemStatus = {
   status?: string;
   root?: string;
@@ -598,6 +654,7 @@ export default function App() {
   const [agentJobEvents, setAgentJobEvents] = useState<AgentJobEvent[]>([]);
   const [nexusStatus, setNexusStatus] = useState<NexusStatus>({ status: "unknown" });
   const [livingStatus, setLivingStatus] = useState<LivingStatus>({ status: "unknown" });
+  const [quantumFoamStatus, setQuantumFoamStatus] = useState<QuantumFoamStatus>({ status: "unknown" });
   const [worldStatus, setWorldStatus] = useState<WorldStatus>({ status: "unknown" });
   const [externalCapabilities, setExternalCapabilities] = useState<ExternalCapabilitiesStatus>({ status: "unknown" });
   const [runtimeTools, setRuntimeTools] = useState<RuntimeToolsStatus>({ status: "unknown" });
@@ -699,6 +756,19 @@ export default function App() {
       setLivingStatus(data);
     } catch (error) {
       setLivingStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadQuantumFoamStatus = useCallback(async () => {
+    try {
+      const data = await api<QuantumFoamStatus>("/api/ouroboros/esoteric/quantum-foam/status?limit=5");
+      setQuantumFoamStatus(data);
+    } catch (error) {
+      setQuantumFoamStatus((previous) => ({
         ...previous,
         status: unavailableStatus(previous.status),
         reason: error instanceof Error ? error.message : String(error),
@@ -866,6 +936,7 @@ export default function App() {
         setAgentJobs(Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs : []);
         await loadNexusStatus();
         await loadLivingStatus();
+        await loadQuantumFoamStatus();
         await loadWorldStatus();
         await loadExternalCapabilities();
         await loadRuntimeTools();
@@ -876,7 +947,7 @@ export default function App() {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
+  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -896,6 +967,7 @@ export default function App() {
   useEffect(() => {
     loadNexusStatus().catch(() => undefined);
     loadLivingStatus().catch(() => undefined);
+    loadQuantumFoamStatus().catch(() => undefined);
     loadWorldStatus().catch(() => undefined);
     loadExternalCapabilities().catch(() => undefined);
     loadRuntimeTools().catch(() => undefined);
@@ -906,6 +978,7 @@ export default function App() {
     const id = window.setInterval(() => {
       loadNexusStatus().catch(() => undefined);
       loadLivingStatus().catch(() => undefined);
+      loadQuantumFoamStatus().catch(() => undefined);
       loadWorldStatus().catch(() => undefined);
       loadExternalCapabilities().catch(() => undefined);
       loadRuntimeTools().catch(() => undefined);
@@ -920,7 +993,7 @@ export default function App() {
       window.clearInterval(id);
       window.clearInterval(capabilitiesId);
     };
-  }, [loadNexusStatus, loadLivingStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
+  }, [loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -1202,7 +1275,36 @@ export default function App() {
         body: action === "tick" ? JSON.stringify({ trigger: "cockpit", payload: { provider, model } }) : undefined,
       }),
     );
-    if (data) await loadLivingStatus();
+    if (data) {
+      await loadLivingStatus();
+      await loadQuantumFoamStatus();
+    }
+  }
+
+  async function quantumFoamAction(action: "initiate" | "tick" | "collapse") {
+    const endpoint =
+      action === "initiate"
+        ? "/api/ouroboros/esoteric/quantum-foam/initiate"
+        : action === "collapse"
+          ? "/api/ouroboros/esoteric/quantum-foam/collapse"
+          : "/api/ouroboros/esoteric/quantum-foam/tick";
+    const body =
+      action === "initiate"
+        ? { task: prompt || "Cockpit Quantum Foam field", context: { provider, model }, collapse_existing: true }
+        : action === "collapse"
+          ? { reason: "cockpit_manual_collapse" }
+          : { trigger: "cockpit", evolve: true };
+    const data = await perform(`Quantum Foam ${action}`, () =>
+      api<Record<string, unknown>>(endpoint, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    );
+    if (data) {
+      await loadQuantumFoamStatus();
+      await loadLivingStatus();
+      await loadNexusStatus();
+    }
   }
 
   const records = status.records ?? {};
@@ -1223,6 +1325,8 @@ export default function App() {
     };
   });
   const selfContext = config.self_context;
+  const chroma = config.chroma ?? {};
+  const chromaCollections = chroma.collections ?? {};
   const localModels = config.available_models?.ollama ?? status.model?.available_bases ?? [];
   const subscriptionProviderCount = providerChoices.filter((item) => item.kind === "external").length;
   const configuredKeyCount = apiKeyChoices.filter((item) => {
@@ -1329,6 +1433,12 @@ export default function App() {
             label="Living"
             value={livingStatus.mode ?? livingStatus.status ?? "idle"}
             ok={livingStatus.mode === "speaking" || livingStatus.mode === "running" || livingStatus.status === "idle"}
+          />
+          <StatusPill
+            icon={<Activity size={16} />}
+            label="QF Field"
+            value={quantumFoamStatus.active_field_count ? `${Math.round(quantumFoamStatus.field_coherence_percent ?? 0)}%` : quantumFoamStatus.latest_field?.status ?? quantumFoamStatus.status ?? "idle"}
+            ok={quantumFoamStatus.status === "online" || quantumFoamStatus.status === "idle"}
           />
           <StatusPill icon={<Globe2 size={16} />} label="World" value={worldStatus.status ?? "unknown"} ok={worldStatus.status === "online"} />
           <StatusPill
@@ -1650,6 +1760,16 @@ export default function App() {
                 <Fact label="Training memory" value={`${records.training_collection_count ?? 0}`} />
                 <Fact label="Total" value={`${records.total_count ?? 0}`} state={status.learning_11d?.status} />
                 <Fact label="Geometry" value={`${status.geometry_11d?.dimension_count ?? 11}D`} />
+                <Fact label="Chroma runtime" value={chroma.mode ?? "persistent"} state={chroma.status} />
+                <Fact label="Brain target" value={chroma.remote_url ? "VPS remote" : (chroma.persist_dir ? "local disk" : "--")} />
+              </div>
+              <div className="memory-list compact">
+                {Object.entries(chromaCollections).map(([name, details]) => (
+                  <div className="memory-row" key={name}>
+                    <span>{name}</span>
+                    <strong>{details.count ?? 0}</strong>
+                  </div>
+                ))}
               </div>
               <PanelHeader title="Agent Roles" small />
               <div className="role-list">
@@ -1671,6 +1791,17 @@ export default function App() {
                 onStart={() => livingAction("start")}
                 onTick={() => livingAction("tick")}
                 onStop={() => livingAction("stop")}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="Quantum Foam Field" />
+              <QuantumFoamPanel
+                field={quantumFoamStatus}
+                busy={busy}
+                onInitiate={() => quantumFoamAction("initiate")}
+                onTick={() => quantumFoamAction("tick")}
+                onCollapse={() => quantumFoamAction("collapse")}
               />
             </section>
 
@@ -2155,6 +2286,80 @@ function LivingOuroborosPanel({
               <strong>{entry.text ?? ""}</strong>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuantumFoamPanel({
+  field,
+  busy,
+  onInitiate,
+  onTick,
+  onCollapse,
+}: {
+  field: QuantumFoamStatus;
+  busy: boolean;
+  onInitiate: () => void;
+  onTick: () => void;
+  onCollapse: () => void;
+}) {
+  const active = field.active_field ?? null;
+  const latest = active ?? field.latest_field ?? null;
+  const coherence = latest?.field_coherence ?? field.field_coherence ?? 0;
+  const coherencePercent = Math.max(0, Math.min(100, Math.round((latest?.field_coherence_percent ?? field.field_coherence_percent ?? coherence * 100) || 0)));
+  const nodes = latest?.nodes ?? [];
+  const collapsed = latest?.collapse_essence ?? null;
+  return (
+    <div className="quantum-foam-panel">
+      <div className="living-head">
+        <div>
+          <strong>{latest ? latest.field_id ?? "field" : field.status === "idle" ? "Field idle" : field.status ?? "unknown"}</strong>
+          <span>{field.version ?? "v4.9"} / {latest?.status ?? field.status ?? "idle"} / {latest?.node_count ?? 0} nodes / {latest?.mesh?.edge_count ?? 0} links</span>
+        </div>
+        <div className="living-actions">
+          <button onClick={onInitiate} disabled={busy}>Initiate</button>
+          <button onClick={onTick} disabled={busy || !active}>Tick</button>
+          <button onClick={onCollapse} disabled={busy || !active}>Collapse</button>
+        </div>
+      </div>
+      <div className="nexus-bars">
+        <label>
+          <span>FIELD COH {formatMetric(coherence)}</span>
+          <b><em style={{ width: `${coherencePercent}%` }} /></b>
+        </label>
+      </div>
+      {latest?.task && (
+        <div className="living-thought">
+          <span>Task</span>
+          <strong>{latest.task}</strong>
+        </div>
+      )}
+      <div className="metric-strip">
+        <span>Ticks <strong>{latest?.tick_count ?? 0}/{latest?.max_ticks ?? field.lifecycle?.default_max_ticks ?? "--"}</strong></span>
+        <span>Active <strong>{latest?.active_node_count ?? 0}</strong></span>
+        <span>Fields <strong>{field.field_count ?? 0}</strong></span>
+        <span>Limit <strong>{field.lifecycle?.max_nodes ?? 25}</strong></span>
+      </div>
+      {nodes.length > 0 && (
+        <div className="quantum-node-list">
+          {nodes.slice(0, 8).map((node) => (
+            <div key={node.node_id ?? `${node.node_type}-${node.weight}`}>
+              <span>{node.node_type ?? "Node"}</span>
+              <strong>{formatMetric(node.coherence)} / {node.connection_count ?? 0} links</strong>
+            </div>
+          ))}
+        </div>
+      )}
+      {collapsed?.summary && (
+        <div className="living-whisper">
+          <span>{collapsed.summary}</span>
+        </div>
+      )}
+      {!active && field.reason && (
+        <div className="living-whisper">
+          <span>{field.reason}</span>
         </div>
       )}
     </div>

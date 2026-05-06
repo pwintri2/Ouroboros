@@ -205,6 +205,19 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertNotIn("gemini-2.0-flash", google_models)
         self.assertIn("api_keys", data)
         self.assertFalse(data["api_keys"]["secrets_returned"])
+        self.assertIn("chroma", data)
+        self.assertIn(data["chroma"]["mode"], {"persistent", "http"})
+
+    def test_chroma_status_endpoint_exposes_runtime_mode_without_secrets(self):
+        response = self.client.get("/api/ouroboros/chroma/status")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("mode", data)
+        self.assertIn(data["mode"], {"persistent", "http"})
+        self.assertIn("collections", data)
+        self.assertFalse(data["fake_success"])
+        self.assertNotIn("api_key", json.dumps(data).lower())
 
     def test_cockpit_config_keeps_local_provider_enabled_when_ollama_inventory_is_empty(self):
         original_list_models = self.main.ollama.list_models

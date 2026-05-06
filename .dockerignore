@@ -1,0 +1,17 @@
+.git
+.secrets
+.pytest_cache
+.venv*
+__pycache__
+*.pyc
+*.pyo
+node_modules
+ouroboros_cockpit/node_modules
+ouroboros_cockpit/dist
+wintrip_brain
+artifacts/*.log
+artifacts/*.tar
+artifacts/*.tar.gz
+*.docx
+*.odt
+.~lock.*

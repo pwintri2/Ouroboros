@@ -721,12 +721,10 @@ def _taint_for_source(source_type: str, result: dict[str, Any]) -> str:
 
 def _training_collection() -> Any:
     try:
-        import chromadb
-        from controller.training_dataset_builder import chroma_path
+        from controller.chroma_runtime import get_or_create_collection
 
-        client = chromadb.PersistentClient(path=str(chroma_path()))
         collection_name = os.getenv("WINTRIP_TRAINING_COLLECTION", "wintrip_training_11d")
-        return client.get_or_create_collection(name=collection_name)
+        return get_or_create_collection(name=collection_name)
     except Exception:
         return None
 

@@ -283,6 +283,7 @@ def default_codex_command(job: JobRecord) -> list[str]:
 
 def default_codex_env() -> dict[str, str]:
     env = dict(os.environ)
+    configured_binary = env.get("WINTRIP_CODEX_BINARY") or env.get("CODEX_BINARY")
     extension_bases = (
         Path.home() / ".windsurf" / "extensions",
         Path.home() / ".vscode" / "extensions",
@@ -296,11 +297,13 @@ def default_codex_env() -> dict[str, str]:
         if path.exists()
     ]
     extras = [
+        str(Path(configured_binary).expanduser().parent) if configured_binary else "",
+        "/codex_native/bin/linux-x86_64",
         str(Path.home() / ".local" / "bin"),
         str(Path.home() / ".nvm" / "versions" / "node" / "v22.22.2" / "bin"),
         *codex_bins,
     ]
-    env["PATH"] = os.pathsep.join([*extras, env.get("PATH", "")])
+    env["PATH"] = os.pathsep.join([item for item in [*extras, env.get("PATH", "")] if item])
     return env
 
 

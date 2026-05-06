@@ -928,6 +928,7 @@ def _host_wintrip_root() -> Path:
 
 def _host_env() -> dict[str, str]:
     env = dict(os.environ)
+    configured_codex_binary = env.get("WINTRIP_CODEX_BINARY") or env.get("CODEX_BINARY")
     node_bin = str(Path.home() / ".nvm" / "versions" / "node" / "v22.22.2" / "bin")
     extension_bases = (
         Path.home() / ".windsurf" / "extensions",
@@ -941,13 +942,23 @@ def _host_env() -> dict[str, str]:
         for path in sorted(base.glob("openai.chatgpt-*/bin/linux-x86_64"))
         if path.exists()
     ]
-    extra_bins = [node_bin, str(Path.home() / ".local" / "bin"), *codex_bins]
-    env["PATH"] = os.pathsep.join([*extra_bins, env.get("PATH", "")])
+    extra_bins = [
+        str(Path(configured_codex_binary).expanduser().parent) if configured_codex_binary else "",
+        "/codex_native/bin/linux-x86_64",
+        node_bin,
+        str(Path.home() / ".local" / "bin"),
+        *codex_bins,
+    ]
+    env["PATH"] = os.pathsep.join([item for item in [*extra_bins, env.get("PATH", "")] if item])
     env.setdefault("WINTRIP_HOST_WORKSPACE", str(_host_wintrip_root()))
     return env
 
 
 def _command_exists(name: str) -> bool:
+    if name == "codex":
+        configured = os.getenv("WINTRIP_CODEX_BINARY") or os.getenv("CODEX_BINARY")
+        if configured and Path(configured).expanduser().exists():
+            return True
     paths = _host_env().get("PATH", "").split(os.pathsep)
     return any((Path(path) / name).exists() for path in paths if path)
 

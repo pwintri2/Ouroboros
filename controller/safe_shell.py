@@ -28,6 +28,7 @@ SAFE_COMMANDS = {
     "tree",
     "pytest",
     "ruff",
+    "gemini",
 }
 
 SAFE_GIT_SUBCOMMANDS = {"status", "diff", "log", "show", "branch", "rev-parse", "ls-files"}

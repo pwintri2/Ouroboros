@@ -1,8 +1,9 @@
 import os
 import requests
-import chromadb
 import uuid
 from dotenv import load_dotenv
+
+from controller.chroma_runtime import chroma_runtime_config, get_or_create_collection
 
 load_dotenv()
 
@@ -40,10 +41,8 @@ def store_in_chroma(chunks, embeddings, source_metadata, collection_name):
     """Stores chunks and embeddings in ChromaDB using the configured brain path."""
     from controller.knowledge_base import CHROMA_PERSIST_DIR
     chromadb_storage_path = os.getenv("WINTRIP_DB_PATH", CHROMA_PERSIST_DIR)
-    os.makedirs(chromadb_storage_path, exist_ok=True)
-    
-    client = chromadb.PersistentClient(path=chromadb_storage_path)
-    collection = client.get_or_create_collection(name=collection_name)
+    runtime = chroma_runtime_config(persist_dir=chromadb_storage_path)
+    collection = get_or_create_collection(name=collection_name, persist_dir=chromadb_storage_path)
     
     ids = [str(uuid.uuid4()) for _ in range(len(chunks))]
     metadatas = []
@@ -59,7 +58,8 @@ def store_in_chroma(chunks, embeddings, source_metadata, collection_name):
             metadatas=metadatas,
             ids=ids
         )
-        print(f"Successfully stored {len(chunks)} chunks in collection '{collection_name}' at {chromadb_storage_path}.")
+        target = runtime.get("remote_url") or runtime.get("persist_dir") or chromadb_storage_path
+        print(f"Successfully stored {len(chunks)} chunks in collection '{collection_name}' at {target}.")
 
 def digest_text(text, source_metadata, collection_name):
     """Main function to chunk text, generate embeddings, and store them."""
@@ -71,4 +71,3 @@ def digest_text(text, source_metadata, collection_name):
     else:
         print("Digestion failed: No chunks or embeddings generated.")
         return False
-

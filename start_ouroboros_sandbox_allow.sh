@@ -29,6 +29,10 @@ if [ -z "${HOST_BRIDGE_PYTHON}" ] && [ -x ".venv_world_agent/bin/python" ]; then
   HOST_BRIDGE_PYTHON=".venv_world_agent/bin/python"
 fi
 HOST_BRIDGE_PYTHON="${HOST_BRIDGE_PYTHON:-python3}"
+DOCKER_ENV_ARGS=()
+if [ -n "${WINTRIP_CHROMA_HTTP_URL:-}" ]; then
+  DOCKER_ENV_ARGS+=(-e "WINTRIP_CHROMA_HTTP_URL=${WINTRIP_CHROMA_HTTP_URL}")
+fi
 
 mkdir -p .secrets artifacts
 if [ ! -s .secrets/rclone_bridge_token ]; then
@@ -104,13 +108,59 @@ fi
 
 BRIDGE_HOST_IP="${BRIDGE_HOST_IP:-172.17.0.1}"
 
-docker exec -w /workspace "${CONTAINER}" sh -lc '
+docker exec "${DOCKER_ENV_ARGS[@]}" -w /workspace "${CONTAINER}" sh -lc '
   if [ -f /tmp/wintrip_backend.pid ]; then
     kill "$(cat /tmp/wintrip_backend.pid)" 2>/dev/null || true
   fi
+  python3 - <<'"'"'PY'"'"'
+from pathlib import Path
+import os
+import signal
+import time
+
+current = os.getpid()
+parent = os.getppid()
+for entry in Path("/proc").iterdir():
+    if not entry.name.isdigit():
+        continue
+    pid = int(entry.name)
+    if pid in {current, parent}:
+        continue
+    try:
+        cmdline = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "ignore")
+    except Exception:
+        continue
+    if "uvicorn" in cmdline and "controller.main:app" in cmdline and ("python" in cmdline or "/uvicorn" in cmdline):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+time.sleep(0.5)
+PY
   set -a
   . /workspace/artifacts/ouroboros_sandbox_allow.env
   set +a
+  if [ -d /codex ]; then
+    export WINTRIP_CODEX_PATH=/codex
+  fi
+  if [ -d /agents ]; then
+    export WINTRIP_AGENTS_PATH=/agents
+  fi
+  if [ -d /openhands ]; then
+    export WINTRIP_OPENHANDS_PATH=/openhands
+  fi
+  if [ -d /ruflo ]; then
+    export WINTRIP_RUFLO_PATH=/ruflo
+  fi
+  if [ -d /roo ]; then
+    export WINTRIP_ROO_PATH=/roo
+  fi
+  if [ -x /codex_native/bin/linux-x86_64/codex ]; then
+    export WINTRIP_CODEX_BINARY=/codex_native/bin/linux-x86_64/codex
+    export CODEX_BINARY=/codex_native/bin/linux-x86_64/codex
+    export PATH="/codex_native/bin/linux-x86_64:${PATH}"
+  fi
+  export WINTRIP_CODEX_TIMEOUT_SECONDS="${WINTRIP_CODEX_TIMEOUT_SECONDS:-1800}"
   export WINTRIP_RCLONE_BRIDGE_URL="http://'"${BRIDGE_HOST_IP}:${BRIDGE_PORT}"'"
   export WINTRIP_RCLONE_BRIDGE_TOKEN_PATH="/workspace/.secrets/rclone_bridge_token"
   nohup uvicorn controller.main:app --host 0.0.0.0 --port 8010 \

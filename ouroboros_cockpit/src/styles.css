@@ -462,6 +462,11 @@ label {
   background: #0d1420;
 }
 
+.memory-list.compact .memory-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
 .memory-row strong {
   font-size: 12px;
 }
@@ -672,6 +677,42 @@ label {
   border: 1px solid #263449;
   border-radius: 7px;
   background: #0d1420;
+}
+
+.quantum-foam-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #234039;
+  border-radius: 7px;
+  background: #0b1515;
+}
+
+.quantum-node-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 6px;
+}
+
+.quantum-node-list div {
+  display: grid;
+  gap: 3px;
+  min-height: 48px;
+  padding: 7px 8px;
+  border: 1px solid #1d332f;
+  border-radius: 6px;
+  background: #091212;
+}
+
+.quantum-node-list span {
+  color: #91a3b8;
+  font-size: 11px;
+}
+
+.quantum-node-list strong {
+  color: #e5edf4;
+  font-size: 12px;
 }
 
 .living-head {

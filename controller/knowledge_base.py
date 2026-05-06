@@ -1,12 +1,13 @@
 import os
 import uuid
-import chromadb
 from chromadb.utils import embedding_functions
 import PyPDF2
 import docx
 import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
+
+from controller.chroma_runtime import chroma_client, chroma_runtime_config
 
 load_dotenv()
 
@@ -17,8 +18,8 @@ class KnowledgeBase:
     def __init__(self, persist_dir: str = None):
         if not persist_dir:
             persist_dir = os.getenv("WINTRIP_DB_PATH", CHROMA_PERSIST_DIR)
-        os.makedirs(persist_dir, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=persist_dir)
+        runtime = chroma_runtime_config(persist_dir=persist_dir)
+        self.client = chroma_client(persist_dir=persist_dir)
         
         # We vertellen ChromaDB dat we Ollama gebruiken voor de wiskundige vectoren
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -34,7 +35,8 @@ class KnowledgeBase:
             name=CHROMA_COLLECTION_NAME, 
             embedding_function=self.embedding_function
         )
-        print(f"🧠 [Hippocampus]: Vector Database wordt opgestart ({persist_dir})...")
+        target = runtime.get("remote_url") or runtime.get("persist_dir") or persist_dir
+        print(f"🧠 [Hippocampus]: Vector Database wordt opgestart ({target})...")
         count = self.collection.count()
         print(f"🧠 [Hippocampus]: Online. Aantal herinneringen in database: {count}")
 

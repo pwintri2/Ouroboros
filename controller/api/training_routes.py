@@ -297,13 +297,11 @@ def _store_training_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _training_collection():
     try:
-        import chromadb
+        from controller.chroma_runtime import get_or_create_collection
     except Exception as exc:
-        raise RuntimeError(f"chromadb is niet beschikbaar: {exc}") from exc
-    persist_dir = os.getenv("WINTRIP_DB_PATH", "wintrip_brain")
+        raise RuntimeError(f"chroma runtime is niet beschikbaar: {exc}") from exc
     collection_name = os.getenv("WINTRIP_TRAINING_COLLECTION", "wintrip_training_11d")
-    client = chromadb.PersistentClient(path=persist_dir)
-    return client.get_or_create_collection(name=collection_name)
+    return get_or_create_collection(name=collection_name, persist_dir=os.getenv("WINTRIP_DB_PATH", "wintrip_brain"))
 
 
 def _embedding_11d(payload: dict[str, Any]) -> list[float]:
