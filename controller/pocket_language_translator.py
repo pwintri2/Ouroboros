@@ -223,6 +223,7 @@ class PocketLanguageTranslator:
             "network_flow": fallback.get("network_flow"),
             "symbolism": POCKET_SYMBOLISM,
             "quantum": _compact_quantum(event.get("quantum") or {}),
+            "quantum_foam": _compact_quantum_foam(event.get("quantum_foam") or {}),
             "qif": _compact_qif(event.get("qif") or {}),
             "network": _compact_network(event.get("network") or {}),
             "reality": {
@@ -250,10 +251,14 @@ class PocketLanguageTranslator:
         vector = _float_list(event.get("11d") or [])
         dominant = _dominant_dimensions(vector)
         quantum = event.get("quantum") or {}
+        quantum_foam = event.get("quantum_foam") if isinstance(event.get("quantum_foam"), dict) else {}
         qif = event.get("qif") or {}
         network = event.get("network") or {}
         topology = _pocket_topology(event, vector)
         network_flow = _network_flow(network)
+        foam_dimensions = [str(item) for item in list(quantum_foam.get("dominant_dimensions") or [])[:3]]
+        if foam_dimensions:
+            dominant = _unique_text([*foam_dimensions, *dominant])[:3]
         runtime = str(quantum.get("runtime") or quantum.get("sdk") or "none")
         expectation = quantum.get("expectation", qif.get("expectation_z", 0.0))
         binary_axis = topology.get("binary_axis") or "vlak"
@@ -261,10 +266,19 @@ class PocketLanguageTranslator:
             f"11D pocket actief door het binaire raamwerk: {', '.join(dominant) if dominant else 'geen dominante dimensie'}. "
             f"Meetlaag={runtime}, verwachting={_round(expectation)}, route={network_flow.get('observed_route', 'geen route')}."
         )
+        if quantum_foam:
+            foam_state = "collapse" if quantum_foam.get("collapse_event") else ("active" if quantum_foam.get("active") else "idle")
+            summary += f" Quantum Foam Field={foam_state}, coherence={_round(quantum_foam.get('field_coherence_percent') or quantum_foam.get('coherence'))}%."
         prompt_text = str(user_prompt or "").strip()
         prompt_lower = prompt_text.lower()
         if prompt_text:
-            if any(term in prompt_lower for term in ("dhcp", "internet", "netwerk", "flow", "router")):
+            if quantum_foam and any(term in prompt_lower for term in ("quantum foam", "field", "coherence", "node")):
+                response = (
+                    f"Het Quantum Foam Field staat op {_round(quantum_foam.get('field_coherence_percent') or quantum_foam.get('coherence'))}% "
+                    f"en draagt {', '.join(dominant[:2]) if dominant else 'de 11D basislaag'}. "
+                    f"Collapse blijft leidend zodra de taak klaar is."
+                )
+            elif any(term in prompt_lower for term in ("dhcp", "internet", "netwerk", "flow", "router")):
                 response = (
                     f"Ik laat DHCP/internet nu door de pocket spreken als {network_flow.get('dhcp_state', 'adresmetadata')} "
                     f"en {network_flow.get('internet_flow', 'flowmetadata')}. "
@@ -325,6 +339,31 @@ def _compact_quantum(value: dict[str, Any]) -> dict[str, Any]:
         "collapse_gain": value.get("collapse_gain"),
         "physical_quantum_hardware": value.get("physical_quantum_hardware"),
         "preserves_11d_pocket": value.get("preserves_11d_pocket"),
+    }
+
+
+def _compact_quantum_foam(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "active": bool(value.get("active")),
+        "field_id": value.get("field_id"),
+        "summary": _safe_text(value.get("summary"), 500),
+        "field_coherence_percent": value.get("field_coherence_percent") or value.get("coherence"),
+        "dominant_dimensions": [str(item)[:100] for item in list(value.get("dominant_dimensions") or [])[:5]],
+        "node_count": value.get("node_count") or value.get("active_nodes"),
+        "nodes": [
+            {
+                "type": str(node.get("type") or node.get("node_type") or "Node")[:80],
+                "weight": node.get("weight"),
+                "coherence": node.get("coherence"),
+                "connections": node.get("connections") or node.get("connection_count"),
+            }
+            for node in list(value.get("nodes") or [])[:8]
+            if isinstance(node, dict)
+        ],
+        "collapse_event": bool(value.get("collapse_event") or value.get("field_collapsed")),
+        "ram_released_estimate_nodes": value.get("ram_released_estimate_nodes"),
     }
 
 
@@ -451,6 +490,17 @@ def _safe_mapping(value: Any) -> dict[str, Any]:
                 for inner_key, inner_value in list(item.items())[:8]
             }
     return safe
+
+
+def _unique_text(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            output.append(text)
+    return output
 
 
 def _float_list(value: Any) -> list[float]:

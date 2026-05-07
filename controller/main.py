@@ -48,6 +48,12 @@ except ImportError:
     from virtual_team import VirtualMeeting
     from orchestrator import WintripOrchestrator
 
+try:
+    from controller.orchestrator import should_use_agentic_processor
+except Exception:
+    def should_use_agentic_processor(prompt: object) -> bool:
+        return False
+
 load_dotenv()
 
 try:
@@ -425,6 +431,15 @@ class LivingActionRequest(BaseModel):
     prompt: str
     approval: Optional[str] = None
     max_iterations: Optional[int] = 3
+
+class AgenticProcessRequest(BaseModel):
+    prompt: str
+    provider: Optional[str] = "ollama"
+    model: Optional[str] = None
+    system_prompt: Optional[str] = None
+    approval: Optional[str] = None
+    history: Optional[List[Dict[str, str]]] = None
+    max_steps: Optional[int] = 8
 
 class InviteRequest(BaseModel):
     persona_id: str
@@ -809,6 +824,33 @@ async def orchestrator_living_action(request: LivingActionRequest):
         max_iterations=request.max_iterations or 3,
     )
 
+@app.post("/api/orchestrator/agentic")
+@app.post("/orchestrator/agentic")
+async def orchestrator_agentic_process(request: AgenticProcessRequest):
+    method = getattr(orchestrator, "agentic_process", None)
+    if not callable(method):
+        raise HTTPException(status_code=503, detail="Agentic Core is niet beschikbaar op deze orchestrator")
+    requested_provider, provider = _normalize_cockpit_provider(request.provider)
+    model = _default_cockpit_model(provider, request.model)
+    planner = _agentic_model_planner(provider, model, history=request.history or [])
+    result = await asyncio.to_thread(
+        method,
+        request.prompt,
+        approval=request.approval or "",
+        model=model,
+        provider=provider,
+        system_prompt=request.system_prompt,
+        history=request.history or [],
+        max_steps=request.max_steps or 8,
+        planner=planner,
+    )
+    result.setdefault("requested_provider", requested_provider)
+    result.setdefault("provider", provider)
+    result.setdefault("model", model)
+    result.setdefault("route", "agentic_processor")
+    result.setdefault("source_trace", _cockpit_source_trace(result, provider=provider, model=model))
+    return result
+
 @app.post("/team/discuss")
 async def discuss_task(request: TeamTask):
     task = request.task or request.message
@@ -1122,6 +1164,7 @@ def _cockpit_config_payload() -> dict[str, Any]:
             "fase8_tool_dispatch": {"method": "POST", "path": "/api/fase8/tools/dispatch"},
             "fase8_external_capabilities": {"method": "GET", "path": "/api/fase8/external-capabilities"},
             "living_action": {"method": "POST", "path": "/api/orchestrator/living-action"},
+            "agentic_processor": {"method": "POST", "path": "/api/orchestrator/agentic"},
             "orchestrator_run": {"method": "POST", "path": "/orchestrator/run"},
             "orchestrator_status": {"method": "GET", "path": "/orchestrator/status/{task_id}"},
             "orchestrator_stop": {"method": "POST", "path": "/orchestrator/stop/{task_id}"},
@@ -1209,6 +1252,54 @@ def _multi_api_router_instance() -> Any:
         return None
 
 
+def _agentic_model_planner(provider: str, model: str, history: list[dict[str, str]] | None = None) -> Any:
+    """Return a sync planner callback for AgenticProcessor.
+
+    The callback is used inside asyncio.to_thread, so asyncio.run is safe for
+    external async providers.
+    """
+
+    if provider == "ollama":
+        def local_planner(*, prompt: str, system_prompt: str | None = None, model: str | None = None, history: list[dict[str, str]] | None = None) -> str:
+            return str(ollama.chat(prompt, model=model or _default_cockpit_model("ollama", None), system_prompt=system_prompt, history=history or []))
+
+        return local_planner
+
+    if provider in MULTI_API_PROVIDER_MODELS:
+        def external_planner(*, prompt: str, system_prompt: str | None = None, model: str | None = None, history: list[dict[str, str]] | None = None) -> str:
+            multi_router = _multi_api_router_instance()
+            if multi_router is None:
+                return ""
+
+            async def _route() -> dict[str, Any]:
+                return await multi_router.route_chat(
+                    provider=provider,
+                    model=model or _default_cockpit_model(provider, None),
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    history=history or [],
+                    tools=None,
+                )
+
+            result = asyncio.run(_route())
+            return str(result.get("response") or result.get("content") or json.dumps(result, ensure_ascii=False))
+
+        return external_planner
+
+    return None
+
+
+def _should_route_agentic_chat(req: CockpitChatRequest, provider: str) -> bool:
+    if not callable(getattr(orchestrator, "agentic_process", None)):
+        return False
+    role = str(req.role or "").strip().lower()
+    if role in {"agentic", "agentic_core", "agent"}:
+        return True
+    if str(req.prompt or "").strip().startswith("/"):
+        return False
+    return bool(should_use_agentic_processor(req.prompt))
+
+
 def _stored_api_keys() -> dict[str, str]:
     if callable(load_provider_api_keys):
         try:
@@ -1294,7 +1385,7 @@ def _save_api_key_payload(req: ProviderApiKeyRequest) -> dict[str, Any]:
 
 
 def _disabled_chat_payload(req: CockpitChatRequest, provider: str, model: str, tools: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+    payload = {
         "status": "disabled",
         "provider": provider,
         "model": model,
@@ -1306,6 +1397,8 @@ def _disabled_chat_payload(req: CockpitChatRequest, provider: str, model: str, t
         "local_only": True,
         "next_action": "Kies provider 'ollama' of configureer MultiAPIRouter met een expliciete API key.",
     }
+    payload["source_trace"] = _cockpit_source_trace(payload, provider=provider, model=model)
+    return payload
 
 
 def _slash_agent_timeout_seconds() -> int:
@@ -1443,6 +1536,52 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         slash_result.setdefault("tool_schema_count", 0)
         slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
         return _with_cockpit_self_context(slash_result, chat_context, provider, model, include_living_echo=False)
+
+    if _should_route_agentic_chat(req, provider):
+        planner = _agentic_model_planner(provider, model, history=chat_context.get("history") or [])
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    orchestrator.agentic_process,
+                    chat_context.get("prompt") or req.prompt,
+                    approval=req.approval or "",
+                    model=model,
+                    provider=provider,
+                    system_prompt=chat_context.get("system_prompt"),
+                    history=chat_context.get("history") or [],
+                    max_steps=8,
+                    planner=planner,
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return _with_cockpit_self_context(
+                _chat_timeout_payload(
+                    requested_provider=requested_provider,
+                    provider="agentic_processor",
+                    model=model,
+                    route="agentic_processor",
+                    timeout_seconds=timeout_seconds,
+                    local_only=provider == "ollama",
+                    tools=tools,
+                    return_tools=_should_return_tool_schemas(req),
+                ),
+                chat_context,
+                provider,
+                model,
+            )
+        if not isinstance(result, dict):
+            result = {"status": "success", "response": str(result)}
+        result.setdefault("status", "success")
+        result.setdefault("provider", provider)
+        result.setdefault("requested_provider", requested_provider)
+        result.setdefault("model", model)
+        result.setdefault("route", "agentic_processor")
+        result.setdefault("local_only", provider == "ollama")
+        result.setdefault("tool_schemas", tools if _should_return_tool_schemas(req) else [])
+        result.setdefault("tool_schema_count", len(tools) if _should_return_tool_schemas(req) else 0)
+        result.setdefault("llm_provider_used", provider != "ouroboros")
+        return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
 
     if provider == "ouroboros":
         try:
@@ -1705,7 +1844,7 @@ def _chat_timeout_payload(
 ) -> dict[str, Any]:
     seconds = int(round(timeout_seconds))
     reason = f"Chat provider exceeded backend timeout after {seconds}s."
-    return {
+    payload = {
         "status": "timeout",
         "provider": provider,
         "requested_provider": requested_provider,
@@ -1720,6 +1859,8 @@ def _chat_timeout_payload(
         "next_action": "Kies een sneller model of probeer opnieuw met een kortere prompt.",
         "fake_success": False,
     }
+    payload["source_trace"] = _cockpit_source_trace(payload, provider=provider, model=model)
+    return payload
 
 
 def _grok_frontend_action(action_id: object = None, question: object = "") -> dict[str, Any]:
@@ -1734,6 +1875,113 @@ def _grok_frontend_action(action_id: object = None, question: object = "") -> di
         "question": clean_question,
         "auto_submit_hint": bool(clean_question),
     }
+
+
+def _cockpit_source_trace(result: dict[str, Any], *, provider: str, model: str) -> dict[str, Any]:
+    """Build a uniform cockpit-readable trace of where a chat answer came from."""
+
+    route = str(result.get("route") or "unknown")
+    provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
+    steps = [step for step in (result.get("steps") or []) if isinstance(step, dict)]
+    plan = [step for step in (result.get("plan") or []) if isinstance(step, dict)]
+    status_blockers = {"blocked", "rejected", "approval_required"}
+
+    planned_tools = _trace_list(provenance.get("planned_tools")) or [
+        str(step.get("tool") or "unknown") for step in plan if step.get("tool")
+    ]
+    step_tools = [str(step.get("tool") or "unknown") for step in steps if step.get("tool")]
+    blocked_tools = _trace_list(provenance.get("blocked_tools")) or [
+        str(step.get("tool") or "unknown")
+        for step in steps
+        if str(step.get("status") or "").lower() in status_blockers and step.get("tool")
+    ]
+    tools_used = _trace_list(provenance.get("tools_used")) or step_tools
+    tools_executed = [
+        str(step.get("tool") or "unknown")
+        for step in steps
+        if step.get("tool") and str(step.get("status") or "").lower() not in status_blockers
+    ]
+    if not tools_executed and tools_used and not blocked_tools:
+        tools_executed = tools_used
+
+    brave_used = bool(provenance.get("brave_search_used")) or "brave_search" in tools_executed or "brave_search" in tools_used
+    brave_success = bool(provenance.get("brave_search_success")) or any(
+        str(step.get("tool") or "") == "brave_search" and str(step.get("status") or "") == "success"
+        for step in steps
+    )
+    pocket_processed = _trace_int(provenance.get("pocket_processed_steps"))
+    step_count = _trace_int(provenance.get("step_count"), default=len(steps))
+    if route == "ouroboros_runtime" and pocket_processed == 0:
+        pocket_processed = 1
+        step_count = max(step_count, 1)
+
+    source_kind = {
+        "agentic_processor": "agentic",
+        "local": "model_only",
+        "multi_api": "model_only",
+        "ouroboros_runtime": "ouroboros_runtime",
+        "slash_agent": "slash_agent",
+        "world_agent": "world_agent",
+        "living_action": "living_action",
+    }.get(route, route or "unknown")
+    model_only = route in {"local", "multi_api"} and not brave_used and not tools_executed
+    selected_model_interprets = route in {"agentic_processor", "local", "multi_api"}
+    external_tools = _trace_list(provenance.get("external_tools_used"))
+    mutating_tools = _trace_list(provenance.get("mutating_tools_attempted"))
+    planner_guardrails = _trace_list(provenance.get("planner_guardrails_applied"))
+    memory_status = str(
+        provenance.get("memory_status")
+        or ((result.get("memory_status") or {}).get("status") if isinstance(result.get("memory_status"), dict) else result.get("memory_status"))
+        or ""
+    )
+    action_status = "blocked" if blocked_tools else ("executed" if tools_executed else "none")
+
+    return {
+        "route": route,
+        "source_kind": source_kind,
+        "model_only": model_only,
+        "selected_model": str(result.get("model") or model or ""),
+        "selected_provider": str(result.get("provider") or provider or ""),
+        "selected_model_interprets_answer": selected_model_interprets,
+        "brave_search_used": brave_used,
+        "brave_search_success": brave_success,
+        "external_context_used": bool(brave_used or external_tools or route == "world_agent"),
+        "pocket_processed": pocket_processed,
+        "pocket_step_count": step_count,
+        "pocket_voice_used": bool(route == "ouroboros_runtime" or result.get("local_model_translation_used")),
+        "tools_planned": planned_tools,
+        "tools_used": tools_used,
+        "tools_executed": tools_executed,
+        "tools_blocked": blocked_tools,
+        "external_tools_used": external_tools,
+        "mutating_tools_attempted": mutating_tools,
+        "planner_source": str(provenance.get("planner_source") or ""),
+        "planner_guardrails_applied": planner_guardrails,
+        "approval_required": bool(result.get("approval_required") or blocked_tools),
+        "action_status": action_status,
+        "memory_status": memory_status or "not_applicable",
+        "fake_success": False,
+    }
+
+
+def _trace_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            output.append(text)
+            seen.add(text)
+    return output
+
+
+def _trace_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 
 def _with_cockpit_self_context(
@@ -1752,6 +2000,7 @@ def _with_cockpit_self_context(
     living_echo = _living_chat_echo() if attach_living_echo else {}
     if living_echo:
         result["living_echo"] = living_echo
+    result.setdefault("source_trace", _cockpit_source_trace(result, provider=provider, model=model))
     result["conversation_id"] = chat_context.get("conversation_id")
     if status == "success" and response.strip():
         try:

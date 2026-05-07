@@ -1,5 +1,6 @@
 import json
 import os
+import struct
 import unittest
 from pathlib import Path
 
@@ -13,6 +14,14 @@ def _first_existing(paths):
         if path.exists():
             return path
     return None
+
+
+def _png_size(path):
+    with path.open("rb") as handle:
+        header = handle.read(24)
+    if len(header) < 24 or not header.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise AssertionError(f"{path} is not a PNG file")
+    return struct.unpack(">II", header[16:24])
 
 
 class TestTauriCockpitFiles(unittest.TestCase):
@@ -182,6 +191,20 @@ class TestTauriCockpitFiles(unittest.TestCase):
         react_source = app_tsx.read_text(encoding="utf-8")
 
         for expected in [
+            "AgenticTraceReadout",
+            "Bronpad",
+            "Brave Search",
+            "source_trace",
+            "source_kind",
+            "model_only",
+            "planner_source",
+            "selected_model_interprets_answer",
+            "brave_search_used",
+            "pocket_processed_steps",
+            "tools_blocked",
+            "planner_guardrails_applied",
+            "Guardrails",
+            "agentic-guardrail-chips",
             "PocketVoiceReadout",
             "Ouroboros voice",
             "Cirq local measurement",
@@ -189,8 +212,80 @@ class TestTauriCockpitFiles(unittest.TestCase):
             "local_model_translation_used",
             "dominant_dimensions",
             "cirq_available",
+            "Quantum Foam Field active",
+            "Field Collapse",
+            "field-state-badge",
+            "weight {formatMetric(node.weight)}",
         ]:
             self.assertIn(expected, react_source)
+
+    def test_cockpit_uses_ouroboros_logo_assets_for_native_and_in_app_branding(self):
+        app_tsx = COCKPIT_DIR / "src" / "App.tsx"
+        styles_css = COCKPIT_DIR / "src" / "styles.css"
+        config_path = COCKPIT_DIR / "src-tauri" / "tauri.conf.json"
+        logo = COCKPIT_DIR / "src" / "assets" / "ouroboros-logo.png"
+        icon_dir = COCKPIT_DIR / "src-tauri" / "icons"
+
+        self.assertEqual((256, 256), _png_size(logo))
+        self.assertEqual((32, 32), _png_size(icon_dir / "32x32.png"))
+        self.assertEqual((128, 128), _png_size(icon_dir / "128x128.png"))
+        self.assertEqual((256, 256), _png_size(icon_dir / "128x128@2x.png"))
+        self.assertEqual((512, 512), _png_size(icon_dir / "icon.png"))
+
+        self.assertIn("ouroborosLogoUrl", app_tsx.read_text(encoding="utf-8"))
+        self.assertIn("brand-logo", app_tsx.read_text(encoding="utf-8"))
+        self.assertIn(".brand-logo", styles_css.read_text(encoding="utf-8"))
+        self.assertIn("icons/icon.png", config_path.read_text(encoding="utf-8"))
+
+    def test_standalone_applications_launcher_starts_native_tauri_not_browser(self):
+        start_script = REPO_ROOT / "scripts" / "start_ouroboros_cockpit.sh"
+        install_script = REPO_ROOT / "scripts" / "install_ouroboros_cockpit_desktop.sh"
+
+        self.assertTrue(start_script.exists(), "Missing native cockpit start script")
+        self.assertTrue(install_script.exists(), "Missing Applications desktop installer")
+        start_text = start_script.read_text(encoding="utf-8")
+        install_text = install_script.read_text(encoding="utf-8")
+
+        for expected in [
+            "target/release/ouroboros-cockpit",
+            "target/debug/ouroboros-cockpit",
+            "npm run tauri -- dev",
+            "docker compose up -d ouroboros-backend",
+            "TAURI_BACKEND_URL",
+            "VITE_BACKEND_URL",
+        ]:
+            self.assertIn(expected, start_text)
+
+        self.assertNotIn("xdg-open", start_text)
+        self.assertNotIn("sensible-browser", start_text)
+        self.assertNotIn("google-chrome", start_text)
+
+        for expected in [
+            "[Desktop Entry]",
+            "Name=Ouroboros Cockpit",
+            "Exec=$LAUNCHER",
+            "Icon=$ICON",
+            "Terminal=false",
+            "Categories=Development;",
+        ]:
+            self.assertIn(expected, install_text)
+
+    def test_docker_compose_mounts_codex_repo_home_and_binary(self):
+        compose_path = REPO_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.exists(), "Missing docker-compose.yml")
+        compose_text = compose_path.read_text(encoding="utf-8")
+
+        for expected in [
+            "/home/pwintri2/Codex:/codex:ro",
+            "/home/pwintri2/.codex:/codex_home:ro",
+            "/codex_native/bin/linux-x86_64/codex",
+            "WINTRIP_CODEX_PATH: /codex",
+            "CODEX_HOME: /codex_home",
+            "WINTRIP_CODEX_BINARY: /codex_native/bin/linux-x86_64/codex",
+            "WINTRIP_NS_API_KEY: ${WINTRIP_NS_API_KEY:-}",
+            "NS_API_SUBSCRIPTION_KEY: ${NS_API_SUBSCRIPTION_KEY:-}",
+        ]:
+            self.assertIn(expected, compose_text)
 
 
 if __name__ == "__main__":

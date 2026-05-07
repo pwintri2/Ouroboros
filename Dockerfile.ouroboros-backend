@@ -7,11 +7,29 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /workspace
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential curl \
+    && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    wget \
+    ca-certificates \
+    git \
+    dnsutils \
+    netcat-openbsd \
+    telnet \
+    iputils-ping \
+    net-tools \
+    ffmpeg \
+    v4l-utils \
+    libopencv-dev \
+    python3-opencv \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY controller/requirements.txt /tmp/wintrip-controller-requirements.txt
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -r /tmp/wintrip-controller-requirements.txt
+    && python -m pip install -r /tmp/wintrip-controller-requirements.txt \
+    && python -m pip install requests aiohttp opencv-python pillow
 
 CMD ["uvicorn", "controller.main:app", "--host", "0.0.0.0", "--port", "8010"]

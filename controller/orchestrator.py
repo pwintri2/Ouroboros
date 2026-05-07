@@ -83,6 +83,46 @@ class ResultClassifier:
         else:
             return "YELLOW", eval_result.get("insight", "")
 
+
+AGENTIC_INTENT_MARKERS = (
+    "zoek",
+    "internet",
+    "brave",
+    "browser",
+    "laatste",
+    "nieuws",
+    "bestand",
+    "file",
+    "lees",
+    "shell",
+    "commando",
+    "command",
+    "run tests",
+    "unittest",
+    "mail",
+    "email",
+    "verstuur",
+    "post op",
+    "social media",
+    "chatgpt",
+    "gemini",
+    "grok",
+    "codex",
+)
+
+
+def should_use_agentic_processor(prompt: object) -> bool:
+    text = str(prompt or "").strip().lower()
+    if not text or text.startswith("/"):
+        return False
+    if text.startswith(("schrijf python", "maak python", "genereer python", "write python")):
+        return False
+    if any(marker in text for marker in ("schrijf", "write", "save")) and re.search(r"\b[\w./-]+\.[a-z0-9]{1,8}\b", text):
+        return True
+    if "maak" in text and any(marker in text for marker in ("bestand", "file", "map", "directory")):
+        return True
+    return any(marker in text for marker in AGENTIC_INTENT_MARKERS)
+
 class WintripOrchestrator:
     def __init__(
         self,
@@ -215,6 +255,56 @@ class WintripOrchestrator:
 
     def levende_actie(self, prompt: str, *, approval: str = "", max_iterations: int = 3) -> dict[str, Any]:
         return self.levendige_actie(prompt, approval=approval, max_iterations=max_iterations)
+
+    def agentic_process(
+        self,
+        prompt: str,
+        *,
+        approval: str = "",
+        model: str | None = None,
+        provider: str = "ollama",
+        system_prompt: str | None = None,
+        history: list[dict[str, Any]] | None = None,
+        max_steps: int = 8,
+        planner: Callable[..., str] | None = None,
+    ) -> dict[str, Any]:
+        """Run the 11D-pocket grounded Agentic Core for complex tool goals."""
+
+        try:
+            from controller.agentic_processor import AgenticProcessor
+
+            processor = AgenticProcessor(
+                ollama_client=self.ollama,
+                agent_tools=self.agent_tools,
+                tool_bridge_runner=self._tool_bridge_runner,
+                planner=planner,
+                model=model or getattr(self, "active_model", ""),
+                provider=provider,
+                max_steps=max_steps,
+            )
+            result = processor.run(
+                prompt,
+                approval=approval,
+                model=model or getattr(self, "active_model", ""),
+                provider=provider,
+                system_prompt=system_prompt,
+                history=history or [],
+            )
+            result.setdefault("provider", provider)
+            result.setdefault("model", model or getattr(self, "active_model", ""))
+            result.setdefault("route", "agentic_processor")
+            result.setdefault("fake_success", False)
+            return result
+        except Exception as exc:
+            return {
+                "status": "error",
+                "route": "agentic_processor",
+                "provider": provider,
+                "model": model or getattr(self, "active_model", ""),
+                "response": f"Agentic Core is niet beschikbaar: {exc}",
+                "reason": str(exc),
+                "fake_success": False,
+            }
 
     def _living_decision(self, prompt: str, *, approval: str = "") -> dict[str, Any]:
         loop = self._living_loop or self._start_living_consciousness_loop()
@@ -488,6 +578,9 @@ class WintripOrchestrator:
         return "\n".join(line for line in lines if str(line).strip())[:4000]
 
     def execute_task(self, prompt, max_iterations=3):
+        if should_use_agentic_processor(prompt):
+            return self.agentic_process(str(prompt or ""), max_steps=max_iterations or 8)
+
         print(f"\n🚀 [Regiekamer]: Start Autonome OODA Loop voor taak: '{prompt}'")
         task = TaskModel(task_name=prompt, max_iterations=max_iterations)
         

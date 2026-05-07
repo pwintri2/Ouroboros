@@ -29,6 +29,7 @@ import {
   XCircle,
 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
+import ouroborosLogoUrl from "./assets/ouroboros-logo.png";
 
 export const BACKEND_BASE_CONFIG_KEYS = ["VITE_BACKEND_URL", "TAURI_BACKEND_URL"] as const;
 
@@ -426,6 +427,12 @@ type QuantumFoamStatus = {
     field_coherence?: number;
     node_count?: number;
     tick_count?: number;
+    metadata?: {
+      essence?: {
+        summary?: string;
+        ram_released_estimate_nodes?: number;
+      };
+    };
   } | null;
   history?: Array<{ action?: string; field_id?: string; field_coherence?: number; ts?: string }>;
   lifecycle?: { max_nodes?: number; default_max_ticks?: number; collapse_required?: boolean };
@@ -1113,6 +1120,9 @@ export default function App() {
       if (!openResult) closeReservedWindow(reservedWindow);
       setLastChatResult(data);
       setChatOutput(renderResponse(data, openResult));
+      await loadQuantumFoamStatus();
+      await loadLivingStatus();
+      await loadNexusStatus();
       // Slash-agent dispatched a background job — pull it into the Agent Jobs panel right away
       // instead of waiting for the next 5s poll.
       const job = (data as { job?: { job_id?: string } }).job;
@@ -1355,7 +1365,7 @@ export default function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <Bot size={22} />
+          <img className="brand-logo" src={ouroborosLogoUrl} alt="Ouroboros logo" />
           <div>
             <h1>Ouroboros</h1>
             <span>{health.status ?? "unknown"} / {records.total_count ?? health.memories ?? 0} records</span>
@@ -1442,8 +1452,8 @@ export default function App() {
           />
           <StatusPill
             icon={<Activity size={16} />}
-            label="QF Field"
-            value={quantumFoamStatus.active_field_count ? `${Math.round(quantumFoamStatus.field_coherence_percent ?? 0)}%` : quantumFoamStatus.latest_field?.status ?? quantumFoamStatus.status ?? "idle"}
+            label="Quantum Foam Field"
+            value={quantumFoamStatus.active_field_count ? `active ${Math.round(quantumFoamStatus.field_coherence_percent ?? 0)}%` : quantumFoamStatus.latest_field?.status ?? quantumFoamStatus.status ?? "idle"}
             ok={quantumFoamStatus.status === "online" || quantumFoamStatus.status === "idle"}
           />
           <StatusPill icon={<Globe2 size={16} />} label="World" value={worldStatus.status ?? "unknown"} ok={worldStatus.status === "online"} />
@@ -1547,6 +1557,7 @@ export default function App() {
                     <strong>{approvalReady ? "Akkoord" : "locked"}</strong>
                   </div>
                 </div>
+                <AgenticTraceReadout data={lastChatResult} />
                 <PocketVoiceReadout data={lastChatResult} />
                 <PanelHeader title="Events" small />
                 <div className="feed">
@@ -1914,6 +1925,7 @@ function summarizeResult(raw: unknown): string {
   const route = summarizeValue(data.route);
   const agent = summarizeValue(data.agent);
   const isSlashAgent = route === "slash_agent";
+  const isAgentic = route === "agentic_processor";
   if (isSlashAgent && agent === "catalog" && (data.response || data.message)) {
     return summarizeValue(data.response || data.message).slice(0, 4000);
   }
@@ -1922,16 +1934,42 @@ function summarizeResult(raw: unknown): string {
       ? (data.living_echo as Record<string, unknown>)
       : null;
   const pocketVoice = !isSlashAgent ? asRecord(data.pocket_voice) : {};
+  const provenance = isAgentic ? asRecord(data.provenance) : {};
+  const sourceTrace = asRecord(data.source_trace);
   const quantumCollapse = !isSlashAgent ? asRecord(data.quantum_collapse) : {};
   const cirqRuntime = asRecord(quantumCollapse.cirq_runtime ?? pocketVoice.cirq_runtime);
   const dominant = Array.isArray(pocketVoice.dominant_dimensions)
     ? pocketVoice.dominant_dimensions.map(summarizeValue).filter(Boolean).join(", ")
     : "";
+  const toolsUsedRaw = sourceTrace.tools_executed ?? provenance.tools_used;
+  const toolsUsed = Array.isArray(toolsUsedRaw)
+    ? toolsUsedRaw.map(summarizeValue).filter(Boolean).join(" -> ")
+    : "";
+  const toolsBlocked = Array.isArray(sourceTrace.tools_blocked)
+    ? sourceTrace.tools_blocked.map(summarizeValue).filter(Boolean).join(" -> ")
+    : "";
+  const plannerGuardrails = Array.isArray(sourceTrace.planner_guardrails_applied)
+    ? sourceTrace.planner_guardrails_applied.map(summarizeValue).filter(Boolean).join(" -> ")
+    : Array.isArray(provenance.planner_guardrails_applied)
+      ? provenance.planner_guardrails_applied.map(summarizeValue).filter(Boolean).join(" -> ")
+      : "";
+  const memoryStatus = summarizeValue(sourceTrace.memory_status ?? provenance.memory_status ?? asRecord(data.memory_status).status ?? data.memory_status);
   const showDiagnostic = shouldSurfaceDiagnostic(data);
   const parts = [
     data.status ? `status=${summarizeValue(data.status)}` : "",
+    route ? `route=${route}` : "",
+    sourceTrace.source_kind ? `source_kind=${summarizeValue(sourceTrace.source_kind)}` : "",
+    sourceTrace.model_only !== undefined ? `model_only=${summarizeValue(sourceTrace.model_only)}` : "",
     !isSlashAgent && data.provider ? `provider=${summarizeValue(data.provider)}` : "",
     !isSlashAgent && data.model ? `model=${summarizeValue(data.model)}` : "",
+    sourceTrace.planner_source ? `planner_source=${summarizeValue(sourceTrace.planner_source)}` : "",
+    sourceTrace.selected_model_interprets_answer !== undefined ? `selected_model_interprets_answer=${summarizeValue(sourceTrace.selected_model_interprets_answer)}` : "",
+    sourceTrace.brave_search_used !== undefined || provenance.brave_search_used !== undefined ? `brave_search_used=${summarizeValue(sourceTrace.brave_search_used ?? provenance.brave_search_used)}` : "",
+    sourceTrace.pocket_processed !== undefined || provenance.pocket_processed_steps !== undefined ? `pocket_processed=${summarizeValue(sourceTrace.pocket_processed ?? provenance.pocket_processed_steps)}/${summarizeValue(sourceTrace.pocket_step_count ?? provenance.step_count) || "0"}` : "",
+    toolsUsed ? `tools_executed=${toolsUsed}` : "",
+    toolsBlocked ? `tools_blocked=${toolsBlocked}` : "",
+    plannerGuardrails ? `planner_guardrails_applied=${plannerGuardrails}` : "",
+    memoryStatus && memoryStatus !== "not_applicable" ? `memory_status=${memoryStatus}` : "",
     data.next_action ? `next=${summarizeValue(data.next_action)}` : "",
     data.response ? summarizeValue(data.response) : "",
     data.message ? summarizeValue(data.message) : "",
@@ -1961,6 +1999,77 @@ function renderResponse(raw: unknown, openResult: ExternalOpenResult | null = nu
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function AgenticTraceReadout({ data }: { data: Record<string, unknown> | null }) {
+  if (!data) return null;
+  const route = summarizeValue(data.route) || "model";
+  const isAgentic = route === "agentic_processor";
+  const sourceTrace = asRecord(data.source_trace);
+  const provenance = asRecord(data.provenance);
+  const steps = Array.isArray(data.steps) ? data.steps.map(asRecord) : [];
+  const braveUsed = Boolean(sourceTrace.brave_search_used ?? provenance.brave_search_used);
+  const braveSuccess = Boolean(sourceTrace.brave_search_success ?? provenance.brave_search_success);
+  const pocketCount = summarizeValue(sourceTrace.pocket_processed ?? provenance.pocket_processed_steps) || "0";
+  const stepCount = summarizeValue(sourceTrace.pocket_step_count ?? provenance.step_count) || String(steps.length);
+  const memoryStatus = summarizeValue(sourceTrace.memory_status ?? provenance.memory_status ?? asRecord(data.memory_status).status ?? data.memory_status) || "--";
+  const tools = Array.isArray(sourceTrace.tools_executed)
+    ? sourceTrace.tools_executed.map(summarizeValue).filter(Boolean)
+    : Array.isArray(provenance.tools_used)
+      ? provenance.tools_used.map(summarizeValue).filter(Boolean)
+      : steps.map((step) => summarizeValue(step.tool)).filter(Boolean);
+  const blockedTools = Array.isArray(sourceTrace.tools_blocked)
+    ? sourceTrace.tools_blocked.map(summarizeValue).filter(Boolean)
+    : [];
+  const guardrailsApplied = Array.isArray(sourceTrace.planner_guardrails_applied)
+    ? sourceTrace.planner_guardrails_applied.map(summarizeValue).filter(Boolean)
+    : Array.isArray(provenance.planner_guardrails_applied)
+      ? provenance.planner_guardrails_applied.map(summarizeValue).filter(Boolean)
+      : [];
+  const sourceValue = summarizeValue(sourceTrace.source_kind) || (isAgentic ? "agentic" : "model-only");
+  const braveValue = braveUsed ? (braveSuccess ? "used" : "attempted") : "not used";
+  const modelValue = Boolean(sourceTrace.selected_model_interprets_answer) ? "interprets" : "not used";
+  const actionValue = summarizeValue(sourceTrace.action_status) || (blockedTools.length ? "blocked" : (tools.length ? "executed" : "none"));
+  const guardrailValue = guardrailsApplied.length ? String(guardrailsApplied.length) : "none";
+  return (
+    <div className="agentic-trace-readout">
+      <div className="status-grid pocket-badges">
+        <StatusPill icon={<Layers size={15} />} label="Bronpad" value={sourceValue} ok={sourceValue !== "unknown"} />
+        <StatusPill icon={<Globe2 size={15} />} label="Brave Search" value={braveValue} ok={braveUsed && braveSuccess} />
+        <StatusPill icon={<BrainCircuit size={15} />} label="11D pocket" value={`${pocketCount}/${stepCount}`} ok={Number(pocketCount) > 0} />
+        <StatusPill icon={<Bot size={15} />} label="Model" value={modelValue} ok={Boolean(sourceTrace.selected_model_interprets_answer)} />
+        <StatusPill icon={<ShieldCheck size={15} />} label="Guardrails" value={guardrailValue} ok={guardrailsApplied.length > 0} />
+        <StatusPill icon={<Hammer size={15} />} label="Actie" value={actionValue} ok={actionValue === "executed"} />
+        <StatusPill icon={<Database size={15} />} label="Memory" value={memoryStatus} ok={["stored", "success"].includes(memoryStatus)} />
+      </div>
+      {tools.length > 0 && (
+        <div className="dimension-chip-list agentic-tool-chips">
+          {tools.slice(0, 8).map((item, index) => <span key={`${item}-${index}`}>{item}</span>)}
+        </div>
+      )}
+      {guardrailsApplied.length > 0 && (
+        <div className="dimension-chip-list agentic-guardrail-chips">
+          {guardrailsApplied.slice(0, 8).map((item, index) => <span key={`${item}-${index}`}>{item}</span>)}
+        </div>
+      )}
+      {blockedTools.length > 0 && (
+        <div className="dimension-chip-list agentic-blocked-chips">
+          {blockedTools.slice(0, 8).map((item, index) => <span key={`${item}-${index}`}>{item}</span>)}
+        </div>
+      )}
+      {steps.length > 0 && (
+        <div className="agentic-step-list">
+          {steps.slice(0, 8).map((step, index) => (
+            <div className="agentic-step-row" key={`${summarizeValue(step.tool) || "step"}-${index}`}>
+              <span>{summarizeValue(step.index) || String(index + 1)}</span>
+              <strong>{summarizeValue(step.tool) || "tool"}</strong>
+              <em>{summarizeValue(step.status) || "unknown"}</em>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PocketVoiceReadout({ data }: { data: Record<string, unknown> | null }) {
@@ -2367,6 +2476,8 @@ function QuantumFoamPanel({
   const coherencePercent = Math.max(0, Math.min(100, Math.round((latest?.field_coherence_percent ?? field.field_coherence_percent ?? coherence * 100) || 0)));
   const nodes = latest?.nodes ?? [];
   const collapsed = latest?.collapse_essence ?? null;
+  const collapseEvent = field.last_event?.action === "collapsed" || latest?.status === "collapsed" || !!collapsed;
+  const releasedNodes = collapsed?.ram_released_estimate_nodes ?? field.last_event?.metadata?.essence?.ram_released_estimate_nodes ?? 0;
   return (
     <div className="quantum-foam-panel">
       <div className="living-head">
@@ -2379,6 +2490,10 @@ function QuantumFoamPanel({
           <button onClick={onTick} disabled={busy || !active}>Tick</button>
           <button onClick={onCollapse} disabled={busy || !active}>Collapse</button>
         </div>
+      </div>
+      <div className={active ? "field-state-badge active" : "field-state-badge"} aria-label={active ? "Quantum Foam Field active" : "Quantum Foam Field idle"}>
+        <strong>Quantum Foam Field {active ? "active" : latest?.status ?? field.status ?? "idle"}</strong>
+        <span>Coherence: {coherencePercent}%</span>
       </div>
       <div className="nexus-bars">
         <label>
@@ -2403,9 +2518,16 @@ function QuantumFoamPanel({
           {nodes.slice(0, 8).map((node) => (
             <div key={node.node_id ?? `${node.node_type}-${node.weight}`}>
               <span>{node.node_type ?? "Node"}</span>
-              <strong>{formatMetric(node.coherence)} / {node.connection_count ?? 0} links</strong>
+              <strong>weight {formatMetric(node.weight)} / coh {formatMetric(node.coherence)} / {node.connection_count ?? 0} links</strong>
             </div>
           ))}
+        </div>
+      )}
+      {collapseEvent && (
+        <div className="field-collapse-event">
+          <strong>Field Collapse</strong>
+          <span>{collapsed?.summary ?? field.last_event?.metadata?.essence?.summary ?? "Essentie bewaard; tijdelijke nodes vrijgegeven."}</span>
+          <em>{releasedNodes} nodes released</em>
         </div>
       )}
       {collapsed?.summary && (

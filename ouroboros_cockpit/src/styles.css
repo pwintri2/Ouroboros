@@ -113,6 +113,16 @@ summary {
   border-bottom: 1px solid #1d2634;
 }
 
+.brand-logo {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border: 1px solid #284a5d;
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 0 18px rgba(64, 196, 170, 0.16);
+}
+
 .brand h1 {
   margin: 0;
   font-size: 18px;
@@ -345,6 +355,12 @@ label {
   margin-bottom: 12px;
 }
 
+.agentic-trace-readout {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+
 .pocket-badges {
   grid-template-columns: 1fr;
 }
@@ -375,6 +391,56 @@ label {
   background: #0b1220;
   color: #b7c6dc;
   font-size: 11px;
+}
+
+.agentic-tool-chips span {
+  border-color: #1f3c4e;
+  background: #071923;
+  color: #b7e4f4;
+}
+
+.agentic-guardrail-chips span {
+  border-color: #3d3a22;
+  background: #18170b;
+  color: #f1df9b;
+}
+
+.agentic-blocked-chips span {
+  border-color: #55302f;
+  background: #241111;
+  color: #ffb6ad;
+}
+
+.agentic-step-list {
+  display: grid;
+  gap: 6px;
+}
+
+.agentic-step-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid #1d2634;
+  border-radius: 7px;
+  background: #0b1220;
+  color: #b7c6dc;
+  font-size: 11px;
+}
+
+.agentic-step-row span,
+.agentic-step-row em {
+  color: #8192aa;
+  font-style: normal;
+}
+
+.agentic-step-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #e5edf4;
 }
 
 .feed {
@@ -751,6 +817,37 @@ label {
 .quantum-node-list strong {
   color: #e5edf4;
   font-size: 12px;
+}
+
+.field-state-badge,
+.field-collapse-event {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid #24423b;
+  border-radius: 6px;
+  background: #0d1c1a;
+  color: #c9d7e2;
+  font-size: 12px;
+}
+
+.field-state-badge.active {
+  border-color: #2f6f5d;
+}
+
+.field-collapse-event {
+  display: grid;
+  gap: 3px;
+  border-color: #4f4731;
+  background: #18170f;
+}
+
+.field-collapse-event em {
+  color: #d9bd6b;
+  font-style: normal;
+  font-size: 11px;
 }
 
 .living-head {

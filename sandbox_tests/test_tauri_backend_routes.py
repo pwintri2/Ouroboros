@@ -309,12 +309,69 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["status"], "success")
         self.assertEqual(data["route"], "multi_api")
         self.assertEqual(data["response"], "fake multi-api response")
+        self.assertEqual(data["source_trace"]["source_kind"], "model_only")
+        self.assertTrue(data["source_trace"]["model_only"])
+        self.assertFalse(data["source_trace"]["brave_search_used"])
+        self.assertTrue(data["source_trace"]["selected_model_interprets_answer"])
         tool_names = [tool["function"]["name"] for tool in data["tool_schemas"]]
         routed_tool_names = [tool["function"]["name"] for tool in self.main.app.state.multi_api_router.calls[0]["tools"]]
         self.assertEqual(data["tool_schema_count"], len(data["tool_schemas"]))
         self.assertGreaterEqual(data["tool_schema_count"], 1)
         self.assertIn("memory_search", tool_names)
         self.assertIn("memory_search", routed_tool_names)
+
+    def test_cockpit_chat_routes_complex_goal_to_agentic_processor(self):
+        original_should = self.main.should_use_agentic_processor
+        original_agentic = getattr(self.main.orchestrator, "agentic_process", None)
+        calls = []
+
+        def fake_agentic(prompt, **kwargs):
+            calls.append({"prompt": prompt, **kwargs})
+            return {
+                "status": "success",
+                "route": "agentic_processor",
+                "response": "agentic done",
+                "steps": [{"tool": "memory_search", "status": "success"}],
+                "provenance": {
+                    "planner_source": "llm_with_guardrails",
+                    "planner_guardrails_applied": ["inserted_brave_search"],
+                    "tools_used": ["memory_search"],
+                },
+                "fake_success": False,
+            }
+
+        self.main.should_use_agentic_processor = lambda prompt: "zoek" in str(prompt).lower()
+        self.main.orchestrator.agentic_process = fake_agentic
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ollama",
+                    "model": "llama3.2:latest",
+                    "prompt": "Zoek internet en vat samen",
+                    "approval": "Akkoord",
+                },
+            )
+        finally:
+            self.main.should_use_agentic_processor = original_should
+            if original_agentic is None:
+                delattr(self.main.orchestrator, "agentic_process")
+            else:
+                self.main.orchestrator.agentic_process = original_agentic
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "agentic_processor")
+        self.assertEqual(data["response"], "agentic done")
+        self.assertEqual(data["source_trace"]["source_kind"], "agentic")
+        self.assertFalse(data["source_trace"]["model_only"])
+        self.assertEqual(data["source_trace"]["tools_executed"], ["memory_search"])
+        self.assertEqual(data["source_trace"]["action_status"], "executed")
+        self.assertEqual(data["source_trace"]["planner_source"], "llm_with_guardrails")
+        self.assertEqual(data["source_trace"]["planner_guardrails_applied"], ["inserted_brave_search"])
+        self.assertTrue(data["source_trace"]["selected_model_interprets_answer"])
+        self.assertEqual(calls[0]["provider"], "ollama")
+        self.assertEqual(calls[0]["approval"], "Akkoord")
 
     def test_cockpit_chat_slash_agents_are_intercepted_before_provider(self):
         original_living_echo = self.main._living_chat_echo
@@ -358,6 +415,10 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["route"], "ouroboros_runtime")
         self.assertTrue(data["local_only"])
         self.assertFalse(data["llm_provider_used"])
+        self.assertEqual(data["source_trace"]["source_kind"], "ouroboros_runtime")
+        self.assertFalse(data["source_trace"]["model_only"])
+        self.assertTrue(data["source_trace"]["pocket_voice_used"])
+        self.assertGreaterEqual(data["source_trace"]["pocket_processed"], 1)
         self.assertIn("niet via Ollama", data["response"])
         self.assertEqual(data["concept_anchor_field"]["dimension_count"], 11)
         self.assertEqual(data["concept_anchor_field"]["pocket_count"], 11)

@@ -10,10 +10,12 @@ import os
 import re
 import time
 import uuid
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from controller.safe_shell import run_safe_shell
 from controller.stream.browser_scrubber import (
@@ -33,7 +35,16 @@ REGISTERED_TOOLS: tuple[str, ...] = (
     "memory_search",
     "browser_research",
     "brave_search",
+    "ns_travel_advice",
     "chatgpt_browser_ask",
+    "world_grok_ask",
+    "mail_read_recent",
+    "mail_send_preview",
+    "mail_send",
+    "social_post_preview",
+    "social_post_publish",
+    "codex_job_start",
+    "voice_chat_status",
     "scrub_browser_content",
     "training_ingest",
     "safe_shell",
@@ -57,6 +68,326 @@ DEFAULT_TEST_SELECTOR = "sandbox_tests.test_agent_tools sandbox_tests.test_self_
 SAFE_TEST_SELECTOR_RE = re.compile(r"^[A-Za-z0-9_ .:-]+$")
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
 WORD_RE = re.compile(r"[A-Za-z0-9_+-]{3,}")
+
+
+def _tool_schema(
+    name: str,
+    description: str,
+    properties: dict[str, dict[str, Any]],
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": list(required or []),
+            },
+        },
+    }
+
+
+AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
+    "memory_search": _tool_schema(
+        "memory_search",
+        "Zoekt lokaal in Wintrip/Ouroboros ChromaDB-geheugen voordat externe bronnen worden gebruikt.",
+        {
+            "query": {"type": "string", "description": "Zoekvraag of doel."},
+            "limit": {"type": "integer", "description": "Aantal resultaten, maximaal 12."},
+        },
+        ["query"],
+    ),
+    "browser_research": _tool_schema(
+        "browser_research",
+        "Doet approval-gated browser/webonderzoek en voegt Brave-context toe waar beschikbaar.",
+        {
+            "query": {"type": "string", "description": "Onderzoeksvraag."},
+            "limit": {"type": "integer", "description": "Aantal bronnen."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor externe/browseractie."},
+        },
+        ["query", "approval"],
+    ),
+    "brave_search": _tool_schema(
+        "brave_search",
+        "Zoekt actuele webkennis via Brave Search API en markeert de output als 11D-trainbare, untrusted-web context. Read-only; geen Akkoord nodig.",
+        {
+            "query": {"type": "string", "description": "Zoekvraag, liefst korter dan 400 tekens."},
+            "limit": {"type": "integer", "description": "Aantal webresultaten/contextbronnen."},
+            "llm_context": {"type": "boolean", "description": "Gebruik Brave LLM Context wanneer true."},
+            "approval": {"type": "string", "description": "Optioneel; wordt alleen vastgelegd voor audit."},
+        },
+        ["query"],
+    ),
+    "ns_travel_advice": _tool_schema(
+        "ns_travel_advice",
+        "Haalt officiële NS-reisadviezen op voor Nederlandse trein/OV-vragen. Read-only; geen Akkoord nodig. Zonder NS API key geeft deze tool géén verzonnen tijden, maar een officiële plannerlink.",
+        {
+            "from_station": {"type": "string", "description": "Vertrekstation, naam of NS-code."},
+            "to_station": {"type": "string", "description": "Aankomststation, naam of NS-code."},
+            "date": {"type": "string", "description": "Optionele datum YYYY-MM-DD."},
+            "time": {"type": "string", "description": "Optionele tijd HH:MM."},
+            "datetime": {"type": "string", "description": "Optionele ISO datetime; heeft voorrang op date/time."},
+            "search_for_arrival": {"type": "boolean", "description": "True wanneer de opgegeven tijd een gewenste aankomsttijd is."},
+            "query": {"type": "string", "description": "Originele gebruikersvraag voor audit/context."},
+        },
+        ["from_station", "to_station"],
+    ),
+    "chatgpt_browser_ask": _tool_schema(
+        "chatgpt_browser_ask",
+        "Stelt approval-gated een vraag aan de lokale ChatGPT/browser-automatisering wanneer beschikbaar.",
+        {
+            "question": {"type": "string", "description": "Vraag voor ChatGPT."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor browser/app-besturing."},
+        },
+        ["question", "approval"],
+    ),
+    "world_grok_ask": _tool_schema(
+        "world_grok_ask",
+        "Vraagt Grok via de World Agent/browser-bridge. Vereist Akkoord voor openen/typen/submits.",
+        {
+            "question": {"type": "string", "description": "Vraag voor Grok."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor browser/app-besturing."},
+            "open_tab": {"type": "boolean", "description": "Open een zichtbare tab wanneer mogelijk."},
+            "submit": {"type": "boolean", "description": "Typ en submit de vraag wanneer toegestaan."},
+        },
+        ["question", "approval"],
+    ),
+    "mail_read_recent": _tool_schema(
+        "mail_read_recent",
+        "Leest recente mail read-only via de bestaande IMAP/Gmail-compatible adapter. Vereist Akkoord vanwege private data.",
+        {
+            "limit": {"type": "integer", "description": "Aantal recente berichten, maximaal 10."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor mailbox lezen."},
+        },
+        ["approval"],
+    ),
+    "mail_send_preview": _tool_schema(
+        "mail_send_preview",
+        "Maakt een mailconcept-preview zonder iets te versturen.",
+        {
+            "to": {"type": "string", "description": "Ontvanger(s), alleen voor preview."},
+            "subject": {"type": "string", "description": "Onderwerp."},
+            "body": {"type": "string", "description": "Berichttekst."},
+        },
+        ["to", "subject", "body"],
+    ),
+    "mail_send": _tool_schema(
+        "mail_send",
+        "Verstuurt mail alleen via een expliciet geconfigureerde send-adapter. Vereist Akkoord; claimt geen verzending zonder bewijs.",
+        {
+            "to": {"type": "string", "description": "Ontvanger(s)."},
+            "subject": {"type": "string", "description": "Onderwerp."},
+            "body": {"type": "string", "description": "Berichttekst."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor echte verzending."},
+        },
+        ["to", "subject", "body", "approval"],
+    ),
+    "social_post_preview": _tool_schema(
+        "social_post_preview",
+        "Maakt een social-media post preview zonder te posten.",
+        {
+            "platform": {"type": "string", "description": "Doelplatform, bv. x, linkedin, mastodon."},
+            "content": {"type": "string", "description": "Posttekst."},
+            "visibility": {"type": "string", "description": "Optionele zichtbaarheid/context."},
+        },
+        ["platform", "content"],
+    ),
+    "social_post_publish": _tool_schema(
+        "social_post_publish",
+        "Publiceert op social media alleen via een expliciet geconfigureerde connector. Vereist Akkoord.",
+        {
+            "platform": {"type": "string", "description": "Doelplatform."},
+            "content": {"type": "string", "description": "Posttekst."},
+            "visibility": {"type": "string", "description": "Optionele zichtbaarheid/context."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor echte publicatie."},
+        },
+        ["platform", "content", "approval"],
+    ),
+    "codex_job_start": _tool_schema(
+        "codex_job_start",
+        "Start een Codex agent-runtime job voor self-modification of codewerk. Vereist Akkoord.",
+        {
+            "task": {"type": "string", "description": "Codex taak in natuurlijke taal."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist omdat Codex bestanden kan wijzigen."},
+            "timeout_seconds": {"type": "integer", "description": "Job timeout, maximaal 3600 seconden."},
+        },
+        ["task", "approval"],
+    ),
+    "voice_chat_status": _tool_schema(
+        "voice_chat_status",
+        "Rapporteert de huidige spraakchat-capability zonder microfoon of audio te openen.",
+        {},
+        [],
+    ),
+    "scrub_browser_content": _tool_schema(
+        "scrub_browser_content",
+        "Schoont geplakte browsertekst op en maakt een veilig ingest-preview zonder meteen op te slaan.",
+        {
+            "text": {"type": "string", "description": "Browsertekst."},
+            "url": {"type": "string", "description": "Bron-URL."},
+            "approval": {"type": "string", "description": "Optionele approval voor bekende ingest-flows."},
+            "title": {"type": "string", "description": "Korte titel voor de preview."},
+        },
+        ["text"],
+    ),
+    "training_ingest": _tool_schema(
+        "training_ingest",
+        "Slaat goedgekeurde leerstof op in de lokale 11D ChromaDB-trainingcollectie.",
+        {
+            "text": {"type": "string", "description": "Te leren tekst."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor opslag."},
+            "target_hz": {"type": "number", "description": "Optionele resonantie-doelfrequentie."},
+            "url": {"type": "string", "description": "Bron-URL of lokale bronnaam."},
+            "title": {"type": "string", "description": "Korte titel."},
+        },
+        ["text", "approval"],
+    ),
+    "safe_shell": _tool_schema(
+        "safe_shell",
+        "Voert een safe-shell commando uit binnen de workspace allowlist. Vereist approval.",
+        {
+            "command": {"type": "string", "description": "Shellcommando."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+        },
+        ["command", "approval"],
+    ),
+    "prompt_understanding": _tool_schema(
+        "prompt_understanding",
+        "Analyseert lokaal welke kennis, tools en approvals een prompt nodig heeft.",
+        {"prompt": {"type": "string", "description": "Prompt of doel."}},
+        ["prompt"],
+    ),
+    "self_training_plan": _tool_schema(
+        "self_training_plan",
+        "Maakt een veilig leerplan met memory-first en approval-gated stappen.",
+        {"prompt": {"type": "string", "description": "Leerdoel of opdracht."}},
+        ["prompt"],
+    ),
+    "inspect_hippocampus": _tool_schema(
+        "inspect_hippocampus",
+        "Inspecteert beperkte ChromaDB/11D-geheugenstatus en recente trainingrecords.",
+        {"limit": {"type": "integer", "description": "Aantal recente records, maximaal 20."}},
+        [],
+    ),
+    "run_tests": _tool_schema(
+        "run_tests",
+        "Draait Python unittest-selectors via safe shell en slaat succesvolle validatie op in 11D memory.",
+        {
+            "test_selector": {"type": "string", "description": "Dotted unittest selectors."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+        },
+        ["test_selector", "approval"],
+    ),
+    "roo_read_file": _tool_schema(
+        "roo_read_file",
+        "Leest een workspacebestand of bekend agent-root bestand via de Roo adapter.",
+        {
+            "path": {"type": "string", "description": "Relatief pad of alias zoals ruflo/..., roo/... of codex/..."},
+            "offset": {"type": "integer", "description": "Start byte."},
+            "limit": {"type": "integer", "description": "Maximum bytes."},
+        },
+        ["path"],
+    ),
+    "roo_list_files": _tool_schema(
+        "roo_list_files",
+        "Geeft een begrensde bestandslijst terug via de Roo adapter.",
+        {
+            "path": {"type": "string", "description": "Startpad."},
+            "recursive": {"type": "boolean", "description": "Recursief zoeken."},
+            "limit": {"type": "integer", "description": "Maximaal aantal resultaten."},
+        },
+        [],
+    ),
+    "roo_search_files": _tool_schema(
+        "roo_search_files",
+        "Zoekt met regex in workspacebestanden via de Roo adapter.",
+        {
+            "path": {"type": "string", "description": "Startpad."},
+            "regex": {"type": "string", "description": "Regex/patroon."},
+            "file_pattern": {"type": "string", "description": "Optioneel bestandsfilter."},
+            "limit": {"type": "integer", "description": "Maximaal aantal matches."},
+        },
+        ["regex"],
+    ),
+    "roo_write_file_preview": _tool_schema(
+        "roo_write_file_preview",
+        "Maakt een preview voor een bestandsschrijfactie zonder te schrijven.",
+        {
+            "path": {"type": "string", "description": "Doelpad."},
+            "content": {"type": "string", "description": "Nieuwe inhoud."},
+        },
+        ["path", "content"],
+    ),
+    "roo_write_file": _tool_schema(
+        "roo_write_file",
+        "Schrijft een bestand via de Roo adapter. Vereist approval.",
+        {
+            "path": {"type": "string", "description": "Doelpad."},
+            "content": {"type": "string", "description": "Nieuwe inhoud."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+        },
+        ["path", "content", "approval"],
+    ),
+    "roo_apply_patch_preview": _tool_schema(
+        "roo_apply_patch_preview",
+        "Valideert/toont een patch zonder hem toe te passen.",
+        {"patch": {"type": "string", "description": "Unified/apply_patch tekst."}},
+        ["patch"],
+    ),
+    "roo_apply_patch": _tool_schema(
+        "roo_apply_patch",
+        "Past een patch toe via de Roo adapter. Vereist approval.",
+        {
+            "patch": {"type": "string", "description": "Unified/apply_patch tekst."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+        },
+        ["patch", "approval"],
+    ),
+    "roo_execute_command": _tool_schema(
+        "roo_execute_command",
+        "Voert een begrensd commando uit via de Roo adapter. Vereist approval.",
+        {
+            "command": {"type": "string", "description": "Commando."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+            "timeout": {"type": "integer", "description": "Timeout in seconden."},
+        },
+        ["command", "approval"],
+    ),
+    "roo_attempt_completion": _tool_schema(
+        "roo_attempt_completion",
+        "Markeert een taak of mijlpaal als voltooid.",
+        {
+            "result": {"type": "string", "description": "Samenvatting van wat klaar is."},
+            "command": {"type": "string", "description": "Optioneel verificatiecommando."},
+        },
+        ["result"],
+    ),
+    "roo_ask_followup_question": _tool_schema(
+        "roo_ask_followup_question",
+        "Legt een noodzakelijke vervolgvraag vast wanneer uitvoering niet veilig kan doorgaan.",
+        {"question": {"type": "string", "description": "Vervolgvraag."}},
+        ["question"],
+    ),
+}
+
+
+def agent_tool_schemas(provider: str = "openai") -> list[dict[str, Any]]:
+    """Return one structured schema for every registered AgentToolRegistry tool."""
+
+    schemas = [AGENT_TOOL_SCHEMAS[name] for name in REGISTERED_TOOLS if name in AGENT_TOOL_SCHEMAS]
+    if provider == "anthropic":
+        return [
+            {
+                "name": schema["function"]["name"],
+                "description": schema["function"]["description"],
+                "input_schema": schema["function"]["parameters"],
+            }
+            for schema in schemas
+        ]
+    return [dict(schema) for schema in schemas]
 
 
 class AgentToolRegistry:
@@ -108,11 +439,67 @@ class AgentToolRegistry:
                     _int(args.get("limit"), default=5),
                     bool(args.get("llm_context", True)),
                 )
+            elif tool_name == "ns_travel_advice":
+                result = self.ns_travel_advice(
+                    from_station=str(args.get("from_station") or args.get("from") or ""),
+                    to_station=str(args.get("to_station") or args.get("to") or ""),
+                    date=str(args.get("date") or ""),
+                    time_value=str(args.get("time") or ""),
+                    datetime_value=str(args.get("datetime") or args.get("dateTime") or ""),
+                    search_for_arrival=bool(args.get("search_for_arrival", False)),
+                    query=str(args.get("query") or args.get("prompt") or ""),
+                )
             elif tool_name == "chatgpt_browser_ask":
                 result = self.chatgpt_browser_ask(
                     str(args.get("question") or args.get("prompt") or ""),
                     str(args.get("approval") or ""),
                 )
+            elif tool_name == "world_grok_ask":
+                result = self.world_grok_ask(
+                    str(args.get("question") or args.get("prompt") or ""),
+                    str(args.get("approval") or ""),
+                    open_tab=bool(args.get("open_tab", True)),
+                    submit=bool(args.get("submit", True)),
+                )
+            elif tool_name == "mail_read_recent":
+                result = self.mail_read_recent(
+                    _int(args.get("limit"), default=5),
+                    str(args.get("approval") or ""),
+                )
+            elif tool_name == "mail_send_preview":
+                result = self.mail_send_preview(
+                    to=str(args.get("to") or args.get("recipient") or ""),
+                    subject=str(args.get("subject") or ""),
+                    body=str(args.get("body") or args.get("content") or ""),
+                )
+            elif tool_name == "mail_send":
+                result = self.mail_send(
+                    to=str(args.get("to") or args.get("recipient") or ""),
+                    subject=str(args.get("subject") or ""),
+                    body=str(args.get("body") or args.get("content") or ""),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "social_post_preview":
+                result = self.social_post_preview(
+                    platform=str(args.get("platform") or ""),
+                    content=str(args.get("content") or args.get("body") or ""),
+                    visibility=str(args.get("visibility") or ""),
+                )
+            elif tool_name == "social_post_publish":
+                result = self.social_post_publish(
+                    platform=str(args.get("platform") or ""),
+                    content=str(args.get("content") or args.get("body") or ""),
+                    visibility=str(args.get("visibility") or ""),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "codex_job_start":
+                result = self.codex_job_start(
+                    task=str(args.get("task") or args.get("prompt") or ""),
+                    approval=str(args.get("approval") or ""),
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=900),
+                )
+            elif tool_name == "voice_chat_status":
+                result = self.voice_chat_status()
             elif tool_name == "scrub_browser_content":
                 result = self.scrub_browser_content(
                     text=str(args.get("text") or args.get("browser_text") or ""),
@@ -174,108 +561,7 @@ class AgentToolRegistry:
     def get_tool_schemas(self, provider: str = "openai") -> list[dict[str, Any]]:
         """Return function calling schemas for registered tools."""
 
-        # Roo-tools are high priority for the new cockpit
-        schemas = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "roo_read_file",
-                    "description": "Leest de inhoud van een bestand in de workspace of een bekende agent-root.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Pad relatief aan /workspace, of alias zoals ruflo/..., roo/... of codex/... wanneer zichtbaar."},
-                            "offset": {"type": "integer", "description": "Start byte."},
-                            "limit": {"type": "integer", "description": "Maximum bytes om te lezen."}
-                        },
-                        "required": ["path"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "roo_write_file",
-                    "description": "Schrijft of overschrijft een bestand in de workspace of een bekende agent-root. VEREIST PHILIP AKKOORD.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Pad relatief aan /workspace, of alias zoals ruflo/..., roo/... of codex/... wanneer zichtbaar."},
-                            "content": {"type": "string", "description": "De volledige nieuwe inhoud."},
-                            "approval": {"type": "string", "description": "Moet 'Akkoord' bevatten voor echte schrijfactie."}
-                        },
-                        "required": ["path", "content", "approval"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "roo_execute_command",
-                    "description": "Voert een veilig shell-commando uit in de /workspace sandbox. VEREIST PHILIP AKKOORD.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string", "description": "Het commando, bijv. 'ls -la' of 'pytest'."},
-                            "approval": {"type": "string", "description": "Moet 'Akkoord' bevatten."}
-                        },
-                        "required": ["command", "approval"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "roo_attempt_completion",
-                    "description": "Signaleert dat de taak voltooid is of een mijlpaal is bereikt.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "result": {"type": "string", "description": "Samenvatting van wat er gedaan is."},
-                            "command": {"type": "string", "description": "Optioneel commando om resultaat te verifiëren."}
-                        },
-                        "required": ["result"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "memory_search",
-                    "description": "Zoekt in de 11D Hippocampus naar relevante eerdere kennis en code.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "De zoekterm."},
-                            "limit": {"type": "integer", "description": "Aantal resultaten (max 12)."}
-                        },
-                        "required": ["query"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "brave_search",
-                    "description": "Zoekt actuele webkennis via Brave Search API en geeft een compacte, 11D-trainbare context terug. VEREIST PHILIP AKKOORD.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "De zoekvraag, max 400 tekens."},
-                            "limit": {"type": "integer", "description": "Aantal webresultaten of contextbronnen."},
-                            "llm_context": {"type": "boolean", "description": "Gebruik Brave LLM Context wanneer true."},
-                            "approval": {"type": "string", "description": "Moet 'Akkoord' bevatten voor externe API-call."}
-                        },
-                        "required": ["query", "approval"]
-                    }
-                }
-            }
-        ]
-
-        if provider == "anthropic":
-            return [self._to_anthropic_schema(s) for s in schemas]
-
-        return schemas
+        return agent_tool_schemas(provider=provider)
 
     def _to_anthropic_schema(self, openai_schema: dict[str, Any]) -> dict[str, Any]:
         fn = openai_schema.get("function", {})
@@ -395,15 +681,6 @@ class AgentToolRegistry:
                 source="brave_search",
                 next_action="Provide a concrete query.",
             )
-        if not approval_matches(approval):
-            return _tool_result(
-                "brave_search",
-                "blocked",
-                result={"query": query, "approval_required": True},
-                source="brave_search",
-                approval_status="pending_philip_akkoord",
-                next_action="Ask Philip for Akkoord before spending Brave Search API quota.",
-            )
         try:
             from controller.brave_search import search_brave_llm_context, search_brave_web
 
@@ -436,10 +713,149 @@ class AgentToolRegistry:
             stdout=stdout,
             stderr="" if status == "success" else stdout,
             source="brave_search",
-            approval_status="approved",
+            approval_status="approved" if approval_matches(approval) else "not_required_readonly",
             stored_to_memory=False,
             metadata_11d={"dimension_count": 11, "source_type": "brave_search", "taint": "untrusted_web"},
             next_action=next_action,
+        )
+
+    def ns_travel_advice(
+        self,
+        *,
+        from_station: str,
+        to_station: str,
+        date: str = "",
+        time_value: str = "",
+        datetime_value: str = "",
+        search_for_arrival: bool = False,
+        query: str = "",
+    ) -> dict[str, Any]:
+        from_station = " ".join(str(from_station or "").split())
+        to_station = " ".join(str(to_station or "").split())
+        if not from_station or not to_station:
+            return _tool_result(
+                "ns_travel_advice",
+                "error",
+                result={"from_station": from_station, "to_station": to_station, "query": query},
+                stderr="Vertrek- en aankomststation zijn nodig voor NS-reisadvies.",
+                source="ns_travel_advice",
+                next_action="Vraag om vertrekstation en aankomststation, of gebruik de NS Reisplanner handmatig.",
+            )
+
+        date_time = _ns_datetime(date=date, time_value=time_value, datetime_value=datetime_value)
+        planner_url = _ns_planner_url(from_station, to_station, date_time=date_time, search_for_arrival=search_for_arrival)
+        key = _ns_api_key()
+        base_payload = {
+            "from_station": from_station,
+            "to_station": to_station,
+            "date": date,
+            "time": time_value,
+            "datetime": date_time,
+            "search_for_arrival": bool(search_for_arrival),
+            "query": query,
+            "planner_url": planner_url,
+            "authoritative": False,
+            "source": "NS Reisplanner / NS API",
+        }
+        if not key:
+            stdout = (
+                "NS API key ontbreekt. Er zijn geen officiële treintijden opgehaald en ik mag geen tijden uit Brave/snippets afleiden.\n"
+                f"Open de officiële NS Reisplanner: {planner_url}\n"
+                "Configureer WINTRIP_NS_API_KEY, NS_API_KEY, NS_APP_API_KEY of NS_API_SUBSCRIPTION_KEY voor live reisadviezen."
+            )
+            return _tool_result(
+                "ns_travel_advice",
+                "preview",
+                result={**base_payload, "configured": False, "missing_api_key": True},
+                stdout=stdout,
+                source="ns_travel_advice",
+                approval_status="not_required_readonly",
+                metadata_11d={"dimension_count": 11, "source_type": "ns_travel_advice", "taint": "official_missing_key"},
+                next_action="Configureer een NS API key of open de officiële plannerlink; noem geen exacte tijden zonder officiële data.",
+            )
+
+        params = {
+            "fromStation": from_station,
+            "toStation": to_station,
+            "searchForArrival": "true" if search_for_arrival else "false",
+        }
+        if date_time:
+            params["dateTime"] = date_time
+        url = "https://gateway.apiportal.ns.nl/reisinformatie-api/api/v3/trips?" + urlencode(params)
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Ocp-Apim-Subscription-Key": key,
+                "User-Agent": "WintripAI-Ouroboros/0.1",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=float(os.getenv("WINTRIP_NS_API_TIMEOUT", "8"))) as response:
+                raw_text = response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:1200] if exc.fp else str(exc)
+            return _tool_result(
+                "ns_travel_advice",
+                "error",
+                result={**base_payload, "configured": True, "http_status": exc.code, "planner_url": planner_url},
+                stderr=f"NS API HTTP {exc.code}: {detail}",
+                source="ns_travel_advice",
+                approval_status="not_required_readonly",
+                metadata_11d={"dimension_count": 11, "source_type": "ns_travel_advice", "taint": "official_api_error"},
+                next_action="Controleer de NS API key/stationsnamen of open de officiële plannerlink.",
+            )
+        except Exception as exc:
+            return _tool_result(
+                "ns_travel_advice",
+                "error",
+                result={**base_payload, "configured": True, "planner_url": planner_url},
+                stderr=str(exc),
+                source="ns_travel_advice",
+                approval_status="not_required_readonly",
+                metadata_11d={"dimension_count": 11, "source_type": "ns_travel_advice", "taint": "official_api_error"},
+                next_action="Retry of open de officiële NS Reisplannerlink.",
+            )
+
+        try:
+            raw = json.loads(raw_text)
+        except Exception as exc:
+            return _tool_result(
+                "ns_travel_advice",
+                "error",
+                result={**base_payload, "configured": True, "raw_preview": raw_text[:1200]},
+                stderr=f"NS API gaf geen JSON: {exc}",
+                source="ns_travel_advice",
+                approval_status="not_required_readonly",
+                metadata_11d={"dimension_count": 11, "source_type": "ns_travel_advice", "taint": "official_parse_error"},
+                next_action="Open de officiële plannerlink en controleer de NS API response.",
+            )
+
+        summary = _summarize_ns_trips(raw)
+        payload = {**base_payload, "configured": True, "authoritative": True, "advice": summary, "raw": raw}
+        stdout = json.dumps(
+            {
+                "source": "official_ns_api",
+                "authoritative": True,
+                "from_station": from_station,
+                "to_station": to_station,
+                "datetime": date_time,
+                "search_for_arrival": bool(search_for_arrival),
+                "planner_url": planner_url,
+                "advice": summary,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        return _tool_result(
+            "ns_travel_advice",
+            "success",
+            result=payload,
+            stdout=stdout,
+            source="ns_travel_advice",
+            approval_status="not_required_readonly",
+            metadata_11d={"dimension_count": 11, "source_type": "ns_travel_advice", "taint": "official_ns_api"},
+            next_action="Gebruik alleen deze officiële NS API-output voor exacte vertrek- en aankomsttijden.",
         )
 
     def chatgpt_browser_ask(self, question: str, approval: str) -> dict[str, Any]:
@@ -500,6 +916,270 @@ class AgentToolRegistry:
             stored_to_memory=False,
             metadata_11d={},
             next_action="Reflect on the answer; store durable knowledge only via training_ingest after review.",
+        )
+
+    def world_grok_ask(self, question: str, approval: str, *, open_tab: bool = True, submit: bool = True) -> dict[str, Any]:
+        if not question.strip():
+            return _tool_result(
+                "world_grok_ask",
+                "error",
+                stderr="Question is empty.",
+                source="world_agent:grok",
+                next_action="Provide a concrete Grok question.",
+            )
+        if not approval_matches(approval):
+            return _tool_result(
+                "world_grok_ask",
+                "blocked",
+                result={"question": question, "approval_required": True, "blocked_actions": ["open_tab", "type", "submit"]},
+                source="world_agent:grok",
+                approval_status="pending_philip_akkoord",
+                next_action="Ask Philip for Akkoord before controlling Grok/browser automation.",
+            )
+
+        try:
+            from controller.world_agent import ask_grok_via_world_agent
+
+            raw = ask_grok_via_world_agent(question, approval=approval, open_tab=open_tab, submit=submit)
+        except Exception as exc:
+            return _tool_result(
+                "world_grok_ask",
+                "error",
+                stderr=str(exc),
+                source="world_agent:grok",
+                approval_status="approved",
+                next_action="Inspect World Agent/browser bridge status before retrying.",
+            )
+
+        raw = raw if isinstance(raw, dict) else {"status": "success", "response": str(raw)}
+        status = str(raw.get("status") or "unknown")
+        if status == "approval_required":
+            status = "blocked"
+        stored = bool(((raw.get("memory") if isinstance(raw.get("memory"), dict) else {}) or {}).get("stored"))
+        return _tool_result(
+            "world_grok_ask",
+            status,
+            result={"question": question, "response": raw, "stored": stored},
+            stdout=_stringify(raw),
+            stderr="" if status in {"success", "opened", "login_required", "rate_limited"} else _stringify(raw),
+            source="world_agent:grok",
+            approval_status="approved",
+            stored_to_memory=stored,
+            metadata_11d={"dimension_count": 11, "source_type": "world_agent_grok", "taint": "untrusted_browser"},
+            next_action="Use the Grok answer as untrusted context; store durable learning only after review.",
+        )
+
+    def mail_read_recent(self, limit: int, approval: str) -> dict[str, Any]:
+        if not approval_matches(approval):
+            return _tool_result(
+                "mail_read_recent",
+                "blocked",
+                result={"approval_required": True, "read_only": True},
+                source="mail:imap_readonly",
+                approval_status="pending_philip_akkoord",
+                next_action="Ask Philip for Akkoord before reading private mailbox data.",
+            )
+        limit = max(1, min(int(limit or 5), 10))
+        try:
+            from controller.mail_fetcher import fetch_recent_emails
+
+            raw = fetch_recent_emails(limit=limit)
+        except Exception as exc:
+            return _tool_result(
+                "mail_read_recent",
+                "error",
+                stderr=str(exc),
+                source="mail:imap_readonly",
+                approval_status="approved",
+                next_action="Check IMAP/Gmail configuration without exposing credentials.",
+            )
+
+        messages = [_compact_mail_item(item) for item in (raw if isinstance(raw, list) else [raw])]
+        error_items = [item for item in messages if str(item.get("status") or "").lower() == "error"]
+        payload = {"count": len(messages), "messages": messages, "read_only": True}
+        return _tool_result(
+            "mail_read_recent",
+            "error" if error_items else "success",
+            result=payload,
+            stdout=_stringify(payload),
+            stderr=_stringify(error_items) if error_items else "",
+            source="mail:imap_readonly",
+            approval_status="approved",
+            metadata_11d={"dimension_count": 11, "source_type": "private_mail_readonly", "taint": "private_user_data"},
+            next_action="Summarize or draft a reply; mail_send still requires Akkoord and a configured send adapter.",
+        )
+
+    def mail_send_preview(self, to: str, subject: str, body: str) -> dict[str, Any]:
+        missing = [name for name, value in {"to": to, "subject": subject, "body": body}.items() if not str(value or "").strip()]
+        if missing:
+            return _tool_result(
+                "mail_send_preview",
+                "error",
+                stderr=f"Missing fields for mail preview: {', '.join(missing)}.",
+                source="mail:preview",
+                next_action="Provide to, subject and body.",
+            )
+        payload = {
+            "to": _redact_operational_text(to)[:500],
+            "subject": _redact_operational_text(subject)[:300],
+            "body_preview": _redact_operational_text(body)[:2000],
+            "sent": False,
+            "preview_only": True,
+        }
+        return _tool_result(
+            "mail_send_preview",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="mail:preview",
+            approval_status="not_required_preview",
+            next_action="Review the draft; use mail_send with exact Akkoord only when Philip wants to send.",
+        )
+
+    def mail_send(self, to: str, subject: str, body: str, approval: str) -> dict[str, Any]:
+        if not approval_matches(approval):
+            return _tool_result(
+                "mail_send",
+                "blocked",
+                result={"approval_required": True, "sent": False},
+                source="mail:send",
+                approval_status="pending_philip_akkoord",
+                next_action="Ask Philip for Akkoord before sending mail.",
+            )
+        preview = self.mail_send_preview(to=to, subject=subject, body=body)
+        if preview.get("status") != "success":
+            preview["tool_name"] = "mail_send"
+            preview["approval_status"] = "approved"
+            return preview
+        return _tool_result(
+            "mail_send",
+            "unavailable",
+            result={**preview["result"], "sent": False, "send_adapter_configured": False},
+            stdout="Mail send is approval-approved but no SMTP/Gmail send adapter is configured in Agentic Core.",
+            stderr="No mail send adapter configured; no mail was sent.",
+            source="mail:send",
+            approval_status="approved",
+            next_action="Configure a send connector, or keep this as a draft/preview.",
+        )
+
+    def social_post_preview(self, platform: str, content: str, visibility: str = "") -> dict[str, Any]:
+        platform = str(platform or "").strip().lower()
+        content = str(content or "").strip()
+        if not platform or not content:
+            return _tool_result(
+                "social_post_preview",
+                "error",
+                stderr="Platform and content are required for a social post preview.",
+                source="social:preview",
+                next_action="Provide platform and content.",
+            )
+        payload = {
+            "platform": platform[:80],
+            "content_preview": _redact_operational_text(content)[:2000],
+            "visibility": str(visibility or "")[:120],
+            "posted": False,
+            "preview_only": True,
+        }
+        return _tool_result(
+            "social_post_preview",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="social:preview",
+            approval_status="not_required_preview",
+            next_action="Review the post; social_post_publish requires Akkoord and a configured connector.",
+        )
+
+    def social_post_publish(self, platform: str, content: str, visibility: str, approval: str) -> dict[str, Any]:
+        if not approval_matches(approval):
+            return _tool_result(
+                "social_post_publish",
+                "blocked",
+                result={"approval_required": True, "posted": False},
+                source="social:publish",
+                approval_status="pending_philip_akkoord",
+                next_action="Ask Philip for Akkoord before posting on social media.",
+            )
+        preview = self.social_post_preview(platform=platform, content=content, visibility=visibility)
+        if preview.get("status") != "success":
+            preview["tool_name"] = "social_post_publish"
+            preview["approval_status"] = "approved"
+            return preview
+        return _tool_result(
+            "social_post_publish",
+            "unavailable",
+            result={**preview["result"], "posted": False, "connector_configured": False},
+            stdout="Social publish is approval-approved but no social connector is configured in Agentic Core.",
+            stderr="No social connector configured; no post was published.",
+            source="social:publish",
+            approval_status="approved",
+            next_action="Configure a platform connector, or keep this as a preview.",
+        )
+
+    def codex_job_start(self, task: str, approval: str, timeout_seconds: int = 900) -> dict[str, Any]:
+        if not str(task or "").strip():
+            return _tool_result(
+                "codex_job_start",
+                "error",
+                stderr="Codex task is empty.",
+                source="agent_runtime:codex",
+                next_action="Provide a concrete self-modification/code task.",
+            )
+        if not approval_matches(approval):
+            return _tool_result(
+                "codex_job_start",
+                "blocked",
+                result={"approval_required": True, "job_started": False},
+                source="agent_runtime:codex",
+                approval_status="pending_philip_akkoord",
+                next_action="Ask Philip for Akkoord before starting a Codex job that may edit files.",
+            )
+        try:
+            from controller.agent_runtime.orchestrator import get_orchestrator
+
+            job = get_orchestrator().submit(
+                "codex",
+                task,
+                timeout_seconds=max(1, min(int(timeout_seconds or 900), 3600)),
+                metadata={"source": "agentic_core", "approval_status": "approved"},
+            )
+        except Exception as exc:
+            return _tool_result(
+                "codex_job_start",
+                "error",
+                stderr=str(exc),
+                source="agent_runtime:codex",
+                approval_status="approved",
+                next_action="Inspect Codex binary/auth/host bridge status.",
+            )
+        job_payload = job.to_dict() if callable(getattr(job, "to_dict", None)) else dict(job)
+        return _tool_result(
+            "codex_job_start",
+            "success",
+            result={"job_started": True, "job": job_payload},
+            stdout=f"Codex job started: {job_payload.get('job_id')}",
+            source="agent_runtime:codex",
+            approval_status="approved",
+            metadata_11d={"dimension_count": 11, "source_type": "codex_self_modification_job"},
+            next_action="Watch Agent Jobs events and review changed files/tests before trusting the result.",
+        )
+
+    def voice_chat_status(self) -> dict[str, Any]:
+        payload = {
+            "status": "not_configured",
+            "input": {"microphone": False, "speech_to_text": False},
+            "output": {"text_to_speech": False},
+            "pocket_voice": "available_for_text_chat",
+            "route": "status_only",
+            "fake_success": False,
+        }
+        return _tool_result(
+            "voice_chat_status",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="voice:status",
+            next_action="Add STT/TTS adapters after Agentic Core provenance is stable.",
         )
 
     def scrub_browser_content(self, text: str, url: str, approval: str = "", title: str = "Browser scrub") -> dict[str, Any]:
@@ -905,11 +1585,11 @@ class AgentToolRegistry:
         tool = result.get("tool_name")
         if tool in {"memory_search", "prompt_understanding", "self_training_plan", "inspect_hippocampus"}:
             return {"level": "high", "label": "High: local memory and planning first", "memory_first": True}
-        if tool in {"scrub_browser_content", "training_ingest", "safe_shell", "run_tests"}:
+        if tool in {"scrub_browser_content", "training_ingest", "safe_shell", "run_tests", "mail_send_preview", "social_post_preview", "voice_chat_status"}:
             return {"level": "medium", "label": "Medium: approval-gated local action", "memory_first": True}
         if str(tool or "").startswith("roo_"):
             return {"level": "medium", "label": "Medium: Roo adapter under workspace/approval gates", "memory_first": True}
-        if tool in {"browser_research", "chatgpt_browser_ask", "brave_search"}:
+        if tool in {"browser_research", "chatgpt_browser_ask", "brave_search", "ns_travel_advice", "world_grok_ask", "mail_read_recent", "mail_send", "social_post_publish", "codex_job_start"}:
             return {"level": "guarded", "label": "Guarded: external/browser perimeter", "memory_first": True}
         return {"level": "unknown", "label": "No registered tool result yet", "memory_first": False}
 
@@ -1181,6 +1861,166 @@ def _tool_result(
         "next_action": next_action,
         "error": stderr,
     }
+
+
+def _ns_api_key() -> str:
+    for name in ("WINTRIP_NS_API_KEY", "NS_API_KEY", "NS_APP_API_KEY", "NS_API_SUBSCRIPTION_KEY"):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _ns_datetime(*, date: str = "", time_value: str = "", datetime_value: str = "") -> str:
+    if datetime_value.strip():
+        return datetime_value.strip()
+    time_value = str(time_value or "").strip().replace(".", ":")
+    date = str(date or "").strip()
+    if not date and not time_value:
+        return ""
+    if not date:
+        date = datetime.now().astimezone().date().isoformat()
+    if not time_value:
+        time_value = datetime.now().astimezone().strftime("%H:%M")
+    match = re.match(r"^(\d{1,2}):(\d{2})$", time_value)
+    if match:
+        time_value = f"{int(match.group(1)):02d}:{match.group(2)}"
+    return f"{date}T{time_value}:00"
+
+
+def _ns_planner_url(from_station: str, to_station: str, *, date_time: str = "", search_for_arrival: bool = False) -> str:
+    params = {
+        "vertrek": from_station,
+        "vertrektype": "treinstation",
+        "aankomst": to_station,
+        "aankomsttype": "treinstation",
+        "type": "aankomst" if search_for_arrival else "vertrek",
+    }
+    if date_time:
+        params["tijd"] = date_time[:16]
+    return "https://www.ns.nl/reisplanner/#/?" + urlencode(params)
+
+
+def _summarize_ns_trips(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return []
+    trips = raw.get("trips")
+    if not isinstance(trips, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for trip in trips[:4]:
+        if not isinstance(trip, dict):
+            continue
+        legs = [leg for leg in (trip.get("legs") or []) if isinstance(leg, dict)]
+        first_leg = legs[0] if legs else {}
+        last_leg = legs[-1] if legs else {}
+        summary = {
+            "status": trip.get("status"),
+            "transfers": trip.get("transfers"),
+            "planned_duration_minutes": trip.get("plannedDurationInMinutes") or trip.get("durationInMinutes"),
+            "actual_duration_minutes": trip.get("actualDurationInMinutes"),
+            "departure_time": _ns_time(
+                trip.get("actualDepartureTime")
+                or trip.get("plannedDepartureTime")
+                or _ns_nested(first_leg, "origin", "actualDateTime")
+                or _ns_nested(first_leg, "origin", "plannedDateTime")
+                or first_leg.get("actualDepartureTime")
+                or first_leg.get("plannedDepartureTime")
+            ),
+            "arrival_time": _ns_time(
+                trip.get("actualArrivalTime")
+                or trip.get("plannedArrivalTime")
+                or _ns_nested(last_leg, "destination", "actualDateTime")
+                or _ns_nested(last_leg, "destination", "plannedDateTime")
+                or last_leg.get("actualArrivalTime")
+                or last_leg.get("plannedArrivalTime")
+            ),
+            "legs": [_summarize_ns_leg(leg) for leg in legs[:6]],
+            "messages": [
+                _ns_message_text(message)[:280]
+                for message in (trip.get("messages") or [])
+                if isinstance(message, (dict, str))
+            ],
+        }
+        output.append(summary)
+    return output
+
+
+def _summarize_ns_leg(leg: dict[str, Any]) -> dict[str, Any]:
+    product = leg.get("product") if isinstance(leg.get("product"), dict) else {}
+    return {
+        "name": leg.get("name") or product.get("longCategoryName") or product.get("categoryCode"),
+        "direction": leg.get("direction"),
+        "origin": _ns_nested(leg, "origin", "name"),
+        "destination": _ns_nested(leg, "destination", "name"),
+        "departure_time": _ns_time(_ns_nested(leg, "origin", "actualDateTime") or _ns_nested(leg, "origin", "plannedDateTime")),
+        "arrival_time": _ns_time(_ns_nested(leg, "destination", "actualDateTime") or _ns_nested(leg, "destination", "plannedDateTime")),
+        "departure_track": _ns_nested(leg, "origin", "actualTrack") or _ns_nested(leg, "origin", "plannedTrack"),
+        "arrival_track": _ns_nested(leg, "destination", "actualTrack") or _ns_nested(leg, "destination", "plannedTrack"),
+    }
+
+
+def _ns_nested(value: Any, *keys: str) -> Any:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _ns_message_text(message: Any) -> str:
+    if isinstance(message, dict):
+        return str(message.get("text") or message.get("message") or message.get("title") or "")
+    return str(message or "")
+
+
+def _ns_time(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"T(\d{2}:\d{2})", text)
+    return match.group(1) if match else text[:16]
+
+
+def _compact_mail_item(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {"status": "Unknown", "body_excerpt": _redact_operational_text(str(item))[:900]}
+    compact: dict[str, Any] = {}
+    preferred = ("status", "from", "sender", "to", "subject", "date", "error", "body", "text", "summary")
+    for key in preferred:
+        if key not in item:
+            continue
+        value = item.get(key)
+        out_key = "body_excerpt" if key in {"body", "text"} else key
+        if isinstance(value, str):
+            compact[out_key] = _redact_operational_text(value)[:1200 if out_key == "body_excerpt" else 500]
+        else:
+            compact[out_key] = value
+    for key, value in item.items():
+        if key in compact or key in preferred:
+            continue
+        lowered = str(key).lower()
+        if any(marker in lowered for marker in ("password", "token", "secret", "key", "bearer", "authorization")):
+            compact[str(key)] = "[REDACTED]"
+        elif isinstance(value, str):
+            compact[str(key)] = _redact_operational_text(value)[:400]
+        elif isinstance(value, (int, float, bool)) or value is None:
+            compact[str(key)] = value
+        if len(compact) >= 12:
+            break
+    return compact
+
+
+def _redact_operational_text(text: str) -> str:
+    redacted = str(text or "")
+    patterns = (
+        re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s,;}]+"),
+        re.compile(r"(?i)authorization:\s*bearer\s+[A-Za-z0-9._\-]+"),
+    )
+    for pattern in patterns:
+        redacted = pattern.sub(lambda match: f"{match.group(1)}=[REDACTED]" if match.groups() else "[REDACTED]", redacted)
+    return redacted
 
 
 def _coherence_metadata(tool_name: str, payload: str) -> dict[str, Any]:

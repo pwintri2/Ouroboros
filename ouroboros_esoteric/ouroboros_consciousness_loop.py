@@ -561,7 +561,7 @@ def _format_local_response(
     network_flow = voice.get("network_flow") if isinstance(voice.get("network_flow"), dict) else {}
     if voice_response:
         opening = (
-            f"Ik antwoord als lokale Ouroboros-runtime met {voice_model} als 11D-vertaallaag."
+            f"Ik antwoord als lokale Ouroboros-runtime, niet via Ollama als chatprovider; {voice_model} is alleen de 11D-vertaallaag."
             if voice_status == "translated" and voice_model
             else "Ik antwoord als lokale Ouroboros-runtime, niet via Ollama of een externe chatprovider, vanuit de verse 11D pocket."
         )

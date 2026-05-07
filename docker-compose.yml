@@ -22,6 +22,9 @@ services:
       - /home/pwintri2/cirq:/cirq:ro
       - /home/pwintri2/AgentS:/agents:ro
       - /home/pwintri2/OpenHands:/openhands:ro
+      - /home/pwintri2/Codex:/codex:ro
+      - /home/pwintri2/.codex:/codex_home:ro
+      - /home/pwintri2/.antigravity/extensions/openai.chatgpt-26.422.71525-linux-x64:/codex_native:ro
     environment:
       PYTHONPATH: /workspace
       WINTRIP_WORKSPACE: /workspace
@@ -43,8 +46,17 @@ services:
       WINTRIP_AGENTS_PATH: /agents
       WINTRIP_OPENHANDS_PATH: /openhands
       WINTRIP_OPENHANDS_SERVER_URL: http://host.docker.internal:3000
+      WINTRIP_CODEX_PATH: /codex
+      CODEX_HOME: /codex_home
+      WINTRIP_CODEX_HOME: /codex_home
+      WINTRIP_CODEX_BINARY: /codex_native/bin/linux-x86_64/codex
+      CODEX_BINARY: /codex_native/bin/linux-x86_64/codex
       OLLAMA_HOST: http://host.docker.internal:11434
       BRAVE_API_KEY: ${BRAVE_API_KEY}
+      WINTRIP_NS_API_KEY: ${WINTRIP_NS_API_KEY:-}
+      NS_API_KEY: ${NS_API_KEY:-}
+      NS_APP_API_KEY: ${NS_APP_API_KEY:-}
+      NS_API_SUBSCRIPTION_KEY: ${NS_API_SUBSCRIPTION_KEY:-}
       # Brave Search Configuration (external containers)
       BRAVE_SEARCH_ENDPOINT_1: http://172.17.0.3:3000
       BRAVE_SEARCH_ENDPOINT_2: http://172.17.0.4:3000
@@ -52,12 +64,17 @@ services:
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
       NO_PROXY: "localhost,127.0.0.1,*.local"
+      # Camera Configuration
+      CAMERA_ENABLED: "1"
+      CAMERA_DEVICES: "/dev/video0,/dev/video1,/dev/video2,/dev/video3"
     ports:
       - "127.0.0.1:8010:8010"
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "brave-search-1:172.17.0.3"
       - "brave-search-2:172.17.0.4"
+    group_add:
+      - video
     networks:
       - wintrip-network
     dns:
@@ -66,6 +83,9 @@ services:
       - 1.1.1.1
     cap_add:
       - NET_ADMIN
+      - SYS_RESOURCE
+    security_opt:
+      - apparmor=unconfined
     stdin_open: true
     tty: true
     command: ["uvicorn", "controller.main:app", "--host", "0.0.0.0", "--port", "8010"]
