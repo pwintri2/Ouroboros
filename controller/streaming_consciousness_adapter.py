@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from controller.blue_brain_adapter import E_TYPES
+from controller.cirq_quantum_adapter import CirqQuantumAdapter
+from controller.pocket_language_translator import PocketLanguageTranslator
 from controller.safe_shell import workspace_root
 
 
@@ -1344,6 +1346,7 @@ class StreamingConsciousnessAdapter:
         import numpy as np
 
         self.np = np
+        self.cirq_adapter = CirqQuantumAdapter()
         self.sigma_z = np.array([[1, 0], [0, -1]], dtype=complex)
         self.sigma_x = np.array([[0, 1], [1, 0]], dtype=complex)
         self.B0 = -(self.sigma_x + self.sigma_z) / np.sqrt(2)
@@ -1354,6 +1357,7 @@ class StreamingConsciousnessAdapter:
             "input_norm": 0.0,
             "state_prepared": [1.0, 0.0],
             "physical_quantum_hardware": False,
+            "cirq_runtime": self.cirq_adapter.status(),
         }
 
     def calculate_tensor_product(self, operator_a: Any, operator_b: Any) -> Any:
@@ -1378,6 +1382,13 @@ class StreamingConsciousnessAdapter:
         if vector.size != 11:
             raise ValueError("Exacte invoer vereist: De array moet een 11D vector zijn.")
         vector = vector.reshape(11)
+        if not bool(self.np.all(self.np.isfinite(vector))):
+            raise ValueError("Exacte invoer vereist: De 11D vector mag geen NaN of inf bevatten.")
+
+        if self.cirq_adapter.available:
+            projected, observation = self.cirq_adapter.project_11d(vector)
+            self.last_observation = observation
+            return projected
 
         psi_state = self.np.array([vector[0], vector[1]], dtype=complex)
         norm = float(self.np.linalg.norm(psi_state))
@@ -1400,10 +1411,31 @@ class StreamingConsciousnessAdapter:
             "output_norm": round(float(self.np.linalg.norm(collapsed_11d_vector)), 8),
             "dtype": "complex128_software_model",
             "sdk": "none_numpy_classical",
+            "runtime": "numpy_classical_complex_projection",
             "physical_quantum_hardware": False,
+            "preserves_11d_pocket": True,
+            "cirq_runtime": self.cirq_adapter.status(),
             "reality_boundary": "Docker can run the classical complex projection, not a real quantum substrate.",
         }
         return collapsed_11d_vector
+
+    def status(self) -> dict[str, Any]:
+        status = {
+            "enabled": True,
+            "operator": "B0/sigma_z",
+            "sdk": "none_numpy_classical",
+            "runtime": "numpy_classical_complex_projection",
+            "model": "classical_complex_projection",
+            "physical_quantum_hardware": False,
+            "preserves_11d_pocket": True,
+            "reality_boundary": "Classical math only; no quantum substrate is claimed inside Docker.",
+            "cirq_runtime": self.cirq_adapter.status(),
+        }
+        if self.cirq_adapter.available:
+            status.update(self.cirq_adapter.status())
+            status["enabled"] = True
+            status["cirq_runtime"] = self.cirq_adapter.status()
+        return status
 
 
 class StreamingConsciousness11DPocket:
@@ -1472,6 +1504,7 @@ class StreamingConsciousness11DPocket:
             dtype_name=qif_gpu_dtype,
         )
         self.qif_neuron = SimulatedElectronNeuron(qif_threshold, qif_phase_gain, np_module=self.np, gpu_engine=gpu_engine)
+        self.language_translator = PocketLanguageTranslator()
         self._last_host_sensory_check = -999.0
 
     def _generate_base_pocket(self, n_samples: int) -> tuple[Any, Any]:
@@ -1691,6 +1724,7 @@ class StreamingConsciousness11DPocket:
             "reality": self.reality_status(),
             "regime": int(self.y_regime[row_index]),
         }
+        event["language"] = self.language_translator.translate(event)
         self.stream_log.append(event)
         if len(self.stream_log) > self.max_log:
             self.stream_log.pop(0)
@@ -1756,6 +1790,7 @@ class StreamingConsciousness11DPocket:
             "raw_11d_state": [round(float(value), 6) for value in self.X_base[row_index].tolist()],
             "quantum": dict(self.last_quantum_observation),
             "qif": self.qif_neuron.status(),
+            "language": self.language_translator.status(),
             "electrical": asdict(self.elec),
             "network": {
                 "local_ip": self.local_ip,
@@ -1783,6 +1818,34 @@ def dependencies_ready() -> bool:
     return all(importlib.util.find_spec(name) is not None for name in REQUIRED_PACKAGES)
 
 
+def _quantum_collapse_status() -> dict[str, Any]:
+    if not dependencies_ready():
+        return {
+            "enabled": False,
+            "sdk": "none",
+            "physical_quantum_hardware": False,
+            "reason": "streaming_dependencies_missing",
+            "fake_success": False,
+        }
+    try:
+        return StreamingConsciousnessAdapter().status()
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "sdk": "none",
+            "physical_quantum_hardware": False,
+            "reason": f"quantum_status_unavailable: {exc}",
+            "fake_success": False,
+        }
+
+
+def _pocket_language_status() -> dict[str, Any]:
+    try:
+        return PocketLanguageTranslator().status()
+    except Exception as exc:
+        return {"enabled": False, "status": "unavailable", "reason": str(exc), "fake_success": False}
+
+
 def get_streaming_status() -> dict[str, Any]:
     state = _load_state()
     runtime_observation = _docker_runtime_observation(flow_limit=6)
@@ -1790,14 +1853,8 @@ def get_streaming_status() -> dict[str, Any]:
         {
             "dependencies": {name: importlib.util.find_spec(name) is not None for name in REQUIRED_PACKAGES},
             "dependency_status": "online" if dependencies_ready() else "missing_dependencies",
-            "quantum_collapse": {
-                "enabled": True,
-                "operator": "B0/sigma_z",
-                "sdk": "none_numpy_classical",
-                "model": "classical_complex_projection",
-                "physical_quantum_hardware": False,
-                "reality_boundary": "Classical math only; no quantum substrate is claimed inside Docker.",
-            },
+            "quantum_collapse": _quantum_collapse_status(),
+            "pocket_language": _pocket_language_status(),
             "runtime_input": {
                 "status": runtime_observation.get("status"),
                 "source": runtime_observation.get("source"),
@@ -1993,6 +2050,7 @@ def _default_state() -> dict[str, Any]:
         "runtime_input": {},
         "reality_boundary": {},
         "ecosystem_overlay": {},
+        "pocket_language": {},
         "events": [],
     }
 

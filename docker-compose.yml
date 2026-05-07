@@ -17,6 +17,7 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
+      - /home/pwintri2/cirq:/cirq:ro
     environment:
       PYTHONPATH: /workspace
       WINTRIP_WORKSPACE: /workspace
@@ -24,6 +25,15 @@ services:
       WINTRIP_CHROMA_HTTP_URL: http://chroma:8000
       WINTRIP_LIVING_LOOP_AUTOSTART: "1"
       WINTRIP_QIF_GPU: "0"
+      WINTRIP_CIRQ_QUANTUM: "auto"
+      WINTRIP_CIRQ_SOURCE_PATH: /cirq
+      WINTRIP_CIRQ_REPETITIONS: "96"
+      WINTRIP_CIRQ_NOISE_P: "0.0125"
+      WINTRIP_11D_TRANSLATOR: "1"
+      WINTRIP_11D_TRANSLATOR_MODEL: ouroboros:latest
+      WINTRIP_11D_TRANSLATOR_TIMEOUT: "8"
+      WINTRIP_11D_TRANSLATOR_COOLDOWN_SECONDS: "3"
+      OLLAMA_HOST: http://host.docker.internal:11434
     ports:
       - "127.0.0.1:8010:8010"
     extra_hosts:

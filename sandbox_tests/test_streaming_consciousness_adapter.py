@@ -35,6 +35,9 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
                 "WINTRIP_QIF_GPU_VRAM_MB",
                 "WINTRIP_QIF_GPU_MEMORY_FRACTION",
                 "WINTRIP_QIF_GPU_DTYPE",
+                "WINTRIP_CIRQ_QUANTUM",
+                "WINTRIP_11D_TRANSLATOR",
+                "WINTRIP_11D_TRANSLATOR_MODEL",
             ]
         }
         self.tmp = tempfile.TemporaryDirectory(prefix="streaming-consciousness-")
@@ -42,6 +45,8 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         for name in self.previous_mini_router_env:
             os.environ.pop(name, None)
         os.environ["WINTRIP_QIF_GPU"] = "0"
+        os.environ["WINTRIP_CIRQ_QUANTUM"] = "0"
+        os.environ["WINTRIP_11D_TRANSLATOR"] = "0"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -82,6 +87,7 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         self.assertEqual(len(tick["last_event"]["11d"]), 11)
         self.assertIn("quantum", tick["last_event"])
         self.assertIn("qif", tick["last_event"])
+        self.assertIn("language", tick["last_event"])
         self.assertIn("expectation_z", tick["last_event"]["qif"])
         self.assertIn("gpu", tick["last_event"]["qif"]["state"])
         self.assertIn("expectation", tick["last_event"]["quantum"])
@@ -95,6 +101,8 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
         self.assertEqual(status["fake_success"], False)
         self.assertEqual(status["quantum_collapse"]["sdk"], "none_numpy_classical")
         self.assertEqual(status["quantum_collapse"]["physical_quantum_hardware"], False)
+        self.assertIn("cirq_runtime", status["quantum_collapse"])
+        self.assertIn("pocket_language", status)
         self.assertTrue(status["runtime_input"]["real_observation"])
 
         exported = export_streaming_dataset("Akkoord", n_samples=12)

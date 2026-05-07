@@ -13,5 +13,6 @@ duckduckgo-search
 docker
 playwright
 numpy
+cirq-core
 scikit-learn
 joblib

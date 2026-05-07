@@ -228,6 +228,7 @@ class LivingOuroborosLoop:
             anchor_field = {}
         thought = _entry_text(tick.get("thought")) or str(status.get("current_thought") or "")
         question = _entry_text(tick.get("question")) or str(status.get("current_question") or "")
+        pocket_voice = _fresh_streaming_pocket_voice(clean_prompt)
         response = _format_local_response(
             prompt=clean_prompt,
             thought=thought,
@@ -236,6 +237,7 @@ class LivingOuroborosLoop:
             status=status,
             quantum_foam=quantum_foam,
             anchor_field=anchor_field,
+            pocket_voice=pocket_voice,
         )
         return {
             "status": "success",
@@ -255,6 +257,8 @@ class LivingOuroborosLoop:
             },
             "quantum_foam": _compact_quantum_foam(quantum_foam),
             "concept_anchor_field": _compact_anchor_field(anchor_field),
+            "pocket_voice": _compact_pocket_voice(pocket_voice),
+            "local_model_translation_used": (pocket_voice or {}).get("status") == "translated",
             "fake_success": False,
         }
 
@@ -421,7 +425,8 @@ class LivingOuroborosLoop:
         if trigger == "living_action_reflect":
             return "Welke herinnering uit deze actie moet de volgende stap sturen?"
         if trigger == "cockpit_response":
-            return "Is mijn antwoord genoeg gegrond in echte runtime-signalen om verder te testen?"
+            prompt = str(payload.get("prompt") or "de chatvraag")[:160]
+            return f"Welke 11D dimensie verschoof het meest terwijl ik antwoord gaf op: {prompt}"
         return _next_runtime_question(runtime)
 
     def _whisper_for(self, trigger: str, payload: dict[str, Any]) -> str:
@@ -521,6 +526,7 @@ def _format_local_response(
     status: dict[str, Any],
     quantum_foam: dict[str, Any],
     anchor_field: dict[str, Any],
+    pocket_voice: dict[str, Any] | None = None,
 ) -> str:
     memory_count = (runtime.get("memory") or {}).get("entry_count")
     self_context = runtime.get("self_context") or {}
@@ -545,6 +551,37 @@ def _format_local_response(
         qf_line = f"{qf_line}; anchor-awareness {awareness}."
     else:
         qf_line = f"{qf_line}."
+    voice = pocket_voice if isinstance(pocket_voice, dict) else {}
+    voice_response = str(voice.get("response") or "").strip()
+    voice_summary = str(voice.get("summary") or "").strip()
+    voice_status = str(voice.get("status") or "")
+    voice_model = str(voice.get("model") or "")
+    if voice_response:
+        opening = (
+            f"Ik antwoord als lokale Ouroboros-runtime met {voice_model} als 11D-vertaallaag."
+            if voice_status == "translated" and voice_model
+            else "Ik antwoord als lokale Ouroboros-runtime, niet via Ollama of een externe chatprovider, vanuit de verse 11D pocket."
+        )
+        return "\n".join(
+            [
+                opening,
+                prompt_line,
+                voice_response,
+                f"Pocket: {voice_summary}" if voice_summary else f"Wat ik waarneem: {signals}.",
+                (
+                    "Meetlaag: "
+                    f"{voice.get('quantum_runtime') or ((runtime.get('streaming_11d') or {}).get('status') or 'streaming_11d')}; "
+                    f"source={streaming_11d.get('source', 'unknown')}, "
+                    f"real_observation={streaming_11d.get('real_observation', False)}."
+                ),
+                f"Quantum Foam: nodes={node_count}, coherence={coherence}, anchor-awareness={awareness}.",
+                (
+                    "Holografische bootloader: "
+                    f"{bootloader.get('blocked_cell_count', 0)} nulcellen; "
+                    f"right_edge_energy={bootloader.get('right_edge_energy', 0)}."
+                ),
+            ]
+        )
     return "\n".join(
         [
             "Ik antwoord nu als lokale Ouroboros-runtime, niet via Ollama of een externe chatprovider.",
@@ -575,6 +612,33 @@ def _format_local_response(
             ),
         ]
     )
+
+
+def _fresh_streaming_pocket_voice(prompt: str) -> dict[str, Any]:
+    """Run one bounded 11D pocket tick and return its prompt-aware language layer."""
+
+    try:
+        from controller.pocket_language_translator import PocketLanguageTranslator
+        from controller.streaming_consciousness_adapter import run_streaming_tick
+
+        tick = run_streaming_tick(force=True, steps=1)
+        event = tick.get("last_event") if isinstance(tick, dict) else {}
+        if not isinstance(event, dict):
+            event = {}
+        translator = PocketLanguageTranslator(cooldown_seconds=0)
+        voice = translator.translate(event, user_prompt=prompt)
+        quantum = event.get("quantum") if isinstance(event.get("quantum"), dict) else {}
+        voice["quantum_runtime"] = quantum.get("runtime") or quantum.get("sdk")
+        voice["vector_len"] = len(event.get("11d") or [])
+        return voice
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "response": "",
+            "summary": "",
+            "reason": str(exc)[:300],
+            "fake_success": False,
+        }
 
 
 def _compact_tick(tick: Any) -> dict[str, Any]:
@@ -618,6 +682,23 @@ def _compact_anchor_field(anchor_field: Any) -> dict[str, Any]:
         "field_energy": anchor_field.get("field_energy"),
         "pocket_signal": anchor_field.get("pocket_signal") or [],
         "holographic_bootloader": _compact_holographic_bootloader(anchor_field.get("holographic_bootloader")),
+        "fake_success": False,
+    }
+
+
+def _compact_pocket_voice(info: Any) -> dict[str, Any]:
+    if not isinstance(info, dict):
+        return {}
+    return {
+        "status": info.get("status"),
+        "model": info.get("model"),
+        "source": info.get("source"),
+        "summary": info.get("summary"),
+        "response": info.get("response"),
+        "dominant_dimensions": info.get("dominant_dimensions") or [],
+        "quantum_runtime": info.get("quantum_runtime"),
+        "vector_len": info.get("vector_len"),
+        "preserves_11d_pocket": info.get("preserves_11d_pocket"),
         "fake_success": False,
     }
 
