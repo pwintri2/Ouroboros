@@ -38,6 +38,9 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
                 "WINTRIP_CIRQ_QUANTUM",
                 "WINTRIP_11D_TRANSLATOR",
                 "WINTRIP_11D_TRANSLATOR_MODEL",
+                "WINTRIP_11D_STREAM_TRANSLATOR",
+                "WINTRIP_11D_STREAM_TRANSLATOR_TIMEOUT",
+                "WINTRIP_11D_STREAM_TRANSLATOR_COOLDOWN_SECONDS",
             ]
         }
         self.tmp = tempfile.TemporaryDirectory(prefix="streaming-consciousness-")
@@ -112,6 +115,21 @@ class TestStreamingConsciousnessAdapter(unittest.TestCase):
 
         stopped = stop_streaming_consciousness("Akkoord")
         self.assertEqual(stopped["status"], "stopped")
+
+    def test_background_stream_uses_fast_symbolic_language_by_default(self):
+        os.environ["WINTRIP_11D_TRANSLATOR"] = "1"
+        os.environ.pop("WINTRIP_11D_STREAM_TRANSLATOR", None)
+
+        from controller.streaming_consciousness_adapter import StreamingConsciousness11DPocket
+
+        pocket = StreamingConsciousness11DPocket(n_samples=160, seed=13)
+        event = pocket.stream_step()
+
+        self.assertIn("language", event)
+        self.assertFalse(event["language"]["enabled"])
+        self.assertEqual(event["language"]["status"], "disabled")
+        self.assertEqual(pocket.language_translator.status()["calls"], 0)
+        self.assertIn("0/1-attractorvenster", event["language"]["symbolic_frame"])
 
     def test_quantum_collapse_math_helpers(self):
         import numpy as np

@@ -32,7 +32,7 @@ from typing import Any
 
 from controller.blue_brain_adapter import E_TYPES
 from controller.cirq_quantum_adapter import CirqQuantumAdapter
-from controller.pocket_language_translator import PocketLanguageTranslator
+from controller.pocket_language_translator import PocketLanguageTranslator, TRUE_VALUES
 from controller.safe_shell import workspace_root
 
 
@@ -65,6 +65,21 @@ TCP_STATES = {
     "0A": "LISTEN",
     "0B": "CLOSING",
 }
+
+
+def _stream_language_translator_enabled() -> bool:
+    """Keep background ticks light; explicit chat still uses the local model."""
+
+    mode = str(os.getenv("WINTRIP_11D_STREAM_TRANSLATOR", "0") or "0").strip().lower()
+    return mode in TRUE_VALUES
+
+
+def _stream_language_translator_timeout() -> float:
+    return _clamp_float(os.getenv("WINTRIP_11D_STREAM_TRANSLATOR_TIMEOUT", "4"), 0.5, 30.0)
+
+
+def _stream_language_translator_cooldown() -> float:
+    return _clamp_float(os.getenv("WINTRIP_11D_STREAM_TRANSLATOR_COOLDOWN_SECONDS", "30"), 0.0, 3600.0)
 
 
 class DHCPState(Enum):
@@ -512,8 +527,9 @@ class MiniRouter:
 
     The router does not bind TUN/TAP, sniff host packets, run DHCP on the LAN or
     forward traffic. Its primary input is Docker/procfs and host-sensory network
-    metadata; when those sources are absent it reports a bounded software
-    fallback instead of pretending to observe real packets.
+    metadata. DHCP and internet are allowed to flow through the pocket as
+    address/route metadata; when real metadata is absent it reports a bounded
+    software fallback instead of pretending to observe real packets.
     """
 
     def __init__(self, pocket: "StreamingConsciousness11DPocket") -> None:
@@ -736,6 +752,12 @@ class MiniRouter:
                 "real_source": "Docker/procfs and approved host-sensory metadata only",
                 "payloads": "not captured",
             },
+            "allowed_pocket_flow": {
+                "dhcp": "address metadata may shape the 11D network/router dimensions",
+                "internet": "socket and flow metadata may shape the 11D network/router dimensions",
+                "raw_payloads": False,
+                "lan_forwarding": False,
+            },
             "fake_success": False,
         }
 
@@ -808,11 +830,11 @@ class MiniRouter:
         elif "host_sensory" in source:
             routes.append("host_sensory_read_only")
         elif packet.dst_ip == "255.255.255.255" or packet.protocol == "DHCP":
-            routes.append("address_metadata")
+            routes.append("dhcp_bootstrap")
         if context.get("sensitivity") in {"high", "critical"} or float(context.get("security_risk") or 0) >= 7:
             routes.append("quarantine_shadow")
         elif packet.protocol in {"TCP", "UDP"}:
-            routes.append("consciousness_buffer")
+            routes.extend(["internet_flow", "consciousness_buffer"])
         return routes[:4]
 
     def _observe_route(self, routes: list[str], context: dict[str, Any]) -> str:
@@ -822,8 +844,10 @@ class MiniRouter:
             return "docker_procfs_observed"
         if "host_sensory_read_only" in routes:
             return "host_sensory_observed"
-        if context.get("intent") == "presence_announcement" and "address_metadata" in routes:
-            return "address_metadata"
+        if context.get("intent") in {"presence_announcement", "address_negotiation"} and "dhcp_bootstrap" in routes:
+            return "dhcp_bootstrap"
+        if "internet_flow" in routes:
+            return "internet_flow_metadata"
         return "consciousness_buffer" if "consciousness_buffer" in routes else routes[0]
 
     def _update_entanglement(self, src_ip: str, dst_ip: str) -> None:
@@ -1504,7 +1528,11 @@ class StreamingConsciousness11DPocket:
             dtype_name=qif_gpu_dtype,
         )
         self.qif_neuron = SimulatedElectronNeuron(qif_threshold, qif_phase_gain, np_module=self.np, gpu_engine=gpu_engine)
-        self.language_translator = PocketLanguageTranslator()
+        self.language_translator = PocketLanguageTranslator(
+            enabled=_stream_language_translator_enabled(),
+            timeout=_stream_language_translator_timeout(),
+            cooldown_seconds=_stream_language_translator_cooldown(),
+        )
         self._last_host_sensory_check = -999.0
 
     def _generate_base_pocket(self, n_samples: int) -> tuple[Any, Any]:
@@ -1573,7 +1601,8 @@ class StreamingConsciousness11DPocket:
             "real_packet_capture": False,
             "real_forwarding": False,
             "physical_quantum_hardware": False,
-            "boundary": "Real Docker/procfs counters and flow metadata drive the pocket; packet payload capture, LAN routing and physical quantum effects remain outside this container.",
+            "allowed_pocket_flow": ["DHCP address metadata", "internet socket/flow metadata", "router pull"],
+            "boundary": "Real Docker/procfs counters and flow metadata drive the pocket; packet payload capture, host LAN routing, DHCP serving and physical quantum effects remain outside this container.",
         }
 
     def electrical_step(self, dt: float | None = None) -> None:
@@ -1868,7 +1897,8 @@ def get_streaming_status() -> dict[str, Any]:
             },
             "reality_boundary": {
                 "real_inputs": ["Docker/procfs counters", "Docker/procfs socket metadata", "approved host-sensory summaries"],
-                "not_done": ["packet payload capture", "LAN forwarding", "DHCP server", "physical quantum hardware", "actual electron spin control"],
+                "allowed_pocket_flow": ["DHCP address metadata", "internet socket/flow metadata", "router pull"],
+                "not_done": ["packet payload capture", "host LAN forwarding", "DHCP server", "physical quantum hardware", "actual electron spin control"],
                 "fake_success": False,
             },
             "thread_alive": bool(_WORKER_THREAD and _WORKER_THREAD.is_alive()),

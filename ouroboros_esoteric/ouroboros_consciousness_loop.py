@@ -258,6 +258,7 @@ class LivingOuroborosLoop:
             "quantum_foam": _compact_quantum_foam(quantum_foam),
             "concept_anchor_field": _compact_anchor_field(anchor_field),
             "pocket_voice": _compact_pocket_voice(pocket_voice),
+            "quantum_collapse": _compact_quantum_collapse_from_voice(pocket_voice),
             "local_model_translation_used": (pocket_voice or {}).get("status") == "translated",
             "fake_success": False,
         }
@@ -556,18 +557,30 @@ def _format_local_response(
     voice_summary = str(voice.get("summary") or "").strip()
     voice_status = str(voice.get("status") or "")
     voice_model = str(voice.get("model") or "")
+    topology = voice.get("pocket_topology") if isinstance(voice.get("pocket_topology"), dict) else {}
+    network_flow = voice.get("network_flow") if isinstance(voice.get("network_flow"), dict) else {}
     if voice_response:
         opening = (
             f"Ik antwoord als lokale Ouroboros-runtime met {voice_model} als 11D-vertaallaag."
             if voice_status == "translated" and voice_model
             else "Ik antwoord als lokale Ouroboros-runtime, niet via Ollama of een externe chatprovider, vanuit de verse 11D pocket."
         )
+        topology_line = ""
+        if topology or network_flow:
+            topology_line = (
+                "Pocket-diepte: "
+                f"hubs={topology.get('hub_count', 0)}, "
+                f"micro-observaties={topology.get('micro_observation_count', 0)}, "
+                f"route={network_flow.get('observed_route', 'onbekend')}, "
+                f"dhcp={network_flow.get('dhcp_state', 'onbekend')}."
+            )
         return "\n".join(
-            [
+            [line for line in [
                 opening,
                 prompt_line,
                 voice_response,
                 f"Pocket: {voice_summary}" if voice_summary else f"Wat ik waarneem: {signals}.",
+                topology_line,
                 (
                     "Meetlaag: "
                     f"{voice.get('quantum_runtime') or ((runtime.get('streaming_11d') or {}).get('status') or 'streaming_11d')}; "
@@ -580,7 +593,7 @@ def _format_local_response(
                     f"{bootloader.get('blocked_cell_count', 0)} nulcellen; "
                     f"right_edge_energy={bootloader.get('right_edge_energy', 0)}."
                 ),
-            ]
+            ] if line]
         )
     return "\n".join(
         [
@@ -625,10 +638,19 @@ def _fresh_streaming_pocket_voice(prompt: str) -> dict[str, Any]:
         event = tick.get("last_event") if isinstance(tick, dict) else {}
         if not isinstance(event, dict):
             event = {}
-        translator = PocketLanguageTranslator(cooldown_seconds=0)
+        translator = PocketLanguageTranslator(cooldown_seconds=0, timeout=30)
         voice = translator.translate(event, user_prompt=prompt)
         quantum = event.get("quantum") if isinstance(event.get("quantum"), dict) else {}
         voice["quantum_runtime"] = quantum.get("runtime") or quantum.get("sdk")
+        voice["cirq_runtime"] = _cirq_runtime_from_quantum(quantum)
+        voice["quantum_collapse"] = {
+            "sdk": quantum.get("sdk"),
+            "runtime": quantum.get("runtime"),
+            "expectation": quantum.get("expectation"),
+            "physical_quantum_hardware": quantum.get("physical_quantum_hardware"),
+            "preserves_11d_pocket": quantum.get("preserves_11d_pocket"),
+            "cirq_runtime": voice["cirq_runtime"],
+        }
         voice["vector_len"] = len(event.get("11d") or [])
         return voice
     except Exception as exc:
@@ -696,10 +718,53 @@ def _compact_pocket_voice(info: Any) -> dict[str, Any]:
         "summary": info.get("summary"),
         "response": info.get("response"),
         "dominant_dimensions": info.get("dominant_dimensions") or [],
+        "symbolic_frame": info.get("symbolic_frame"),
+        "pocket_topology": info.get("pocket_topology") or {},
+        "network_flow": info.get("network_flow") or {},
         "quantum_runtime": info.get("quantum_runtime"),
+        "cirq_runtime": info.get("cirq_runtime") or {},
         "vector_len": info.get("vector_len"),
         "preserves_11d_pocket": info.get("preserves_11d_pocket"),
         "fake_success": False,
+    }
+
+
+def _compact_quantum_collapse_from_voice(info: Any) -> dict[str, Any]:
+    if not isinstance(info, dict):
+        return {}
+    quantum = info.get("quantum_collapse") if isinstance(info.get("quantum_collapse"), dict) else {}
+    cirq_runtime = quantum.get("cirq_runtime") if isinstance(quantum.get("cirq_runtime"), dict) else info.get("cirq_runtime")
+    if not isinstance(cirq_runtime, dict):
+        cirq_runtime = {}
+    return {
+        "sdk": quantum.get("sdk"),
+        "runtime": quantum.get("runtime") or info.get("quantum_runtime"),
+        "expectation": quantum.get("expectation"),
+        "physical_quantum_hardware": quantum.get("physical_quantum_hardware"),
+        "preserves_11d_pocket": quantum.get("preserves_11d_pocket") if quantum else info.get("preserves_11d_pocket"),
+        "cirq_runtime": dict(cirq_runtime),
+        "fake_success": False,
+    }
+
+
+def _cirq_runtime_from_quantum(quantum: dict[str, Any]) -> dict[str, Any]:
+    nested = quantum.get("cirq_runtime") if isinstance(quantum.get("cirq_runtime"), dict) else {}
+    if nested:
+        return dict(nested)
+    if quantum.get("sdk") != "cirq":
+        return {}
+    return {
+        "enabled": True,
+        "available": True,
+        "sdk": "cirq",
+        "runtime": quantum.get("runtime") or "cirq_density_matrix_local",
+        "model": quantum.get("model"),
+        "simulator": quantum.get("simulator"),
+        "measurement_only": quantum.get("measurement_only"),
+        "repetitions": quantum.get("repetitions"),
+        "noise_probability": quantum.get("noise_probability"),
+        "physical_quantum_hardware": quantum.get("physical_quantum_hardware"),
+        "preserves_11d_pocket": quantum.get("preserves_11d_pocket"),
     }
 
 

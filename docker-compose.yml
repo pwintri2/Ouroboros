@@ -6,6 +6,8 @@ services:
       - ./wintrip_brain:/data
     ports:
       - "127.0.0.1:18000:8000"
+    networks:
+      - wintrip-network
 
   ouroboros-backend:
     build:
@@ -18,6 +20,8 @@ services:
     volumes:
       - .:/workspace
       - /home/pwintri2/cirq:/cirq:ro
+      - /home/pwintri2/AgentS:/agents:ro
+      - /home/pwintri2/OpenHands:/openhands:ro
     environment:
       PYTHONPATH: /workspace
       WINTRIP_WORKSPACE: /workspace
@@ -31,11 +35,44 @@ services:
       WINTRIP_CIRQ_NOISE_P: "0.0125"
       WINTRIP_11D_TRANSLATOR: "1"
       WINTRIP_11D_TRANSLATOR_MODEL: ouroboros:latest
-      WINTRIP_11D_TRANSLATOR_TIMEOUT: "8"
+      WINTRIP_11D_TRANSLATOR_TIMEOUT: "30"
       WINTRIP_11D_TRANSLATOR_COOLDOWN_SECONDS: "3"
+      WINTRIP_11D_STREAM_TRANSLATOR: "0"
+      WINTRIP_11D_STREAM_TRANSLATOR_TIMEOUT: "4"
+      WINTRIP_11D_STREAM_TRANSLATOR_COOLDOWN_SECONDS: "30"
+      WINTRIP_AGENTS_PATH: /agents
+      WINTRIP_OPENHANDS_PATH: /openhands
+      WINTRIP_OPENHANDS_SERVER_URL: http://host.docker.internal:3000
       OLLAMA_HOST: http://host.docker.internal:11434
+      BRAVE_API_KEY: ${BRAVE_API_KEY}
+      # Brave Search Configuration (external containers)
+      BRAVE_SEARCH_ENDPOINT_1: http://172.17.0.3:3000
+      BRAVE_SEARCH_ENDPOINT_2: http://172.17.0.4:3000
+      # Internet/Network Configuration
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      NO_PROXY: "localhost,127.0.0.1,*.local"
     ports:
       - "127.0.0.1:8010:8010"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "brave-search-1:172.17.0.3"
+      - "brave-search-2:172.17.0.4"
+    networks:
+      - wintrip-network
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
+    cap_add:
+      - NET_ADMIN
+    stdin_open: true
+    tty: true
     command: ["uvicorn", "controller.main:app", "--host", "0.0.0.0", "--port", "8010"]
+
+networks:
+  wintrip-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16

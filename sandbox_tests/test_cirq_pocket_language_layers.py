@@ -66,6 +66,46 @@ class TestCirqPocketLanguageLayers(unittest.TestCase):
         self.assertTrue(result["preserves_11d_pocket"])
         self.assertIn("11D", result["response"])
 
+    def test_pocket_language_fallback_uses_symbolic_topology_and_network_flow(self):
+        from controller.pocket_language_translator import PocketLanguageTranslator
+
+        translator = PocketLanguageTranslator(enabled=False, model="ouroboros:latest", cooldown_seconds=0)
+        result = translator.translate(
+            {
+                "t": 0.1,
+                "11d": [0.6, -0.4, 0.2, 0.3, 0.1, 0.9, 0.2, 0.7, -0.1, 0.5, 0.0],
+                "quantum": {
+                    "sdk": "none_numpy_classical",
+                    "runtime": "numpy_classical_complex_projection",
+                    "expectation": 0.5,
+                    "cirq_runtime": {"available": False},
+                },
+                "qif": {"expectation_z": 0.5, "fired": False},
+                "network": {
+                    "local_ip": "172.18.0.4",
+                    "dhcp": "BOUND",
+                    "total_received": 3,
+                    "mini_router": {
+                        "mode": "docker_procfs_read_only",
+                        "connections": 2,
+                        "last_route": {
+                            "observed": "internet_flow_metadata",
+                            "superposition": ["observe_only", "local_pocket", "internet_flow"],
+                        },
+                    },
+                },
+                "reality": {"real_observation": True, "physical_quantum_hardware": False},
+            },
+            user_prompt="Duik dieper in de 11D pocket en laat DHCP/internet stromen.",
+        )
+
+        self.assertEqual(result["status"], "disabled")
+        self.assertIn("Binair raamwerk", result["symbolic_frame"])
+        self.assertEqual(result["network_flow"]["dhcp_state"], "BOUND")
+        self.assertEqual(result["network_flow"]["observed_route"], "internet_flow_metadata")
+        self.assertEqual(result["pocket_topology"]["inner_model"], "membrane_hub_route_graph")
+        self.assertIn("DHCP/internet", result["response"])
+
 
 if __name__ == "__main__":
     unittest.main()

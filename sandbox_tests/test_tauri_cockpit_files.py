@@ -177,6 +177,21 @@ class TestTauriCockpitFiles(unittest.TestCase):
         self.assertIn('window.open("about:blank"', react_source)
         self.assertIn("reserved-window", react_source)
 
+    def test_cockpit_surfaces_ouroboros_pocket_voice_runtime_badges(self):
+        app_tsx = COCKPIT_DIR / "src" / "App.tsx"
+        react_source = app_tsx.read_text(encoding="utf-8")
+
+        for expected in [
+            "PocketVoiceReadout",
+            "Ouroboros voice",
+            "Cirq local measurement",
+            "NumPy fallback",
+            "local_model_translation_used",
+            "dominant_dimensions",
+            "cirq_available",
+        ]:
+            self.assertIn(expected, react_source)
+
 
 if __name__ == "__main__":
     unittest.main()

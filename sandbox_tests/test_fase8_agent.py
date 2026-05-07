@@ -92,6 +92,34 @@ class TestFase8Agent(unittest.TestCase):
         self.assertNotIn("should_not_read", text)
         self.assertNotIn(".env", text)
 
+    def test_external_capabilities_honor_container_mount_env(self):
+        old_agents = os.environ.get("WINTRIP_AGENTS_PATH")
+        old_openhands = os.environ.get("WINTRIP_OPENHANDS_PATH")
+        try:
+            with tempfile.TemporaryDirectory(prefix="agents-root-") as agents_tmp, tempfile.TemporaryDirectory(prefix="openhands-root-") as openhands_tmp:
+                agents_root = Path(agents_tmp)
+                openhands_root = Path(openhands_tmp)
+                (agents_root / "gui_agents").mkdir()
+                (openhands_root / "openhands").mkdir()
+                os.environ["WINTRIP_AGENTS_PATH"] = str(agents_root)
+                os.environ["WINTRIP_OPENHANDS_PATH"] = str(openhands_root)
+
+                status = external_capabilities_status(prefer_bridge=False)
+
+            self.assertEqual(status["capabilities"]["agents"]["status"], "available")
+            self.assertEqual(status["capabilities"]["openhands"]["status"], "available")
+            self.assertEqual(status["capabilities"]["agents"]["root"], str(agents_root))
+            self.assertEqual(status["capabilities"]["openhands"]["root"], str(openhands_root))
+        finally:
+            if old_agents is None:
+                os.environ.pop("WINTRIP_AGENTS_PATH", None)
+            else:
+                os.environ["WINTRIP_AGENTS_PATH"] = old_agents
+            if old_openhands is None:
+                os.environ.pop("WINTRIP_OPENHANDS_PATH", None)
+            else:
+                os.environ["WINTRIP_OPENHANDS_PATH"] = old_openhands
+
 
 if __name__ == "__main__":
     unittest.main()

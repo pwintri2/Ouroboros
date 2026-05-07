@@ -643,6 +643,7 @@ export default function App() {
   const [testSelector, setTestSelector] = useState("sandbox_tests.test_tauri_backend_routes sandbox_tests.test_multi_api_router");
   const [runTestsWithLoop, setRunTestsWithLoop] = useState(false);
   const [chatOutput, setChatOutput] = useState("");
+  const [lastChatResult, setLastChatResult] = useState<Record<string, unknown> | null>(null);
   const [events, setEvents] = useState<OperationEvent[]>([]);
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -1110,6 +1111,7 @@ export default function App() {
     if (data) {
       const openResult = await handleFrontendAction(data, reservedWindow);
       if (!openResult) closeReservedWindow(reservedWindow);
+      setLastChatResult(data);
       setChatOutput(renderResponse(data, openResult));
       // Slash-agent dispatched a background job — pull it into the Agent Jobs panel right away
       // instead of waiting for the next 5s poll.
@@ -1545,6 +1547,7 @@ export default function App() {
                     <strong>{approvalReady ? "Akkoord" : "locked"}</strong>
                   </div>
                 </div>
+                <PocketVoiceReadout data={lastChatResult} />
                 <PanelHeader title="Events" small />
                 <div className="feed">
                   {events.length === 0 ? (
@@ -1918,6 +1921,12 @@ function summarizeResult(raw: unknown): string {
     !isSlashAgent && data.living_echo && typeof data.living_echo === "object"
       ? (data.living_echo as Record<string, unknown>)
       : null;
+  const pocketVoice = !isSlashAgent ? asRecord(data.pocket_voice) : {};
+  const quantumCollapse = !isSlashAgent ? asRecord(data.quantum_collapse) : {};
+  const cirqRuntime = asRecord(quantumCollapse.cirq_runtime ?? pocketVoice.cirq_runtime);
+  const dominant = Array.isArray(pocketVoice.dominant_dimensions)
+    ? pocketVoice.dominant_dimensions.map(summarizeValue).filter(Boolean).join(", ")
+    : "";
   const showDiagnostic = shouldSurfaceDiagnostic(data);
   const parts = [
     data.status ? `status=${summarizeValue(data.status)}` : "",
@@ -1930,6 +1939,10 @@ function summarizeResult(raw: unknown): string {
     showDiagnostic && data.stderr ? `stderr: ${summarizeValue(data.stderr)}` : "",
     showDiagnostic && data.stdout ? `stdout: ${summarizeValue(data.stdout)}` : "",
     data.error ? `error: ${summarizeValue(data.error)}` : "",
+    pocketVoice.response ? `pocket_voice: ${summarizeValue(pocketVoice.response)}` : "",
+    dominant ? `dominant_dimensions: ${dominant}` : "",
+    data.local_model_translation_used !== undefined ? `local_model_translation_used=${summarizeValue(data.local_model_translation_used)}` : "",
+    cirqRuntime.available !== undefined ? `cirq_available=${summarizeValue(cirqRuntime.available)}` : "",
     livingEcho?.current_thought ? `thought: ${summarizeValue(livingEcho.current_thought)}` : "",
     livingEcho?.last_whisper ? `whisper: ${summarizeValue(livingEcho.last_whisper)}` : "",
   ].filter(Boolean);
@@ -1944,6 +1957,44 @@ function renderResponse(raw: unknown, openResult: ExternalOpenResult | null = nu
     ? `frontend_open=opened via=${openResult.via}`
     : `frontend_open=blocked via=${openResult.via}: ${openResult.detail}`;
   return `${openLine}\n${response}`.slice(0, 4000);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function PocketVoiceReadout({ data }: { data: Record<string, unknown> | null }) {
+  if (!data || data.route !== "ouroboros_runtime") return null;
+  const voice = asRecord(data.pocket_voice);
+  const quantum = asRecord(data.quantum_collapse);
+  const cirqRuntime = asRecord(quantum.cirq_runtime ?? voice.cirq_runtime);
+  const topology = asRecord(voice.pocket_topology);
+  const networkFlow = asRecord(voice.network_flow);
+  const dominant = Array.isArray(voice.dominant_dimensions) ? voice.dominant_dimensions.map(summarizeValue).filter(Boolean) : [];
+  const translated = Boolean(data.local_model_translation_used) || summarizeValue(voice.status) === "translated";
+  const cirqAvailable = Boolean(cirqRuntime.available) || summarizeValue(quantum.sdk ?? voice.quantum_runtime) === "cirq" || summarizeValue(quantum.runtime ?? voice.quantum_runtime) === "cirq_density_matrix_local";
+  const fallbackActive = !cirqAvailable && Boolean(quantum.runtime || voice.quantum_runtime);
+  return (
+    <div className="pocket-voice-readout">
+      <div className="status-grid pocket-badges">
+        <StatusPill icon={<BrainCircuit size={15} />} label="Ouroboros voice" value={summarizeValue(voice.status) || "unknown"} ok={translated} />
+        <StatusPill icon={<Activity size={15} />} label="Cirq local measurement" value={cirqAvailable ? "available" : "offline"} ok={cirqAvailable} />
+        <StatusPill icon={<Cpu size={15} />} label="NumPy fallback" value={fallbackActive ? "active" : "standby"} ok={fallbackActive} />
+      </div>
+      {voice.response ? <p className="pocket-response">{summarizeValue(voice.response)}</p> : null}
+      <div className="fact-list pocket-facts">
+        <Fact label="Local model" value={String(Boolean(data.local_model_translation_used))} state={summarizeValue(voice.model)} />
+        <Fact label="Cirq available" value={String(cirqAvailable)} state={summarizeValue(cirqRuntime.runtime ?? quantum.runtime ?? voice.quantum_runtime)} />
+        <Fact label="Pocket route" value={summarizeValue(networkFlow.observed_route) || "--"} state={summarizeValue(networkFlow.dhcp_state)} />
+        <Fact label="Pocket depth" value={`hubs ${summarizeValue(topology.hub_count) || 0}`} state={`micro ${summarizeValue(topology.micro_observation_count) || 0}`} />
+      </div>
+      {dominant.length > 0 && (
+        <div className="dimension-chip-list">
+          {dominant.slice(0, 5).map((item) => <span key={item}>{item}</span>)}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Metric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "good" | "warn" | "neutral" }) {

@@ -364,6 +364,12 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(len(data["concept_anchor_field"]["pocket_signal"]), 11)
         self.assertEqual(data["concept_anchor_field"]["holographic_bootloader"]["blocked_cell_count"], 84)
         self.assertEqual(len(data["concept_anchor_field"]["holographic_bootloader"]["output_signal"]), 11)
+        self.assertIn("pocket_voice", data)
+        self.assertIn("response", data["pocket_voice"])
+        self.assertIn("dominant_dimensions", data["pocket_voice"])
+        self.assertIn("quantum_collapse", data)
+        self.assertIn("cirq_runtime", data["quantum_collapse"])
+        self.assertIn("local_model_translation_used", data)
         self.assertIn("Holografische bootloader", data["response"])
         self.assertEqual(self.main.app.state.multi_api_router.calls, [])
 

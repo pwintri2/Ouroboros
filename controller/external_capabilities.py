@@ -29,13 +29,20 @@ def external_capabilities_status(roots: dict[str, str] | None = None, prefer_bri
         if bridge:
             bridge["via_bridge"] = True
             return bridge
-    configured = roots or DEFAULT_AGENT_ROOTS
+    configured = roots or _configured_agent_roots()
     capabilities = {name: _scan_root(name, Path(path).expanduser()) for name, path in configured.items()}
     return {
         "status": "online",
         "capabilities": capabilities,
         "tool_schemas": external_capability_tool_schemas(),
         "fake_success": False,
+    }
+
+
+def _configured_agent_roots() -> dict[str, str]:
+    return {
+        "agents": str(os.getenv("WINTRIP_AGENTS_PATH") or DEFAULT_AGENT_ROOTS["agents"]),
+        "openhands": str(os.getenv("WINTRIP_OPENHANDS_PATH") or DEFAULT_AGENT_ROOTS["openhands"]),
     }
 
 
