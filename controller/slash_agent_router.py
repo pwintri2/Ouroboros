@@ -38,8 +38,9 @@ except Exception:
 
 
 APPROVAL_PHRASE = "Akkoord"
-SUPPORTED_COMMANDS = ("agents", "help", "codex", "ruflo", "claude", "roo")
-HOST_AGENT_COMMANDS = {"codex", "ruflo", "claude"}
+SUPPORTED_COMMANDS = ("agents", "help", "codex", "deepseek", "atlas", "ruflo", "claude", "roo")
+HOST_AGENT_COMMANDS = {"codex", "deepseek", "atlas", "ruflo", "claude"}
+ECOSYSTEM_AGENT_COMMANDS = {"deepseek", "atlas"}
 MAX_TASK_CHARS = 8000
 SECRET_PATTERNS = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
@@ -70,6 +71,14 @@ def slash_command_catalog() -> dict[str, Any]:
             "/codex app-status": "Status van de Codex app-server subsystem.",
             "/codex mcp-status": "Status van de Codex MCP server subsystem.",
             "/codex run <opdracht>": "Expliciete run van een codex taak.",
+            "/deepseek status": "DeepSeek CLI/root/runtime status.",
+            "/deepseek capabilities": "DeepSeek agentische rollen, docs en CLI-functies.",
+            "/deepseek doctor": "DeepSeek doctor --json probe.",
+            "/deepseek run <opdracht>": "Laat DeepSeek exec agentisch werken in WintripAI.",
+            "/atlas status": "Atlas CLI/root/runtime status.",
+            "/atlas capabilities": "Atlas SDD crew, context-pack en CLI-functies.",
+            "/atlas doctor": "Atlas doctor probe.",
+            "/atlas ask <opdracht>": "Laat Atlas een vraag/taak beantwoorden via de CLI.",
             "/ruflo <opdracht>": "Start Ruflo swarm-coordinatie rond de opdracht.",
             "/claude <opdracht>": "Laat Claude Code in WintripAI werken als auth beschikbaar is.",
             "/roo <opdracht>": "Gebruik Roo adapter of maak een Roo IDE-handoff.",
@@ -107,6 +116,10 @@ def handle_slash_command(prompt: str, approval: str = "", timeout_seconds: int =
         codex_sub = _codex_subcommand(task, approval=approval, timeout_seconds=timeout_seconds)
         if codex_sub is not None:
             return codex_sub
+    if command in ECOSYSTEM_AGENT_COMMANDS:
+        ecosystem_sub = _ecosystem_subcommand(command, task, approval=approval, timeout_seconds=timeout_seconds)
+        if ecosystem_sub is not None:
+            return ecosystem_sub
     if command in HOST_AGENT_COMMANDS and task.lower() in {"status", "jobs", "latest", "laatste"}:
         return _agent_jobs_result(command)
     if not task:
@@ -161,6 +174,14 @@ def execute_host_agent_command(
             return bridged
     if agent == "codex":
         return _run_codex_exec(task=task, timeout_seconds=timeout_seconds)
+    if agent in ECOSYSTEM_AGENT_COMMANDS:
+        return _submit_ecosystem_agent_runtime(
+            agent=agent,
+            task=task,
+            timeout_seconds=timeout_seconds,
+            started=started,
+            bridge_result=bridged,
+        )
     if agent == "ruflo":
         if _allow_inline_host_agents():
             return _run_ruflo_swarm(task=task, timeout_seconds=timeout_seconds)
@@ -307,6 +328,152 @@ def _codex_subcommand(task: str, approval: str = "", timeout_seconds: int = 1800
             prefer_bridge=True,
         )
     return None
+
+
+def _ecosystem_subcommand(agent: str, task: str, approval: str = "", timeout_seconds: int = 1800) -> dict[str, Any] | None:
+    text = str(task or "").strip()
+    if not text:
+        return None
+    head, _, rest = text.partition(" ")
+    head_lower = head.lower()
+    rest = rest.strip()
+
+    if head_lower in {"status", "health"}:
+        return _ecosystem_status_subcommand(agent)
+    if head_lower in {"capabilities", "caps", "inventory"}:
+        return _ecosystem_capabilities_subcommand(agent)
+    if head_lower in {"jobs", "latest", "laatste"}:
+        return _agent_jobs_result(agent)
+    if head_lower in {"doctor", "diagnostics", "diagnose"}:
+        return _ecosystem_doctor_subcommand(agent, timeout_seconds=timeout_seconds)
+    if head_lower in {"version", "--version"}:
+        return _ecosystem_version_subcommand(agent)
+    run_heads = {"run", "exec"}
+    if agent == "atlas":
+        run_heads.add("ask")
+    if head_lower in run_heads:
+        if not rest:
+            verb = "ask" if agent == "atlas" else "run"
+            return {
+                "status": "blocked",
+                "route": "slash_agent",
+                "agent": agent,
+                "response": f"Geef een opdracht mee, bijvoorbeeld /{agent} {verb} vat de agentic status samen.",
+                "fake_success": False,
+            }
+        return execute_host_agent_command(
+            agent=agent,
+            task=rest,
+            approval=approval,
+            timeout_seconds=timeout_seconds,
+            prefer_bridge=True,
+        )
+    return None
+
+
+def _ecosystem_status_subcommand(agent: str) -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.agent_runtime.adapters.ecosystem_cli import ecosystem_agent_status
+
+        status = ecosystem_agent_status(agent)
+    except Exception as exc:
+        return _agent_result(agent, f"{agent}_status", "error", started, reason=str(exc)[:500])
+    launcher = status.get("launcher") if isinstance(status.get("launcher"), dict) else {}
+    version_probe = status.get("version_probe") if isinstance(status.get("version_probe"), dict) else {}
+    lines = [
+        f"/{agent} status: {status.get('status')}",
+        f"- root: {status.get('root')} (present={status.get('root_exists')})",
+        f"- runtime reachable: {status.get('runtime_reachable')}",
+        f"- launcher: {launcher.get('kind') or 'n/a'} ({launcher.get('path') or 'n/a'})",
+        f"- version probe: {version_probe.get('status')} exit={version_probe.get('exit_code')}",
+        f"- capabilities: {', '.join(list(status.get('capabilities') or [])[:8]) or '(none)'}",
+        f"- reason: {status.get('reason') or ''}",
+    ]
+    return _agent_result(
+        agent,
+        f"{agent}_status",
+        str(status.get("status") or "unknown"),
+        started,
+        ecosystem_status=status,
+        response="\n".join(lines),
+    )
+
+
+def _ecosystem_capabilities_subcommand(agent: str) -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.agent_runtime.adapters.ecosystem_cli import ecosystem_agent_capabilities
+        from controller.external_capabilities import external_capabilities_status
+
+        runtime_caps = ecosystem_agent_capabilities(agent)
+        external = external_capabilities_status()
+    except Exception as exc:
+        return _agent_result(agent, f"{agent}_capabilities", "error", started, reason=str(exc)[:500])
+    source = ((external.get("capabilities") or {}).get(agent) or {}) if isinstance(external, dict) else {}
+    roles = list(source.get("role_taxonomy") or [])
+    patterns = list(source.get("agentic_patterns") or [])
+    entrypoints = list(runtime_caps.get("entrypoints") or source.get("entrypoints") or [])
+    commands = runtime_caps.get("commands") if isinstance(runtime_caps.get("commands"), dict) else {}
+    lines = [
+        f"/{agent} capabilities: {runtime_caps.get('status')}",
+        f"- root: {runtime_caps.get('root') or source.get('root')}",
+        f"- entrypoints: {len(entrypoints)}",
+        f"- roles: {len(roles)}",
+        f"- patterns: {len(patterns)}",
+    ]
+    for key, command in list(commands.items())[:8]:
+        lines.append(f"- {key}: {command}")
+    for role in roles[:6]:
+        if isinstance(role, dict):
+            lines.append(f"- role {role.get('label') or role.get('id')}: {role.get('value')}")
+    return _agent_result(
+        agent,
+        f"{agent}_capabilities",
+        "success",
+        started,
+        ecosystem_capabilities=runtime_caps,
+        external_capability=source,
+        response="\n".join(lines),
+    )
+
+
+def _ecosystem_doctor_subcommand(agent: str, timeout_seconds: int = 1800) -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.agent_runtime.adapters.ecosystem_cli import ecosystem_agent_doctor
+
+        result = ecosystem_agent_doctor(agent, timeout_seconds=min(int(timeout_seconds or 20), 120))
+    except Exception as exc:
+        return _agent_result(agent, f"{agent}_doctor", "error", started, reason=str(exc)[:500])
+    lines = [
+        f"/{agent} doctor: {result.get('status')}",
+        f"- exit: {result.get('exit_code')}",
+        f"- reason: {result.get('reason') or ''}",
+    ]
+    if result.get("stdout"):
+        lines.append(str(result.get("stdout"))[-1600:])
+    if result.get("stderr"):
+        lines.append(str(result.get("stderr"))[-1600:])
+    return _agent_result(
+        agent,
+        f"{agent}_doctor",
+        str(result.get("status") or "unknown"),
+        started,
+        doctor=result,
+        response="\n".join(line for line in lines if line),
+    )
+
+
+def _ecosystem_version_subcommand(agent: str) -> dict[str, Any]:
+    status_result = _ecosystem_status_subcommand(agent)
+    status_result["tool"] = f"{agent}_version"
+    version_probe = (status_result.get("ecosystem_status") or {}).get("version_probe") or {}
+    status_result["response"] = (
+        f"/{agent} version: {version_probe.get('status')}\n"
+        f"{str(version_probe.get('stdout') or version_probe.get('stderr') or '').strip()}"
+    ).strip()
+    return status_result
 
 
 def _codex_status_subcommand() -> dict[str, Any]:
@@ -555,6 +722,68 @@ def _submit_host_agent_runtime(agent: str, task: str, timeout_seconds: int, star
     )
 
 
+def _submit_ecosystem_agent_runtime(
+    agent: str,
+    task: str,
+    timeout_seconds: int,
+    started: float | None = None,
+    bridge_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    started = started or time.time()
+    try:
+        from controller.agent_runtime.adapters.ecosystem_cli import ecosystem_agent_status
+
+        runtime_status = ecosystem_agent_status(agent, prefer_bridge=False)
+    except Exception as exc:
+        return _agent_result(agent, f"{agent}_runtime", "error", started, reason=str(exc)[:500])
+
+    runnable = bool(runtime_status.get("runtime_reachable"))
+    cargo_fallback = agent == "deepseek" and bool(runtime_status.get("cargo_fallback_available"))
+    if not runnable and not cargo_fallback:
+        response = (
+            f"/{agent} is nog niet launchable in deze runtime.\n"
+            f"- status: {runtime_status.get('status')}\n"
+            f"- root: {runtime_status.get('root')}\n"
+            f"- reason: {runtime_status.get('reason')}\n"
+            "Start de host bridge of bouw/installeer de CLI, dan kan dezelfde slash-opdracht als job draaien."
+        )
+        if bridge_result and bridge_result.get("transport_error"):
+            response += f"\nBridge fallback: {bridge_result.get('reason')}"
+        return _agent_result(
+            agent,
+            f"{agent}_runtime",
+            str(runtime_status.get("status") or "missing"),
+            started,
+            ecosystem_status=runtime_status,
+            bridge=bridge_result,
+            response=response,
+        )
+    try:
+        from controller.agent_runtime.orchestrator import get_orchestrator
+
+        orchestrator = get_orchestrator()
+        record = orchestrator.submit(
+            agent=agent,
+            task=task,
+            timeout_seconds=int(timeout_seconds or 240),
+            metadata={"prompt": _agent_prompt(agent.title(), task), "slash_agent": agent, "runtime_status": runtime_status},
+        )
+    except Exception as exc:
+        return _agent_result(agent, f"{agent}_runtime", "error", started, reason=str(exc)[:500], ecosystem_status=runtime_status)
+    return _agent_result(
+        agent,
+        f"{agent}_runtime",
+        "running",
+        started,
+        job=record.to_dict(),
+        ecosystem_status=runtime_status,
+        response=(
+            f"{agent} job {record.job_id} gestart in de agent runtime. "
+            f"Volg live in Agent Jobs of vraag `/{agent} jobs` voor de laatste samenvatting."
+        ),
+    )
+
+
 def _host_agent_runtime_adapter(agent: str):
     def adapter(job: Any, log: Any, on_progress: Any) -> dict[str, Any]:
         log.append("slash_host_agent_start", {"agent": agent})
@@ -752,6 +981,8 @@ def _agent_prompt(agent_label: str, task: str) -> str:
         f"- Ruflo root: {roots['ruflo']}\n"
         f"- Roo root: {roots['roo']}\n"
         f"- Codex root: {roots['codex']}\n"
+        f"- DeepSeek root: {roots['deepseek']}\n"
+        f"- Atlas root: {roots['atlas']}\n"
         "- Lees AGENTS.md en OUROBOROS_IDE_CONTEXT.md wanneer aanwezig.\n"
         "- Werk in WintripAI tenzij Philip expliciet iets anders vraagt.\n"
         "- Respecteer bestaande dirty worktree; revert geen onbekende wijzigingen.\n"
@@ -826,6 +1057,8 @@ def _write_agent_handoff(agent: str, task: str) -> dict[str, Any]:
         f"- Ruflo: `{_agent_roots()['ruflo']}`\n"
         f"- Roo: `{_agent_roots()['roo']}`\n"
         f"- Codex: `{_agent_roots()['codex']}`\n"
+        f"- DeepSeek: `{_agent_roots()['deepseek']}`\n"
+        f"- Atlas: `{_agent_roots()['atlas']}`\n"
         f"- Shared map: `OUROBOROS_IDE_CONTEXT.md`\n",
         encoding="utf-8",
     )
@@ -901,6 +1134,8 @@ def _catalog_text() -> str:
         [
             "Slash agents:",
             "/codex <opdracht>",
+            "/deepseek <opdracht>",
+            "/atlas <opdracht>",
             "/ruflo <opdracht>",
             "/claude <opdracht>",
             "/roo <opdracht>",
@@ -915,6 +1150,8 @@ def _agent_roots() -> dict[str, str]:
         "ruflo": str(ruflo_path()),
         "roo": str(roo_path()),
         "codex": str(codex_path()),
+        "deepseek": str(Path(os.getenv("WINTRIP_DEEPSEEK_PATH") or "/home/pwintri2/deepseek").expanduser()),
+        "atlas": str(Path(os.getenv("WINTRIP_ATLAS_PATH") or "/home/pwintri2/atlas").expanduser()),
     }
 
 
@@ -946,6 +1183,8 @@ def _host_env() -> dict[str, str]:
         str(Path(configured_codex_binary).expanduser().parent) if configured_codex_binary else "",
         "/codex_native/bin/linux-x86_64",
         node_bin,
+        "/home/pwintri2/.cargo/bin",
+        str(Path.home() / ".cargo" / "bin"),
         str(Path.home() / ".local" / "bin"),
         *codex_bins,
     ]

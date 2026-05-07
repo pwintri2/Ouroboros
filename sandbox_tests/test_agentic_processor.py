@@ -48,6 +48,18 @@ class FakeAgentTools:
                 "stored_to_memory": False,
                 "next_action": "continue",
             }
+        if tool_name == "agentic_ecosystem_context":
+            return {
+                "status": "success",
+                "tool_name": tool_name,
+                "stdout": "DeepSeek/Atlas: Sub-agent role taxonomy, Spec-driven delivery.",
+                "stderr": "",
+                "result": {"sources": ["deepseek", "atlas"], "visible_summary": "deepseek + atlas"},
+                "metadata_11d": {"source_type": "local_agentic_ecosystem"},
+                "approval_status": "not_required_readonly",
+                "stored_to_memory": False,
+                "next_action": "continue",
+            }
         return {"status": "success", "tool_name": tool_name, "stdout": "ok", "stderr": "", "result": {}}
 
 
@@ -231,6 +243,28 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertEqual([step["tool"] for step in result["plan"]], ["voice_chat_status"])
         self.assertEqual([call[0] for call in fake_tools.calls], ["voice_chat_status"])
         self.assertEqual(result["planner"]["source"], "llm")
+
+    def test_guardrail_inserts_agentic_ecosystem_for_agents_deepseek_atlas_goal(self):
+        plan = '[{"tool":"prompt_understanding","args":{"prompt":"agentisch werk"}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(
+            agent_tools=fake_tools,
+            ollama_client=FakeOllama([plan, "DeepSeek en Atlas patronen zijn meegenomen."]),
+        )
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run(
+                "Gebruik relevante onderdelen van /home/pwintri2/deepseek en /home/pwintri2/atlas voor agentisch werken met agents.",
+                model="gemma4",
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([step["tool"] for step in result["plan"][:2]], ["memory_search", "agentic_ecosystem_context"])
+        self.assertEqual([call[0] for call in fake_tools.calls[:2]], ["memory_search", "agentic_ecosystem_context"])
+        self.assertIn("inserted_agentic_ecosystem_context", result["planner"]["guardrails_applied"])
+        self.assertTrue(result["provenance"]["agentic_ecosystem_used"])
+        self.assertEqual(result["provenance"]["agentic_ecosystem_sources"], ["deepseek", "atlas"])
+        self.assertIn("DeepSeek/Atlas: deepseek+atlas", result["response"])
 
     def test_blocks_mutating_step_without_approval_and_stores_session(self):
         plan = '[{"tool":"write_file","args":{"path":"blocked.txt","content":"x"}}]'

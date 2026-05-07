@@ -9,6 +9,8 @@ Read `OUROBOROS_IDE_CONTEXT.md` first. This repository is the authoritative impl
 - Ruflo: `/home/pwintri2/ruflo`
 - Roo: `/home/pwintri2/Roo`
 - Codex: `/home/pwintri2/Codex`
+- DeepSeek: `/home/pwintri2/deepseek`
+- Atlas: `/home/pwintri2/atlas`
 
 ## Continuity
 
@@ -19,6 +21,8 @@ Cockpit chat memory is server-side in `.secrets/ouroboros_self_context.json` via
 The cockpit chat routes slash-prefixed prompts through `controller/slash_agent_router.py`:
 
 - `/codex <task>` runs Codex CLI against WintripAI through the host bridge.
+- `/deepseek <task>` runs DeepSeek `exec --auto --json` against WintripAI when the CLI is launchable.
+- `/atlas <task>` runs Atlas `ask` against WintripAI when the CLI is launchable.
 - `/ruflo <task>` starts Ruflo swarm coordination through the host bridge.
 - `/claude <task>` runs Claude Code through the host bridge when Claude auth is present.
 - `/roo <task>` uses the Roo Python adapter or writes a Roo handoff task.

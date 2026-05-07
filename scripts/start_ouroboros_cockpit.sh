@@ -7,6 +7,7 @@ BACKEND_URL="${TAURI_BACKEND_URL:-${VITE_BACKEND_URL:-http://localhost:8010}}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ouroboros-cockpit"
 LOG_DIR="$STATE_DIR/logs"
 LOCK_FILE="$STATE_DIR/launcher.lock"
+BRIDGE_PORT="${WINTRIP_RCLONE_BRIDGE_PORT:-8766}"
 
 mkdir -p "$LOG_DIR"
 exec >>"$LOG_DIR/launcher.log" 2>&1
@@ -76,6 +77,30 @@ ensure_backend() {
   return 0
 }
 
+ensure_host_bridge() {
+  if port_is_up 127.0.0.1 "$BRIDGE_PORT"; then
+    echo "Host bridge already online on port $BRIDGE_PORT."
+    return 0
+  fi
+
+  if [ ! -f "$ROOT/scripts/rclone_host_bridge.py" ]; then
+    echo "Host bridge script missing; continuing without bridge."
+    return 0
+  fi
+
+  echo "Starting Ouroboros host bridge on port $BRIDGE_PORT."
+  (cd "$ROOT" && setsid -f python3 scripts/rclone_host_bridge.py >"$LOG_DIR/host_bridge.log" 2>&1)
+  for _ in $(seq 1 20); do
+    port_is_up 127.0.0.1 "$BRIDGE_PORT" && {
+      echo "Host bridge online."
+      return 0
+    }
+    sleep 0.5
+  done
+  echo "Host bridge did not open port $BRIDGE_PORT yet; continuing with local fallbacks."
+  return 0
+}
+
 wait_for_vite() {
   for _ in $(seq 1 40); do
     port_is_up 127.0.0.1 1420 && return 0
@@ -130,6 +155,7 @@ launch_cockpit() {
     echo "Another launcher instance is preparing the cockpit; continuing with UI launch."
     launch_cockpit
   }
+  ensure_host_bridge
   ensure_backend
   launch_cockpit
 ) 9>"$LOCK_FILE"

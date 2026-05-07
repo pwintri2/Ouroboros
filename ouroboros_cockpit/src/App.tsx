@@ -212,6 +212,8 @@ type ExternalCapability = {
   root?: string;
   entrypoints?: Array<{ kind?: string; label?: string; path?: string }>;
   packages?: Array<{ kind?: string; label?: string; path?: string }>;
+  agentic_patterns?: Array<{ id?: string; label?: string; value?: string; source?: string }>;
+  role_taxonomy?: Array<{ id?: string; label?: string; value?: string; source?: string }>;
   safe_notes?: string[];
 };
 
@@ -1360,6 +1362,8 @@ export default function App() {
   ];
   const selectedAgentJob = agentJobs.find((job) => job.job_id === selectedAgentJobId) ?? null;
   const agentJobTerminalStatuses = new Set(["completed", "failed", "cancelled"]);
+  const deepseekCapability = externalCapabilities.capabilities?.deepseek;
+  const atlasCapability = externalCapabilities.capabilities?.atlas;
 
   return (
     <main className="app-shell">
@@ -1469,6 +1473,18 @@ export default function App() {
             value={openhandsStatus.status ?? "unknown"}
             ok={openhandsStatus.status === "online" || openhandsStatus.status === "available"}
           />
+          <StatusPill
+            icon={<Layers size={16} />}
+            label="DeepSeek"
+            value={deepseekCapability?.status ?? "unknown"}
+            ok={deepseekCapability?.status === "available"}
+          />
+          <StatusPill
+            icon={<FolderTree size={16} />}
+            label="Atlas"
+            value={atlasCapability?.status ?? "unknown"}
+            ok={atlasCapability?.status === "available"}
+          />
         </header>
 
         <section className="toolbar">
@@ -1500,7 +1516,7 @@ export default function App() {
             <section className="prompt-pane">
               <div className="prompt-stack">
                 <div className="slash-strip">
-                  {["/codex", "/ruflo", "/roo", "/claude", "/agents"].map((item) => (
+                  {["/codex", "/deepseek", "/atlas", "/ruflo", "/roo", "/claude", "/agents"].map((item) => (
                     <button type="button" key={item} onClick={() => insertSlash(item)}>{item}</button>
                   ))}
                 </div>
@@ -1707,7 +1723,7 @@ export default function App() {
               <PanelHeader title="Agent Jobs" />
               <OmegaPointNexusPanel nexus={nexusStatus} />
               {agentJobs.length === 0 ? (
-                <div className="empty-state">Nog geen agent jobs. Start er een met /codex &lt;opdracht&gt;.</div>
+                <div className="empty-state">Nog geen agent jobs. Start er een met /codex, /deepseek of /atlas &lt;opdracht&gt;.</div>
               ) : (
                 <div className="role-list">
                   {agentJobs.map((job) => {
@@ -2010,6 +2026,12 @@ function AgenticTraceReadout({ data }: { data: Record<string, unknown> | null })
   const steps = Array.isArray(data.steps) ? data.steps.map(asRecord) : [];
   const braveUsed = Boolean(sourceTrace.brave_search_used ?? provenance.brave_search_used);
   const braveSuccess = Boolean(sourceTrace.brave_search_success ?? provenance.brave_search_success);
+  const agenticEcosystemUsed = Boolean(sourceTrace.agentic_ecosystem_used ?? provenance.agentic_ecosystem_used);
+  const agenticEcosystemSources = Array.isArray(sourceTrace.agentic_ecosystem_sources)
+    ? sourceTrace.agentic_ecosystem_sources.map(summarizeValue).filter(Boolean)
+    : Array.isArray(provenance.agentic_ecosystem_sources)
+      ? provenance.agentic_ecosystem_sources.map(summarizeValue).filter(Boolean)
+      : [];
   const pocketCount = summarizeValue(sourceTrace.pocket_processed ?? provenance.pocket_processed_steps) || "0";
   const stepCount = summarizeValue(sourceTrace.pocket_step_count ?? provenance.step_count) || String(steps.length);
   const memoryStatus = summarizeValue(sourceTrace.memory_status ?? provenance.memory_status ?? asRecord(data.memory_status).status ?? data.memory_status) || "--";
@@ -2028,6 +2050,7 @@ function AgenticTraceReadout({ data }: { data: Record<string, unknown> | null })
       : [];
   const sourceValue = summarizeValue(sourceTrace.source_kind) || (isAgentic ? "agentic" : "model-only");
   const braveValue = braveUsed ? (braveSuccess ? "used" : "attempted") : "not used";
+  const agenticEcosystemValue = agenticEcosystemUsed ? (agenticEcosystemSources.join("+") || "used") : "standby";
   const modelValue = Boolean(sourceTrace.selected_model_interprets_answer) ? "interprets" : "not used";
   const actionValue = summarizeValue(sourceTrace.action_status) || (blockedTools.length ? "blocked" : (tools.length ? "executed" : "none"));
   const guardrailValue = guardrailsApplied.length ? String(guardrailsApplied.length) : "none";
@@ -2036,6 +2059,7 @@ function AgenticTraceReadout({ data }: { data: Record<string, unknown> | null })
       <div className="status-grid pocket-badges">
         <StatusPill icon={<Layers size={15} />} label="Bronpad" value={sourceValue} ok={sourceValue !== "unknown"} />
         <StatusPill icon={<Globe2 size={15} />} label="Brave Search" value={braveValue} ok={braveUsed && braveSuccess} />
+        <StatusPill icon={<FolderTree size={15} />} label="DeepSeek/Atlas" value={agenticEcosystemValue} ok={agenticEcosystemUsed} />
         <StatusPill icon={<BrainCircuit size={15} />} label="11D pocket" value={`${pocketCount}/${stepCount}`} ok={Number(pocketCount) > 0} />
         <StatusPill icon={<Bot size={15} />} label="Model" value={modelValue} ok={Boolean(sourceTrace.selected_model_interprets_answer)} />
         <StatusPill icon={<ShieldCheck size={15} />} label="Guardrails" value={guardrailValue} ok={guardrailsApplied.length > 0} />
@@ -2050,6 +2074,11 @@ function AgenticTraceReadout({ data }: { data: Record<string, unknown> | null })
       {guardrailsApplied.length > 0 && (
         <div className="dimension-chip-list agentic-guardrail-chips">
           {guardrailsApplied.slice(0, 8).map((item, index) => <span key={`${item}-${index}`}>{item}</span>)}
+        </div>
+      )}
+      {agenticEcosystemSources.length > 0 && (
+        <div className="dimension-chip-list agentic-ecosystem-chips">
+          {agenticEcosystemSources.slice(0, 4).map((item, index) => <span key={`${item}-${index}`}>{item}</span>)}
         </div>
       )}
       {blockedTools.length > 0 && (
@@ -2146,13 +2175,31 @@ function AgentCapabilitiesPanel({
 }) {
   const agents = external.capabilities?.agents;
   const openhands = external.capabilities?.openhands;
+  const deepseek = external.capabilities?.deepseek;
+  const atlas = external.capabilities?.atlas;
   const toolNames = runtimeTools.tools ?? [];
   const schemaNames = (external.tool_schemas ?? []).map((schema) => schema.function?.name).filter(Boolean);
+  const agenticPatterns = [
+    ...(deepseek?.agentic_patterns ?? []).map((item) => ({ ...item, system: "DeepSeek" })),
+    ...(atlas?.agentic_patterns ?? []).map((item) => ({ ...item, system: "Atlas" })),
+  ];
+  const roleTaxonomy = [
+    ...(deepseek?.role_taxonomy ?? []).map((item) => ({ ...item, system: "DeepSeek" })),
+    ...(atlas?.role_taxonomy ?? []).map((item) => ({ ...item, system: "Atlas" })),
+  ];
+  const ecosystemEntryPoints = [
+    ...(agents?.entrypoints ?? []),
+    ...(openhands?.entrypoints ?? []),
+    ...(deepseek?.entrypoints ?? []),
+    ...(atlas?.entrypoints ?? []),
+  ];
   return (
     <div className="world-panel">
       <div className="nexus-stats">
         <span>AgentS <strong>{agentsStatus.status ?? agents?.status ?? "unknown"}</strong></span>
         <span>OpenHands <strong>{openhandsStatus.status ?? openhands?.status ?? "unknown"}</strong></span>
+        <span>DeepSeek <strong>{deepseek?.status ?? "unknown"}</strong></span>
+        <span>Atlas <strong>{atlas?.status ?? "unknown"}</strong></span>
         <span>Roo <strong>{rooStatus?.status ?? "unknown"}</strong></span>
         <span>Codex jobs <strong>{codexJobs.length}</strong></span>
       </div>
@@ -2170,10 +2217,30 @@ function AgentCapabilitiesPanel({
         <Fact label="Roo tools" value={`${rooStatus?.local_python_adapters?.length ?? 0}`} state={rooStatus?.available ? "available" : rooStatus?.status} />
         <Fact label="Runtime tools" value={toolNames.length ? toolNames.join(", ") : "--"} state={runtimeTools.status} />
         <Fact label="Fase 8 tools" value={schemaNames.length ? schemaNames.join(", ") : "--"} state={external.via_bridge ? "via bridge" : external.status} />
+        <Fact label="DeepSeek root" value={deepseek?.root ?? "/home/pwintri2/deepseek"} state={deepseek?.status ?? (deepseek?.exists ? "detected" : "missing")} />
+        <Fact label="Atlas root" value={atlas?.root ?? "/home/pwintri2/atlas"} state={atlas?.status ?? (atlas?.exists ? "detected" : "missing")} />
+      </div>
+      <PanelHeader title="DeepSeek / Atlas Patterns" small />
+      <div className="world-action-list agent-pattern-list">
+        {agenticPatterns.slice(0, 8).map((pattern, index) => (
+          <div className="world-action" key={`${pattern.system}-${pattern.id ?? pattern.label ?? index}`}>
+            <div>
+              <strong>{pattern.label ?? pattern.id ?? "Agentic pattern"}</strong>
+              <span>{pattern.system}</span>
+            </div>
+            <p>{pattern.value ?? pattern.source ?? ""}</p>
+          </div>
+        ))}
+        {!agenticPatterns.length && (
+          <div className="empty-state">Nog geen DeepSeek/Atlas agentische patronen zichtbaar.</div>
+        )}
+      </div>
+      <div className="dimension-chip-list agentic-ecosystem-chips">
+        {roleTaxonomy.slice(0, 12).map((role, index) => <span key={`${role.system}-${role.id ?? role.label ?? index}`}>{role.system}: {role.label ?? role.id}</span>)}
       </div>
       <PanelHeader title="Entry Points" small />
       <div className="world-action-list">
-        {[...(agents?.entrypoints ?? []), ...(openhands?.entrypoints ?? [])].slice(0, 8).map((entry) => (
+        {ecosystemEntryPoints.slice(0, 12).map((entry) => (
           <div className="world-action" key={`${entry.kind ?? "entry"}-${entry.path ?? entry.label}`}>
             <div>
               <strong>{entry.label ?? entry.path}</strong>
@@ -2182,13 +2249,13 @@ function AgentCapabilitiesPanel({
             <p>{entry.path ?? ""}</p>
           </div>
         ))}
-        {!agents?.entrypoints?.length && !openhands?.entrypoints?.length && (
-          <div className="empty-state">{external.reason ?? "Nog geen AgentS/OpenHands capability data geladen."}</div>
+        {!ecosystemEntryPoints.length && (
+          <div className="empty-state">{external.reason ?? "Nog geen AgentS/OpenHands/DeepSeek/Atlas capability data geladen."}</div>
         )}
       </div>
       <div className="nexus-last">
-        <strong>Codex/Roo</strong>
-        <span>Gebruik `/codex ...` of `/roo ...` in de chat; jobs verschijnen live in Agent Jobs met events en output.</span>
+        <strong>Slash agents</strong>
+        <span>Gebruik `/codex ...`, `/deepseek ...`, `/atlas ...` of `/roo ...` in de chat; DeepSeek/Atlas status, doctor en jobs zijn nu direct routeerbaar.</span>
       </div>
     </div>
   );

@@ -108,6 +108,17 @@ AGENTIC_INTENT_MARKERS = (
     "gemini",
     "grok",
     "codex",
+    "agentisch",
+    "agentic",
+    "agents",
+    "subagent",
+    "sub-agent",
+    "deepseek",
+    "atlas",
+    "workflow",
+    "orchestratie",
+    "delegatie",
+    "handoff",
 )
 
 

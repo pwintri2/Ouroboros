@@ -33,6 +33,7 @@ from controller.stream.storage import _resonance_to_importance
 
 REGISTERED_TOOLS: tuple[str, ...] = (
     "memory_search",
+    "agentic_ecosystem_context",
     "browser_research",
     "brave_search",
     "ns_travel_advice",
@@ -99,6 +100,15 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "description": "Aantal resultaten, maximaal 12."},
         },
         ["query"],
+    ),
+    "agentic_ecosystem_context": _tool_schema(
+        "agentic_ecosystem_context",
+        "Haalt read-only agentische patrooncontext uit lokale DeepSeek en Atlas workspaces: sub-agent rollen, SDD workflow, hooks, skills en guardrails. Geen Akkoord nodig; leest geen secrets.",
+        {
+            "goal": {"type": "string", "description": "Gebruikersdoel of agent/workflowvraag."},
+            "prefer_bridge": {"type": "boolean", "description": "Gebruik host bridge wanneer beschikbaar."},
+        },
+        [],
     ),
     "browser_research": _tool_schema(
         "browser_research",
@@ -426,6 +436,11 @@ class AgentToolRegistry:
                     str(args.get("query") or args.get("prompt") or "Ouroboros"),
                     _int(args.get("limit"), default=5),
                 )
+            elif tool_name == "agentic_ecosystem_context":
+                result = self.agentic_ecosystem_context(
+                    str(args.get("goal") or args.get("query") or args.get("prompt") or ""),
+                    prefer_bridge=bool(args.get("prefer_bridge", True)),
+                )
             elif tool_name == "browser_research":
                 result = self.browser_research(
                     str(args.get("query") or args.get("prompt") or ""),
@@ -605,6 +620,37 @@ class AgentToolRegistry:
             stdout=json.dumps(payload, ensure_ascii=False, indent=2),
             source="hippocampus",
             next_action="Use matching memory as context, or request browser_research when knowledge is missing.",
+        )
+
+    def agentic_ecosystem_context(self, goal: str, *, prefer_bridge: bool = True) -> dict[str, Any]:
+        try:
+            from controller.agentic_ecosystem import agentic_ecosystem_context
+
+            payload = agentic_ecosystem_context(goal, prefer_bridge=prefer_bridge)
+        except Exception as exc:
+            return _tool_result(
+                "agentic_ecosystem_context",
+                "error",
+                stderr=str(exc),
+                source="agentic_ecosystem",
+                next_action="Controleer WINTRIP_DEEPSEEK_PATH/WINTRIP_ATLAS_PATH of host bridge status.",
+            )
+        status = str(payload.get("status") or "unknown")
+        stdout = _agentic_ecosystem_stdout(payload)
+        return _tool_result(
+            "agentic_ecosystem_context",
+            "success" if status in {"online", "missing"} else status,
+            result=payload,
+            stdout=stdout,
+            source="agentic_ecosystem",
+            approval_status="not_required_readonly",
+            metadata_11d={
+                "dimension_count": 11,
+                "source_type": "local_agentic_ecosystem",
+                "sources": ",".join(payload.get("sources") or []),
+                "taint": "local_readonly_docs",
+            },
+            next_action="Gebruik deze patronen om rollen, handoffs, guardrails en cockpit-provenance concreet te maken.",
         )
 
     def browser_research(self, query: str, approval: str, limit: int = 3) -> dict[str, Any]:
@@ -1583,7 +1629,7 @@ class AgentToolRegistry:
 
     def _autonomy_for(self, result: dict[str, Any]) -> dict[str, Any]:
         tool = result.get("tool_name")
-        if tool in {"memory_search", "prompt_understanding", "self_training_plan", "inspect_hippocampus"}:
+        if tool in {"memory_search", "agentic_ecosystem_context", "prompt_understanding", "self_training_plan", "inspect_hippocampus"}:
             return {"level": "high", "label": "High: local memory and planning first", "memory_first": True}
         if tool in {"scrub_browser_content", "training_ingest", "safe_shell", "run_tests", "mail_send_preview", "social_post_preview", "voice_chat_status"}:
             return {"level": "medium", "label": "Medium: approval-gated local action", "memory_first": True}
@@ -1615,6 +1661,25 @@ def _brave_companion_for_browser_research(query: str, approval: str, limit: int 
         return {"status": "error", "provider": "brave", "reason": str(exc), "fake_success": False}
 
 
+def _agentic_ecosystem_stdout(payload: dict[str, Any]) -> str:
+    sources = ", ".join(payload.get("sources") or []) or "geen bronnen"
+    lines = [
+        f"Agentic ecosystem context: {sources}",
+        str(payload.get("visible_summary") or "").strip(),
+    ]
+    patterns = payload.get("patterns") if isinstance(payload.get("patterns"), list) else []
+    roles = payload.get("roles") if isinstance(payload.get("roles"), list) else []
+    if roles:
+        lines.append("Rollen: " + ", ".join(str(item.get("label") or item.get("id") or "role") for item in roles[:8] if isinstance(item, dict)))
+    if patterns:
+        lines.append("Patronen: " + ", ".join(str(item.get("label") or item.get("id") or "pattern") for item in patterns[:6] if isinstance(item, dict)))
+    recommendations = payload.get("recommendations") if isinstance(payload.get("recommendations"), list) else []
+    for item in recommendations[:4]:
+        if isinstance(item, dict):
+            lines.append(f"- {item.get('label')}: {item.get('action')}")
+    return "\n".join(line for line in lines if line).strip()
+
+
 def understand_prompt(prompt: str) -> dict[str, Any]:
     text = str(prompt or "").strip()
     lowered = text.lower()
@@ -1638,6 +1703,7 @@ def understand_prompt(prompt: str) -> dict[str, Any]:
     wants_training = any(marker in lowered for marker in ("train", "leer", "onthoud", "ingest", "sla op"))
     wants_shell = any(marker in lowered for marker in ("run tests", "pytest", "unittest", "shell", "commando"))
     wants_chatgpt = "chatgpt" in lowered
+    wants_agentic_ecosystem = _wants_agentic_ecosystem(lowered)
     approval_detected = approval_matches(text)
 
     missing_knowledge: list[dict[str, Any]] = []
@@ -1660,6 +1726,15 @@ def understand_prompt(prompt: str) -> dict[str, Any]:
                 "approval_required": True,
             }
         )
+    if wants_agentic_ecosystem:
+        missing_knowledge.append(
+            {
+                "kind": "local_agentic_ecosystem",
+                "reason": "Prompt asks about agentic work, agents, DeepSeek or Atlas patterns.",
+                "tool": "agentic_ecosystem_context",
+                "approval_required": False,
+            }
+        )
 
     candidate_actions: list[dict[str, Any]] = []
     if wants_shell:
@@ -1670,6 +1745,8 @@ def understand_prompt(prompt: str) -> dict[str, Any]:
         candidate_actions.append({"tool": "training_ingest", "approval_required": True})
     if asks_current:
         candidate_actions.append({"tool": "browser_research", "approval_required": True})
+    if wants_agentic_ecosystem:
+        candidate_actions.append({"tool": "agentic_ecosystem_context", "approval_required": False})
 
     return {
         "philip_opdracht": text,
@@ -1685,6 +1762,16 @@ def understand_prompt(prompt: str) -> dict[str, Any]:
         "research_query": _research_query(text, keywords),
         "next_action": "Run memory_search first, then request approved browser_research if knowledge is still missing.",
     }
+
+
+def _wants_agentic_ecosystem(lowered: str) -> bool:
+    if any(marker in lowered for marker in ("deepseek", "atlas", "agentisch", "agentic", "sub-agent", "subagent", "multi-agent", "sdd")):
+        return True
+    if any(marker in lowered for marker in ("workflow", "orchestratie", "delegatie", "delegate", "handoff")):
+        return any(marker in lowered for marker in ("agent", "agents", "tool", "tools", "werk", "werken", "work"))
+    if "agents" in lowered:
+        return any(marker in lowered for marker in ("werken met", "werk met", "agent runtime", "slash", "catalogus", "capabilities"))
+    return False
 
 
 def _preview_payload_local(

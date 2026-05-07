@@ -9,11 +9,13 @@ Doel: WintripAI, Ruflo, Roo en Codex moeten hetzelfde lokale systeembeeld delen 
 - Ruflo workspace: `/home/pwintri2/ruflo`
 - Roo workspace: `/home/pwintri2/Roo`
 - Codex workspace: `/home/pwintri2/Codex`
+- DeepSeek workspace: `/home/pwintri2/deepseek`
+- Atlas workspace: `/home/pwintri2/atlas`
 
 ## Runtime Context
 
 - Cockpit chat endpoint: `POST /api/cockpit/chat`
-- Cockpit slash agents: `/codex`, `/ruflo`, `/claude`, `/roo`, `/agents`
+- Cockpit slash agents: `/codex`, `/deepseek`, `/atlas`, `/ruflo`, `/claude`, `/roo`, `/agents`
 - Server-side chat memory: `.secrets/ouroboros_self_context.json`
 - Self-context status: `GET /api/ouroboros/self-context/status`
 - Host agent bridge: `POST /agents/command` via `scripts/rclone_host_bridge.py`
@@ -34,3 +36,4 @@ Doel: WintripAI, Ruflo, Roo en Codex moeten hetzelfde lokale systeembeeld delen 
 - From WintripAI to Ruflo: use absolute path `/home/pwintri2/ruflo`, or Roo alias `ruflo/...` when the root is visible.
 - From Ruflo back to WintripAI: see `/home/pwintri2/ruflo/WINTRIPAI_CONTEXT.md`.
 - From Docker backend to host Ruflo: use the host bridge self-context status instead of assuming `/home/pwintri2/ruflo` is mounted inside the container.
+- From Docker backend to host DeepSeek/Atlas: use the host bridge for CLI execution; mounted `/deepseek` and `/atlas` are read-only context roots.

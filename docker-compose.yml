@@ -22,6 +22,8 @@ services:
       - /home/pwintri2/cirq:/cirq:ro
       - /home/pwintri2/AgentS:/agents:ro
       - /home/pwintri2/OpenHands:/openhands:ro
+      - /home/pwintri2/deepseek:/deepseek:ro
+      - /home/pwintri2/atlas:/atlas:ro
       - /home/pwintri2/Codex:/codex:ro
       - /home/pwintri2/.codex:/codex_home:ro
       - /home/pwintri2/.antigravity/extensions/openai.chatgpt-26.422.71525-linux-x64:/codex_native:ro
@@ -45,7 +47,12 @@ services:
       WINTRIP_11D_STREAM_TRANSLATOR_COOLDOWN_SECONDS: "30"
       WINTRIP_AGENTS_PATH: /agents
       WINTRIP_OPENHANDS_PATH: /openhands
+      WINTRIP_DEEPSEEK_PATH: /deepseek
+      WINTRIP_ATLAS_PATH: /atlas
       WINTRIP_OPENHANDS_SERVER_URL: http://host.docker.internal:3000
+      WINTRIP_RCLONE_BRIDGE_URL: http://host.docker.internal:8766
+      WINTRIP_RCLONE_BRIDGE_TOKEN_PATH: /workspace/.secrets/rclone_bridge_token
+      WINTRIP_SLASH_BRIDGE_TIMEOUT_SECONDS: "8"
       WINTRIP_CODEX_PATH: /codex
       CODEX_HOME: /codex_home
       WINTRIP_CODEX_HOME: /codex_home

@@ -164,6 +164,8 @@ export type ExternalCapability = {
   root?: string;
   entrypoints?: Array<{ kind?: string; label?: string; path?: string }>;
   packages?: Array<{ kind?: string; label?: string; path?: string }>;
+  agentic_patterns?: Array<{ id?: string; label?: string; value?: string; source?: string }>;
+  role_taxonomy?: Array<{ id?: string; label?: string; value?: string; source?: string }>;
   safe_notes?: string[];
 };
 

@@ -114,6 +114,7 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("mail_read_recent", names)
         self.assertIn("social_post_publish", names)
         self.assertIn("codex_job_start", names)
+        self.assertIn("agentic_ecosystem_context", names)
         brave = next(schema for schema in schemas if schema["function"]["name"] == "brave_search")
         self.assertIn("query", brave["function"]["parameters"]["properties"])
         self.assertNotIn("approval", brave["function"]["parameters"]["required"])
@@ -122,6 +123,47 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("to_station", ns["function"]["parameters"]["required"])
         mail = next(schema for schema in schemas if schema["function"]["name"] == "mail_read_recent")
         self.assertIn("approval", mail["function"]["parameters"]["required"])
+        ecosystem = next(schema for schema in schemas if schema["function"]["name"] == "agentic_ecosystem_context")
+        self.assertIn("goal", ecosystem["function"]["parameters"]["properties"])
+
+    def test_agentic_ecosystem_context_reads_only_safe_deepseek_atlas_patterns(self):
+        old_deepseek = os.environ.get("WINTRIP_DEEPSEEK_PATH")
+        old_atlas = os.environ.get("WINTRIP_ATLAS_PATH")
+        try:
+            with tempfile.TemporaryDirectory(prefix="deepseek-root-") as deepseek_tmp, tempfile.TemporaryDirectory(prefix="atlas-root-") as atlas_tmp:
+                os.makedirs(os.path.join(deepseek_tmp, "docs"), exist_ok=True)
+                os.makedirs(os.path.join(atlas_tmp, "context"), exist_ok=True)
+                with open(os.path.join(deepseek_tmp, "docs", "SUBAGENTS.md"), "w", encoding="utf-8") as handle:
+                    handle.write("subagents")
+                with open(os.path.join(atlas_tmp, "context", "project-overview.md"), "w", encoding="utf-8") as handle:
+                    handle.write("atlas")
+                with open(os.path.join(deepseek_tmp, ".env"), "w", encoding="utf-8") as handle:
+                    handle.write("SHOULD_NOT_READ")
+                os.environ["WINTRIP_DEEPSEEK_PATH"] = deepseek_tmp
+                os.environ["WINTRIP_ATLAS_PATH"] = atlas_tmp
+
+                registry = make_registry()
+                result = registry.run_tool(
+                    "agentic_ecosystem_context",
+                    {"goal": "verrijk agentisch werken met agents", "prefer_bridge": False},
+                )
+
+            self.assertToolEnvelope(result, "agentic_ecosystem_context")
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["approval_status"], "not_required_readonly")
+            self.assertEqual(result["result"]["sources"], ["deepseek", "atlas"])
+            self.assertIn("Sub-agent role taxonomy", result["stdout"])
+            self.assertIn("Spec-driven delivery", result["stdout"])
+            self.assertNotIn("SHOULD_NOT_READ", str(result))
+        finally:
+            if old_deepseek is None:
+                os.environ.pop("WINTRIP_DEEPSEEK_PATH", None)
+            else:
+                os.environ["WINTRIP_DEEPSEEK_PATH"] = old_deepseek
+            if old_atlas is None:
+                os.environ.pop("WINTRIP_ATLAS_PATH", None)
+            else:
+                os.environ["WINTRIP_ATLAS_PATH"] = old_atlas
 
     def test_prompt_understanding_detects_missing_browser_knowledge(self):
         registry = make_registry()

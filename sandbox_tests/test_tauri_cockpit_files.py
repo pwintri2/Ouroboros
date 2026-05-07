@@ -216,6 +216,10 @@ class TestTauriCockpitFiles(unittest.TestCase):
             "Field Collapse",
             "field-state-badge",
             "weight {formatMetric(node.weight)}",
+            "DeepSeek/Atlas",
+            "agentic_ecosystem_used",
+            "agentic-ecosystem-chips",
+            "DeepSeek / Atlas Patterns",
         ]:
             self.assertIn(expected, react_source)
 
@@ -282,6 +286,12 @@ class TestTauriCockpitFiles(unittest.TestCase):
             "WINTRIP_CODEX_PATH: /codex",
             "CODEX_HOME: /codex_home",
             "WINTRIP_CODEX_BINARY: /codex_native/bin/linux-x86_64/codex",
+            "/home/pwintri2/deepseek:/deepseek:ro",
+            "/home/pwintri2/atlas:/atlas:ro",
+            "WINTRIP_DEEPSEEK_PATH: /deepseek",
+            "WINTRIP_ATLAS_PATH: /atlas",
+            "WINTRIP_RCLONE_BRIDGE_URL: http://host.docker.internal:8766",
+            "WINTRIP_RCLONE_BRIDGE_TOKEN_PATH: /workspace/.secrets/rclone_bridge_token",
             "WINTRIP_NS_API_KEY: ${WINTRIP_NS_API_KEY:-}",
             "NS_API_SUBSCRIPTION_KEY: ${NS_API_SUBSCRIPTION_KEY:-}",
         ]:

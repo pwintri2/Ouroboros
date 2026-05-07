@@ -49,8 +49,22 @@ def _default_codex_adapter(job: JobRecord, log: EventLog, on_progress: Callable[
     return run_codex_job(job, log, on_progress=on_progress)
 
 
+def _default_deepseek_adapter(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    from controller.agent_runtime.adapters.ecosystem_cli import run_deepseek_job
+
+    return run_deepseek_job(job, log, on_progress=on_progress)
+
+
+def _default_atlas_adapter(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    from controller.agent_runtime.adapters.ecosystem_cli import run_atlas_job
+
+    return run_atlas_job(job, log, on_progress=on_progress)
+
+
 AGENT_DISPATCH: dict[str, AdapterFn] = {
     "codex": _default_codex_adapter,
+    "deepseek": _default_deepseek_adapter,
+    "atlas": _default_atlas_adapter,
 }
 
 
@@ -383,6 +397,8 @@ def _default_allowed_roots() -> list[str]:
         os.getenv("WINTRIP_RUFLO_PATH") or "/home/pwintri2/ruflo",
         os.getenv("WINTRIP_ROO_PATH") or "/home/pwintri2/Roo",
         os.getenv("WINTRIP_CODEX_PATH") or "/home/pwintri2/Codex",
+        os.getenv("WINTRIP_DEEPSEEK_PATH") or "/home/pwintri2/deepseek",
+        os.getenv("WINTRIP_ATLAS_PATH") or "/home/pwintri2/atlas",
     ]
     seen: set[str] = set()
     out: list[str] = []

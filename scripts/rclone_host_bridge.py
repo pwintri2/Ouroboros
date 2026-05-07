@@ -9,8 +9,9 @@ Inputs:
 Outputs:
     JSON status and listing responses. No rclone tokens are returned.
 Safety notes:
-    The bridge requires X-Ouroboros-Bridge-Token, supports read-only endpoints
-    only and delegates all listing approval checks to RcloneDriveAdapter.
+    The bridge requires X-Ouroboros-Bridge-Token. Read-only status endpoints
+    never return credentials; mutating/agent command endpoints keep their own
+    approval checks.
 Akkoord requirements:
     Listing calls still require the request body approval phrase `Akkoord`.
 
@@ -26,6 +27,7 @@ import argparse
 import json
 import os
 import secrets
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -63,7 +65,7 @@ def main() -> int:
     args = parser.parse_args()
 
     ensure_bridge_token()
-    server = ThreadingHTTPServer((args.bind, args.port), RcloneBridgeHandler)
+    server = FastThreadingHTTPServer((args.bind, args.port), RcloneBridgeHandler)
     server.serve_forever()
     return 0
 
@@ -96,7 +98,49 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
             self._json(get_ruflo_status())
             return
         if path == "/agents/status":
-            self._json({"status": "online", "agents": ["codex", "ruflo", "claude"], "fake_success": False})
+            self._json({"status": "online", "agents": ["codex", "deepseek", "atlas", "ruflo", "claude"], "fake_success": False})
+            return
+        if path == "/deepseek/status":
+            from controller.agent_runtime.adapters.ecosystem_cli import deepseek_status
+
+            result = deepseek_status(prefer_bridge=False)
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/deepseek/capabilities":
+            from controller.agent_runtime.adapters.ecosystem_cli import discover_deepseek_capabilities
+
+            result = discover_deepseek_capabilities()
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/deepseek/doctor":
+            from controller.agent_runtime.adapters.ecosystem_cli import deepseek_doctor
+
+            result = deepseek_doctor(prefer_bridge=False)
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/atlas/status":
+            from controller.agent_runtime.adapters.ecosystem_cli import atlas_status
+
+            result = atlas_status(prefer_bridge=False)
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/atlas/capabilities":
+            from controller.agent_runtime.adapters.ecosystem_cli import discover_atlas_capabilities
+
+            result = discover_atlas_capabilities()
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/atlas/doctor":
+            from controller.agent_runtime.adapters.ecosystem_cli import atlas_doctor
+
+            result = atlas_doctor(prefer_bridge=False)
+            result["via_bridge"] = False
+            self._json(result)
             return
         if path == "/agents/agents-status":
             from controller.agent_runtime.adapters.agents_cli import agents_status
@@ -267,6 +311,16 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
 
     def log_message(self, _format: str, *_args: Any) -> None:
         return
+
+
+class FastThreadingHTTPServer(ThreadingHTTPServer):
+    """HTTP server variant that avoids slow reverse DNS on 0.0.0.0 binds."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 if __name__ == "__main__":

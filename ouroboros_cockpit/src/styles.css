@@ -411,6 +411,12 @@ label {
   color: #ffb6ad;
 }
 
+.agentic-ecosystem-chips span {
+  border-color: #2d4c48;
+  background: #071817;
+  color: #9ee8d8;
+}
+
 .agentic-step-list {
   display: grid;
   gap: 6px;
@@ -715,7 +721,7 @@ label {
 
 .nexus-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   gap: 6px;
 }
 

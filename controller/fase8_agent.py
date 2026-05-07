@@ -292,13 +292,13 @@ def create_plan(goal: str) -> dict[str, Any]:
     lowered = clean_goal.lower()
     if re.search(r"\bgrok(?:\.com)?\b", lowered):
         steps.append(Fase8Step("step_1", "Vraag Grok via World Agent", "world_grok_ask", {"question": _extract_grok_question(clean_goal), "open_tab": False, "submit": True}))
-    if re.search(r"\b(agent|openhands|agents|capabilit|mogelijkheden)\b", lowered):
-        steps.append(Fase8Step(f"step_{len(steps)+1}", "Inspecteer AgentS/OpenHands capabilities", "external_capabilities_status", {}))
+    if re.search(r"\b(agent|openhands|agents|capabilit|mogelijkheden|deepseek|atlas|agentic|agentisch)\b", lowered):
+        steps.append(Fase8Step(f"step_{len(steps)+1}", "Inspecteer AgentS/OpenHands/DeepSeek/Atlas capabilities", "external_capabilities_status", {}))
     if re.search(r"\b(test|verifieer|verify)\b", lowered):
         steps.append(Fase8Step(f"step_{len(steps)+1}", "Draai Fase 8 regressietests", "run_tests", {"test_selector": "sandbox_tests.test_world_agent sandbox_tests.test_tauri_backend_routes"}))
     if not steps:
         steps.append(Fase8Step("step_1", "Zoek lokaal geheugen voor context", "memory_search", {"query": clean_goal, "limit": 5}))
-        steps.append(Fase8Step("step_2", "Inspecteer AgentS/OpenHands capabilities", "external_capabilities_status", {}))
+        steps.append(Fase8Step("step_2", "Inspecteer AgentS/OpenHands/DeepSeek/Atlas capabilities", "external_capabilities_status", {}))
     return {
         "goal": clean_goal,
         "created_at": _now_iso(),

@@ -330,6 +330,7 @@ class AgenticProcessor:
             "Noem approval-blokkades expliciet en claim geen sociale, mail- of shellactie die niet werkelijk is uitgevoerd. "
             "Voor trein/OV-tijden is ns_travel_advice de leidende bron. "
             "Als ns_travel_advice niet authoritative=true is, noem dan geen exacte vertrek- of aankomsttijden; geef de officiële plannerlink en zeg wat er ontbreekt.\n\n"
+            "Wanneer agentic_ecosystem_context is gebruikt, benoem concreet welke lokale DeepSeek/Atlas patronen de route verrijken, zonder te claimen dat hun runtimes zelf zijn gestart.\n\n"
             "Quantum Foam Field is tijdelijk: bij collapse_event=true is de essentie samengevat en het veld opgeruimd; claim dan niet dat het actief blijft.\n\n"
             f"Doel:\n{goal}\n\nSessie:\n{summary}"
         )
@@ -485,12 +486,41 @@ class AgenticProcessor:
             guarded = [{"tool": "prompt_understanding", "args": {"prompt": goal}}]
         needs_transit = _needs_transit_web_context(goal.lower())
         explicit_web = _explicit_web_requested(goal)
+        needs_agentic_ecosystem = _needs_agentic_ecosystem_context(goal)
 
         if not _needs_voice_status(goal):
             before = len(guarded)
             guarded = [step for step in guarded if str(step.get("tool") or "") != "voice_chat_status"]
             if len(guarded) != before:
                 applied.append("removed_irrelevant_voice_chat_status")
+
+        if needs_agentic_ecosystem:
+            if not _has_tool(guarded, "memory_search"):
+                guarded.insert(
+                    0,
+                    {
+                        "tool": "memory_search",
+                        "args": {"query": goal, "limit": 5},
+                        "reason": "guardrail: eerst lokaal Ouroboros geheugen voor agentische context.",
+                    },
+                )
+                applied.append("inserted_memory_search")
+            elif str(guarded[0].get("tool") or "") != "memory_search":
+                memory_index = next((index for index, step in enumerate(guarded) if str(step.get("tool") or "") == "memory_search"), -1)
+                if memory_index > 0:
+                    guarded.insert(0, guarded.pop(memory_index))
+                    applied.append("moved_memory_search_first")
+            if not _has_tool(guarded, "agentic_ecosystem_context"):
+                insert_at = 1 if guarded and str(guarded[0].get("tool") or "") == "memory_search" else 0
+                guarded.insert(
+                    insert_at,
+                    {
+                        "tool": "agentic_ecosystem_context",
+                        "args": {"goal": goal, "prefer_bridge": True},
+                        "reason": "guardrail: verrijk agentisch werk met lokale DeepSeek/Atlas patronen.",
+                    },
+                )
+                applied.append("inserted_agentic_ecosystem_context")
 
         if _needs_current_web_context(goal):
             if not _has_tool(guarded, "memory_search"):
@@ -561,6 +591,8 @@ class AgenticProcessor:
                 steps.append({"tool": "brave_search", "args": {"query": _web_query_for_goal(goal), "limit": 3, "llm_context": True}})
         elif _needs_current_web_context(goal):
             steps.append({"tool": "brave_search", "args": {"query": _web_query_for_goal(goal), "limit": 5, "llm_context": True}})
+        if _needs_agentic_ecosystem_context(goal):
+            steps.append({"tool": "agentic_ecosystem_context", "args": {"goal": goal, "prefer_bridge": True}})
         if "lees" in lowered or "read" in lowered:
             path = _extract_filename(goal)
             if path:
@@ -603,6 +635,7 @@ class AgenticProcessor:
             '[{"tool":"tool_name","args":{...},"reason":"kort"}]. '
             "Gebruik memory_search eerst wanneer nuttig. Gebruik brave_search voor actuele internetvragen. "
             "Gebruik ns_travel_advice voor trein/OV/reisplanner-vragen; Brave-snippets zijn niet betrouwbaar genoeg voor exacte OV-tijden. "
+            "Gebruik agentic_ecosystem_context voor agentische workflowvragen, sub-agents, multi-agent werk, DeepSeek of Atlas context; dit is lokale read-only verrijking zonder approval. "
             "Gebruik read_file/write_file/apply_patch/run_command alleen via de ToolBridge-namen. "
             "Brave Search is read-only internetcontext en mag zonder approval. "
             "Voor muterende acties, shell, browser/app-besturing, mail/social posting of duurzame training moet args.approval exact 'Akkoord' zijn wanneer approval aanwezig is; "
@@ -841,6 +874,17 @@ def _web_query_for_goal(goal: str) -> str:
     return clean[:400]
 
 
+def _needs_agentic_ecosystem_context(goal: str) -> bool:
+    lowered = str(goal or "").lower()
+    if any(marker in lowered for marker in ("deepseek", "atlas", "agentisch", "agentic", "sub-agent", "subagent", "multi-agent", "sdd")):
+        return True
+    if any(marker in lowered for marker in ("workflow", "orchestratie", "delegatie", "delegate", "handoff")):
+        return any(marker in lowered for marker in ("agent", "agents", "tool", "tools", "werk", "werken", "work"))
+    if "agents" in lowered:
+        return any(marker in lowered for marker in ("werken met", "werk met", "agent runtime", "slash", "catalogus", "capabilities"))
+    return False
+
+
 def _safe_args(args: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
     for key, value in args.items():
@@ -931,6 +975,7 @@ def _execution_summary(state: Mapping[str, Any]) -> str:
                     "approval_status": result.get("approval_status"),
                     "stored_to_memory": result.get("stored_to_memory"),
                     "metadata_11d": result.get("metadata_11d"),
+                    "payload": result.get("result") if str(step.get("tool") or "") == "agentic_ecosystem_context" else None,
                 },
                 "pocket_status": summarize_mapping_status(step.get("pocket")),
                 "quantum_foam": _compact_foam(step.get("quantum_foam")),
@@ -960,6 +1005,8 @@ def _build_provenance(state: Mapping[str, Any]) -> dict[str, Any]:
         for step in steps
     ]
     brave_steps = [step for step in steps if str(step.get("tool") or "") == "brave_search"]
+    agentic_ecosystem_steps = [step for step in steps if str(step.get("tool") or "") == "agentic_ecosystem_context"]
+    agentic_ecosystem_sources = _agentic_sources_from_steps(agentic_ecosystem_steps)
     external_tools_used = _unique(tool for tool in tools_used if tool in EXTERNAL_TOOLS)
     mutating_tools_attempted = _unique(tool for tool in tools_used if tool in MUTATING_TOOLS)
     blocked_tools = _unique(
@@ -993,6 +1040,8 @@ def _build_provenance(state: Mapping[str, Any]) -> dict[str, Any]:
         "blocked_tools": blocked_tools,
         "brave_search_used": bool(brave_steps),
         "brave_search_success": any(str(step.get("status") or "") == "success" for step in brave_steps),
+        "agentic_ecosystem_used": bool(agentic_ecosystem_steps),
+        "agentic_ecosystem_sources": agentic_ecosystem_sources,
         "pocket_observe_status": summarize_mapping_status(state.get("pocket_observe")),
         "pocket_processed_steps": pocket_processed_steps,
         "step_count": len(steps),
@@ -1024,6 +1073,16 @@ def _unique(values: Any) -> list[str]:
     return output
 
 
+def _agentic_sources_from_steps(steps: Sequence[Mapping[str, Any]]) -> list[str]:
+    sources: list[str] = []
+    for step in steps:
+        result = step.get("result") if isinstance(step.get("result"), Mapping) else {}
+        payload = result.get("result") if isinstance(result.get("result"), Mapping) else {}
+        for source in payload.get("sources") or []:
+            sources.append(str(source))
+    return _unique(sources)
+
+
 def _float_value(value: Any) -> float:
     try:
         return float(value)
@@ -1041,10 +1100,12 @@ def _audit_header(state: Mapping[str, Any]) -> str:
     model = provenance["synthesizer_model"] or "gekozen cockpitmodel"
     foam_state = "collapsed" if provenance["quantum_foam_collapsed"] else ("active" if provenance["quantum_foam_active"] else "idle")
     foam = f"{foam_state} / coherence {round(provenance['quantum_foam_coherence'], 1)}%"
+    ecosystem = "+".join(provenance.get("agentic_ecosystem_sources") or []) if provenance.get("agentic_ecosystem_used") else "standby"
     return "\n".join(
         [
             f"Bronpad: Agentic Core -> 11D pocket -> {provenance['synthesizer_provider']}/{model}",
             f"Brave Search: {brave}",
+            f"DeepSeek/Atlas: {ecosystem}",
             f"Tools: {tools}",
             f"11D pocket: {pocket}",
             f"Quantum Foam: {foam}",

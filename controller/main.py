@@ -214,6 +214,12 @@ except Exception:
         app.state.openhands_routes_unavailable = True
 
 try:
+    from controller.api.ecosystem_agent_routes import init_ecosystem_agent_routes
+except Exception:
+    def init_ecosystem_agent_routes(app: Any) -> None:
+        app.state.ecosystem_agent_routes_unavailable = True
+
+try:
     from controller.api.ouroboros_esoteric_routes import init_ouroboros_esoteric
 except Exception:
     def init_ouroboros_esoteric(app: Any) -> None:
@@ -336,6 +342,7 @@ init_agent_runtime(app)
 init_codex_routes(app)
 init_agents_routes(app)
 init_openhands_routes(app)
+init_ecosystem_agent_routes(app)
 init_ouroboros_esoteric(app)
 init_world_agent(app)
 app.state.self_modification_pipeline = {
@@ -1909,6 +1916,8 @@ def _cockpit_source_trace(result: dict[str, Any], *, provider: str, model: str) 
         str(step.get("tool") or "") == "brave_search" and str(step.get("status") or "") == "success"
         for step in steps
     )
+    agentic_ecosystem_used = bool(provenance.get("agentic_ecosystem_used")) or "agentic_ecosystem_context" in tools_used
+    agentic_ecosystem_sources = _trace_list(provenance.get("agentic_ecosystem_sources"))
     pocket_processed = _trace_int(provenance.get("pocket_processed_steps"))
     step_count = _trace_int(provenance.get("step_count"), default=len(steps))
     if route == "ouroboros_runtime" and pocket_processed == 0:
@@ -1945,6 +1954,8 @@ def _cockpit_source_trace(result: dict[str, Any], *, provider: str, model: str) 
         "selected_model_interprets_answer": selected_model_interprets,
         "brave_search_used": brave_used,
         "brave_search_success": brave_success,
+        "agentic_ecosystem_used": agentic_ecosystem_used,
+        "agentic_ecosystem_sources": agentic_ecosystem_sources,
         "external_context_used": bool(brave_used or external_tools or route == "world_agent"),
         "pocket_processed": pocket_processed,
         "pocket_step_count": step_count,
