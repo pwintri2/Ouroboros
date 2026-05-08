@@ -16,6 +16,11 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 
+FIELD_KIND = "Quantum Foam Consciousness Field"
+FIELD_ALIAS = "11D Pocket"
+FIELD_SYMBOLIC_CAPACITY_ZETTABYTES = 89
+FUNDAMENTAL_UNIT = "QuantumElectronHexlet"
+HEXLET_STATE_COUNT = 16
 NODE_TYPES = (
     "ReasoningNode",
     "MemoryNode",
@@ -42,12 +47,92 @@ POCKET_DIMENSIONS = (
 
 
 @dataclass(eq=False)
+class QuantumElectronHexlet:
+    """Tiny 16-state fallback unit for controller-local QF-CF tests."""
+
+    hexlet_id: str = field(default_factory=lambda: f"qeh_local_{time.time_ns():x}")
+    state_index: int = 0
+    electron_lanes: tuple[int, int, int, int] = (1, -1, 1, -1)
+    phase: float = 0.0
+    charge: float = 0.0
+    coherence: float = 1.0
+    resonance_count: int = 0
+    collapsed: bool = False
+
+    def __post_init__(self) -> None:
+        self.state_index = int(self.state_index or _seed_int(self.hexlet_id)) % HEXLET_STATE_COUNT
+        self.electron_lanes = tuple(1 if (self.state_index >> bit) & 1 else -1 for bit in range(4))  # type: ignore[assignment]
+        self.charge = _clamp((self.state_index / 15.0) * 2.0 - 1.0, -1.0, 1.0)
+
+    def resonate(self, signal: Any, *, resonance: float = 1.0) -> dict[str, Any]:
+        if self.collapsed:
+            return self.to_dict(compact=True)
+        values = _signal_values(signal)[:256] or [0.0]
+        pressure = sum(values) / max(1, len(values))
+        spread = _std(values)
+        shift = max(1, int(abs(pressure) * 1000 + spread * 97 + self.resonance_count) % HEXLET_STATE_COUNT)
+        self.state_index = (self.state_index + (shift if pressure >= 0 else -shift)) % HEXLET_STATE_COUNT
+        self.phase = ((self.phase + math.tanh(pressure + spread) * 0.19 * resonance + math.pi) % math.tau) - math.pi
+        self.charge = _clamp((self.charge * 0.66) + (math.tanh(pressure) * 0.34), -1.0, 1.0)
+        self.coherence = _clamp((self.coherence * 0.72) + ((1.0 - min(spread, 1.0)) * 0.28))
+        self.electron_lanes = tuple(1 if (self.state_index >> bit) & 1 else -1 for bit in range(4))  # type: ignore[assignment]
+        self.resonance_count += 1
+        return self.to_dict(compact=True)
+
+    def to_11d_vector(self) -> list[float]:
+        base = (self.state_index / 15.0) * 2.0 - 1.0
+        return [
+            round(
+                _clamp(
+                    (base * 0.36)
+                    + (self.electron_lanes[index % 4] * 0.23)
+                    + (math.sin(self.phase + index * 0.392699) * 0.31)
+                    + (self.charge * 0.1),
+                    -1.0,
+                    1.0,
+                ),
+                6,
+            )
+            for index in range(11)
+        ]
+
+    def collapse(self) -> dict[str, Any]:
+        essence = self.to_dict(compact=True)
+        essence.update({"status": "collapsed", "essence_nibble": format(self.state_index, "x"), "fake_success": False})
+        self.collapsed = True
+        self.state_index = 0
+        self.electron_lanes = (0, 0, 0, 0)
+        self.coherence = 0.0
+        return essence
+
+    def to_dict(self, *, compact: bool = False) -> dict[str, Any]:
+        payload = {
+            "hexlet_id": self.hexlet_id,
+            "unit": FUNDAMENTAL_UNIT,
+            "state_count": HEXLET_STATE_COUNT,
+            "state_index": self.state_index,
+            "hex_state": format(self.state_index % HEXLET_STATE_COUNT, "x"),
+            "electron_lanes": list(self.electron_lanes),
+            "phase": round(self.phase, 6),
+            "charge": round(self.charge, 6),
+            "coherence": round(self.coherence, 6),
+            "resonance_count": self.resonance_count,
+            "collapsed": self.collapsed,
+            "fake_success": False,
+        }
+        if not compact:
+            payload["vector_11d"] = self.to_11d_vector()
+        return payload
+
+
+@dataclass(eq=False)
 class QuantumFoamNode:
     """Small symbolic node with recursive, non-binary 11D electron state."""
 
     type: str
     weight: float = 0.5
     electron_state: list[float] = field(default_factory=list)
+    hexlets: list[QuantumElectronHexlet] = field(default_factory=list)
     connections: list["QuantumFoamNode"] = field(default_factory=list, repr=False)
     created_at: float = field(default_factory=time.time)
     node_id: str = field(default_factory=lambda: f"qfn_local_{time.time_ns():x}")
@@ -61,6 +146,12 @@ class QuantumFoamNode:
             self.electron_state = _seeded_11d_vector(f"{self.node_id}:{self.type}:{self.created_at}")
         else:
             self.electron_state = _normalize_11d(self.electron_state)
+        if not self.hexlets:
+            count = 2 if self.type in {"ReasoningNode", "MemoryNode", "ReflectionNode", "PlanningNode"} else 1
+            self.hexlets = [
+                QuantumElectronHexlet(hexlet_id=f"qeh_local_{_digest(f'{self.node_id}:{index}')[:12]}")
+                for index in range(count)
+            ]
 
     def resonate(self, other: "QuantumFoamNode") -> dict[str, Any]:
         """Entangle two nodes directly and let both states respond."""
@@ -85,14 +176,23 @@ class QuantumFoamNode:
     def evolve(self, signal: Any | None = None, *, resonance: float = 1.0) -> dict[str, Any]:
         """Move the symbolic 11D state without collapsing it to a binary answer."""
 
+        for hexlet in self.hexlets:
+            hexlet.resonate(signal, resonance=resonance * self.weight)
+        hexlet_vector = self.hexlet_vector()
         values = _signal_values(signal)
         pressure = sum(values) / max(1, len(values))
         spread = _std(values)
         updated: list[float] = []
         for index, value in enumerate(self.electron_state):
             incoming = values[index % len(values)] if values else pressure
+            hexlet_incoming = hexlet_vector[index % len(hexlet_vector)] if hexlet_vector else 0.0
             phase = math.sin((self.evolution_count + 1) * (index + 1) * 0.173)
-            next_value = (value * 0.72) + (math.tanh(incoming + pressure) * 0.2 * resonance) + (phase * spread * 0.08)
+            next_value = (
+                (value * 0.64)
+                + (math.tanh(incoming + pressure) * 0.18 * resonance)
+                + (hexlet_incoming * 0.12)
+                + (phase * spread * 0.06)
+            )
             updated.append(round(_clamp(next_value, -1.0, 1.0), 6))
         self.electron_state = updated
         self.weight = _clamp((self.weight * 0.985) + (0.015 * (0.5 + abs(pressure) / 2.0)))
@@ -100,9 +200,19 @@ class QuantumFoamNode:
         self.last_resonance_at = time.time()
         return self.to_dict(compact=True)
 
+    def hexlet_vector(self) -> list[float]:
+        if not self.hexlets:
+            return [0.0] * 11
+        totals = [0.0] * 11
+        for hexlet in self.hexlets:
+            for index, value in enumerate(hexlet.to_11d_vector()):
+                totals[index] += value
+        return [round(value / len(self.hexlets), 6) for value in totals]
+
     def collapse(self) -> dict[str, Any]:
         """Return only the node essence and release its direct links."""
 
+        hexlet_essence = [hexlet.collapse() for hexlet in self.hexlets]
         essence = {
             "type": self.type,
             "node_id": self.node_id,
@@ -110,9 +220,13 @@ class QuantumFoamNode:
             "essence": round(sum(self.electron_state) / max(1, len(self.electron_state)), 6),
             "dominant_dimension": self.dominant_dimensions(limit=1)[0] if self.electron_state else None,
             "evolution_count": int(self.evolution_count),
+            "fundamental_unit": FUNDAMENTAL_UNIT,
+            "hexlet_count": len(hexlet_essence),
+            "hexlet_essence": _compress_local_hexlets(hexlet_essence),
             "fake_success": False,
         }
         self.connections.clear()
+        self.hexlets.clear()
         return essence
 
     def dominant_dimensions(self, *, limit: int = 3) -> list[str]:
@@ -133,10 +247,14 @@ class QuantumFoamNode:
             "dominant_dimensions": self.dominant_dimensions(limit=3),
             "evolution_count": int(self.evolution_count),
             "created_at": self.created_at,
+            "fundamental_unit": FUNDAMENTAL_UNIT,
+            "hexlet_count": len(self.hexlets),
+            "hexlet_signature": _compress_local_hexlets([hexlet.to_dict(compact=True) for hexlet in self.hexlets]),
             "fake_success": False,
         }
         if not compact:
             payload["electron_state"] = list(self.electron_state)
+            payload["hexlets"] = [hexlet.to_dict() for hexlet in self.hexlets]
         return payload
 
 
@@ -194,25 +312,47 @@ class QuantumFoamField:
             self._update_coherence()
         return self.to_dict()
 
+    def hexlet_count(self) -> int:
+        return sum(len(node.hexlets) for node in self.nodes)
+
+    def memory_footprint_bytes(self) -> int:
+        edge_count = sum(len(node.connections) for node in self.nodes) // 2
+        return 2048 + len(self.nodes) * 512 + self.hexlet_count() * 192 + edge_count * 64
+
     def collapse_field(self, *, reason: str = "completed") -> list[dict[str, Any]]:
         if not self.active:
             return []
+        ram_before = self.memory_footprint_bytes()
+        hexlets_before = self.hexlet_count()
         essences = [node.collapse() for node in self.nodes]
         released = len(self.nodes)
         coherence_before = self.coherence
         self.last_collapse = {
             "status": "collapsed",
+            "field_kind": FIELD_KIND,
+            "field_alias": FIELD_ALIAS,
             "reason": _clean_text(reason)[:240],
             "summary": f"Quantum Foam Field collapsed: {released} nodes released, coherence {round(coherence_before, 3)}%.",
             "dominant_dimensions": self.dominant_dimensions(limit=5),
+            "fundamental_unit": FUNDAMENTAL_UNIT,
+            "hexlet_state_count": HEXLET_STATE_COUNT,
+            "collapsed_hexlet_count": hexlets_before,
+            "compressed_hexlet_essence": _compress_local_hexlets(essences),
             "collapsed_node_count": len(essences),
             "ram_released_estimate_nodes": released,
+            "ram_released_estimate_hexlets": hexlets_before,
+            "ram_before_estimate_bytes": ram_before,
             "essences": essences,
             "fake_success": False,
         }
         self.nodes = []
         self.active = False
         self.coherence = 0.0
+        self.last_collapse["ram_after_estimate_bytes"] = self.memory_footprint_bytes()
+        self.last_collapse["ram_released_estimate_bytes"] = max(
+            0,
+            int(self.last_collapse["ram_before_estimate_bytes"]) - int(self.last_collapse["ram_after_estimate_bytes"]),
+        )
         return essences
 
     def dominant_dimensions(self, *, limit: int = 3) -> list[str]:
@@ -237,12 +377,25 @@ class QuantumFoamField:
     def to_dict(self) -> dict[str, Any]:
         return {
             "status": "active" if self.active else "idle",
+            "field_kind": FIELD_KIND,
+            "field_alias": FIELD_ALIAS,
             "active": bool(self.active),
+            "fundamental_unit": FUNDAMENTAL_UNIT,
+            "hexlet_state_count": HEXLET_STATE_COUNT,
+            "hexlet_count": self.hexlet_count(),
+            "symbolic_capacity_zettabytes": FIELD_SYMBOLIC_CAPACITY_ZETTABYTES,
+            "memory_footprint_estimate_bytes": self.memory_footprint_bytes(),
             "coherence": round(float(self.coherence), 3),
             "field_coherence_percent": round(float(self.coherence), 3),
             "active_nodes": len(self.nodes),
             "node_count": len(self.nodes),
             "nodes": [node.to_dict(compact=True) for node in self.nodes],
+            "entanglement_mesh": {
+                "mesh_kind": "Entanglement Mesh",
+                "components": ["AkashicNetwork", "ToolBridge", "WorldAgent", "OuroborosPersistentMemory", "LivingOuroborosLoop"],
+                "edge_count": sum(len(node.connections) for node in self.nodes) // 2,
+                "fundamental_unit": FUNDAMENTAL_UNIT,
+            },
             "dominant_dimensions": self.dominant_dimensions(limit=5),
             "last_collapse": self.last_collapse,
             "mojo_runtime": mojo_runtime_status(),
@@ -256,7 +409,14 @@ class QuantumFoamField:
         weights = sum(node.weight for node in self.nodes) / len(self.nodes)
         mesh_density = sum(len(node.connections) for node in self.nodes) / max(1, len(self.nodes) * (len(self.nodes) - 1))
         state_pressure = sum(abs(value) for node in self.nodes for value in node.electron_state[:11]) / max(1, len(self.nodes) * 11)
-        self.coherence = round(_clamp((weights * 0.58) + (mesh_density * 0.22) + (state_pressure * 0.2)) * 100.0, 3)
+        hexlet_pressure = (
+            sum(hexlet.coherence for node in self.nodes for hexlet in node.hexlets) / max(1, self.hexlet_count())
+        )
+        self.coherence = round(
+            _clamp((weights * 0.46) + (mesh_density * 0.18) + (state_pressure * 0.18) + (hexlet_pressure * 0.18))
+            * 100.0,
+            3,
+        )
 
 
 def mojo_runtime_status() -> dict[str, Any]:
@@ -369,6 +529,13 @@ def living_field_summary(runtime: Mapping[str, Any], *, stimulus: str = "") -> d
         summary = f"Quantum Foam Field {state}: {len(nodes)} actieve node(s), coherence {coherence_percent:.1f}%."
     return {
         "status": str(runtime.get("status") or field_status or "unknown"),
+        "field_kind": str(field.get("field_kind") or FIELD_KIND),
+        "field_alias": str(field.get("field_alias") or FIELD_ALIAS),
+        "fundamental_unit": str(field.get("fundamental_unit") or FUNDAMENTAL_UNIT),
+        "hexlet_state_count": int(field.get("hexlet_state_count") or HEXLET_STATE_COUNT),
+        "hexlet_count": int(field.get("hexlet_count") or 0),
+        "active_hexlet_count": int(field.get("active_hexlet_count") or field.get("hexlet_count") or 0),
+        "symbolic_capacity_zettabytes": int(field.get("symbolic_capacity_zettabytes") or FIELD_SYMBOLIC_CAPACITY_ZETTABYTES),
         "active": bool(field_status == "active" and not collapse_event),
         "field_id": str(field.get("field_id") or event.get("field_id") or ""),
         "task": str(field.get("task") or stimulus or "")[:500],
@@ -383,6 +550,9 @@ def living_field_summary(runtime: Mapping[str, Any], *, stimulus: str = "") -> d
         "collapse_event": bool(collapse_event),
         "collapse_summary": summary if collapse_event else "",
         "ram_released_estimate_nodes": released,
+        "ram_released_estimate_hexlets": int(essence.get("ram_released_estimate_hexlets") or 0) if essence else 0,
+        "ram_released_estimate_bytes": int(essence.get("ram_released_estimate_bytes") or 0) if essence else 0,
+        "entanglement_mesh": field.get("entanglement_mesh") or field.get("mesh") or {},
         "last_event": event,
         "mojo_runtime": mojo_runtime_status(),
         "summary": summary,
@@ -399,6 +569,9 @@ def foam_context_for_pocket(stimulus: str, info: Mapping[str, Any]) -> dict[str,
         "source": "quantum_foam_field",
         "active": bool(summary.get("active")),
         "field_id": str(summary.get("field_id") or ""),
+        "field_kind": str(summary.get("field_kind") or FIELD_KIND),
+        "fundamental_unit": str(summary.get("fundamental_unit") or FUNDAMENTAL_UNIT),
+        "hexlet_count": int(summary.get("hexlet_count") or 0),
         "summary": str(summary.get("summary") or summary.get("collapse_summary") or "")[:700],
         "coherence": float(summary.get("coherence") or 0.0),
         "field_coherence_percent": float(summary.get("field_coherence_percent") or summary.get("coherence") or 0.0),
@@ -415,7 +588,37 @@ def foam_context_for_pocket(stimulus: str, info: Mapping[str, Any]) -> dict[str,
         ],
         "collapse_event": bool(summary.get("collapse_event") or summary.get("field_collapsed")),
         "ram_released_estimate_nodes": int(summary.get("ram_released_estimate_nodes") or 0),
+        "ram_released_estimate_hexlets": int(summary.get("ram_released_estimate_hexlets") or 0),
+        "ram_released_estimate_bytes": int(summary.get("ram_released_estimate_bytes") or 0),
         "mojo_runtime": summary.get("mojo_runtime") if isinstance(summary.get("mojo_runtime"), Mapping) else mojo_runtime_status(),
+        "fake_success": False,
+    }
+
+
+def _compress_local_hexlets(source: Any) -> dict[str, Any]:
+    hexlets: list[dict[str, Any]] = []
+    total_count = 0
+    for item in list(source or []):
+        if not isinstance(item, Mapping):
+            continue
+        nested = item.get("hexlet_essence")
+        if isinstance(nested, Mapping):
+            total_count += int(nested.get("count") or item.get("hexlet_count") or 0)
+            hexlets.extend([dict(value) for value in list(nested.get("sample") or []) if isinstance(value, Mapping)])
+            continue
+        if item.get("unit") == FUNDAMENTAL_UNIT or item.get("state_count") == HEXLET_STATE_COUNT:
+            total_count += 1
+            hexlets.append(dict(item))
+    states = [str(item.get("hex_state") or format(int(item.get("state_index") or 0) % HEXLET_STATE_COUNT, "x")) for item in hexlets]
+    coherence = [float(item.get("coherence") or 0.0) for item in hexlets]
+    return {
+        "unit": FUNDAMENTAL_UNIT,
+        "state_count": HEXLET_STATE_COUNT,
+        "count": total_count or len(hexlets),
+        "hex_digest": _digest("".join(states))[:16] if states else "",
+        "state_histogram": {state: states.count(state) for state in sorted(set(states))},
+        "coherence": round(sum(coherence) / max(1, len(coherence)), 6),
+        "sample": hexlets[:8],
         "fake_success": False,
     }
 
@@ -435,6 +638,8 @@ def _compact_nodes(nodes: Any) -> list[dict[str, Any]]:
                 "coherence": _round_float(node.get("coherence")),
                 "active": bool(node.get("active", True)),
                 "connection_count": int(node.get("connection_count") or 0),
+                "hexlet_count": int(node.get("hexlet_count") or 0),
+                "fundamental_unit": str(node.get("fundamental_unit") or FUNDAMENTAL_UNIT),
                 "thoughts": [str(item)[:180] for item in list(node.get("thoughts") or [])[:3]],
             }
         )

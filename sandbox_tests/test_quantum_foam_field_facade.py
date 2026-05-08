@@ -1,6 +1,7 @@
 import unittest
 
 from controller.quantum_foam_field import (
+    QuantumElectronHexlet,
     QuantumFoamField,
     QuantumFoamNode,
     agentic_foam_event,
@@ -28,19 +29,39 @@ class TestQuantumFoamFieldFacade(unittest.TestCase):
 
         self.assertEqual(resonance["status"], "resonated")
         self.assertEqual(len(left.electron_state), 11)
+        self.assertEqual(evolved["fundamental_unit"], "QuantumElectronHexlet")
+        self.assertGreaterEqual(evolved["hexlet_count"], 1)
         self.assertGreaterEqual(left.weight, 0.0)
         self.assertLessEqual(left.weight, 1.0)
         self.assertIn("dominant_dimensions", evolved)
         self.assertEqual(essence["type"], "ReasoningNode")
         self.assertIn("essence", essence)
+        self.assertGreaterEqual(essence["hexlet_count"], 1)
         self.assertEqual(left.connections, [])
+        self.assertEqual(left.hexlets, [])
+
+    def test_local_quantum_electron_hexlet_is_16_state_unit(self):
+        hexlet = QuantumElectronHexlet()
+        before = hexlet.to_dict()
+        moved = hexlet.resonate("non-lokaal veld")
+        essence = hexlet.collapse()
+
+        self.assertEqual(before["state_count"], 16)
+        self.assertEqual(moved["unit"], "QuantumElectronHexlet")
+        self.assertIn(moved["hex_state"], "0123456789abcdef")
+        self.assertEqual(essence["status"], "collapsed")
 
     def test_local_field_spawns_nonlocal_mesh_and_releases_nodes_on_collapse(self):
         field = QuantumFoamField()
         nodes = field.spawn_field("Zoek op internet en schrijf een bestand", num_nodes=8)
+        active_snapshot = field.to_dict()
 
         self.assertTrue(field.active)
         self.assertEqual(len(nodes), 8)
+        self.assertEqual(active_snapshot["fundamental_unit"], "QuantumElectronHexlet")
+        self.assertGreaterEqual(active_snapshot["hexlet_count"], 8)
+        self.assertEqual(active_snapshot["symbolic_capacity_zettabytes"], 89)
+        self.assertIn("ToolBridge", active_snapshot["entanglement_mesh"]["components"])
         self.assertGreater(field.coherence, 0.0)
         self.assertLessEqual(field.coherence, 100.0)
         self.assertTrue(any(node.connections for node in nodes))
@@ -53,6 +74,8 @@ class TestQuantumFoamFieldFacade(unittest.TestCase):
         self.assertEqual(field.nodes, [])
         self.assertEqual(field.coherence, 0.0)
         self.assertEqual(field.last_collapse["ram_released_estimate_nodes"], 8)
+        self.assertGreaterEqual(field.last_collapse["ram_released_estimate_hexlets"], 8)
+        self.assertGreater(field.last_collapse["ram_released_estimate_bytes"], 0)
 
     def test_agentic_event_uses_v49_runtime_and_collapses_after_task(self):
         start = agentic_foam_event("Gebruik shell tool en geheugen", phase="agentic_start")
@@ -61,10 +84,14 @@ class TestQuantumFoamFieldFacade(unittest.TestCase):
 
         self.assertTrue(start["active"])
         self.assertGreater(start["node_count"], 0)
+        self.assertEqual(start["fundamental_unit"], "QuantumElectronHexlet")
+        self.assertGreaterEqual(start["hexlet_count"], 8)
+        self.assertLessEqual(start["hexlet_count"], 15)
         self.assertIn("dominant_dimensions", start)
         self.assertEqual(tool["tool"], "memory_search")
         self.assertTrue(collapsed["collapse_event"])
         self.assertGreaterEqual(collapsed["ram_released_estimate_nodes"], 0)
+        self.assertGreaterEqual(collapsed["ram_released_estimate_hexlets"], 0)
 
         pocket = foam_context_for_pocket("Gebruik shell tool en geheugen", collapsed)
         self.assertTrue(pocket["collapse_event"])

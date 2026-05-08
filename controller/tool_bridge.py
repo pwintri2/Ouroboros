@@ -18,8 +18,19 @@ from ouroboros_esoteric.quantum_corruption_nexus import get_quantum_corruption_n
 
 
 APPROVAL_PHRASE = "Akkoord"
-TOOL_BRIDGE_TOOLS: tuple[str, ...] = ("read_file", "write_file", "apply_patch", "run_command")
-WRITE_TOOLS: frozenset[str] = frozenset(("write_file", "apply_patch", "run_command"))
+TOOL_BRIDGE_TOOLS: tuple[str, ...] = (
+    "read_file",
+    "write_file",
+    "apply_patch",
+    "run_command",
+    "browser_open_url",
+    "gmail_search",
+    "gmail_manage",
+    "drive_upload_file",
+    "drive_upload_text",
+)
+WRITE_TOOLS: frozenset[str] = frozenset(("write_file", "apply_patch", "run_command", "gmail_manage", "drive_upload_file", "drive_upload_text"))
+APPROVAL_TOOLS: frozenset[str] = frozenset((*WRITE_TOOLS, "browser_open_url", "gmail_search"))
 
 
 class ToolBridge:
@@ -104,6 +115,7 @@ class ToolBridge:
             "status": "online",
             "tools": list(TOOL_BRIDGE_TOOLS),
             "write_tools_require_approval": list(WRITE_TOOLS),
+            "approval_required_for": list(APPROVAL_TOOLS),
             "firewall_frequency_hz": 528.0,
             "last_result": self.last_result,
             "fake_success": False,
@@ -128,10 +140,10 @@ class ToolBridge:
                 "frequency": frequency,
             }
 
-        if tool in WRITE_TOOLS and str(args.get("approval") or "").strip() != APPROVAL_PHRASE:
+        if tool in APPROVAL_TOOLS and str(args.get("approval") or "").strip() != APPROVAL_PHRASE:
             return {
                 "status": "blocked",
-                "reason": "Tool bridge write/command calls require exact approval phrase: Akkoord.",
+                "reason": "Tool bridge private/browser/write calls require exact approval phrase: Akkoord.",
                 "resonant": True,
                 "frequency": frequency,
                 "approval_required": True,
@@ -163,6 +175,59 @@ class ToolBridge:
                 str(args.get("command") or ""),
                 approval=str(args.get("approval") or ""),
                 timeout=max(1, min(_int(args.get("timeout"), default=20), 30)),
+            )
+        if tool == "browser_open_url":
+            from controller.world_agent import open_url_via_world_agent
+
+            return open_url_via_world_agent(
+                str(args.get("url") or ""),
+                approval=str(args.get("approval") or ""),
+                prefer_bridge=True,
+            )
+        if tool == "gmail_search":
+            from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+            return GoogleWorkspaceAdapter(live_api_enabled=True).search_gmail(
+                query=str(args.get("query") or "in:inbox"),
+                approval=str(args.get("approval") or ""),
+                max_results=max(1, min(_int(args.get("max_results"), default=10), 50)),
+            )
+        if tool == "gmail_manage":
+            from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+            message_ids = args.get("message_ids")
+            clean_ids = [str(item) for item in message_ids] if isinstance(message_ids, list) else []
+            remove_label_ids = args.get("remove_label_ids")
+            clean_remove = [str(item) for item in remove_label_ids] if isinstance(remove_label_ids, list) else []
+            action = str(args.get("action") or "").strip().lower()
+            archive = bool(args.get("archive")) or action in {"archive", "move"}
+            mark_read = bool(args.get("mark_read"))
+            return GoogleWorkspaceAdapter(live_api_enabled=True).manage_gmail(
+                query=str(args.get("query") or "in:inbox"),
+                message_ids=clean_ids,
+                add_label=str(args.get("label") or args.get("add_label") or ""),
+                remove_label_ids=clean_remove,
+                archive=archive,
+                mark_read=mark_read,
+                approval=str(args.get("approval") or ""),
+                max_results=max(1, min(_int(args.get("max_results"), default=10), 50)),
+            )
+        if tool == "drive_upload_file":
+            from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+            return GoogleWorkspaceAdapter(live_api_enabled=True).upload_file(
+                local_path=str(args.get("path") or args.get("local_path") or ""),
+                drive_folder_id=str(args.get("drive_folder_id") or ""),
+                approval=str(args.get("approval") or ""),
+            )
+        if tool == "drive_upload_text":
+            from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+            return GoogleWorkspaceAdapter(live_api_enabled=True).upload_text_file(
+                name=str(args.get("name") or "ouroboros-agent-output.txt"),
+                content=str(args.get("content") or ""),
+                drive_folder_id=str(args.get("drive_folder_id") or ""),
+                approval=str(args.get("approval") or ""),
             )
         return {"status": "rejected", "reason": f"Tool not allowed by bridge: {tool}", "fake_success": False}
 

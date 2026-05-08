@@ -276,6 +276,10 @@ class TestOuroborosPhase1Api(unittest.TestCase):
         cls.main = main
         cls.client = TestClient(main.app)
 
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.close()
+
     def test_status_schema_exposes_capabilities_and_11d_geometry(self):
         response = self.client.get("/api/ouroboros/status")
         self.assertEqual(response.status_code, 200)

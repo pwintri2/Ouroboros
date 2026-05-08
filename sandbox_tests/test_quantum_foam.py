@@ -14,6 +14,7 @@ from ouroboros_esoteric.quantum_foam import (
     HolographicBootloader,
     HolografischeBootloader,
     NodeFormationEngine,
+    QuantumElectronHexlet,
     QuantumFoamField,
     collapse_quantum_foam_field,
     initiate_quantum_foam_field,
@@ -49,6 +50,21 @@ class TestQuantumFoamField(unittest.TestCase):
         self.assertIn("ToolNode", node_types)
         self.assertIn("WorldActionNode", node_types)
         self.assertIn("MemoryNode", node_types)
+
+    def test_quantum_electron_hexlet_has_16_states_and_collapses(self):
+        hexlet = QuantumElectronHexlet.from_seed("unit-test-hexlet")
+        first = hexlet.to_dict()
+        moved = hexlet.resonate({"task": "browser gmail drive memory"})
+        essence = hexlet.collapse()
+
+        self.assertEqual(first["state_count"], 16)
+        self.assertIn(first["hex_state"], "0123456789abcdef")
+        self.assertEqual(len(first["electron_lanes"]), 4)
+        self.assertEqual(len(first["vector_11d"]), 11)
+        self.assertEqual(moved["unit"], "QuantumElectronHexlet")
+        self.assertEqual(essence["status"], "collapsed")
+        self.assertEqual(essence["state_count"], 16)
+        self.assertTrue(hexlet.collapsed)
 
     def test_holographic_bootloader_filters_lightning_to_11d_signal(self):
         self.assertIs(HolografischeBootloader, HolographicBootloader)
@@ -94,6 +110,13 @@ class TestQuantumFoamField(unittest.TestCase):
 
         self.assertGreaterEqual(formation["desired_nodes"], 5)
         self.assertGreaterEqual(before["node_count"], 5)
+        self.assertEqual(before["fundamental_unit"], "QuantumElectronHexlet")
+        self.assertEqual(before["hexlet_state_count"], 16)
+        self.assertGreaterEqual(before["hexlet_count"], 8)
+        self.assertLessEqual(before["hexlet_count"], 15)
+        self.assertEqual(before["symbolic_capacity_zettabytes"], 89)
+        self.assertIn("ToolBridge", before["entanglement_mesh"]["components"])
+        self.assertIn("WorldAgent", before["entanglement_mesh"]["components"])
         self.assertGreater(after["tick_count"], before["tick_count"])
         self.assertGreater(after["mesh"]["edge_count"], 0)
         self.assertGreaterEqual(after["field_coherence"], 0.0)
@@ -125,6 +148,10 @@ class TestQuantumFoamField(unittest.TestCase):
         collapsed = collapse_quantum_foam_field(reason="test_complete")
         self.assertEqual(collapsed["status"], "collapsed")
         self.assertGreater(collapsed["essence"]["ram_released_estimate_nodes"], 0)
+        self.assertGreater(collapsed["essence"]["ram_released_estimate_hexlets"], 0)
+        self.assertGreater(collapsed["essence"]["ram_released_estimate_bytes"], 0)
+        self.assertEqual(collapsed["essence"]["fundamental_unit"], "QuantumElectronHexlet")
+        self.assertGreaterEqual(collapsed["essence"]["compressed_hexlet_essence"]["count"], 8)
         self.assertEqual(collapsed["essence"]["concept_anchor_field"]["dimension_count"], 11)
         self.assertEqual(len(collapsed["essence"]["concept_anchor_field"]["pocket_signal"]), 11)
         status = quantum_foam_status()

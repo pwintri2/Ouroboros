@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
@@ -32,6 +33,9 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
     re.compile(r"(?i)authorization:\s*bearer\s+[A-Za-z0-9._\-]+"),
 )
+URLISH_RE = re.compile(r"(?i)\b(?:https?://|www\.)[^\s<>()]+|\b[a-z0-9][a-z0-9.-]*\.(?:nl|com|org|net|io|dev|app)(?:/[^\s<>()]*)?")
+FILE_PATH_RE = re.compile(r"(?i)(?:workspace/|wintripai/|out/|\.?/)?[A-Za-z0-9_.\-/]+\.(?:txt|md|json|csv|html|py|log)")
+APPROVAL_PHRASE = "Akkoord"
 
 
 def deepseek_root() -> Path:
@@ -293,6 +297,9 @@ def run_deepseek_job(job: JobRecord, log: EventLog, on_progress: Callable[[dict[
     env = runtime_env()
     status = deepseek_status(prefer_bridge=False)
     log.append("deepseek_status", status)
+    tool_loop = _execute_direct_tool_loop(agent="deepseek", job=job, log=log, on_progress=on_progress, runtime_status=status)
+    if tool_loop is not None:
+        return tool_loop
     launcher = resolve_deepseek_launcher(
         root=root,
         env=env,
@@ -307,17 +314,17 @@ def run_deepseek_job(job: JobRecord, log: EventLog, on_progress: Callable[[dict[
             "category": "binary_missing",
             "runtime_status": status,
         }
-    prompt = _job_prompt(job)
+    prompt = _job_prompt_with_tool_protocol("deepseek", job)
     command = [
         *launcher["command"],
         "--workspace",
         job.workspace_root or str(_workspace_root()),
         "exec",
+        prompt,
         "--auto",
         "--json",
-        prompt,
     ]
-    return _run_cli_job(
+    cli_result = _run_cli_job(
         agent="deepseek",
         job=job,
         log=log,
@@ -327,6 +334,7 @@ def run_deepseek_job(job: JobRecord, log: EventLog, on_progress: Callable[[dict[
         env={**env, **launcher.get("env", {})},
         status_payload=status,
     )
+    return _execute_cli_declared_tool_loop(agent="deepseek", job=job, log=log, on_progress=on_progress, cli_result=cli_result, runtime_status=status)
 
 
 def run_atlas_job(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
@@ -334,6 +342,9 @@ def run_atlas_job(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str
     env = runtime_env()
     status = atlas_status(prefer_bridge=False)
     log.append("atlas_status", status)
+    tool_loop = _execute_direct_tool_loop(agent="atlas", job=job, log=log, on_progress=on_progress, runtime_status=status)
+    if tool_loop is not None:
+        return tool_loop
     launcher = resolve_atlas_launcher(root=root, env=env)
     if launcher is None:
         return {
@@ -343,13 +354,13 @@ def run_atlas_job(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str
             "category": "binary_missing",
             "runtime_status": status,
         }
-    prompt = _job_prompt(job)
+    prompt = _job_prompt_with_tool_protocol("atlas", job)
     command = [*launcher["command"], "ask"]
     model = _metadata_value(job, "model")
     if model:
         command.extend(["--model", model])
     command.append(prompt)
-    return _run_cli_job(
+    cli_result = _run_cli_job(
         agent="atlas",
         job=job,
         log=log,
@@ -359,6 +370,7 @@ def run_atlas_job(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str
         env={**env, **launcher.get("env", {})},
         status_payload=status,
     )
+    return _execute_cli_declared_tool_loop(agent="atlas", job=job, log=log, on_progress=on_progress, cli_result=cli_result, runtime_status=status)
 
 
 def resolve_deepseek_launcher(
@@ -594,6 +606,9 @@ def _run_cli_job(
 
     stdout_text = redact(_read_tail(stdout_path, 16000))
     stderr_text = redact(_read_tail(stderr_path, 16000))
+    cli_payload = _parse_json_object(stdout_text)
+    cli_error = _cli_error_text(cli_payload)
+    cli_reported_failed = str(cli_payload.get("status") or "").strip().lower() in {"failed", "error"} if cli_payload else False
     workspace_after = read_workspace_status(cwd)
     changed_files = changed_status_paths(workspace_before, workspace_after)
     dirty_files = [item.get("path", "") for item in (workspace_after or []) if item.get("path")]
@@ -601,7 +616,7 @@ def _run_cli_job(
     if job.output_file:
         artifact_candidates.append(Path(job.output_file))
     artifacts = [str(path) for path in artifact_candidates if path.exists()]
-    output_text = (stdout_text or stderr_text).strip()[-16000:]
+    output_text = (cli_error or stdout_text or stderr_text).strip()[-16000:]
     if job.output_file:
         try:
             Path(job.output_file).write_text(output_text, encoding="utf-8")
@@ -616,11 +631,13 @@ def _run_cli_job(
         status = "cancelled"
     elif timed_out:
         status = "failed"
-    elif return_code == 0:
+    elif return_code == 0 and not cli_reported_failed:
         status = "completed"
     else:
         status = "failed"
     category = classify_result(status, return_code, stdout_text, stderr_text, timed_out)
+    if status == "completed" and category != "ok":
+        status = "failed"
     log.append("finished", {"status": status, "exit_code": return_code, "timed_out": timed_out, "cancelled": cancelled, "category": category})
     return {
         "status": status,
@@ -638,9 +655,465 @@ def _run_cli_job(
         "cancelled": cancelled,
         "pid": pid,
         "category": category,
+        "reason": _result_reason(category, cli_error, timed_out, cancelled),
         "runtime_status": status_payload,
         "duration_seconds": round(time.monotonic() - started, 3),
     }
+
+
+def _execute_direct_tool_loop(
+    *,
+    agent: str,
+    job: JobRecord,
+    log: EventLog,
+    on_progress: Callable[[dict[str, Any]], None] | None,
+    runtime_status: dict[str, Any],
+) -> dict[str, Any] | None:
+    calls = _infer_tool_calls_from_task(agent=agent, job=job)
+    if not calls:
+        return None
+
+    approval = _job_approval(job)
+    if approval != APPROVAL_PHRASE:
+        log.append("tool_loop_blocked", {"reason": "missing_approval", "call_count": len(calls)})
+        text = f"{agent} herkende {len(calls)} echte toolactie(s), maar de job mist de Akkoord-gate."
+        _write_job_output(job, text)
+        return {
+            "status": "failed",
+            "exit_code": 1,
+            "reason": "Tool loop requires exact approval phrase: Akkoord.",
+            "category": "approval_missing",
+            "response_preview": text,
+            "runtime_status": runtime_status,
+            "tool_calls": _public_tool_calls(calls),
+            "fake_success": False,
+        }
+
+    log.append("tool_loop_planned", {"agent": agent, "call_count": len(calls), "tools": [call["tool"] for call in calls]})
+    if on_progress:
+        on_progress({"response_preview": f"{agent} voert {len(calls)} echte toolactie(s) uit via de tool_bridge."})
+
+    started = time.monotonic()
+    results: list[dict[str, Any]] = []
+    changed_files: list[str] = []
+    commands_run: list[str] = []
+    for call in calls:
+        tool = str(call.get("tool") or "")
+        args = dict(call.get("args") or {})
+        args.setdefault("approval", approval)
+        commands_run.append(f"tool_bridge:{tool}")
+        log.append("tool_call", {"tool": tool, "args": _public_tool_args(args), "reason": call.get("reason", "")})
+        try:
+            from controller.tool_bridge import run_tool_bridge
+
+            result = run_tool_bridge(tool, args)
+        except Exception as exc:
+            result = {"status": "error", "tool": tool, "reason": str(exc), "fake_success": False}
+        result_status = str(result.get("status") or "unknown")
+        log.append("tool_result", {"tool": tool, "status": result_status, "reason": _clip(redact(result.get("reason", "")), 800)})
+        results.append({"tool": tool, "args": _public_tool_args(args), "result": _public_tool_result(result)})
+        changed_files.extend(_changed_files_from_tool_result(tool, result))
+        if on_progress:
+            on_progress({"response_preview": _tool_loop_summary(agent, results)[-1800:]})
+
+    failed = [
+        item
+        for item in results
+        if str(((item.get("result") or {}).get("status") or "")).lower()
+        in {"error", "failed", "blocked", "rejected", "approval_required", "disabled", "unavailable"}
+    ]
+    status = "failed" if failed else "completed"
+    output = _tool_loop_summary(agent, results)
+    _write_job_output(job, output)
+    return {
+        "status": status,
+        "exit_code": 0 if status == "completed" else 1,
+        "reason": "" if status == "completed" else f"{len(failed)} toolactie(s) faalden; zie job-events/result.json.",
+        "category": "tool_loop" if status == "completed" else "tool_loop_error",
+        "commands_run": commands_run,
+        "changed_files": sorted(set(changed_files)),
+        "dirty_files": [],
+        "artifacts": [path for path in [job.output_file, job.result_file, job.events_file] if path],
+        "output": output,
+        "stdout": output,
+        "stderr": "" if status == "completed" else "\n".join(str((item.get("result") or {}).get("reason") or "") for item in failed),
+        "response_preview": output[-2000:],
+        "tool_calls": _public_tool_calls(calls),
+        "tool_results": results,
+        "runtime_status": runtime_status,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "fake_success": False,
+    }
+
+
+def _execute_cli_declared_tool_loop(
+    *,
+    agent: str,
+    job: JobRecord,
+    log: EventLog,
+    on_progress: Callable[[dict[str, Any]], None] | None,
+    cli_result: dict[str, Any],
+    runtime_status: dict[str, Any],
+) -> dict[str, Any]:
+    text = f"{cli_result.get('stdout', '')}\n{cli_result.get('output', '')}"
+    calls = _dedupe_tool_calls(_explicit_tool_calls_from_text(text))
+    if not calls:
+        return cli_result
+    approval = _job_approval(job)
+    if approval != APPROVAL_PHRASE:
+        log.append("cli_tool_loop_blocked", {"reason": "missing_approval", "call_count": len(calls)})
+        cli_result["category"] = "approval_missing"
+        cli_result["reason"] = "CLI declared tool calls, but job metadata is missing Akkoord approval."
+        cli_result["tool_calls"] = _public_tool_calls(calls)
+        cli_result["status"] = "failed"
+        cli_result["exit_code"] = 1
+        return cli_result
+
+    log.append("cli_tool_loop_planned", {"agent": agent, "call_count": len(calls), "tools": [call["tool"] for call in calls]})
+    results: list[dict[str, Any]] = []
+    changed_files = list(cli_result.get("changed_files") or [])
+    for call in calls:
+        tool = str(call.get("tool") or "")
+        args = dict(call.get("args") or {})
+        args.setdefault("approval", approval)
+        log.append("cli_tool_call", {"tool": tool, "args": _public_tool_args(args)})
+        try:
+            from controller.tool_bridge import run_tool_bridge
+
+            result = run_tool_bridge(tool, args)
+        except Exception as exc:
+            result = {"status": "error", "tool": tool, "reason": str(exc), "fake_success": False}
+        log.append("cli_tool_result", {"tool": tool, "status": result.get("status"), "reason": _clip(redact(result.get("reason", "")), 800)})
+        results.append({"tool": tool, "args": _public_tool_args(args), "result": _public_tool_result(result)})
+        changed_files.extend(_changed_files_from_tool_result(tool, result))
+        if on_progress:
+            on_progress({"response_preview": _tool_loop_summary(agent, results)[-1800:]})
+
+    failed = [
+        item
+        for item in results
+        if str(((item.get("result") or {}).get("status") or "")).lower()
+        in {"error", "failed", "blocked", "rejected", "approval_required", "disabled", "unavailable"}
+    ]
+    summary = _tool_loop_summary(agent, results)
+    combined_output = f"{str(cli_result.get('output') or '').strip()}\n\n{summary}".strip() + "\n"
+    _write_job_output(job, combined_output)
+    cli_result["tool_calls"] = _public_tool_calls(calls)
+    cli_result["tool_results"] = results
+    cli_result["changed_files"] = sorted(set(changed_files))
+    cli_result["runtime_status"] = runtime_status
+    cli_result["output"] = combined_output
+    cli_result["stdout"] = f"{str(cli_result.get('stdout') or '').strip()}\n\n{summary}".strip()
+    cli_result["response_preview"] = combined_output[-2000:]
+    if failed:
+        cli_result["status"] = "failed"
+        cli_result["exit_code"] = 1
+        cli_result["category"] = "cli_tool_loop_error"
+        cli_result["reason"] = f"{len(failed)} declared tool call(s) failed."
+    elif cli_result.get("status") == "failed":
+        cli_result["status"] = "completed"
+        cli_result["exit_code"] = 0
+        cli_result["category"] = "cli_tool_loop_recovered"
+        cli_result["reason"] = "Declared Ouroboros tool calls executed successfully."
+    return cli_result
+
+
+def _infer_tool_calls_from_task(*, agent: str, job: JobRecord) -> list[dict[str, Any]]:
+    task = str(job.task or "")
+    lowered = task.casefold()
+    calls: list[dict[str, Any]] = []
+
+    if _looks_like_browser_open_request(lowered):
+        url = _extract_first_url(task)
+        if url:
+            calls.append(
+                {
+                    "tool": "browser_open_url",
+                    "args": {"url": url},
+                    "reason": "De opdracht vraagt om een zichtbare browser-tab/navigatie.",
+                }
+            )
+
+    if _looks_like_gmail_request(lowered):
+        calls.extend(_gmail_tool_calls(task, lowered))
+
+    file_calls = _file_tool_calls(agent=agent, job=job, task=task, lowered=lowered)
+    calls.extend(file_calls)
+
+    calls.extend(_explicit_tool_calls_from_text(task))
+    return _dedupe_tool_calls(calls)
+
+
+def _looks_like_browser_open_request(lowered: str) -> bool:
+    return any(word in lowered for word in ("browser", "tab", "open url", "open een", "navigeer", "navigate", "ga naar", "open ")) and bool(URLISH_RE.search(lowered))
+
+
+def _looks_like_gmail_request(lowered: str) -> bool:
+    return "gmail" in lowered or re.search(r"\bmail(?:box|s|berichten| inbox)?\b", lowered) is not None
+
+
+def _gmail_tool_calls(task: str, lowered: str) -> list[dict[str, Any]]:
+    query = _extract_gmail_query(task) or "in:inbox newer_than:30d"
+    max_results = _extract_int_near(task, ("max", "limit", "aantal"), default=5 if any(word in lowered for word in ("organiseer", "organize", "sort", "sorteer")) else 10)
+    label = _extract_label_name(task) or "Ouroboros/Organized"
+    destructive = any(word in lowered for word in ("archive", "archiveer", "move", "verplaats"))
+    labeling = destructive or any(word in lowered for word in ("label", "map", "folder", "organiseer", "organize", "sort", "sorteer"))
+    mark_read = any(phrase in lowered for phrase in ("mark read", "markeer gelezen", "als gelezen"))
+
+    if labeling:
+        action = "move" if any(word in lowered for word in ("move", "verplaats")) else ("archive" if any(word in lowered for word in ("archive", "archiveer")) and not label else "label")
+        args: dict[str, Any] = {
+            "action": action,
+            "query": query,
+            "max_results": max_results,
+            "mark_read": mark_read,
+        }
+        if label and action != "archive":
+            args["label"] = label
+        if destructive:
+            args["archive"] = True
+        return [{"tool": "gmail_manage", "args": args, "reason": "De opdracht vraagt om Gmail te sorteren/labelen/verplaatsen/archiveren."}]
+
+    return [{"tool": "gmail_search", "args": {"query": query, "max_results": max_results}, "reason": "De opdracht vraagt om Gmail te lezen/zoeken."}]
+
+
+def _file_tool_calls(*, agent: str, job: JobRecord, task: str, lowered: str) -> list[dict[str, Any]]:
+    if not any(word in lowered for word in ("file", "bestand", "save", "sla op", "schrijf", "write", "create")):
+        return []
+    if "gmail" in lowered and not any(word in lowered for word in ("local", "disk", "drive", "bestand", "file")):
+        return []
+
+    path = _extract_file_path(task)
+    explicit_file_action = bool(
+        path
+        or _extract_file_content(task)
+        or "google drive" in lowered
+        or re.search(r"(?i)\b(?:write|create|save|maak|schrijf|sla)\s+(?:een\s+|a\s+)?(?:file|bestand)\b", task)
+    )
+    if not explicit_file_action:
+        return []
+
+    content = _extract_file_content(task) or f"Created by {agent} for Ouroboros job {job.job_id}.\n\nTask:\n{task.strip()}\n"
+    drive_requested = "google drive" in lowered or re.search(r"\bdrive\b", lowered) is not None
+    calls: list[dict[str, Any]] = []
+
+    if path or not drive_requested:
+        target_path = path or f"out/agent_runtime/{agent}_{job.job_id[-8:]}_output.txt"
+        calls.append(
+            {
+                "tool": "write_file",
+                "args": {"path": target_path, "content": content},
+                "reason": "De opdracht vraagt om een bestand lokaal te maken/schrijven.",
+            }
+        )
+        if drive_requested:
+            calls.append(
+                {
+                    "tool": "drive_upload_file",
+                    "args": {"path": target_path},
+                    "reason": "De opdracht vraagt om het bestand ook naar Google Drive te bewaren.",
+                }
+            )
+    elif drive_requested:
+        calls.append(
+            {
+                "tool": "drive_upload_text",
+                "args": {"name": f"{agent}-{job.job_id[-8:]}-output.txt", "content": content},
+                "reason": "De opdracht vraagt om tekst als Google Drive-bestand te bewaren.",
+            }
+        )
+    return calls
+
+
+def _extract_first_url(text: str) -> str:
+    candidates = [match.group(0).strip(".,;:)]}\"'") for match in URLISH_RE.finditer(text)]
+    for candidate in candidates:
+        if not candidate or candidate.lower().endswith((".md", ".py", ".json")):
+            continue
+        if not re.match(r"(?i)^https?://", candidate):
+            candidate = "https://" + candidate.lstrip("/")
+        parsed = urllib.parse.urlparse(candidate)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return urllib.parse.urlunparse(parsed)
+    return ""
+
+
+def _extract_gmail_query(text: str) -> str:
+    patterns = (
+        r"(?i)\b(?:gmail\s+)?(?:query|q|zoekterm|search)\s*[:=]\s*([^\n;]+)",
+        r"(?i)\b(?:zoek|search)\s+(?:gmail|mail)\s+(?:naar|for)\s+([^\n;]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return _clean_gmail_query(match.group(1))
+    gmail_tokens = re.findall(r"\b(?:from|to|subject|label|in|category|newer_than|older_than):[^\s;]+", text, flags=re.IGNORECASE)
+    if gmail_tokens:
+        return " ".join(gmail_tokens)
+    return ""
+
+
+def _clean_gmail_query(value: str) -> str:
+    text = str(value or "").strip().strip("\"'")
+    text = re.split(r"(?i)\s+\b(?:label|archive|archiveer|move|verplaats|naar map|to folder|max|limit)\b", text, maxsplit=1)[0]
+    return text.strip().strip("\"'")[:512]
+
+
+def _extract_label_name(text: str) -> str:
+    patterns = (
+        r"(?i)\b(?:label|map|folder)\s*(?:as|als|naar|to|:)?\s*['\"]([^'\"]+)['\"]",
+        r"(?i)\b(?:label|map|folder)\s*(?:as|als|naar|to|:)\s*([A-Za-z0-9 _./-]{2,80})",
+        r"(?i)\b(?:organiseer|organize|sort|sorteer).{0,40}\b(?:als|as|naar|to)\s*['\"]([^'\"]+)['\"]",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            label = str(match.group(1) or "").strip().strip("/").rstrip(".,;")
+            if label:
+                return label[:225]
+    return ""
+
+
+def _extract_int_near(text: str, names: tuple[str, ...], *, default: int) -> int:
+    for name in names:
+        match = re.search(rf"(?i)\b{name}\s*[:=]?\s*(\d{{1,2}})\b", text)
+        if match:
+            try:
+                return max(1, min(int(match.group(1)), 50))
+            except ValueError:
+                pass
+    return max(1, min(int(default), 50))
+
+
+def _extract_file_path(text: str) -> str:
+    quoted = re.search(r"['\"]([^'\"]+\.(?:txt|md|json|csv|html|py|log))['\"]", text, flags=re.IGNORECASE)
+    if quoted:
+        return quoted.group(1).strip()
+    matches = [match.group(0).strip(".,;:)]}\"'") for match in FILE_PATH_RE.finditer(text)]
+    for match in matches:
+        if match and not match.startswith(("http://", "https://")):
+            return match
+    return ""
+
+
+def _extract_file_content(text: str) -> str:
+    patterns = (
+        r"(?is)\b(?:content|inhoud)\s*[:=]\s*(.+)$",
+        r"(?is)\b(?:with content|met inhoud)\s+(.+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return str(match.group(1) or "").strip().strip("\"'")
+    return ""
+
+
+def _explicit_tool_calls_from_text(text: str) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for line in str(text or "").splitlines():
+        if "OUROBOROS_TOOL_CALL" not in line:
+            continue
+        _, _, raw = line.partition("OUROBOROS_TOOL_CALL")
+        raw = raw.strip().lstrip(":").strip()
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("tool"):
+            calls.append({"tool": str(payload.get("tool")), "args": dict(payload.get("args") or {}), "reason": "Expliciete OUROBOROS_TOOL_CALL uit agentoutput."})
+    return calls
+
+
+def _dedupe_tool_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for call in calls:
+        tool = str(call.get("tool") or "")
+        args = dict(call.get("args") or {})
+        key = json.dumps({"tool": tool, "args": args}, sort_keys=True, ensure_ascii=False)
+        if not tool or key in seen:
+            continue
+        seen.add(key)
+        out.append({"tool": tool, "args": args, "reason": str(call.get("reason") or "")})
+    return out
+
+
+def _job_approval(job: JobRecord) -> str:
+    metadata = job.metadata if isinstance(job.metadata, dict) else {}
+    approval = str(metadata.get("approval") or "").strip()
+    if approval == APPROVAL_PHRASE or str(metadata.get("approval_status") or "").strip() == "approved":
+        return APPROVAL_PHRASE
+    return approval
+
+
+def _public_tool_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{"tool": str(call.get("tool") or ""), "args": _public_tool_args(dict(call.get("args") or {})), "reason": _clip(redact(call.get("reason", "")), 500)} for call in calls]
+
+
+def _public_tool_args(args: dict[str, Any]) -> dict[str, Any]:
+    public: dict[str, Any] = {}
+    for key, value in args.items():
+        if str(key).lower() in {"approval"}:
+            public[key] = "[APPROVED]" if str(value).strip() == APPROVAL_PHRASE else "[MISSING]"
+        elif any(marker in str(key).lower() for marker in ("token", "secret", "password", "key")):
+            public[key] = "[REDACTED]"
+        elif isinstance(value, str):
+            public[key] = _clip(redact(value), 1200)
+        else:
+            public[key] = value
+    return public
+
+
+def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        encoded = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        decoded = json.loads(redact(encoded))
+        return decoded if isinstance(decoded, dict) else {"value": decoded}
+    except Exception:
+        return {"status": str(result.get("status") or "unknown"), "reason": _clip(redact(result.get("reason", "")), 1000)}
+
+
+def _changed_files_from_tool_result(tool: str, result: dict[str, Any]) -> list[str]:
+    if tool != "write_file":
+        return []
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+    path = str((nested or raw.get("result") or {}).get("path") or "")
+    return [path] if path else []
+
+
+def _tool_loop_summary(agent: str, results: list[dict[str, Any]]) -> str:
+    lines = [f"{agent} real-tool loop:"]
+    for index, item in enumerate(results, start=1):
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        tool = item.get("tool")
+        status = result.get("status")
+        line = f"{index}. {tool}: {status}"
+        reason = str(result.get("reason") or "").strip()
+        if reason:
+            line += f" - {_clip(reason, 260)}"
+        lines.append(line)
+        for key in ("url", "path", "operation", "modified_count", "count"):
+            value = result.get(key)
+            if value not in (None, "", []):
+                lines.append(f"   {key}: {_clip(value, 500)}")
+        if isinstance(result.get("result"), dict):
+            nested = result["result"]
+            for key in ("path", "bytes_written", "modified_count", "count"):
+                value = nested.get(key)
+                if value not in (None, "", []):
+                    lines.append(f"   {key}: {_clip(value, 500)}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _write_job_output(job: JobRecord, text: str) -> None:
+    if not job.output_file:
+        return
+    try:
+        Path(job.output_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(job.output_file).write_text(str(text or ""), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def read_workspace_status(cwd: str) -> list[dict[str, str]] | None:
@@ -701,14 +1174,57 @@ def terminate_process(proc: Any) -> None:
             pass
 
 
+def _parse_json_object(text: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    if not raw.startswith("{"):
+        return {}
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _cli_error_text(payload: dict[str, Any]) -> str:
+    if not payload:
+        return ""
+    error = str(payload.get("error") or payload.get("message") or "").strip()
+    if error:
+        return error
+    status = str(payload.get("status") or "").strip().lower()
+    output = str(payload.get("output") or "").strip()
+    if status in {"failed", "error"} and output:
+        return output
+    return ""
+
+
+def _result_reason(category: str, cli_error: str, timed_out: bool, cancelled: bool) -> str:
+    if cancelled:
+        return "Job was cancelled."
+    if timed_out:
+        return "Job timed out."
+    if category == "auth_missing":
+        return cli_error or "Agent CLI authentication is missing."
+    if category in {"binary_missing", "spawn_failed", "exec_error"}:
+        return cli_error
+    return ""
+
+
 def classify_result(status: str, exit_code: int | None, stdout: str, stderr: str, timed_out: bool) -> str:
-    if status == "completed":
-        return "ok"
     if timed_out:
         return "timeout"
     blob = f"{stdout}\n{stderr}".lower()
-    if "api key" in blob or "auth" in blob or "login" in blob or "unauthorized" in blob:
+    if (
+        "api key" in blob
+        or "auth set" in blob
+        or "not authenticated" in blob
+        or "login" in blob
+        or "unauthorized" in blob
+        or "failed to send message" in blob
+    ):
         return "auth_missing"
+    if status == "completed":
+        return "ok"
     if "command not found" in blob or "no such file" in blob:
         return "binary_missing"
     if exit_code is None:
@@ -783,6 +1299,21 @@ def _parse_node_major(version: str) -> int:
 def _job_prompt(job: JobRecord) -> str:
     prompt = _metadata_value(job, "prompt")
     return prompt or job.task
+
+
+def _job_prompt_with_tool_protocol(agent: str, job: JobRecord) -> str:
+    base = _job_prompt(job)
+    return (
+        f"{base}\n\n"
+        "Ouroboros real-tool protocol:\n"
+        "- Als je echte side-effects nodig hebt, geef per regel exact dit formaat terug:\n"
+        "  OUROBOROS_TOOL_CALL {\"tool\":\"browser_open_url\",\"args\":{\"url\":\"https://www.ns.nl/\"}}\n"
+        "  OUROBOROS_TOOL_CALL {\"tool\":\"gmail_manage\",\"args\":{\"query\":\"in:inbox newer_than:30d\",\"label\":\"Ouroboros/Organized\",\"max_results\":5}}\n"
+        "  OUROBOROS_TOOL_CALL {\"tool\":\"write_file\",\"args\":{\"path\":\"out/agent_runtime/note.txt\",\"content\":\"tekst\"}}\n"
+        "- Beschikbare tools: browser_open_url, gmail_search, gmail_manage, write_file, drive_upload_file, drive_upload_text.\n"
+        "- De host runtime voegt Akkoord alleen toe als de slash/API gate al goedgekeurd is.\n"
+        f"- Agent label: {agent}.\n"
+    )
 
 
 def _metadata_value(job: JobRecord, key: str) -> str:

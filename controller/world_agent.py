@@ -13,6 +13,8 @@ import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -527,6 +529,77 @@ def ask_grok_via_world_agent(
     return get_world_agent().ask_grok(question, approval=approval, open_tab=open_tab, submit=submit)
 
 
+def open_url_via_world_agent(
+    url: str,
+    *,
+    approval: object = None,
+    prefer_bridge: bool = True,
+) -> dict[str, Any]:
+    """Open one approved http(s) URL in the user's normal browser.
+
+    This deliberately uses the host/default browser instead of Playwright so a
+    tab remains visible after the call returns.
+    """
+
+    normalized = _normalize_browser_url(url)
+    if not normalized:
+        return _world_payload(
+            status="blocked",
+            action_id=uuid.uuid4().hex,
+            question=str(url or ""),
+            response="",
+            reason="Geef exact een http(s)-URL of domein op.",
+            next_action="Voorbeeld: https://www.ns.nl/",
+            extra={"action": "browser_open_url", "tab_opened": False, "browser_action_performed": False},
+        )
+    if not _has_exact_approval(approval):
+        return _world_payload(
+            status="approval_required",
+            action_id=uuid.uuid4().hex,
+            question=normalized,
+            response="",
+            reason="Browser-open vereist exact Akkoord.",
+            next_action="Roep opnieuw aan met approval='Akkoord' om een zichtbare tab te openen.",
+            extra={
+                "action": "browser_open_url",
+                "url": normalized,
+                "approval_required": True,
+                "approval_phrase": DEFAULT_APPROVAL_PHRASE,
+                "tab_opened": False,
+                "browser_action_performed": False,
+            },
+        )
+    if prefer_bridge:
+        bridge = _bridge_request("POST", "/browser/open-url", {"url": normalized, "approval": approval or ""}, timeout=10)
+        if bridge:
+            bridge["via_bridge"] = True
+            return bridge
+
+    action_id = uuid.uuid4().hex
+    opened = _open_url_in_default_browser(normalized)
+    status = "opened" if opened else "failed"
+    result = _world_payload(
+        status=status,
+        action_id=action_id,
+        question=normalized,
+        response=f"Browser tab geopend: {normalized}" if opened else "",
+        reason="" if opened else "Default browser kon de URL niet openen.",
+        next_action="De tab blijft open in de normale browser." if opened else "Controleer DISPLAY/default browser op de host.",
+        frontend_action={"type": "open_url", "url": normalized, "target": "_blank", "agent": "world_agent"},
+        extra={
+            "action": "browser_open_url",
+            "url": normalized,
+            "tab_opened": opened,
+            "browser_action_performed": opened,
+        },
+    )
+    try:
+        get_world_agent().action_log.append(result)
+    except Exception:
+        pass
+    return result
+
+
 def search_world_memory(query: str, *, limit: int = 5, prefer_bridge: bool = False) -> dict[str, Any]:
     payload = {"query": query, "limit": limit}
     if prefer_bridge:
@@ -785,9 +858,31 @@ def _answer_excerpt(answer: str, reason: str = "") -> str:
 
 def _open_url_in_default_browser(url: str) -> bool:
     try:
-        return bool(webbrowser.open(url, new=2, autoraise=True))
+        if webbrowser.open(url, new=2, autoraise=True):
+            return True
     except Exception:
-        return False
+        pass
+    for command in (("xdg-open", url), ("gio", "open", url)):
+        if not shutil.which(command[0]):
+            continue
+        try:
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _normalize_browser_url(url: object) -> str:
+    raw = str(url or "").strip().strip("<>\"'")
+    if not raw or any(ch in raw for ch in "\r\n\t"):
+        return ""
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw):
+        raw = "https://" + raw.lstrip("/")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urllib.parse.urlunparse(parsed)
 
 
 def _bridge_request(method: str, path: str, payload: Mapping[str, Any] | None, timeout: float) -> dict[str, Any]:

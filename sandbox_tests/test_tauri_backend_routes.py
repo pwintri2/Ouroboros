@@ -136,6 +136,7 @@ class TestTauriBackendRoutes(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.client.close()
         sys.modules.pop("controller.main", None)
         if cls.previous_main is not None:
             sys.modules["controller.main"] = cls.previous_main

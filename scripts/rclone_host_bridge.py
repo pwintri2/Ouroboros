@@ -48,6 +48,7 @@ from controller.host_sensory_adapter import get_host_sensory_status, snapshot_ho
 from controller.ouroboros_self_context import get_ruflo_status  # noqa: E402
 from controller.slash_agent_router import execute_host_agent_command  # noqa: E402
 from controller.world_agent import ask_grok_via_world_agent, recent_world_actions, search_world_memory, world_agent_status  # noqa: E402
+from controller.world_agent import open_url_via_world_agent  # noqa: E402
 from controller.external_capabilities import external_capabilities_status  # noqa: E402
 from controller.project_context import (  # noqa: E402
     get_changed_files,
@@ -259,6 +260,15 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
                 approval=str(body.get("approval") or ""),
                 open_tab=bool(body.get("open_tab", True)),
                 submit=bool(body.get("submit", True)),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "approval_required" else 200)
+            return
+        if self.path == "/browser/open-url":
+            result = open_url_via_world_agent(
+                str(body.get("url") or ""),
+                approval=str(body.get("approval") or ""),
                 prefer_bridge=False,
             )
             result["via_bridge"] = False

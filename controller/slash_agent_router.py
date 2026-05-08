@@ -181,6 +181,7 @@ def execute_host_agent_command(
             timeout_seconds=timeout_seconds,
             started=started,
             bridge_result=bridged,
+            approval=effective_approval,
         )
     if agent == "ruflo":
         if _allow_inline_host_agents():
@@ -728,6 +729,7 @@ def _submit_ecosystem_agent_runtime(
     timeout_seconds: int,
     started: float | None = None,
     bridge_result: dict[str, Any] | None = None,
+    approval: str = "",
 ) -> dict[str, Any]:
     started = started or time.time()
     try:
@@ -766,7 +768,13 @@ def _submit_ecosystem_agent_runtime(
             agent=agent,
             task=task,
             timeout_seconds=int(timeout_seconds or 240),
-            metadata={"prompt": _agent_prompt(agent.title(), task), "slash_agent": agent, "runtime_status": runtime_status},
+            metadata={
+                "prompt": _agent_prompt(agent.title(), task),
+                "slash_agent": agent,
+                "runtime_status": runtime_status,
+                "approval": _approval_effective(approval),
+                "approval_status": "approved" if _approval_effective(approval) == APPROVAL_PHRASE else "missing",
+            },
         )
     except Exception as exc:
         return _agent_result(agent, f"{agent}_runtime", "error", started, reason=str(exc)[:500], ecosystem_status=runtime_status)

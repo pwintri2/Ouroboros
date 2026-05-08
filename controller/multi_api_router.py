@@ -34,6 +34,7 @@ else:
     HTTPX_HTTP_ERROR = httpx.HTTPError
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 JsonDict = dict[str, Any]
 AsyncClientFactory = Callable[[], Any]

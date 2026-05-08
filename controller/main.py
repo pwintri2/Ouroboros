@@ -2605,10 +2605,13 @@ def _execute_ouroboros_create_via_ollama_api(plan: dict[str, Any]) -> dict[str, 
             json=create_payload,
             timeout=180,
         )
-        text = response.text[-12000:]
-        if response.ok:
-            return {"status": "success", "stdout": text or f"Ollama model '{OUROBOROS_MODEL_NAME}' aangemaakt.", "stderr": ""}
-        return {"status": "error", "stdout": "", "stderr": text or f"Ollama create status {response.status_code}"}
+        try:
+            text = response.text[-12000:]
+            if response.ok:
+                return {"status": "success", "stdout": text or f"Ollama model '{OUROBOROS_MODEL_NAME}' aangemaakt.", "stderr": ""}
+            return {"status": "error", "stdout": "", "stderr": text or f"Ollama create status {response.status_code}"}
+        finally:
+            response.close()
     except Exception as exc:
         return {"status": "error", "stdout": "", "stderr": f"Ollama create API mislukt: {exc}"}
 
