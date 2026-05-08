@@ -38,6 +38,11 @@ try:
 except Exception:
     _ingest_nexus_event = None
 
+try:
+    from controller.memory_event_router import record_trigger_action as _record_trigger_action_event
+except Exception:
+    _record_trigger_action_event = None
+
 
 AdapterFn = Callable[[JobRecord, EventLog, Callable[[dict[str, Any]], None]], dict[str, Any]]
 
@@ -155,6 +160,20 @@ class AgentOrchestrator:
         self.store.upsert(record)
         log = EventLog(record.events_file)
         log.append("created", {"agent": agent_key, "task_chars": len(cleaned_task), "job_id": job_id})
+        if _record_trigger_action_event is not None:
+            try:
+                _record_trigger_action_event(
+                    trigger="agent_runtime_job_created",
+                    action=f"{agent_key}.submit",
+                    route="agent_runtime",
+                    status="queued",
+                    payload={"task": cleaned_task, "metadata": record.metadata},
+                    approval_required=bool(record.metadata.get("approval_status") == "approved" or record.metadata.get("approval")),
+                    approval_status=str(record.metadata.get("approval_status") or "not_required"),
+                    source_trace={"job_id": job_id, "agent": agent_key, "events_file": record.events_file},
+                )
+            except Exception:
+                pass
         if esoteric_context:
             log.append("ouroboros_esoteric_context", esoteric_context)
         if nexus_created:
@@ -345,6 +364,27 @@ class AgentOrchestrator:
                 }
             )
         log.append("status", {"status": updates["status"], "finished_at": finished_at, "exit_code": updates.get("exit_code")})
+        if _record_trigger_action_event is not None:
+            try:
+                _record_trigger_action_event(
+                    trigger="agent_runtime_job_finished",
+                    action=f"{job.agent}.finish",
+                    route="agent_runtime",
+                    status=str(updates["status"]),
+                    payload={"task": job.task, "metadata": job.metadata},
+                    result={
+                        "status": updates["status"],
+                        "exit_code": updates.get("exit_code"),
+                        "reason": result.get("reason"),
+                        "category": result.get("category"),
+                        "fake_success": result.get("fake_success", False),
+                    },
+                    approval_required=bool(job.metadata.get("approval_status") == "approved" or job.metadata.get("approval")),
+                    approval_status=str(job.metadata.get("approval_status") or "not_required"),
+                    source_trace={"job_id": job.job_id, "agent": job.agent, "result_file": job.result_file},
+                )
+            except Exception:
+                pass
         if _ingest_nexus_event is not None:
             try:
                 _ingest_nexus_event(

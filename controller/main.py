@@ -32,6 +32,12 @@ except Exception:
         return {"status": "error", "available": False, "reason": "controller.chroma_runtime unavailable", "fake_success": False}
 
 try:
+    from controller.memory_event_router import trigger_action_status
+except Exception:
+    def trigger_action_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "error", "collection": "wintrip_trigger_actions_11d", "reason": "controller.memory_event_router unavailable", "fake_success": False}
+
+try:
     from controller.ollama_client import OllamaClient
     from controller.router import AIRouter
     from controller.mail_executor import MailExecutor
@@ -51,8 +57,33 @@ except ImportError:
 try:
     from controller.orchestrator import should_use_agentic_processor
 except Exception:
-    def should_use_agentic_processor(prompt: object) -> bool:
+    def should_use_agentic_processor(prompt: object, *, role: object = "", approval: object = "") -> bool:
         return False
+
+try:
+    from controller.agentic_intent import classify_agentic_intent
+except Exception:
+    def classify_agentic_intent(prompt: object, *, role: object = "", approval: object = "") -> Any:
+        return SimpleNamespace(
+            route="agentic_processor" if should_use_agentic_processor(prompt, role=role, approval=approval) else "normal_chat",
+            is_agentic=should_use_agentic_processor(prompt, role=role, approval=approval),
+            is_slash_alias=str(prompt or "").strip().startswith("/"),
+            approval_present=str(approval or "").strip() == APPROVAL_PHRASE,
+            reason="fallback_classifier",
+            normalized_prompt=str(prompt or "").strip(),
+            slash_agent="",
+            as_dict=lambda: {
+                "route": "fallback",
+                "is_agentic": should_use_agentic_processor(prompt, role=role, approval=approval),
+                "fake_success": False,
+            },
+        )
+
+try:
+    from controller.runtime_doctor import runtime_doctor_payload
+except Exception:
+    def runtime_doctor_payload(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "failed", "blockers": ["controller.runtime_doctor unavailable"], "checks": {}, "fake_success": False}
 
 load_dotenv()
 
@@ -136,6 +167,25 @@ except Exception:
 
     def record_chat_turn(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"status": "unavailable", "stored": False, "fake_success": False}
+
+try:
+    from controller.approval_resume import (
+        APPROVAL_PHRASE as APPROVAL_RESUME_PHRASE,
+        consume_pending_approval,
+        extract_inline_approval,
+        store_pending_from_result,
+    )
+except Exception:
+    APPROVAL_RESUME_PHRASE = "Akkoord"
+
+    def consume_pending_approval(*_args: Any, **_kwargs: Any) -> dict[str, Any] | None:
+        return None
+
+    def extract_inline_approval(prompt: object, **_kwargs: Any) -> dict[str, Any]:
+        return {"approval": "", "prompt": str(prompt or ""), "resume_only": False}
+
+    def store_pending_from_result(*_args: Any, **_kwargs: Any) -> dict[str, Any] | None:
+        return None
 
 try:
     from controller.slash_agent_router import handle_slash_command, slash_command_catalog
@@ -962,6 +1012,24 @@ async def ouroboros_self_context_status():
 async def ouroboros_chroma_status():
     return chroma_runtime_status()
 
+@app.get("/api/ouroboros/trigger-actions/status")
+async def ouroboros_trigger_actions_status():
+    return trigger_action_status()
+
+@app.get("/api/ouroboros/runtime/doctor")
+async def ouroboros_runtime_doctor(
+    backend_url: str | None = None,
+    preview_url: str | None = None,
+    bridge_url: str | None = None,
+):
+    return await asyncio.to_thread(
+        runtime_doctor_payload,
+        backend_url=backend_url,
+        preview_url=preview_url,
+        bridge_url=bridge_url,
+        include_http_backend_check=False,
+    )
+
 @app.get("/api/cockpit/api-keys")
 async def cockpit_api_keys():
     return _api_key_status_payload()
@@ -988,6 +1056,8 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "self_training_step": {"method": "POST", "path": "/api/ouroboros/self-training/step"},
         "self_context": {"method": "GET", "path": "/api/ouroboros/self-context/status"},
         "chroma_status": {"method": "GET", "path": "/api/ouroboros/chroma/status"},
+        "trigger_actions_status": {"method": "GET", "path": "/api/ouroboros/trigger-actions/status"},
+        "runtime_doctor": {"method": "GET", "path": "/api/ouroboros/runtime/doctor"},
         "esoteric_status": {"method": "GET", "path": "/api/ouroboros/esoteric/status"},
         "akashic_recent": {"method": "GET", "path": "/api/ouroboros/esoteric/akashic/recent"},
         "living_ouroboros_status": {"method": "GET", "path": "/api/ouroboros/esoteric/living/status"},
@@ -1268,7 +1338,10 @@ def _agentic_model_planner(provider: str, model: str, history: list[dict[str, st
 
     if provider == "ollama":
         def local_planner(*, prompt: str, system_prompt: str | None = None, model: str | None = None, history: list[dict[str, str]] | None = None) -> str:
-            return str(ollama.chat(prompt, model=model or _default_cockpit_model("ollama", None), system_prompt=system_prompt, history=history or []))
+            try:
+                return str(ollama.chat(prompt, model=model or _default_cockpit_model("ollama", None), system_prompt=system_prompt, history=history or []))
+            except Exception:
+                return ""
 
         return local_planner
 
@@ -1299,12 +1372,25 @@ def _agentic_model_planner(provider: str, model: str, history: list[dict[str, st
 def _should_route_agentic_chat(req: CockpitChatRequest, provider: str) -> bool:
     if not callable(getattr(orchestrator, "agentic_process", None)):
         return False
-    role = str(req.role or "").strip().lower()
-    if role in {"agentic", "agentic_core", "agent"}:
-        return True
-    if str(req.prompt or "").strip().startswith("/"):
-        return False
-    return bool(should_use_agentic_processor(req.prompt))
+    intent = classify_agentic_intent(req.prompt, role=req.role or "", approval=req.approval or "")
+    return bool(getattr(intent, "is_agentic", False))
+
+
+def _copy_cockpit_request(req: CockpitChatRequest, update: dict[str, Any]) -> CockpitChatRequest:
+    if hasattr(req, "model_copy"):
+        return req.model_copy(update=update)
+    return req.copy(update=update)
+
+
+def _rebuild_chat_context(req: CockpitChatRequest, provider: str, model: str) -> dict[str, Any]:
+    return build_chat_context(
+        prompt=req.prompt,
+        provider=provider,
+        model=model,
+        system_prompt=req.system_prompt,
+        history=req.history or [],
+        conversation_id=req.conversation_id,
+    )
 
 
 def _stored_api_keys() -> dict[str, str]:
@@ -1493,19 +1579,75 @@ def _ouroboros_runtime_chat_payload(
 
 
 async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
+    inline_approval = extract_inline_approval(req.prompt, phrase=APPROVAL_PHRASE)
+    if inline_approval.get("approval") == APPROVAL_PHRASE and inline_approval.get("prompt"):
+        req = _copy_cockpit_request(
+            req,
+            {
+                "prompt": str(inline_approval.get("prompt") or ""),
+                "approval": APPROVAL_PHRASE,
+            },
+        )
     requested_provider, provider = _normalize_cockpit_provider(req.provider)
     model = _default_cockpit_model(provider, req.model)
     tools = _requested_tool_payload(req, provider)
     timeout_seconds = _cockpit_chat_timeout_seconds()
     slash_timeout_seconds = _cockpit_slash_dispatch_timeout_seconds()
-    chat_context = build_chat_context(
-        prompt=req.prompt,
-        provider=provider,
-        model=model,
-        system_prompt=req.system_prompt,
-        history=req.history or [],
-        conversation_id=req.conversation_id,
-    )
+    chat_context = _rebuild_chat_context(req, provider, model)
+    if inline_approval.get("approval") == APPROVAL_PHRASE and inline_approval.get("resume_only") and not str(req.approval or "").strip():
+        pending = consume_pending_approval(chat_context.get("conversation_id"))
+        if pending:
+            req = _copy_cockpit_request(
+                req,
+                {
+                    "prompt": str(pending.get("prompt") or ""),
+                    "approval": APPROVAL_PHRASE,
+                    "provider": str(pending.get("requested_provider") or req.provider or provider),
+                    "model": str(pending.get("model") or req.model or model),
+                },
+            )
+            requested_provider, provider = _normalize_cockpit_provider(req.provider)
+            model = _default_cockpit_model(provider, req.model)
+            tools = _requested_tool_payload(req, provider)
+            chat_context = _rebuild_chat_context(req, provider, model)
+            chat_context["approval_resume"] = {
+                "status": "resumed",
+                "conversation_id": pending.get("conversation_id"),
+                "route": pending.get("route"),
+                "blocked_tools": pending.get("blocked_tools") or [],
+                "fake_success": False,
+            }
+        else:
+            return _with_cockpit_self_context(
+                {
+                    "status": "success",
+                    "provider": provider,
+                    "requested_provider": requested_provider,
+                    "model": model,
+                    "route": "approval_resume",
+                    "local_only": provider == "ollama",
+                    "llm_provider_used": False,
+                    "response": (
+                        "Ik heb `Akkoord` ontvangen, maar er staat geen geblokkeerde actie klaar. "
+                        "Geef de opdracht erbij, bijvoorbeeld: `Akkoord open ns.nl`."
+                    ),
+                    "fake_success": False,
+                },
+                chat_context,
+                provider,
+                model,
+                include_living_echo=False,
+            )
+    intent = classify_agentic_intent(req.prompt, role=req.role or "", approval=req.approval or "")
+    try:
+        chat_context["agentic_intent"] = intent.as_dict()
+    except Exception:
+        chat_context["agentic_intent"] = {
+            "route": getattr(intent, "route", "unknown"),
+            "is_agentic": bool(getattr(intent, "is_agentic", False)),
+            "reason": getattr(intent, "reason", ""),
+            "fake_success": False,
+        }
     try:
         slash_result = await asyncio.wait_for(
             asyncio.to_thread(
@@ -2012,6 +2154,18 @@ def _with_cockpit_self_context(
     if living_echo:
         result["living_echo"] = living_echo
     result.setdefault("source_trace", _cockpit_source_trace(result, provider=provider, model=model))
+    if chat_context.get("approval_resume"):
+        result["approval_resume"] = chat_context.get("approval_resume")
+    pending = store_pending_from_result(
+        result,
+        conversation_id=chat_context.get("conversation_id"),
+        prompt=chat_context.get("prompt") or "",
+        provider=provider,
+        model=model,
+        requested_provider=result.get("requested_provider") or provider,
+    )
+    if pending:
+        result["pending_approval"] = pending
     result["conversation_id"] = chat_context.get("conversation_id")
     if status == "success" and response.strip():
         try:

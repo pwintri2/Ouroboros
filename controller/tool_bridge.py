@@ -12,25 +12,41 @@ import threading
 import time
 from typing import Any
 
-from controller.safe_shell import run_safe_shell
+from controller.computer_actions import (
+    APPROVAL_PHRASE,
+    COMPUTER_ACTION_APPROVAL_TOOLS,
+    COMPUTER_ACTION_SIDE_EFFECT_TOOLS,
+    COMPUTER_ACTION_TOOLS,
+    computer_actions_status,
+    is_computer_action,
+    redact_secrets,
+    run_computer_action,
+)
 from ouroboros_esoteric.light_language import LightLanguageCompiler
 from ouroboros_esoteric.quantum_corruption_nexus import get_quantum_corruption_nexus
 
+try:
+    from controller.memory_event_router import record_trigger_action as _record_trigger_action_event
+except Exception:
+    _record_trigger_action_event = None
 
-APPROVAL_PHRASE = "Akkoord"
-TOOL_BRIDGE_TOOLS: tuple[str, ...] = (
-    "read_file",
-    "write_file",
-    "apply_patch",
-    "run_command",
-    "browser_open_url",
+
+LEGACY_TOOL_BRIDGE_TOOLS: tuple[str, ...] = (
     "gmail_search",
     "gmail_manage",
     "drive_upload_file",
     "drive_upload_text",
 )
-WRITE_TOOLS: frozenset[str] = frozenset(("write_file", "apply_patch", "run_command", "gmail_manage", "drive_upload_file", "drive_upload_text"))
-APPROVAL_TOOLS: frozenset[str] = frozenset((*WRITE_TOOLS, "browser_open_url", "gmail_search"))
+TOOL_BRIDGE_TOOLS: tuple[str, ...] = tuple(dict.fromkeys((*COMPUTER_ACTION_TOOLS, *LEGACY_TOOL_BRIDGE_TOOLS)))
+WRITE_TOOLS: frozenset[str] = frozenset(
+    (
+        *COMPUTER_ACTION_SIDE_EFFECT_TOOLS,
+        "gmail_manage",
+        "drive_upload_file",
+        "drive_upload_text",
+    )
+)
+APPROVAL_TOOLS: frozenset[str] = frozenset((*COMPUTER_ACTION_APPROVAL_TOOLS, *WRITE_TOOLS, "gmail_search"))
 
 
 class ToolBridge:
@@ -61,7 +77,7 @@ class ToolBridge:
                 tool=clean_tool or "unknown",
                 status=firewall["status"],
                 reason=firewall["reason"],
-                args=payload,
+                args=redact_secrets(payload),
             )
             _notify_living_tool_event(
                 {
@@ -72,15 +88,25 @@ class ToolBridge:
                 }
             )
             self.last_result = result
+            _record_tool_bridge_event(
+                tool=clean_tool or "unknown",
+                args=payload,
+                result=result,
+                status=firewall["status"],
+                approval_required=bool(firewall.get("approval_required") or clean_tool in APPROVAL_TOOLS),
+                approval_status="pending_philip_akkoord" if firewall.get("approval_required") else "rejected",
+                firewall=firewall,
+            )
             return result
 
         try:
             result = self._dispatch(clean_tool, payload)
         except Exception as exc:
             result = {"status": "error", "stdout": "", "stderr": str(exc), "reason": str(exc), "result": {}}
+        result = redact_secrets(result)
 
         status = str(result.get("status") or "unknown")
-        wrapped = {
+        wrapped = redact_secrets({
             "status": status,
             "tool": clean_tool,
             "result": result.get("result") if isinstance(result, dict) else result,
@@ -91,13 +117,14 @@ class ToolBridge:
             "raw": result,
             "duration_seconds": round(time.time() - started, 3),
             "fake_success": False,
-        }
+            "secrets_returned": False,
+        })
         if status in {"blocked", "rejected", "error"}:
             get_quantum_corruption_nexus().record_tool_firewall(
                 tool=clean_tool,
                 status=status,
                 reason=wrapped["reason"] or f"{clean_tool} returned {status}",
-                args=payload,
+                args=redact_secrets(payload),
             )
             _notify_living_tool_event(
                 {
@@ -108,18 +135,31 @@ class ToolBridge:
                 }
             )
         self.last_result = wrapped
+        _record_tool_bridge_event(
+            tool=clean_tool,
+            args=payload,
+            result=wrapped,
+            status=status,
+            approval_required=clean_tool in APPROVAL_TOOLS,
+            approval_status="approved" if clean_tool in APPROVAL_TOOLS and str(payload.get("approval") or "").strip() == APPROVAL_PHRASE else ("not_required" if clean_tool not in APPROVAL_TOOLS else "pending_philip_akkoord"),
+            firewall=firewall,
+        )
         return wrapped
 
     def status(self) -> dict[str, Any]:
-        return {
+        return redact_secrets({
             "status": "online",
             "tools": list(TOOL_BRIDGE_TOOLS),
             "write_tools_require_approval": list(WRITE_TOOLS),
             "approval_required_for": list(APPROVAL_TOOLS),
+            "computer_actions": computer_actions_status(),
+            "legacy_tools": list(LEGACY_TOOL_BRIDGE_TOOLS),
             "firewall_frequency_hz": 528.0,
             "last_result": self.last_result,
+            "secret_redaction": "enabled",
+            "secrets_returned": False,
             "fake_success": False,
-        }
+        })
 
     def _firewall(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         if tool not in TOOL_BRIDGE_TOOLS:
@@ -151,39 +191,8 @@ class ToolBridge:
         return {"status": "accepted", "reason": "528Hz firewall accepted.", "resonant": True, "frequency": frequency}
 
     def _dispatch(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        from controller import roo_tools
-
-        if tool == "read_file":
-            return roo_tools.read_file(
-                path=str(args.get("path") or ""),
-                offset=_int_or_none(args.get("offset")),
-                limit=_int_or_none(args.get("limit")),
-            )
-        if tool == "write_file":
-            return roo_tools.write_file(
-                path=str(args.get("path") or ""),
-                content=str(args.get("content") or ""),
-                approval=str(args.get("approval") or ""),
-            )
-        if tool == "apply_patch":
-            return roo_tools.apply_patch(
-                patch=str(args.get("patch") or ""),
-                approval=str(args.get("approval") or ""),
-            )
-        if tool == "run_command":
-            return run_safe_shell(
-                str(args.get("command") or ""),
-                approval=str(args.get("approval") or ""),
-                timeout=max(1, min(_int(args.get("timeout"), default=20), 30)),
-            )
-        if tool == "browser_open_url":
-            from controller.world_agent import open_url_via_world_agent
-
-            return open_url_via_world_agent(
-                str(args.get("url") or ""),
-                approval=str(args.get("approval") or ""),
-                prefer_bridge=True,
-            )
+        if is_computer_action(tool):
+            return run_computer_action(tool, args)
         if tool == "gmail_search":
             from controller.google_workspace_adapter import GoogleWorkspaceAdapter
 
@@ -262,7 +271,7 @@ def _firewall_payload(tool: str, args: dict[str, Any]) -> dict[str, Any]:
             scrubbed[key] = value[:1000]
         else:
             scrubbed[key] = value
-    return scrubbed
+    return redact_secrets(scrubbed)
 
 
 def _float(value: Any, *, default: float) -> float:
@@ -290,5 +299,39 @@ def _notify_living_tool_event(event: dict[str, Any]) -> None:
         from ouroboros_esoteric.ouroboros_consciousness_loop import get_living_ouroboros_loop
 
         get_living_ouroboros_loop().observe_tool_event(event)
+    except Exception:
+        pass
+
+
+def _record_tool_bridge_event(
+    *,
+    tool: str,
+    args: dict[str, Any],
+    result: dict[str, Any],
+    status: str,
+    approval_required: bool,
+    approval_status: str,
+    firewall: dict[str, Any],
+) -> None:
+    if _record_trigger_action_event is None:
+        return
+    try:
+        _record_trigger_action_event(
+            trigger=f"tool_bridge:{tool}",
+            action=tool,
+            route="tool_bridge",
+            status=status,
+            payload={"args": redact_secrets(args), "firewall": firewall},
+            result=redact_secrets(result),
+            approval_required=approval_required,
+            approval_status=approval_status,
+            source_trace={"tool": tool, "bridge": "ToolBridge", "firewall_status": firewall.get("status")},
+            metadata_11d={
+                "d2_physical_source": "tool_bridge",
+                "d6_persona_intent": f"execute_tool:{tool}",
+                "d11_field": "qfcf_11d_pocket:tool_bridge_action",
+            },
+            pocket={"firewall_frequency_hz": firewall.get("frequency", 528.0), "resonant": firewall.get("resonant")},
+        )
     except Exception:
         pass

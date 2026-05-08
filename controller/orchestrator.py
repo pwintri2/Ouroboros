@@ -84,55 +84,19 @@ class ResultClassifier:
             return "YELLOW", eval_result.get("insight", "")
 
 
-AGENTIC_INTENT_MARKERS = (
-    "zoek",
-    "internet",
-    "brave",
-    "browser",
-    "laatste",
-    "nieuws",
-    "bestand",
-    "file",
-    "lees",
-    "shell",
-    "commando",
-    "command",
-    "run tests",
-    "unittest",
-    "mail",
-    "email",
-    "verstuur",
-    "post op",
-    "social media",
-    "chatgpt",
-    "gemini",
-    "grok",
-    "codex",
-    "agentisch",
-    "agentic",
-    "agents",
-    "subagent",
-    "sub-agent",
-    "deepseek",
-    "atlas",
-    "workflow",
-    "orchestratie",
-    "delegatie",
-    "handoff",
-)
+try:
+    from controller.agentic_intent import should_use_agentic_processor as _canonical_should_use_agentic_processor
+except Exception:
+    try:
+        from agentic_intent import should_use_agentic_processor as _canonical_should_use_agentic_processor
+    except Exception:
+        _canonical_should_use_agentic_processor = None
 
 
-def should_use_agentic_processor(prompt: object) -> bool:
-    text = str(prompt or "").strip().lower()
-    if not text or text.startswith("/"):
+def should_use_agentic_processor(prompt: object, *, role: object = "", approval: object = "") -> bool:
+    if _canonical_should_use_agentic_processor is None:
         return False
-    if text.startswith(("schrijf python", "maak python", "genereer python", "write python")):
-        return False
-    if any(marker in text for marker in ("schrijf", "write", "save")) and re.search(r"\b[\w./-]+\.[a-z0-9]{1,8}\b", text):
-        return True
-    if "maak" in text and any(marker in text for marker in ("bestand", "file", "map", "directory")):
-        return True
-    return any(marker in text for marker in AGENTIC_INTENT_MARKERS)
+    return bool(_canonical_should_use_agentic_processor(prompt, role=role, approval=approval))
 
 class WintripOrchestrator:
     def __init__(

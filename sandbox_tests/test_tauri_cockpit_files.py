@@ -155,6 +155,7 @@ class TestTauriCockpitFiles(unittest.TestCase):
             "training ingest": ["/api/ouroboros/training/ingest"],
             "hippocampus inspect": ["/api/ouroboros/hippocampus/inspect"],
             "self training step": ["/api/ouroboros/self-training/step"],
+            "runtime doctor": ["/api/ouroboros/runtime/doctor", "Runtime Doctor"],
             "approval gated shell": ["/sandbox/shell", "/agent/tool"],
             "safe shell tool name": ["safe_shell"],
             "approval phrase": ["Akkoord"],
@@ -243,11 +244,14 @@ class TestTauriCockpitFiles(unittest.TestCase):
 
     def test_standalone_applications_launcher_starts_native_tauri_not_browser(self):
         start_script = REPO_ROOT / "scripts" / "start_ouroboros_cockpit.sh"
+        preview_script = REPO_ROOT / "scripts" / "start_ouroboros_preview.sh"
         install_script = REPO_ROOT / "scripts" / "install_ouroboros_cockpit_desktop.sh"
 
         self.assertTrue(start_script.exists(), "Missing native cockpit start script")
+        self.assertTrue(preview_script.exists(), "Missing official web preview start script")
         self.assertTrue(install_script.exists(), "Missing Applications desktop installer")
         start_text = start_script.read_text(encoding="utf-8")
+        preview_text = preview_script.read_text(encoding="utf-8")
         install_text = install_script.read_text(encoding="utf-8")
 
         for expected in [
@@ -263,6 +267,15 @@ class TestTauriCockpitFiles(unittest.TestCase):
         self.assertNotIn("xdg-open", start_text)
         self.assertNotIn("sensible-browser", start_text)
         self.assertNotIn("google-chrome", start_text)
+
+        for expected in [
+            "docker compose up -d --build chroma ouroboros-backend",
+            "npm run dev -- --host 0.0.0.0 --port 1420 --strictPort",
+            "doctor_ouroboros_runtime.py",
+            "/api/ouroboros/runtime/doctor",
+            "/computer/status",
+        ]:
+            self.assertIn(expected, preview_text)
 
         for expected in [
             "[Desktop Entry]",

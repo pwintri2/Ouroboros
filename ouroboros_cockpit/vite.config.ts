@@ -8,6 +8,7 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: "127.0.0.1",
+    allowedHosts: ["localhost", "127.0.0.1", "host.docker.internal"],
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

@@ -86,7 +86,79 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertIn("read_file", names)
         self.assertIn("write_file", names)
         self.assertIn("run_command", names)
+        self.assertIn("list_files", names)
+        self.assertIn("search_files", names)
+        self.assertIn("browser_open_url", names)
+        self.assertIn("host_status", names)
         self.assertIn("brave_search", names)
+
+    def test_guardrail_opens_url_from_free_language_without_slash(self):
+        plan = '[{"tool":"prompt_understanding","args":{"prompt":"open een site"}}]'
+        bridge_calls = []
+
+        def fake_bridge(tool, args):
+            bridge_calls.append((tool, dict(args)))
+            return {"status": "opened", "stdout": "opened", "stderr": "", "result": {"url": args.get("url")}}
+
+        processor = AgenticProcessor(
+            agent_tools=FakeAgentTools(),
+            ollama_client=FakeOllama([plan, "Ik heb de URL geopend."]),
+            tool_bridge_runner=fake_bridge,
+        )
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run("Open ns.nl", approval="Akkoord", model="gemma4")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([step["tool"] for step in result["plan"]], ["browser_open_url"])
+        self.assertEqual(bridge_calls[0][0], "browser_open_url")
+        self.assertEqual(bridge_calls[0][1]["url"], "https://ns.nl")
+        self.assertEqual(bridge_calls[0][1]["approval"], "Akkoord")
+        self.assertIn("inserted_browser_open_url", result["planner"]["guardrails_applied"])
+
+    def test_heuristic_fallback_opens_url_from_free_language_without_slash(self):
+        bridge_calls = []
+
+        def fake_bridge(tool, args):
+            bridge_calls.append((tool, dict(args)))
+            return {"status": "opened", "stdout": "opened", "stderr": "", "result": {"url": args.get("url")}}
+
+        processor = AgenticProcessor(
+            agent_tools=FakeAgentTools(),
+            ollama_client=FakeOllama(["", "Ik heb de URL geopend."]),
+            tool_bridge_runner=fake_bridge,
+        )
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run("Ga naar example.com", approval="Akkoord", model="gemma4")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([step["tool"] for step in result["plan"]], ["memory_search", "browser_open_url"])
+        self.assertEqual([call[0] for call in bridge_calls], ["browser_open_url"])
+        self.assertEqual(bridge_calls[0][1]["url"], "https://example.com")
+        self.assertEqual(result["planner"]["source"], "heuristic_fallback")
+
+    def test_guardrail_maps_test_selector_to_bridge_run_tests(self):
+        plan = '[{"tool":"run_tests","args":{"test_selector":"sandbox_tests.test_agentic_processor"}}]'
+        bridge_calls = []
+
+        def fake_bridge(tool, args):
+            bridge_calls.append((tool, dict(args)))
+            return {"status": "success", "stdout": "OK", "stderr": "", "result": {"test_command": "python3 -m unittest"}}
+
+        processor = AgenticProcessor(
+            agent_tools=FakeAgentTools(),
+            ollama_client=FakeOllama([plan, "Tests zijn groen."]),
+            tool_bridge_runner=fake_bridge,
+        )
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run("Draai tests sandbox_tests.test_agentic_processor", approval="Akkoord", model="gemma4")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(bridge_calls[0][0], "run_tests")
+        self.assertEqual(bridge_calls[0][1]["selector"], "sandbox_tests.test_agentic_processor")
+        self.assertEqual(bridge_calls[0][1]["approval"], "Akkoord")
 
     def test_executes_plan_with_brave_then_write_file_through_pocket(self):
         plan = (
@@ -308,6 +380,42 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertEqual(result["provenance"]["external_tools_used"], ["mail_read_recent"])
         self.assertEqual(result["provenance"]["mutating_tools_attempted"], [])
         self.assertEqual(result["provenance"]["blocked_tools"], ["mail_read_recent"])
+
+    def test_unknown_planner_tool_routes_to_self_programming_guardrail_and_blocks_without_approval(self):
+        plan = '[{"tool":"make_hologram","args":{"color":"blue"}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(
+            agent_tools=fake_tools,
+            ollama_client=FakeOllama([plan, "unused"]),
+        )
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run("Gebruik een nog onbekende hologram capability", model="gemma4")
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertTrue(result["approval_required"])
+        self.assertEqual(result["plan"][0]["tool"], "resolve_or_build_function")
+        self.assertEqual(result["plan"][0]["args"]["requested_capability"], "make_hologram")
+        self.assertEqual(result["steps"][0]["status"], "blocked")
+        self.assertEqual(fake_tools.calls, [])
+        self.assertEqual(result["provenance"]["blocked_tools"], ["resolve_or_build_function"])
+
+    def test_unknown_planner_tool_runs_self_programming_guardrail_after_approval(self):
+        plan = '[{"tool":"make_hologram","args":{"color":"blue"}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(
+            agent_tools=fake_tools,
+            ollama_client=FakeOllama([plan, "Self-programming guardrail uitgevoerd."]),
+        )
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run("Gebruik een nog onbekende hologram capability", approval="Akkoord", model="gemma4")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(fake_tools.calls[0][0], "resolve_or_build_function")
+        self.assertEqual(fake_tools.calls[0][1]["requested_capability"], "make_hologram")
+        self.assertEqual(fake_tools.calls[0][1]["arguments"], {"color": "blue"})
+        self.assertEqual(fake_tools.calls[0][1]["approval"], "Akkoord")
 
     def test_quantum_foam_birth_tool_resonance_and_collapse_are_recorded(self):
         plan = '[{"tool":"voice_chat_status","args":{}}]'

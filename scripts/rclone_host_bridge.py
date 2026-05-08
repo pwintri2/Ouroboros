@@ -44,6 +44,7 @@ if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
 from controller.rclone_drive_adapter import RcloneDriveAdapter, get_rclone_drive_status  # noqa: E402
+from controller.computer_actions import computer_actions_status, run_computer_action  # noqa: E402
 from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory  # noqa: E402
 from controller.ouroboros_self_context import get_ruflo_status  # noqa: E402
 from controller.slash_agent_router import execute_host_agent_command  # noqa: E402
@@ -91,6 +92,17 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if path == "/status":
             self._json(get_rclone_drive_status())
+            return
+        if path == "/computer/status":
+            result = computer_actions_status()
+            result["via_bridge"] = False
+            result["host_bridge_runtime"] = {
+                "status": "online",
+                "server": self.server_version,
+                "workspace": str(WORKSPACE),
+                "fake_success": False,
+            }
+            self._json(result)
             return
         if path == "/sensory/status":
             self._json(get_host_sensory_status())
@@ -224,6 +236,21 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
             self._json({"status": "error", "reason": "unauthorized", "fake_success": False}, status=401)
             return
         body = self._read_body()
+        if self.path == "/computer/action":
+            raw_args = body.get("args")
+            action_args = dict(raw_args) if isinstance(raw_args, dict) else {}
+            if not action_args:
+                action_args = {str(key): value for key, value in body.items() if key not in {"action", "tool", "name", "args"}}
+            elif "approval" in body and "approval" not in action_args:
+                action_args["approval"] = body.get("approval")
+            action_name = str(body.get("action") or body.get("tool") or body.get("name") or "")
+            if action_name in {"host_open_url", "host_browser_open_url"}:
+                action_name = "browser_open_url"
+            result = run_computer_action(action_name, action_args)
+            result["via_bridge"] = False
+            result["host_bridge_runtime"] = {"status": "online", "server": self.server_version, "fake_success": False}
+            self._json(result, status=403 if result.get("status") in {"blocked", "approval_required"} else 200)
+            return
         if self.path == "/drive/files":
             result = RcloneDriveAdapter().list_drive_files(
                 approval=str(body.get("approval") or ""),

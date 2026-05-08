@@ -114,6 +114,7 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("mail_read_recent", names)
         self.assertIn("social_post_publish", names)
         self.assertIn("codex_job_start", names)
+        self.assertIn("resolve_or_build_function", names)
         self.assertIn("agentic_ecosystem_context", names)
         brave = next(schema for schema in schemas if schema["function"]["name"] == "brave_search")
         self.assertIn("query", brave["function"]["parameters"]["properties"])
@@ -125,6 +126,9 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("approval", mail["function"]["parameters"]["required"])
         ecosystem = next(schema for schema in schemas if schema["function"]["name"] == "agentic_ecosystem_context")
         self.assertIn("goal", ecosystem["function"]["parameters"]["properties"])
+        self_programming = next(schema for schema in schemas if schema["function"]["name"] == "resolve_or_build_function")
+        self.assertIn("requested_capability", self_programming["function"]["parameters"]["required"])
+        self.assertIn("execute_after_build", self_programming["function"]["parameters"]["properties"])
 
     def test_agentic_ecosystem_context_reads_only_safe_deepseek_atlas_patterns(self):
         old_deepseek = os.environ.get("WINTRIP_DEEPSEEK_PATH")
@@ -281,6 +285,19 @@ class TestAgentTools(unittest.TestCase):
                 self.assertEqual(result["status"], "blocked")
                 self.assertEqual(result["approval_status"], "pending_philip_akkoord")
 
+    def test_resolve_or_build_function_tool_blocks_missing_capability_without_akkoord(self):
+        registry = make_registry()
+        with patch(
+            "controller.self_programming_loop._fetch_brave_context",
+            return_value={"status": "success", "document": "context", "fake_success": False},
+        ):
+            result = registry.run_tool("resolve_or_build_function", {"requested_capability": "unknown_new_tool"})
+
+        self.assertToolEnvelope(result, "resolve_or_build_function")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["approval_status"], "pending_philip_akkoord")
+        self.assertEqual(result["result"]["phase"], "approval_required_for_build")
+
     def test_mail_and_social_preview_do_not_perform_external_actions(self):
         registry = make_registry()
 
@@ -304,9 +321,14 @@ class TestAgentTools(unittest.TestCase):
 
     def test_mail_read_recent_uses_readonly_fetcher_after_approval(self):
         registry = make_registry()
-        with patch(
-            "controller.mail_fetcher.fetch_recent_emails",
-            return_value=[{"status": "Success", "from": "sender@example.com", "subject": "Hallo", "body": "API_KEY=SECRET123 moet weg"}],
+        fake_mail_fetcher = SimpleNamespace(
+            fetch_recent_emails=lambda limit=1: [
+                {"status": "Success", "from": "sender@example.com", "subject": "Hallo", "body": "API_KEY=SECRET123 moet weg"}
+            ]
+        )
+        with patch.dict(
+            sys.modules,
+            {"controller.mail_fetcher": fake_mail_fetcher},
         ):
             result = registry.run_tool("mail_read_recent", {"limit": 1, "approval": "Akkoord"})
 

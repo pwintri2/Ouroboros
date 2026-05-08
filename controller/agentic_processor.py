@@ -36,6 +36,7 @@ APPROVAL_TOOLS = {
     "mail_send",
     "social_post_publish",
     "codex_job_start",
+    "resolve_or_build_function",
 }
 EXTERNAL_TOOLS = {
     "brave_search",
@@ -46,6 +47,7 @@ EXTERNAL_TOOLS = {
     "mail_read_recent",
     "mail_send",
     "social_post_publish",
+    "resolve_or_build_function",
 }
 MUTATING_TOOLS = {
     *WRITE_TOOLS,
@@ -58,6 +60,7 @@ MUTATING_TOOLS = {
     "mail_send",
     "social_post_publish",
     "codex_job_start",
+    "resolve_or_build_function",
 }
 COMPLETION_STATUSES = {"success", "stored", "completed", "opened", "login_required", "rate_limited", "skipped", "preview"}
 BLOCKING_STATUSES = {"blocked", "rejected", "approval_required"}
@@ -96,6 +99,21 @@ TRANSIT_INFO_MARKERS = (
 )
 VOICE_INFO_MARKERS = ("spraak", "voice", "microfoon", "tts", "stt")
 FILE_WRITE_RE = re.compile(r"(?:naar|to|in)\s+[`'\"]?([A-Za-z0-9_.\-/]+\.([A-Za-z0-9]+))[`'\"]?", re.IGNORECASE)
+URL_OR_DOMAIN_RE = re.compile(
+    r"(?i)\b(?:https?://|www\.)[^\s<>()\"']+|\b[a-z0-9][a-z0-9.-]*\.(?:nl|com|org|net|io|dev|app)(?::\d+)?(?:/[^\s<>()\"']*)?"
+)
+OPEN_URL_MARKERS = (
+    "open",
+    "openen",
+    "start",
+    "lanceer",
+    "bezoek",
+    "ga naar",
+    "navigeer",
+)
+TEST_GOAL_MARKERS = ("draai test", "run test", "voer test", "pytest", "unittest")
+FILE_LIST_MARKERS = ("lijst bestanden", "toon bestanden", "list files", "inhoud van map", "inhoud van folder")
+FILE_SEARCH_MARKERS = ("zoek in bestanden", "zoek in files", "search files", "grep", "zoek in repo", "zoek in codebase")
 
 
 class AgenticProcessor:
@@ -397,12 +415,22 @@ class AgenticProcessor:
             try:
                 return str(self.planner(prompt=prompt, system_prompt=system_prompt, model=model, history=list(history or [])))
             except TypeError:
-                return str(self.planner(prompt, system_prompt, model))
+                try:
+                    return str(self.planner(prompt, system_prompt, model))
+                except Exception:
+                    return ""
+            except Exception:
+                return ""
         if self.ollama is not None and callable(getattr(self.ollama, "chat", None)):
             try:
                 return str(self.ollama.chat(prompt, model=model or self.model, system_prompt=system_prompt, history=list(history or [])))
             except TypeError:
-                return str(self.ollama.chat(prompt, model=model or self.model, system_prompt=system_prompt))
+                try:
+                    return str(self.ollama.chat(prompt, model=model or self.model, system_prompt=system_prompt))
+                except Exception:
+                    return ""
+            except Exception:
+                return ""
         return ""
 
     def _pocket_context(self, trigger: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -464,14 +492,31 @@ class AgenticProcessor:
         for item in parsed:
             if not isinstance(item, dict):
                 continue
-            tool = str(item.get("tool") or item.get("name") or "").strip()
+            raw_tool = str(item.get("tool") or item.get("name") or "").strip()
+            tool = _tool_alias(raw_tool)
             args = item.get("args") or item.get("arguments") or {}
             if isinstance(args, str):
                 try:
                     args = json.loads(args)
                 except Exception:
                     args = {"input": args}
-            steps.append({"tool": _tool_alias(tool), "args": args if isinstance(args, dict) else {}, "reason": item.get("reason", "")})
+            clean_args = args if isinstance(args, dict) else {}
+            if tool == "run_tests" and "test_selector" in clean_args and "selector" not in clean_args:
+                clean_args["selector"] = clean_args["test_selector"]
+            if tool and tool not in AGENT_TOOL_SET and tool not in BRIDGE_TOOL_SET:
+                steps.append(
+                    {
+                        "tool": "resolve_or_build_function",
+                        "args": {
+                            "requested_capability": raw_tool or tool,
+                            "arguments": clean_args,
+                            "execute_after_build": True,
+                        },
+                        "reason": item.get("reason") or "guardrail: onbekende capability moet eerst bewezen of gebouwd worden.",
+                    }
+                )
+            else:
+                steps.append({"tool": tool, "args": clean_args, "reason": item.get("reason", "")})
             if len(steps) >= self.max_steps:
                 break
         if not steps:
@@ -580,12 +625,74 @@ class AgenticProcessor:
                 )
                 applied.append("inserted_supplemental_brave_search")
 
+        browser_url = _browser_url_for_goal(goal)
+        if browser_url and not _has_any_tool(guarded, {"browser_open_url", "host_open_url", "world_grok_ask"}):
+            guarded = _without_prompt_understanding_only(guarded)
+            insert_at = 1 if guarded and str(guarded[0].get("tool") or "") == "memory_search" else 0
+            guarded.insert(
+                insert_at,
+                {
+                    "tool": "browser_open_url",
+                    "args": {"url": browser_url, "prefer_bridge": True},
+                    "reason": "guardrail: vrije-taal open-url opdracht moet een echte browseractie plannen.",
+                },
+            )
+            applied.append("inserted_browser_open_url")
+
+        if _needs_test_run(goal) and not _has_any_tool(guarded, {"run_tests", "run_command", "safe_shell"}):
+            guarded = _without_prompt_understanding_only(guarded)
+            guarded.append(
+                {
+                    "tool": "run_tests",
+                    "args": _test_args_for_goal(goal),
+                    "reason": "guardrail: vrije-taal testopdracht moet de test runner plannen.",
+                }
+            )
+            applied.append("inserted_run_tests")
+
+        if _needs_file_list(goal) and not _has_any_tool(guarded, {"list_files", "roo_list_files"}):
+            guarded = _without_prompt_understanding_only(guarded)
+            guarded.append(
+                {
+                    "tool": "list_files",
+                    "args": {"path": _path_for_goal(goal), "limit": 200},
+                    "reason": "guardrail: vrije-taal bestandslijst moet list_files gebruiken.",
+                }
+            )
+            applied.append("inserted_list_files")
+
+        if _needs_file_search(goal) and not _has_any_tool(guarded, {"search_files", "roo_search_files"}):
+            guarded = _without_prompt_understanding_only(guarded)
+            guarded.append(
+                {
+                    "tool": "search_files",
+                    "args": {"path": _path_for_goal(goal), "regex": _search_regex_for_goal(goal), "limit": 100},
+                    "reason": "guardrail: vrije-taal bestandszoekopdracht moet search_files gebruiken.",
+                }
+            )
+            applied.append("inserted_search_files")
+
+        shell_command = _shell_command_for_goal(goal)
+        if shell_command and not _has_any_tool(guarded, {"run_command", "safe_shell"}):
+            guarded = _without_prompt_understanding_only(guarded)
+            guarded.append(
+                {
+                    "tool": "run_command",
+                    "args": {"command": shell_command},
+                    "reason": "guardrail: expliciet geciteerd shellcommando moet via safe shell lopen.",
+                }
+            )
+            applied.append("inserted_run_command")
+
         return guarded[: self.max_steps], applied
 
     def _heuristic_plan(self, goal: str, *, approval: str) -> list[dict[str, Any]]:
         lowered = goal.lower()
         steps: list[dict[str, Any]] = [{"tool": "memory_search", "args": {"query": goal, "limit": 5}}]
-        if _needs_transit_web_context(lowered):
+        browser_url = _browser_url_for_goal(goal)
+        if browser_url:
+            steps.append({"tool": "browser_open_url", "args": {"url": browser_url, "prefer_bridge": True}})
+        if _needs_transit_web_context(lowered) and not browser_url:
             steps.append({"tool": "ns_travel_advice", "args": _transit_args_for_goal(goal)})
             if _explicit_web_requested(goal):
                 steps.append({"tool": "brave_search", "args": {"query": _web_query_for_goal(goal), "limit": 3, "llm_context": True}})
@@ -614,8 +721,15 @@ class AgenticProcessor:
             steps.append({"tool": "voice_chat_status", "args": {}})
         if "codex" in lowered and any(marker in lowered for marker in ("pas", "wijzig", "bouw", "programmeer", "self", "zelf")):
             steps.append({"tool": "codex_job_start", "args": {"task": goal[:2000]}})
-        if any(marker in lowered for marker in ("unittest", "pytest", "run tests", "draai tests")):
-            steps.append({"tool": "run_tests", "args": {"test_selector": "sandbox_tests.test_agent_tools"}})
+        if _needs_test_run(goal):
+            steps.append({"tool": "run_tests", "args": _test_args_for_goal(goal)})
+        if _needs_file_list(goal):
+            steps.append({"tool": "list_files", "args": {"path": _path_for_goal(goal), "limit": 200}})
+        if _needs_file_search(goal):
+            steps.append({"tool": "search_files", "args": {"path": _path_for_goal(goal), "regex": _search_regex_for_goal(goal), "limit": 100}})
+        shell_command = _shell_command_for_goal(goal)
+        if shell_command:
+            steps.append({"tool": "run_command", "args": {"command": shell_command}})
         if len(steps) == 1:
             steps.insert(0, {"tool": "prompt_understanding", "args": {"prompt": goal}})
         return steps[: self.max_steps]
@@ -636,7 +750,8 @@ class AgenticProcessor:
             "Gebruik memory_search eerst wanneer nuttig. Gebruik brave_search voor actuele internetvragen. "
             "Gebruik ns_travel_advice voor trein/OV/reisplanner-vragen; Brave-snippets zijn niet betrouwbaar genoeg voor exacte OV-tijden. "
             "Gebruik agentic_ecosystem_context voor agentische workflowvragen, sub-agents, multi-agent werk, DeepSeek of Atlas context; dit is lokale read-only verrijking zonder approval. "
-            "Gebruik read_file/write_file/apply_patch/run_command alleen via de ToolBridge-namen. "
+            "Gebruik read_file/list_files/search_files/write_file/apply_patch/run_command/safe_shell/run_tests/browser_open_url alleen via de ToolBridge-namen. "
+            "Als een gevraagde capability niet in de catalogus staat, gebruik resolve_or_build_function; die mag pas bouwen/testen na exact Akkoord. "
             "Brave Search is read-only internetcontext en mag zonder approval. "
             "Voor muterende acties, shell, browser/app-besturing, mail/social posting of duurzame training moet args.approval exact 'Akkoord' zijn wanneer approval aanwezig is; "
             "anders mag je de stap wel plannen en pauzeert de executor veilig.\n\n"
@@ -701,6 +816,74 @@ class AgenticProcessor:
                 },
                 ["command", "approval"],
             ),
+            _bridge_schema(
+                "list_files",
+                "Geeft een begrensde bestandslijst binnen workspace/agent-root guards.",
+                {
+                    "path": {"type": "string", "description": "Startpad, standaard huidige workspace."},
+                    "recursive": {"type": "boolean", "description": "Recursief zoeken wanneer true."},
+                    "limit": {"type": "integer", "description": "Maximaal aantal paden."},
+                },
+                [],
+            ),
+            _bridge_schema(
+                "search_files",
+                "Zoekt met regex in bestanden binnen workspace/agent-root guards.",
+                {
+                    "path": {"type": "string", "description": "Startpad, standaard huidige workspace."},
+                    "regex": {"type": "string", "description": "Regex of zoekpatroon."},
+                    "file_pattern": {"type": "string", "description": "Optionele glob/filter voor bestandsnamen."},
+                    "limit": {"type": "integer", "description": "Maximaal aantal matches."},
+                },
+                ["regex"],
+            ),
+            _bridge_schema(
+                "safe_shell",
+                "Alias voor run_command: voert een safe-shell commando uit. Vereist Akkoord.",
+                {
+                    "command": {"type": "string", "description": "Allowlisted commando."},
+                    "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+                    "timeout": {"type": "integer", "description": "Timeout in seconden."},
+                },
+                ["command", "approval"],
+            ),
+            _bridge_schema(
+                "run_tests",
+                "Draait pytest of python -m unittest via de safe-shell test wrapper. Vereist Akkoord.",
+                {
+                    "selector": {"type": "string", "description": "Unittest selector of pytest pad."},
+                    "runner": {"type": "string", "description": "unittest of pytest."},
+                    "command": {"type": "string", "description": "Optioneel expliciet testcommando."},
+                    "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+                    "timeout": {"type": "integer", "description": "Timeout in seconden."},
+                },
+                ["approval"],
+            ),
+            _bridge_schema(
+                "browser_open_url",
+                "Opent een http(s) URL via WorldAgent/host bridge. Vereist Akkoord.",
+                {
+                    "url": {"type": "string", "description": "Te openen URL."},
+                    "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+                    "prefer_bridge": {"type": "boolean", "description": "Gebruik host bridge wanneer beschikbaar."},
+                },
+                ["url", "approval"],
+            ),
+            _bridge_schema(
+                "host_status",
+                "Leest basisstatus van de host computer-action bridge.",
+                {},
+                [],
+            ),
+            _bridge_schema(
+                "host_open_url",
+                "Vraagt de host bridge om een URL te openen. Vereist Akkoord.",
+                {
+                    "url": {"type": "string", "description": "Te openen URL."},
+                    "approval": {"type": "string", "description": "Exact 'Akkoord' vereist."},
+                },
+                ["url", "approval"],
+            ),
         ]
 
 
@@ -742,10 +925,21 @@ def _bridge_schema(name: str, description: str, properties: dict[str, Any], requ
 def _tool_alias(tool: str) -> str:
     aliases = {
         "read": "read_file",
+        "list": "list_files",
+        "ls": "list_files",
+        "files": "list_files",
+        "search_filesystem": "search_files",
+        "grep": "search_files",
         "write": "write_file",
         "shell": "run_command",
         "command": "run_command",
         "run_shell": "run_command",
+        "tests": "run_tests",
+        "pytest": "run_tests",
+        "unittest": "run_tests",
+        "open_url": "browser_open_url",
+        "open_browser": "browser_open_url",
+        "browser_open": "browser_open_url",
         "search": "brave_search",
         "web_search": "brave_search",
         "travel_advice": "ns_travel_advice",
@@ -767,8 +961,132 @@ def _has_tool(steps: Sequence[Mapping[str, Any]], tool: str) -> bool:
     return any(str(step.get("tool") or "") == tool for step in steps)
 
 
+def _has_any_tool(steps: Sequence[Mapping[str, Any]], tools: set[str]) -> bool:
+    return any(str(step.get("tool") or "") in tools for step in steps)
+
+
+def _without_prompt_understanding_only(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(steps) == 1 and str(steps[0].get("tool") or "") == "prompt_understanding":
+        return []
+    return steps
+
+
+def _browser_url_for_goal(goal: str) -> str:
+    lowered = str(goal or "").lower()
+    if not any(marker in lowered for marker in OPEN_URL_MARKERS):
+        return ""
+    match = URL_OR_DOMAIN_RE.search(str(goal or ""))
+    if not match:
+        return ""
+    url = match.group(0).strip().rstrip(".,;:!?)]}'\"")
+    if not url:
+        return ""
+    if url.startswith("www."):
+        return f"https://{url}"
+    if not re.match(r"(?i)^https?://", url):
+        return f"https://{url}"
+    return url
+
+
+def _needs_test_run(goal: str) -> bool:
+    lowered = str(goal or "").lower()
+    return any(marker in lowered for marker in TEST_GOAL_MARKERS)
+
+
+def _test_args_for_goal(goal: str) -> dict[str, Any]:
+    selector = _extract_test_selector(goal)
+    args: dict[str, Any] = {"runner": "unittest", "timeout": 30}
+    if selector:
+        args["selector"] = selector
+        if selector.endswith(".py") or "/" in selector:
+            args["runner"] = "pytest" if "pytest" in str(goal or "").lower() else "unittest"
+    if "pytest" in str(goal or "").lower():
+        args["runner"] = "pytest"
+    return args
+
+
+def _extract_test_selector(goal: str) -> str:
+    text = str(goal or "")
+    quoted = re.search(r"[`'\"]([A-Za-z0-9_./:-]+)[`'\"]", text)
+    if quoted:
+        return quoted.group(1)
+    explicit = re.search(r"\b(?:test|tests|pytest|unittest)\s+([A-Za-z0-9_./:-]+)", text, re.IGNORECASE)
+    if explicit:
+        candidate = explicit.group(1).strip().rstrip(".,;:!?")
+        if candidate not in {"met", "with", "voor", "for"}:
+            return candidate
+    path_like = re.search(r"\b(sandbox_tests[./][A-Za-z0-9_./:-]+|tests[./][A-Za-z0-9_./:-]+)\b", text)
+    return path_like.group(1).replace("/", ".").removesuffix(".py") if path_like else ""
+
+
+def _needs_file_list(goal: str) -> bool:
+    lowered = str(goal or "").lower()
+    if re.search(r"(^|\s)ls(\s|$)", lowered):
+        return True
+    if any(marker in lowered for marker in FILE_LIST_MARKERS):
+        return True
+    return any(marker in lowered for marker in ("lijst", "toon", "list")) and any(
+        marker in lowered for marker in ("bestand", "bestanden", "files", "map", "folder", "directory")
+    )
+
+
+def _needs_file_search(goal: str) -> bool:
+    lowered = str(goal or "").lower()
+    if any(marker in lowered for marker in FILE_SEARCH_MARKERS):
+        return True
+    return "zoek" in lowered and any(marker in lowered for marker in ("bestand", "bestanden", "files", "repo", "codebase", "workspace"))
+
+
+def _path_for_goal(goal: str) -> str:
+    text = str(goal or "")
+    for pattern in (
+        r"\b(?:in|van|under|onder|binnen)\s+[`'\"]?([A-Za-z0-9_.\-/]+)[`'\"]?",
+        r"\b(?:map|folder|directory)\s+[`'\"]?([A-Za-z0-9_.\-/]+)[`'\"]?",
+    ):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip().rstrip(".,;:!?")
+            if candidate.lower() in {"bestand", "bestanden", "file", "files", "repo", "codebase", "workspace"}:
+                continue
+            if candidate and not candidate.startswith(("http://", "https://")) and "." not in candidate.split("/", 1)[0]:
+                return candidate
+    return "."
+
+
+def _search_regex_for_goal(goal: str) -> str:
+    text = str(goal or "")
+    quoted = re.search(r"[`'\"]([^`'\"]{1,120})[`'\"]", text)
+    if quoted:
+        return re.escape(quoted.group(1).strip())
+    match = re.search(r"\b(?:naar|for)\s+(.+?)(?:\s+\b(?:in|binnen|under|onder)\b|$)", text, re.IGNORECASE)
+    if match:
+        candidate = match.group(1).strip().rstrip(".,;:!?")
+        if candidate:
+            return re.escape(candidate[:120])
+    words = re.findall(r"[A-Za-z0-9_:-]{3,}", text)
+    for word in reversed(words):
+        if word.lower() not in {"zoek", "bestanden", "files", "repo", "codebase", "workspace", "naar", "for"}:
+            return re.escape(word[:120])
+    return "."
+
+
+def _shell_command_for_goal(goal: str) -> str:
+    text = str(goal or "")
+    if not re.search(r"(?i)\b(commando|command|shell|terminal|voer uit|run)\b", text):
+        return ""
+    quoted = re.search(r"`([^`]{1,300})`", text)
+    if quoted:
+        return quoted.group(1).strip()
+    command = re.search(r"\b(?:commando|command|shell)\s+['\"]([^'\"]{1,300})['\"]", text, re.IGNORECASE)
+    if command:
+        return command.group(1).strip()
+    return ""
+
+
 def _needs_current_web_context(goal: str) -> bool:
     lowered = str(goal or "").lower()
+    if _browser_url_for_goal(goal) and not _explicit_web_requested(goal):
+        return False
     if _explicit_web_requested(goal):
         return True
     if any(marker in lowered for marker in ("mail", "email", "inbox")):

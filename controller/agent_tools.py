@@ -45,6 +45,7 @@ REGISTERED_TOOLS: tuple[str, ...] = (
     "social_post_preview",
     "social_post_publish",
     "codex_job_start",
+    "resolve_or_build_function",
     "voice_chat_status",
     "scrub_browser_content",
     "training_ingest",
@@ -225,6 +226,21 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "timeout_seconds": {"type": "integer", "description": "Job timeout, maximaal 3600 seconden."},
         },
         ["task", "approval"],
+    ),
+    "resolve_or_build_function": _tool_schema(
+        "resolve_or_build_function",
+        "Zoekt eerst een bestaande AgentToolRegistry/ToolBridge/Codex-registry capability. Bij een missende capability gebruikt deze read-only Brave-context en mag pas na exact Akkoord Codex/Gemini en safe-shell tests starten. Geen fake success.",
+        {
+            "requested_capability": {"type": "string", "description": "Naam van de gezochte of te bouwen capability/tool/function."},
+            "arguments": {"type": "object", "description": "JSON-argumenten voor uitvoering na succesvolle resolutie/build."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor bouwen, Gemini fallback, tests en muterende uitvoering."},
+            "execute_after_build": {"type": "boolean", "description": "Voer de capability pas uit na groene tests en rediscovery."},
+            "test_selector": {"type": "string", "description": "Dotted unittest selectors voor safe-shell validatie."},
+            "build_task": {"type": "string", "description": "Optionele expliciete Codex/Gemini bouwopdracht."},
+            "timeout_seconds": {"type": "integer", "description": "Codex timeout, maximaal 3600 seconden."},
+            "wait_seconds": {"type": "integer", "description": "Optioneel aantal seconden wachten op een Codex job voordat tests starten."},
+        },
+        ["requested_capability"],
     ),
     "voice_chat_status": _tool_schema(
         "voice_chat_status",
@@ -512,6 +528,17 @@ class AgentToolRegistry:
                     task=str(args.get("task") or args.get("prompt") or ""),
                     approval=str(args.get("approval") or ""),
                     timeout_seconds=_int(args.get("timeout_seconds"), default=900),
+                )
+            elif tool_name == "resolve_or_build_function":
+                result = self.resolve_or_build_function(
+                    requested_capability=str(args.get("requested_capability") or args.get("capability") or args.get("tool") or ""),
+                    function_args=dict(args.get("arguments") or args.get("function_args") or {}),
+                    approval=str(args.get("approval") or ""),
+                    execute_after_build=bool(args.get("execute_after_build", False)),
+                    test_selector=str(args.get("test_selector") or ""),
+                    build_task=str(args.get("build_task") or ""),
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=900),
+                    wait_seconds=_int(args.get("wait_seconds"), default=0),
                 )
             elif tool_name == "voice_chat_status":
                 result = self.voice_chat_status()
@@ -1210,6 +1237,52 @@ class AgentToolRegistry:
             next_action="Watch Agent Jobs events and review changed files/tests before trusting the result.",
         )
 
+    def resolve_or_build_function(
+        self,
+        requested_capability: str,
+        function_args: dict[str, Any] | None = None,
+        approval: str = "",
+        execute_after_build: bool = False,
+        test_selector: str = "",
+        build_task: str = "",
+        timeout_seconds: int = 900,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        from controller.self_programming_loop import DEFAULT_BUILD_TEST_SELECTOR, resolve_or_build_function
+
+        payload = resolve_or_build_function(
+            requested_capability=requested_capability,
+            function_args=dict(function_args or {}),
+            approval=approval,
+            execute_after_build=execute_after_build,
+            test_selector=test_selector or DEFAULT_BUILD_TEST_SELECTOR,
+            build_task=build_task,
+            timeout_seconds=timeout_seconds,
+            wait_seconds=wait_seconds,
+            agent_registry=self,
+        )
+        status = str(payload.get("status") or "error")
+        stderr = ""
+        if status not in {"success", "preview", "stored", "completed", "opened", "running", "queued"}:
+            stderr = str(payload.get("reason") or payload.get("next_action") or status)
+        return _tool_result(
+            "resolve_or_build_function",
+            status,
+            result=payload,
+            stdout=json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            stderr=stderr,
+            source="self_programming_loop",
+            approval_status=str(payload.get("approval_status") or ("approved" if approval == "Akkoord" else "not_required_for_resolution")),
+            stored_to_memory=False,
+            metadata_11d={
+                "dimension_count": 11,
+                "source_type": "self_programming_loop",
+                "requested_capability": str(requested_capability or "")[:200],
+                "phase": str(payload.get("phase") or ""),
+            },
+            next_action=str(payload.get("next_action") or "Review discovery/build/tests before trusting or executing the capability."),
+        )
+
     def voice_chat_status(self) -> dict[str, Any]:
         payload = {
             "status": "not_configured",
@@ -1635,7 +1708,7 @@ class AgentToolRegistry:
             return {"level": "medium", "label": "Medium: approval-gated local action", "memory_first": True}
         if str(tool or "").startswith("roo_"):
             return {"level": "medium", "label": "Medium: Roo adapter under workspace/approval gates", "memory_first": True}
-        if tool in {"browser_research", "chatgpt_browser_ask", "brave_search", "ns_travel_advice", "world_grok_ask", "mail_read_recent", "mail_send", "social_post_publish", "codex_job_start"}:
+        if tool in {"browser_research", "chatgpt_browser_ask", "brave_search", "ns_travel_advice", "world_grok_ask", "mail_read_recent", "mail_send", "social_post_publish", "codex_job_start", "resolve_or_build_function"}:
             return {"level": "guarded", "label": "Guarded: external/browser perimeter", "memory_first": True}
         return {"level": "unknown", "label": "No registered tool result yet", "memory_first": False}
 

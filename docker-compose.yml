@@ -27,6 +27,7 @@ services:
       - /home/pwintri2/Codex:/codex:ro
       - /home/pwintri2/.codex:/codex_home:ro
       - /home/pwintri2/.antigravity/extensions/openai.chatgpt-26.422.71525-linux-x64:/codex_native:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       PYTHONPATH: /workspace
       WINTRIP_WORKSPACE: /workspace

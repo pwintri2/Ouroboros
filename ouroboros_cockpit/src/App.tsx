@@ -51,6 +51,7 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   cockpitChat: "/api/cockpit/chat",
   agentTool: "/agent/tool",
   apiKeys: "/api/cockpit/api-keys",
+  runtimeDoctor: "/api/ouroboros/runtime/doctor",
   worldAgentStatus: "/api/world-agent/status",
   worldAgentGrok: "/api/world-agent/grok/ask",
   worldAgentSearch: "/api/world-agent/memory/search",
@@ -230,6 +231,17 @@ type RuntimeToolsStatus = {
   tools?: string[];
   write_tools_require_approval?: string[];
   fake_success?: boolean;
+  reason?: string;
+};
+
+type RuntimeDoctorStatus = {
+  status?: "ready" | "degraded" | "failed" | "unknown" | string;
+  version?: string;
+  blockers?: string[];
+  checks?: Record<string, { status?: string; reason?: string; url?: string; path?: string; [key: string]: unknown }>;
+  defaults?: { backend_url?: string; preview_url?: string; bridge_url?: string; workspace?: string };
+  ready_requires?: string[];
+  ts?: number;
   reason?: string;
 };
 
@@ -581,6 +593,16 @@ function isApprovedGrokPrompt(prompt: string, approval: string, approvalPhrase: 
   return approval.trim() === approvalPhrase && /\bgrok(?:\.com)?\b/.test(text) && /\b(open|ga naar|start|vraag|vragen|stel|stellen|ask|tell)\b/.test(text);
 }
 
+function isLikelyAgenticPrompt(prompt: string, approvalPhrase: string): boolean {
+  const raw = prompt.trim();
+  const text = raw.toLowerCase();
+  if (!text) return false;
+  if (raw === approvalPhrase || raw.startsWith(`${approvalPhrase} `) || raw.startsWith(`${approvalPhrase}:`)) return true;
+  if (/^\/(codex|deepseek|atlas|ruflo|roo|claude|agents)\b/i.test(raw)) return true;
+  if (/\b(open|openen|start|lanceer|bezoek|ga naar|navigeer|zoek|lees|download|check|controleer)\b/i.test(raw) && /\b(?:https?:\/\/|www\.)?\w[\w.-]*\.(?:nl|com|org|net|io|dev|app)\b/i.test(raw)) return true;
+  return /\b(zoek|internet|brave|browser|bestand|bestanden|file|files|map|folder|directory|lees|lijst|toon bestanden|zoek in|shell|commando|command|voer uit|uitvoeren|draai|run tests?|test|unittest|pytest|codex|gemini|grok|agentic|agentisch|agents|deepseek|atlas)\b/i.test(raw);
+}
+
 function reserveExternalWindow(prompt: string, approval: string, approvalPhrase: string): Window | null {
   if (isLikelyTauriRuntime() || !isApprovedGrokPrompt(prompt, approval, approvalPhrase)) return null;
   try {
@@ -669,6 +691,7 @@ export default function App() {
   const [worldStatus, setWorldStatus] = useState<WorldStatus>({ status: "unknown" });
   const [externalCapabilities, setExternalCapabilities] = useState<ExternalCapabilitiesStatus>({ status: "unknown" });
   const [runtimeTools, setRuntimeTools] = useState<RuntimeToolsStatus>({ status: "unknown" });
+  const [runtimeDoctor, setRuntimeDoctor] = useState<RuntimeDoctorStatus>({ status: "unknown" });
   const [codexStatus, setCodexStatus] = useState<CodexStatus>({ status: "unknown" });
   const [codexCapabilities, setCodexCapabilities] = useState<CodexCapabilityInventory>({ status: "unknown" });
   const [codexRunPrompt, setCodexRunPrompt] = useState("");
@@ -725,6 +748,7 @@ export default function App() {
   const approvalReady = approval === approvalPhrase;
   const canCallSelectedProvider = selectedProvider?.enabled ?? false;
   const slashPrompt = prompt.trim().startsWith("/");
+  const agenticPrompt = isLikelyAgenticPrompt(prompt, approvalPhrase);
 
   const writeTerm = useCallback((text: string) => {
     terminalRef.current?.writeln(text.replace(/\n/g, "\r\n"));
@@ -821,6 +845,19 @@ export default function App() {
       setRuntimeTools((previous) => ({
         ...previous,
         status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadRuntimeDoctor = useCallback(async () => {
+    try {
+      const data = await api<RuntimeDoctorStatus>(OUROBOROS_BACKEND_CONTRACT.runtimeDoctor);
+      setRuntimeDoctor(data);
+    } catch (error) {
+      setRuntimeDoctor((previous) => ({
+        ...previous,
+        status: "failed",
         reason: error instanceof Error ? error.message : String(error),
       }));
     }
@@ -951,6 +988,7 @@ export default function App() {
         await loadWorldStatus();
         await loadExternalCapabilities();
         await loadRuntimeTools();
+        await loadRuntimeDoctor();
         await loadCodexStatus();
         await loadAgentsStatus();
         await loadOpenhandsStatus();
@@ -958,7 +996,7 @@ export default function App() {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
+  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -982,6 +1020,7 @@ export default function App() {
     loadWorldStatus().catch(() => undefined);
     loadExternalCapabilities().catch(() => undefined);
     loadRuntimeTools().catch(() => undefined);
+    loadRuntimeDoctor().catch(() => undefined);
     loadCodexStatus().catch(() => undefined);
     loadCodexCapabilities().catch(() => undefined);
     loadAgentsStatus().catch(() => undefined);
@@ -993,6 +1032,7 @@ export default function App() {
       loadWorldStatus().catch(() => undefined);
       loadExternalCapabilities().catch(() => undefined);
       loadRuntimeTools().catch(() => undefined);
+      loadRuntimeDoctor().catch(() => undefined);
       loadCodexStatus().catch(() => undefined);
       loadAgentsStatus().catch(() => undefined);
       loadOpenhandsStatus().catch(() => undefined);
@@ -1004,7 +1044,7 @@ export default function App() {
       window.clearInterval(id);
       window.clearInterval(capabilitiesId);
     };
-  }, [loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
+  }, [loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -1364,6 +1404,14 @@ export default function App() {
   const agentJobTerminalStatuses = new Set(["completed", "failed", "cancelled"]);
   const deepseekCapability = externalCapabilities.capabilities?.deepseek;
   const atlasCapability = externalCapabilities.capabilities?.atlas;
+  const runtimeDoctorStatus = runtimeDoctor.status ?? "unknown";
+  const runtimeDoctorOk = runtimeDoctorStatus === "ready";
+  const runtimeDoctorBlockers = Array.isArray(runtimeDoctor.blockers) ? runtimeDoctor.blockers.slice(0, 3) : [];
+  const runtimeDoctorChecks = runtimeDoctor.checks ?? {};
+  const runtimeDoctorSummary =
+    runtimeDoctorBlockers.length > 0
+      ? runtimeDoctorBlockers.join(" · ")
+      : `backend ${runtimeDoctorChecks.backend_http?.status ?? "unknown"} · preview ${runtimeDoctorChecks.web_preview?.status ?? "unknown"} · bridge ${runtimeDoctorChecks.host_bridge?.status ?? "unknown"}`;
 
   return (
     <main className="app-shell">
@@ -1437,6 +1485,12 @@ export default function App() {
 
       <section className="workspace">
         <header className="system-strip">
+          <StatusPill
+            icon={<Activity size={16} />}
+            label="Runtime Doctor"
+            value={runtimeDoctorStatus}
+            ok={runtimeDoctorOk}
+          />
           <StatusPill icon={<Cpu size={16} />} label="Ollama" value={status.model?.ollama_online ? "online" : "offline"} ok={!!status.model?.ollama_online} />
           <StatusPill icon={<Bot size={16} />} label="Ouroboros" value={status.model?.online ? "created" : "offline"} ok={!!status.model?.online} />
           <StatusPill icon={<Hammer size={16} />} label="Pipeline" value={status.self_modification_pipeline?.status ?? "not configured"} ok={status.self_modification_pipeline?.status === "online"} />
@@ -1487,6 +1541,20 @@ export default function App() {
           />
         </header>
 
+        <section className={`runtime-doctor runtime-doctor-${runtimeDoctorStatus}`}>
+          <div>
+            <strong>Runtime Doctor</strong>
+            <span>{runtimeDoctorSummary}</span>
+          </div>
+          <div className="runtime-doctor-checks">
+            {["backend_http", "web_preview", "host_bridge", "chroma", "tool_registry", "agentic_router"].map((key) => (
+              <span className={runtimeDoctorChecks[key]?.status === "online" ? "good" : "warn"} key={key}>
+                {key.replace("_", " ")}: {runtimeDoctorChecks[key]?.status ?? "unknown"}
+              </span>
+            ))}
+          </div>
+        </section>
+
         <section className="toolbar">
           <button onClick={createModel} disabled={busy}>
             <Cpu size={15} /> Create/Refresh
@@ -1527,7 +1595,7 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <button onClick={sendChat} disabled={busy || !prompt.trim() || (!slashPrompt && !canCallSelectedProvider)}>
+              <button onClick={sendChat} disabled={busy || !prompt.trim() || (!slashPrompt && !agenticPrompt && !canCallSelectedProvider)}>
                 <Send size={15} /> Send
               </button>
             </section>

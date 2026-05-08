@@ -1457,6 +1457,27 @@ class FieldLifecycleEngine:
                     "ram_released_estimate_hexlets": essence.get("ram_released_estimate_hexlets"),
                 },
             )
+            try:
+                from controller.memory_event_router import record_trigger_action
+
+                record_trigger_action(
+                    trigger="quantum_foam_collapse",
+                    action="persist_quantum_field_essence",
+                    route="quantum_foam",
+                    status="collapsed",
+                    result=essence,
+                    approval_required=False,
+                    approval_status="not_required",
+                    source_trace={"field_id": essence.get("field_id"), "source": "quantum_foam:collapse"},
+                    metadata_11d={
+                        "d2_physical_source": "quantum_foam",
+                        "d5_persona_actor": "qfcf",
+                        "d11_field": "qfcf_11d_pocket:collapse_essence",
+                    },
+                    pocket={"collapse_essence": essence},
+                )
+            except Exception:
+                pass
             essence["_persisted"] = True
         except Exception:
             essence["_persisted"] = False

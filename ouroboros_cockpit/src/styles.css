@@ -221,6 +221,68 @@ label {
   flex-wrap: wrap;
 }
 
+.runtime-doctor {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #1d2634;
+  background: #0a121d;
+}
+
+.runtime-doctor > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.runtime-doctor strong {
+  font-size: 13px;
+}
+
+.runtime-doctor span {
+  color: #91a3b8;
+  font-size: 12px;
+}
+
+.runtime-doctor-ready {
+  border-left: 3px solid #2dd4bf;
+}
+
+.runtime-doctor-degraded {
+  border-left: 3px solid #f59e0b;
+}
+
+.runtime-doctor-failed {
+  border-left: 3px solid #ef4444;
+}
+
+.runtime-doctor-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.runtime-doctor-checks span {
+  min-height: 26px;
+  padding: 5px 8px;
+  border: 1px solid #2b3545;
+  border-radius: 7px;
+  background: #101a29;
+}
+
+.runtime-doctor-checks span.good {
+  border-color: #1f7a5d;
+  color: #9cf0cc;
+}
+
+.runtime-doctor-checks span.warn {
+  border-color: #7a5a1f;
+  color: #f3ce85;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
