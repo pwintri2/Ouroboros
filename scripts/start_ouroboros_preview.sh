@@ -10,8 +10,14 @@ BRIDGE_PORT="${WINTRIP_RCLONE_BRIDGE_PORT:-8766}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ouroboros-preview"
 LOG_DIR="$STATE_DIR/logs"
 PID_FILE="$STATE_DIR/vite.pid"
+BACKEND_PID_FILE="$STATE_DIR/backend-local.pid"
+BACKEND_LOG="$LOG_DIR/backend-local.log"
 TOKEN_PATH="${WINTRIP_RCLONE_BRIDGE_TOKEN_PATH_HOST:-$ROOT/.secrets/rclone_bridge_token}"
 NODE_BIN="${WINTRIP_NODE_BIN:-$HOME/.nvm/versions/node/v22.22.2/bin}"
+BACKEND_MODE="${WINTRIP_BACKEND_MODE:-auto}"
+LOCAL_BACKEND_VENV="${WINTRIP_BACKEND_VENV:-$ROOT/.venv_ouroboros_backend}"
+LOCAL_BACKEND_PYTHON="${WINTRIP_BACKEND_PYTHON:-$LOCAL_BACKEND_VENV/bin/python}"
+PYTHON311="${WINTRIP_PYTHON311:-$HOME/.local/bin/python3.11}"
 
 if [ -d "$NODE_BIN" ]; then
   export PATH="$NODE_BIN:$PATH"
@@ -114,15 +120,81 @@ wait_for_preview() {
   return 1
 }
 
+refresh_local_backend_pid_file() {
+  local backend_pid
+  backend_pid="$(
+    ps -eo pid=,args= \
+      | awk '$2 ~ /python/ && index($0, " -m uvicorn controller.main:app --host 0.0.0.0 --port 8010") {print $1}' \
+      | tail -n 1
+  )"
+  [ -n "$backend_pid" ] && echo "$backend_pid" > "$BACKEND_PID_FILE"
+}
+
 ensure_backend() {
   if http_ok "$BACKEND_URL/health"; then
-    echo "Docker backend is al bereikbaar."
+    refresh_local_backend_pid_file
+    echo "Backend is al bereikbaar."
     return 0
   fi
-  need_cmd docker
-  echo "Refreshing Docker backend and Chroma..."
-  (cd "$ROOT" && docker compose up -d --build chroma ouroboros-backend)
-  wait_for_url "$BACKEND_URL/health" 90 || fail "backend route $BACKEND_URL/health werd niet bereikbaar."
+  if [ "$BACKEND_MODE" != "local" ] && command -v docker >/dev/null 2>&1; then
+    echo "Refreshing Docker backend and Chroma..."
+    (cd "$ROOT" && docker compose up -d --build chroma ouroboros-backend)
+    if wait_for_url "$BACKEND_URL/health" 90; then
+      return 0
+    fi
+    [ "$BACKEND_MODE" = "docker" ] && fail "backend route $BACKEND_URL/health werd niet bereikbaar via Docker."
+    echo "Docker backend werd niet bereikbaar; probeer lokale backend fallback."
+  elif [ "$BACKEND_MODE" = "docker" ]; then
+    fail "docker ontbreekt; WINTRIP_BACKEND_MODE=docker kan de backend niet starten."
+  else
+    echo "Docker CLI ontbreekt; probeer lokale backend fallback."
+  fi
+  ensure_local_backend
+}
+
+ensure_local_backend_python() {
+  if [ -x "$LOCAL_BACKEND_PYTHON" ]; then
+    return 0
+  fi
+  [ "${WINTRIP_BOOTSTRAP_LOCAL_BACKEND:-0}" = "1" ] || fail "lokale backend venv ontbreekt: $LOCAL_BACKEND_PYTHON. Zet WINTRIP_BOOTSTRAP_LOCAL_BACKEND=1 om deze automatisch te maken, of installeer Docker."
+  local bootstrap_python=""
+  if [ -x "$PYTHON311" ]; then
+    bootstrap_python="$PYTHON311"
+  elif command -v python3.11 >/dev/null 2>&1; then
+    bootstrap_python="$(command -v python3.11)"
+  else
+    bootstrap_python="$(command -v python3)"
+  fi
+  echo "Lokale backend venv ontbreekt; bootstrap met $bootstrap_python..."
+  "$bootstrap_python" -m venv "$LOCAL_BACKEND_VENV"
+  "$LOCAL_BACKEND_PYTHON" -m pip install --upgrade pip
+  "$LOCAL_BACKEND_PYTHON" -m pip install -r "$ROOT/controller/requirements.txt"
+}
+
+ensure_local_backend() {
+  ensure_local_backend_python
+  need_cmd setsid
+  echo "Starting local Python backend on $BACKEND_URL..."
+  (
+    cd "$ROOT"
+    setsid -f env \
+      PYTHONPATH="$ROOT" \
+      WINTRIP_WORKSPACE="$ROOT" \
+      WINTRIP_HOST_WORKSPACE="$ROOT" \
+      WINTRIP_DB_PATH="${WINTRIP_DB_PATH:-$ROOT/wintrip_brain}" \
+      WINTRIP_CHROMA_HTTP_URL="${WINTRIP_CHROMA_HTTP_URL:-}" \
+      WINTRIP_RCLONE_BRIDGE_URL="${WINTRIP_RCLONE_BRIDGE_URL:-$BRIDGE_URL}" \
+      WINTRIP_RCLONE_BRIDGE_TOKEN_PATH="${WINTRIP_RCLONE_BRIDGE_TOKEN_PATH:-$TOKEN_PATH}" \
+      OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}" \
+      "$LOCAL_BACKEND_PYTHON" -m uvicorn controller.main:app --host 0.0.0.0 --port 8010 >"$BACKEND_LOG" 2>&1 < /dev/null
+  )
+  if wait_for_url "$BACKEND_URL/health" 90; then
+    refresh_local_backend_pid_file
+    echo "Local backend online."
+    return 0
+  fi
+  tail -n 120 "$BACKEND_LOG" >&2 || true
+  fail "lokale backend route $BACKEND_URL/health werd niet bereikbaar."
 }
 
 ensure_host_bridge() {
@@ -171,12 +243,18 @@ main() {
   ensure_backend
   ensure_preview
   echo "Running runtime doctor smoke..."
-  python3 "$ROOT/scripts/doctor_ouroboros_runtime.py" \
+  if ! python3 "$ROOT/scripts/doctor_ouroboros_runtime.py" \
     --backend-url "$BACKEND_URL" \
     --preview-url "$PREVIEW_URL" \
     --bridge-url "$BRIDGE_URL" \
     --smoke \
-    --json
+    --json; then
+    if [ "$BACKEND_MODE" = "local" ] || ! command -v docker >/dev/null 2>&1; then
+      echo "Runtime doctor is degraded, maar backend/preview/bridge zijn gestart. Docker runner blijft unavailable zonder Docker CLI." >&2
+    else
+      fail "runtime doctor smoke faalde."
+    fi
+  fi
   echo "Ouroboros preview ready: $PREVIEW_URL"
 }
 

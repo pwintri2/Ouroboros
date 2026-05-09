@@ -60,8 +60,8 @@ def _remote_doctor(backend_url: str, *, preview_url: str = "", bridge_url: str =
         key: value
         for key, value in {
             "backend_url": backend_url,
-            "preview_url": _docker_reachable_url(preview_url),
-            "bridge_url": _docker_reachable_url(bridge_url),
+            "preview_url": preview_url,
+            "bridge_url": bridge_url,
         }.items()
         if value
     }

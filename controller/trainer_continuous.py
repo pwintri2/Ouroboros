@@ -336,6 +336,24 @@ def _create_or_run_job(
     result: dict[str, Any] | None = None
     if execute_training:
         if method == TrainerMethod.LITGPT.value:
+            runtime = get_litgpt_status()
+            if not runtime.get("runtime_ready"):
+                reason = str(runtime.get("reason") or "LitGPT runtime is not executable.")
+                update_job_state(job["job_id"], JobState.DATASET_READY, f"LitGPT training blocked: {reason}")
+                return {
+                    "job_id": job["job_id"],
+                    "method": method,
+                    "base_model": base_model,
+                    "dataset_path": dataset_path,
+                    "record_count": record_count,
+                    "state": JobState.DATASET_READY.value,
+                    "training_result": {
+                        "status": "blocked",
+                        "reason": reason,
+                        "runtime_status": runtime,
+                        "fake_success": False,
+                    },
+                }
             result = run_litgpt_lora_finetune(
                 job_id=job["job_id"],
                 base_model=base_model,
@@ -348,6 +366,24 @@ def _create_or_run_job(
                 epochs=int(training.get("epochs", 1)),
             )
         elif method == TrainerMethod.UNSLOOTH.value:
+            runtime = get_unsloth_status()
+            if not runtime.get("runtime_ready"):
+                reason = str(runtime.get("reason") or "Unsloth runtime is not executable.")
+                update_job_state(job["job_id"], JobState.DATASET_READY, f"Unsloth training blocked: {reason}")
+                return {
+                    "job_id": job["job_id"],
+                    "method": method,
+                    "base_model": base_model,
+                    "dataset_path": dataset_path,
+                    "record_count": record_count,
+                    "state": JobState.DATASET_READY.value,
+                    "training_result": {
+                        "status": "blocked",
+                        "reason": reason,
+                        "runtime_status": runtime,
+                        "fake_success": False,
+                    },
+                }
             result = run_unsloth_sft_training(
                 job_id=job["job_id"],
                 base_model=base_model,

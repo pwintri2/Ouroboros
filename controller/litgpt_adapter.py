@@ -8,7 +8,9 @@ Captures stdout/stderr/exit_code in trainer job records.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +18,59 @@ from controller.safe_shell import run_safe_shell, workspace_root
 from controller.trainer_jobs import JobState, TrainerMethod, get_job, update_job_state
 
 
-LITGPT_SOURCE_PATH = Path("/workspace/litgpt")
-LITGPT_VENV_PATH = Path("/workspace/.venv_litgpt")
+_LITGPT_DOCKER_PATH = Path("/workspace/litgpt")
+_LITGPT_LOCAL_PATH = Path("/home/pwintri2/WintripAI/litgpt")
+
+_VENV_DOCKER_PATH = Path("/workspace/.venv_litgpt")
+_VENV_LOCAL_PATH = Path("/home/pwintri2/WintripAI/.venv_litgpt")
+
+
+def _project_root() -> Path:
+    configured = os.getenv("WINTRIP_WORKSPACE") or os.getenv("WINTRIP_PROJECT_ROOT")
+    if configured:
+        path = Path(configured).expanduser()
+        if path.exists():
+            return path.resolve()
+    for candidate in (Path("/workspace"), Path("/home/pwintri2/WintripAI"), Path.cwd()):
+        if candidate.exists():
+            return candidate.resolve()
+    return Path.cwd().resolve()
+
+
+def _resolve_litgpt_source() -> Path:
+    """Return the first existing LitGPT source directory."""
+    candidates = [
+        os.getenv("WINTRIP_LITGPT_PATH"),
+        str(_project_root() / "litgpt"),
+        str(_LITGPT_DOCKER_PATH),
+        str(_LITGPT_LOCAL_PATH),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if (path / "litgpt").is_dir() and (path / "pyproject.toml").exists():
+            return path.resolve()
+    return _LITGPT_DOCKER_PATH
+
+
+def _resolve_litgpt_venv() -> Path:
+    """Return the venv path that matches the resolved source location."""
+    configured = os.getenv("WINTRIP_LITGPT_VENV")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    source = _resolve_litgpt_source()
+    root = source.parent if source.exists() else _project_root()
+    candidate = root / ".venv_litgpt"
+    if candidate.exists() or root != Path("/workspace"):
+        return candidate.resolve()
+    if _VENV_LOCAL_PATH.exists():
+        return _VENV_LOCAL_PATH
+    return _VENV_DOCKER_PATH
+
+
+LITGPT_SOURCE_PATH = _resolve_litgpt_source()
+LITGPT_VENV_PATH = _resolve_litgpt_venv()
 
 
 def litgpt_available() -> bool:
@@ -25,22 +78,80 @@ def litgpt_available() -> bool:
     return LITGPT_SOURCE_PATH.exists() and LITGPT_SOURCE_PATH.is_dir()
 
 
+def _venv_python() -> Path:
+    return LITGPT_VENV_PATH / "bin" / "python"
+
+
+def _venv_script() -> Path:
+    return LITGPT_VENV_PATH / "bin" / "litgpt"
+
+
+def _is_runnable(path: Path) -> bool:
+    return path.exists() and os.access(path, os.X_OK)
+
+
+def _script_interpreter_exists(path: Path) -> bool:
+    if not _is_runnable(path):
+        return False
+    try:
+        first_line = path.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except Exception:
+        return True
+    if not first_line.startswith("#!"):
+        return True
+    interpreter = first_line[2:].strip().split(" ", 1)[0]
+    return bool(interpreter) and Path(interpreter).exists()
+
+
+def _current_python_can_import_litgpt() -> bool:
+    source_parent = str(LITGPT_SOURCE_PATH)
+    code = "import litgpt, lightning, torch; print('ok')"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = source_parent + os.pathsep + env.get("PYTHONPATH", "")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def _system_litgpt() -> str:
+    return shutil.which("litgpt") or ""
+
+
+def litgpt_runtime_ready() -> bool:
+    return bool(get_litgpt_args(allow_unavailable=False))
+
+
 def setup_litgpt_env() -> dict[str, Any]:
     """Set up LitGPT virtual environment if needed."""
     if not litgpt_available():
         return {
             "status": "error",
-            "reason": "LitGPT source not found at /home/pwintri2/litgpt",
+            "reason": f"LitGPT source not found at {LITGPT_SOURCE_PATH}",
         }
     
     workspace = workspace_root()
     
     # Check if venv exists
-    if LITGPT_VENV_PATH.exists():
+    if LITGPT_VENV_PATH.exists() and _is_runnable(_venv_python()):
         return {
             "status": "success",
             "venv_path": str(LITGPT_VENV_PATH),
             "message": "LitGPT venv already exists",
+        }
+    if LITGPT_VENV_PATH.exists():
+        return {
+            "status": "error",
+            "venv_path": str(LITGPT_VENV_PATH),
+            "reason": "LitGPT venv exists but its Python executable is not runnable; rebuild the venv before training.",
         }
     
     # Create venv and install LitGPT
@@ -88,24 +199,24 @@ def setup_litgpt_env() -> dict[str, Any]:
 
 def get_litgpt_command() -> str:
     """Get the LitGPT command path."""
-    python_path = LITGPT_VENV_PATH / "bin" / "python"
-    main_path = LITGPT_SOURCE_PATH / "litgpt" / "__main__.py"
-    
-    if python_path.exists() and main_path.exists():
-        return f"{python_path} -m litgpt"
-    
-    # Fallback: try system litgpt
-    return "litgpt"
+    args = get_litgpt_args(allow_unavailable=False)
+    return " ".join(args) if args else "unavailable"
 
 
-def get_litgpt_args() -> list[str]:
+def get_litgpt_args(allow_unavailable: bool = True) -> list[str]:
     """Get LitGPT invocation args for the explicit trainer job runner."""
-    python_path = LITGPT_VENV_PATH / "bin" / "python"
     main_path = LITGPT_SOURCE_PATH / "litgpt" / "__main__.py"
 
-    if python_path.exists() and main_path.exists():
-        return [str(python_path), "-m", "litgpt"]
-    return ["litgpt"]
+    if _is_runnable(_venv_python()) and main_path.exists():
+        return [str(_venv_python()), "-m", "litgpt"]
+    if _script_interpreter_exists(_venv_script()):
+        return [str(_venv_script())]
+    system = _system_litgpt()
+    if system:
+        return [system]
+    if _current_python_can_import_litgpt() and main_path.exists():
+        return [sys.executable, "-m", "litgpt"]
+    return ["litgpt"] if allow_unavailable else []
 
 
 def run_litgpt_lora_finetune(
@@ -337,11 +448,30 @@ def validate_litgpt_model(job_id: str, checkpoint_path: str) -> dict[str, Any]:
 
 def get_litgpt_status() -> dict[str, Any]:
     """Get LitGPT adapter status."""
+    source_ready = litgpt_available()
+    command_args = get_litgpt_args(allow_unavailable=False)
+    runtime_ready = bool(command_args)
+    if runtime_ready:
+        status = "online"
+        reason = "LitGPT source and executable runtime are available."
+    elif source_ready:
+        status = "configured"
+        reason = "LitGPT source is present, but the venv/CLI runtime is not executable yet."
+    else:
+        status = "unavailable"
+        reason = "LitGPT source directory is missing."
     return {
-        "status": "online" if litgpt_available() else "unavailable",
+        "status": status,
+        "reason": reason,
+        "source_exists": source_ready,
         "source_path": str(LITGPT_SOURCE_PATH),
         "venv_path": str(LITGPT_VENV_PATH),
         "venv_exists": LITGPT_VENV_PATH.exists(),
+        "venv_python_exists": _is_runnable(_venv_python()),
+        "venv_script_exists": _venv_script().exists(),
+        "venv_script_interpreter_ok": _script_interpreter_exists(_venv_script()),
+        "runtime_ready": runtime_ready,
+        "command_args": command_args,
         "command": get_litgpt_command(),
         "supported_commands": [
             "finetune_lora",

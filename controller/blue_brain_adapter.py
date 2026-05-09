@@ -11,6 +11,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -25,10 +26,16 @@ REQUIRED_PACKAGES = ("numpy", "sklearn", "joblib")
 
 def _workspace_root() -> Path:
     configured = os.getenv("WINTRIP_WORKSPACE") or os.getenv("WORKSPACE_ROOT") or "/workspace"
-    root = Path(configured)
-    if not root.exists():
-        root = Path(os.getenv("WINTRIP_PROJECT_ROOT") or Path.cwd())
-    return root.resolve()
+    if configured and configured != "/workspace":
+        root = Path(configured).expanduser()
+        if root.exists():
+            return root.resolve()
+    project_root = Path(__file__).resolve().parents[1]
+    cwd = Path.cwd().resolve()
+    for root in (Path(os.getenv("WINTRIP_PROJECT_ROOT") or "").expanduser(), cwd, project_root, Path("/workspace")):
+        if str(root) and root.exists() and (root / "controller").is_dir():
+            return root.resolve()
+    return project_root.resolve()
 
 
 def blue_brain_venv_path() -> Path:
@@ -50,7 +57,7 @@ def _dependency_map() -> dict[str, bool]:
 
 
 def _python_dependency_map(python_path: Path) -> dict[str, bool]:
-    if not python_path.exists():
+    if not _python_is_runnable(python_path):
         return {name: False for name in REQUIRED_PACKAGES}
     code = (
         "import importlib.util, json; "
@@ -73,6 +80,97 @@ def _python_dependency_map(python_path: Path) -> dict[str, bool]:
 
 def _venv_python() -> Path:
     return blue_brain_venv_path() / "bin" / "python"
+
+
+def _python_is_runnable(python_path: Path) -> bool:
+    if not python_path.exists() or not os.access(python_path, os.X_OK):
+        return False
+    try:
+        proc = subprocess.run(
+            [str(python_path), "-c", "import sys; print(sys.executable)"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def _python_has_pip(python_path: Path) -> bool:
+    if not _python_is_runnable(python_path):
+        return False
+    try:
+        proc = subprocess.run(
+            [str(python_path), "-m", "pip", "--version"],
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def _bootstrap_python() -> str:
+    candidates = [
+        os.getenv("BLUE_BRAIN_BOOTSTRAP_PYTHON"),
+        sys.executable,
+        shutil.which("python3.11"),
+        shutil.which("python3.10"),
+        shutil.which("python3"),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if _python_is_runnable(path):
+            return str(path)
+    return "python3"
+
+
+def _create_blue_brain_venv(venv_path: Path, *, clear: bool, workspace: Path) -> subprocess.CompletedProcess[str]:
+    args = [_bootstrap_python(), "-m", "venv"]
+    if clear:
+        args.append("--clear")
+    args.append(str(venv_path))
+    return subprocess.run(
+        args,
+        cwd=str(workspace),
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=True,
+    )
+
+
+def _ensure_blue_brain_venv(workspace: Path, venv_path: Path) -> list[subprocess.CompletedProcess[str]]:
+    logs: list[subprocess.CompletedProcess[str]] = []
+    if not venv_path.exists():
+        logs.append(_create_blue_brain_venv(venv_path, clear=False, workspace=workspace))
+    elif not _python_is_runnable(_venv_python()):
+        logs.append(_create_blue_brain_venv(venv_path, clear=True, workspace=workspace))
+
+    if not _python_has_pip(_venv_python()):
+        try:
+            logs.append(
+                subprocess.run(
+                    [str(_venv_python()), "-m", "ensurepip", "--upgrade"],
+                    cwd=str(workspace),
+                    text=True,
+                    capture_output=True,
+                    timeout=120,
+                    check=True,
+                )
+            )
+        except Exception:
+            logs.append(_create_blue_brain_venv(venv_path, clear=True, workspace=workspace))
+
+    if not _python_has_pip(_venv_python()):
+        raise RuntimeError(f"Blue Brain venv has no working pip after setup: {_venv_python()}")
+    return logs
 
 
 def _current_dependencies_ready() -> bool:
@@ -98,6 +196,9 @@ def get_blue_brain_status() -> dict[str, Any]:
         "runtime": runtime,
         "venv_path": str(venv_path),
         "venv_exists": venv_path.exists(),
+        "venv_python": str(_venv_python()),
+        "venv_python_ready": _python_is_runnable(_venv_python()),
+        "venv_pip_ready": _python_has_pip(_venv_python()),
         "current_python": sys.executable,
         "current_dependencies": current_deps,
         "venv_dependencies": venv_deps,
@@ -120,19 +221,18 @@ def setup_blue_brain_env() -> dict[str, Any]:
     venv_path = blue_brain_venv_path()
     venv_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        if not venv_path.exists():
-            subprocess.run(
-                ["python3", "-m", "venv", str(venv_path)],
-                cwd=str(workspace),
-                text=True,
-                capture_output=True,
-                timeout=120,
-                check=True,
-            )
-
-        pip_path = venv_path / "bin" / "pip"
+        setup_logs = _ensure_blue_brain_venv(workspace, venv_path)
+        python_path = _venv_python()
+        upgrade = subprocess.run(
+            [str(python_path), "-m", "pip", "install", "--upgrade", "pip"],
+            cwd=str(workspace),
+            text=True,
+            capture_output=True,
+            timeout=300,
+            check=True,
+        )
         proc = subprocess.run(
-            [str(pip_path), "install", "numpy", "scikit-learn", "joblib"],
+            [str(python_path), "-m", "pip", "install", "numpy", "scikit-learn", "joblib"],
             cwd=str(workspace),
             text=True,
             capture_output=True,
@@ -143,8 +243,10 @@ def setup_blue_brain_env() -> dict[str, Any]:
             "status": "success",
             "venv_path": str(venv_path),
             "dependencies": _python_dependency_map(_venv_python()),
-            "stdout": proc.stdout[-4000:],
-            "stderr": proc.stderr[-4000:],
+            "venv_python_ready": _python_is_runnable(_venv_python()),
+            "venv_pip_ready": _python_has_pip(_venv_python()),
+            "stdout": "\n".join([item.stdout for item in setup_logs] + [upgrade.stdout, proc.stdout])[-4000:],
+            "stderr": "\n".join([item.stderr for item in setup_logs] + [upgrade.stderr, proc.stderr])[-4000:],
         }
     except subprocess.CalledProcessError as exc:
         return {
