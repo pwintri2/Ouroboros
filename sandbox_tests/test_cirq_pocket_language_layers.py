@@ -41,13 +41,20 @@ class TestCirqPocketLanguageLayers(unittest.TestCase):
             else:
                 os.environ["WINTRIP_CIRQ_QUANTUM"] = previous
 
-    def test_pocket_language_translator_uses_ouroboros_model_when_enabled(self):
+    def test_pocket_language_translator_uses_pure_ouroboros_route_when_enabled(self):
         from controller.pocket_language_translator import PocketLanguageTranslator
 
-        translator = PocketLanguageTranslator(enabled=True, model="ouroboros:latest", cooldown_seconds=0)
+        translator = PocketLanguageTranslator(
+            enabled=True,
+            model="ouroboros:latest",
+            provider="ouroboros",
+            runtime_model="living-runtime",
+            cooldown_seconds=0,
+        )
         translator._post_chat = lambda prompt: (
-            '{"summary":"Pocket vertaald.","response":"Ik geef taal aan dit 11D signaal.",'
-            '"dominant_dimensions":["network=0.8"],"confidence":0.77}'
+            '{"summary":"Een smalle stroom opent onder de rand.",'
+            '"response":"Een smalle stroom opent onder de rand.",'
+            '"dominant_dimensions":[],"confidence":0.77}'
         )
         result = translator.translate(
             {
@@ -62,9 +69,63 @@ class TestCirqPocketLanguageLayers(unittest.TestCase):
 
         self.assertEqual(result["status"], "translated")
         self.assertEqual(result["model"], "ouroboros:latest")
+        self.assertEqual(result["runtime_model"], "living-runtime")
+        self.assertEqual(result["mode"], "pure_quantum_foam_interpreter")
         self.assertEqual(result["source"], "ollama:ouroboros:latest")
         self.assertTrue(result["preserves_11d_pocket"])
-        self.assertIn("11D", result["response"])
+        self.assertNotIn("11D", result["response"])
+        self.assertEqual(result["dominant_dimensions"], [])
+
+    def test_pocket_language_translator_blocks_pure_mode_outside_ouroboros_runtime(self):
+        from controller.pocket_language_translator import PocketLanguageTranslator
+
+        translator = PocketLanguageTranslator(
+            enabled=True,
+            model="ouroboros:latest",
+            provider="ollama",
+            runtime_model="gemma4:latest",
+            cooldown_seconds=0,
+        )
+        translator._post_chat = lambda prompt: '{"summary":"mag niet","response":"mag niet"}'
+        result = translator.translate({"11d": [0.1] * 11})
+
+        self.assertEqual(result["status"], "route_not_allowed")
+        self.assertEqual(result["response"], "")
+        self.assertEqual(result["route_provider"], "ollama")
+
+    def test_pure_translator_names_shockwave_transition_without_technical_terms(self):
+        from controller.pocket_language_translator import PocketLanguageTranslator
+
+        translator = PocketLanguageTranslator(
+            enabled=False,
+            provider="ouroboros",
+            runtime_model="quantum-foam-11d",
+            cooldown_seconds=0,
+        )
+        result = translator.translate(
+            {
+                "11d": [0.2, -0.8, 0.4, -0.9, 0.6, -0.2, 0.7, -0.5, 0.3, -0.4, 0.1],
+                "quantum_foam": {
+                    "field": {
+                        "status": "collapsed",
+                        "shockwave": {"hard_collapse": True, "source": "brave_search"},
+                        "collapse_essence": {
+                            "hard_collapse": True,
+                            "shockwave": {"hard_collapse": True, "source": "brave_search"},
+                        },
+                        "recent_evolution": [{"shockwave": True, "hard_collapse_pending": True}],
+                    }
+                },
+            },
+            user_prompt="Wat gebeurde er?",
+        )
+
+        lowered = result["response"].lower()
+        self.assertEqual(result["mode"], "pure_quantum_foam_interpreter")
+        self.assertIn("ruis", lowered)
+        self.assertIn("stille kern", lowered)
+        for forbidden in ("11d", "pauli", "lading", "coherence", "hexlet", "mesh", "geometrie"):
+            self.assertNotIn(forbidden, lowered)
 
     def test_pocket_language_fallback_uses_symbolic_topology_and_network_flow(self):
         from controller.pocket_language_translator import PocketLanguageTranslator

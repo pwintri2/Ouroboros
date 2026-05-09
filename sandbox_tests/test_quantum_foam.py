@@ -22,6 +22,7 @@ from ouroboros_esoteric.quantum_foam import (
     monitor_quantum_foam_field,
     quantum_foam_status,
     reset_field_lifecycle_engine,
+    subliminal_quantum_foam_feed,
 )
 
 
@@ -148,9 +149,9 @@ class TestQuantumFoamField(unittest.TestCase):
         self.assertEqual(len(after["concept_anchor_field"]["pocket_signal"]), 11)
         self.assertIn("holographic_bootloader", after["concept_anchor_field"])
         self.assertGreater(after["recent_evolution"][-1]["anchor_awareness"], 0.0)
-        self.assertEqual(after["dimensional_geometry"]["dimension"], 1)
-        self.assertEqual(after_second["dimensional_geometry"]["dimension"], 2)
-        self.assertEqual(after_second["dimensional_geometry"]["visual_model"], "filled_triangle")
+        self.assertIn(after["dimensional_geometry"]["dimension"], {1, 2})
+        self.assertIn(after_second["dimensional_geometry"]["dimension"], {1, 2})
+        self.assertIn(after_second["dimensional_geometry"]["visual_model"], {"line_segment", "filled_triangle"})
 
     def test_lifecycle_initiate_monitor_and_collapse_persist_essence(self):
         memory_path = Path(self.tmp.name) / ".secrets" / "memory.json"
@@ -164,8 +165,8 @@ class TestQuantumFoamField(unittest.TestCase):
         self.assertEqual(created["status"], "online")
         self.assertGreaterEqual(created["field"]["node_count"], 5)
         self.assertEqual(created["field"]["concept_anchor_field"]["pocket_count"], 11)
-        self.assertEqual(created["field"]["dimensional_geometry"]["dimension"], 1)
-        self.assertEqual(created["field"]["dimensional_geometry"]["clique_size"], 2)
+        self.assertIn(created["field"]["dimensional_geometry"]["dimension"], {1, 2})
+        self.assertIn(created["field"]["dimensional_geometry"]["clique_size"], {2, 3})
         self.assertIn("holographic_bootloader", created["field"]["concept_anchor_field"])
         self.assertNotIn("secret-value", str(created))
 
@@ -190,6 +191,54 @@ class TestQuantumFoamField(unittest.TestCase):
         self.assertEqual(status["latest_field"]["status"], "collapsed")
         events = AkashicNetwork().recent_events(limit=20)
         self.assertTrue(any(event["message"].get("type") == "quantum_foam_field_collapsed" for event in events))
+
+    def test_subliminal_feed_perturbs_field_without_returning_raw_context(self):
+        secret_context = "SILENT_ONLY_FIELD_SIGNAL"
+
+        result = subliminal_quantum_foam_feed(
+            "Translate the active field after a silent lookup",
+            stimulus={
+                "source": "memory_search",
+                "taint": "local_memory",
+                "result_count": 1,
+                "signal_text": secret_context,
+            },
+        )
+
+        self.assertEqual(result["status"], "online")
+        self.assertEqual(result["subliminal_feed"]["source"], "memory_search")
+        self.assertFalse(result["subliminal_feed"]["raw_context_stored"])
+        self.assertEqual(result["field"]["recent_evolution"][-1]["subliminal_source"], "memory_search")
+        self.assertTrue(result["field"]["recent_evolution"][-1]["subliminal"])
+        self.assertTrue(result["field"]["collapse_essence"]["hard_collapse"])
+        self.assertEqual(result["field"]["collapse_essence"]["transition_signature"], "noise_to_structure_to_silence")
+        self.assertEqual(result["field"]["shockwave"]["transition_signature"], "noise_to_structure_to_silence")
+        self.assertEqual(result["field"]["status"], "collapsed")
+        self.assertNotIn(secret_context, str(result))
+
+    def test_background_heartbeat_keeps_geometry_volatile_and_low_dimensional(self):
+        field = QuantumFoamField(task="Quiet background observation", max_ticks=8)
+        field.form_initial_nodes()
+
+        first = field.evolve(trigger="background")
+        second = field.evolve(trigger="background")
+
+        self.assertIn(first["dimensional_geometry"]["dimension"], {1, 2})
+        self.assertIn(second["dimensional_geometry"]["dimension"], {1, 2})
+        self.assertTrue(first["recent_evolution"][-1]["volatile_background"])
+        self.assertIn("runtime_heartbeat", first)
+        self.assertIn("signals_11d", first["runtime_heartbeat"])
+
+    def test_cockpit_context_triggers_shockwave_peak_and_hard_collapse(self):
+        created = initiate_quantum_foam_field(
+            "cockpit_response: Waar staat het veld?",
+            context={"trigger": "cockpit_response", "payload": {"prompt": "Waar staat het veld?"}},
+        )
+
+        self.assertEqual(created["field"]["status"], "collapsed")
+        self.assertTrue(created["field"]["collapse_essence"]["hard_collapse"])
+        self.assertEqual(created["field"]["collapse_essence"]["shockwave"]["peak_dimension"], 11)
+        self.assertEqual(created["field"]["collapse_essence"]["transition_signature"], "noise_to_structure_to_silence")
 
 
 if __name__ == "__main__":

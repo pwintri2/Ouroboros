@@ -57,6 +57,9 @@ POCKET_ANCHOR_DIMENSIONS: tuple[str, ...] = (
 HOLOGRAPHIC_SNAPSHOT_CYCLES = (15, 30)
 FOAM_GEOMETRY_MAX_DIMENSION = 11
 FOAM_GEOMETRY_MAX_CLIQUE_SIZE = FOAM_GEOMETRY_MAX_DIMENSION + 1
+BACKGROUND_GEOMETRY_CLIQUE_SIZES = (2, 3)
+SHOCKWAVE_LADDER_CLIQUE_SIZES = (4, 6, 9, FOAM_GEOMETRY_MAX_CLIQUE_SIZE)
+SHOCKWAVE_PEAK_DIMENSION = 11
 
 
 def foam_geometry_stage_for_clique_size(clique_size: int) -> dict[str, Any]:
@@ -606,6 +609,26 @@ class QuantumElectronHexlet:
         self.resonance_count += 1
         return self.to_dict(compact=True)
 
+    def heartbeat(self, signal: Any, *, volatility: float = 1.0) -> dict[str, Any]:
+        """Apply a raw Docker/procfs heartbeat as bounded restless jitter."""
+
+        if self.collapsed:
+            return self.to_dict(compact=True)
+        values = _signal_values(signal)[:64] or [0.0]
+        pressure = sum(values) / max(1, len(values))
+        spread = _std(values)
+        pulse = math.sin(self.phase + self.resonance_count + len(values)) * 0.5
+        strength = _clamp(float(volatility), 0.05, 3.0)
+        shift = max(1, int(abs(pressure + pulse) * 13 + spread * 17 + self.resonance_count) % HEXLET_STATE_COUNT)
+        direction = -1 if (pressure + pulse) < 0 else 1
+        self.state_index = (self.state_index + direction * shift) % HEXLET_STATE_COUNT
+        self.phase = _bounded_phase(self.phase + (pressure * 0.31 + pulse * 0.17 + spread * 0.11) * strength)
+        self.charge = _clamp((self.charge * 0.48) + (math.tanh(pressure + pulse) * 0.52), -1.0, 1.0)
+        self.coherence = _clamp((self.coherence * 0.38) + ((1.0 - min(spread * strength, 1.0)) * 0.42) + 0.08)
+        self.electron_lanes = tuple(1 if (self.state_index >> bit) & 1 else -1 for bit in range(4))  # type: ignore[assignment]
+        self.resonance_count += 1
+        return self.to_dict(compact=True)
+
     def entangle(self, other: "QuantumElectronHexlet", *, strength: float = 0.618) -> dict[str, Any]:
         if other is self or self.collapsed or other.collapsed:
             return self.to_dict(compact=True)
@@ -904,6 +927,81 @@ class EntanglementMesh:
                 field.nodes[peer].connections.pop(node_id, None)
         self._edges.pop(node_id, None)
 
+    def tremble(
+        self,
+        field: "QuantumFoamField",
+        heartbeat: dict[str, Any],
+        *,
+        target_clique_size: int,
+    ) -> dict[str, Any]:
+        """Make the mesh form and break low-dimensional background cliques."""
+
+        active_ids = [node_id for node_id, node in field.nodes.items() if node.active]
+        if len(active_ids) < 2:
+            return {"status": "idle", "target_clique_size": len(active_ids), "broken_edges": 0, "formed_edges": 0}
+        signals = heartbeat.get("signals_11d") if isinstance(heartbeat.get("signals_11d"), list) else []
+        seed = int(abs(sum(_signal_values(signals)) * 10_000) + field.tick_count + int(heartbeat.get("active_flow_count") or 0))
+        rotation = seed % len(active_ids)
+        rotated = active_ids[rotation:] + active_ids[:rotation]
+        target = max(2, min(int(target_clique_size or 2), len(rotated), 3))
+        selected = rotated[:target]
+
+        broken = 0
+        formed = 0
+        keep_edges = {tuple(sorted((left, right))) for index, left in enumerate(selected) for right in selected[index + 1:]}
+        decay = 0.44 + (0.16 if target == 2 else 0.08)
+        for left, peers in list(self._edges.items()):
+            for right, strength in list(peers.items()):
+                edge_key = tuple(sorted((left, right)))
+                if edge_key in keep_edges:
+                    continue
+                next_strength = float(strength) * decay
+                if next_strength < 0.18:
+                    self._remove_edge(field, left, right)
+                    broken += 1
+                else:
+                    self._edges[left][right] = next_strength
+                    if left in field.nodes:
+                        field.nodes[left].connections[right] = next_strength
+        base_strength = _clamp(0.34 + float(heartbeat.get("volatility") or 0.0) * 0.18, 0.24, 0.72)
+        for index, left in enumerate(selected):
+            for right in selected[index + 1:]:
+                before = self._edges.get(left, {}).get(right)
+                if self.entangle(field, left, right, strength=base_strength):
+                    formed += 1 if before is None else 0
+        return {
+            "status": "trembling",
+            "target_clique_size": target,
+            "selected_node_ids": selected,
+            "broken_edges": broken,
+            "formed_edges": formed,
+            "volatility": round(float(heartbeat.get("volatility") or 0.0), 6),
+        }
+
+    def force_clique(
+        self,
+        field: "QuantumFoamField",
+        node_ids: list[str],
+        *,
+        strength: float = 0.96,
+    ) -> int:
+        formed = 0
+        selected = [node_id for node_id in node_ids if node_id in field.nodes and field.nodes[node_id].active]
+        for index, left in enumerate(selected):
+            for right in selected[index + 1:]:
+                before = self._edges.get(left, {}).get(right)
+                if self.entangle(field, left, right, strength=strength):
+                    formed += 1 if before is None else 0
+        return formed
+
+    def _remove_edge(self, field: "QuantumFoamField", left: str, right: str) -> None:
+        self._edges.get(left, {}).pop(right, None)
+        self._edges.get(right, {}).pop(left, None)
+        if left in field.nodes:
+            field.nodes[left].connections.pop(right, None)
+        if right in field.nodes:
+            field.nodes[right].connections.pop(left, None)
+
     def broadcast_resonance(self, field: "QuantumFoamField", source_id: str, signal: Any) -> list[dict[str, Any]]:
         source = field.nodes.get(source_id)
         if source is None:
@@ -1042,6 +1140,10 @@ class QuantumFoamField:
         self._dimensional_clique_ids: list[str] = []
         self._dimensional_geometry: dict[str, Any] = foam_geometry_stage_for_clique_size(0)
         self._dimensional_geometry_history: deque[dict[str, Any]] = deque(maxlen=20)
+        self._heartbeat_history: deque[dict[str, Any]] = deque(maxlen=16)
+        self._last_runtime_heartbeat: dict[str, Any] = {}
+        self._last_shockwave: dict[str, Any] = {}
+        self._pending_hard_collapse: dict[str, Any] | None = None
 
     def form_initial_nodes(self) -> dict[str, Any]:
         analysis = self.formation_engine.analyze_task(self.task, self.context)
@@ -1111,9 +1213,18 @@ class QuantumFoamField:
             return self.to_dict(compact=True)
         for _ in range(max(1, int(steps or 1))):
             self.tick_count += 1
-            geometry_event = self._advance_dimensional_geometry(trigger=trigger)
+            heartbeat = self._apply_runtime_heartbeat(trigger=trigger)
+            if self._should_shockwave(trigger):
+                shock = self._run_shockwave(trigger=trigger, stimulus=None, heartbeat=heartbeat)
+                self._recent_evolution.append(shock["recent_event"])
+                continue
+            geometry_event = self._advance_dimensional_geometry(
+                trigger=trigger,
+                target_clique_size=self._background_target_clique_size(heartbeat),
+            )
             field_signal = self._field_signal(trigger=trigger)
             field_signal["dimensional_geometry"] = geometry_event
+            field_signal["runtime_heartbeat"] = _compact_heartbeat(heartbeat)
             anchor_event = self.anchor_field.stimulate(
                 field_signal["11d"],
                 trigger=trigger,
@@ -1145,11 +1256,252 @@ class QuantumFoamField:
                     "foam_dimension": geometry_event.get("dimension"),
                     "electron_clique_size": geometry_event.get("clique_size"),
                     "geometry": geometry_event.get("geometry"),
+                    "background_heartbeat": _compact_heartbeat(heartbeat),
+                    "volatile_background": True,
                     "ts": _utc_iso(),
                 }
             )
         self.updated_at = _utc_iso()
         return self.to_dict(compact=True)
+
+    def absorb_external_intention(
+        self,
+        stimulus: dict[str, Any],
+        *,
+        trigger: str = "subliminal_lookup",
+    ) -> dict[str, Any]:
+        """Let external data perturb the field without storing it as chat context."""
+
+        metadata = _subliminal_feed_meta(stimulus)
+        if self.status != "active":
+            return {
+                "status": self.status,
+                "subliminal_feed": metadata,
+                "field": self.to_dict(compact=True),
+                "fake_success": False,
+            }
+
+        external_intention = {
+            "source": metadata.get("source"),
+            "taint": metadata.get("taint"),
+            "result_count": metadata.get("result_count"),
+            "content_hash": metadata.get("content_hash"),
+            "signal_text": _clean_text((stimulus or {}).get("signal_text") or "")[:3000],
+            "intention": "collective_unconscious_subliminal_shockwave",
+        }
+        self.tick_count += 1
+        heartbeat = self._apply_runtime_heartbeat(trigger=trigger)
+        shock = self._run_shockwave(trigger=trigger, stimulus=external_intention, heartbeat=heartbeat)
+        recent = dict(shock["recent_event"])
+        recent.update(
+            {
+                "subliminal": True,
+                "subliminal_source": metadata.get("source"),
+                "content_hash": metadata.get("content_hash"),
+                "result_count": metadata.get("result_count"),
+            }
+        )
+        self._recent_evolution.append(recent)
+        self.updated_at = _utc_iso()
+        return {
+            "status": "shockwave_peak",
+            "subliminal_feed": metadata,
+            "shockwave": _scrub_context(self._last_shockwave),
+            "hard_collapse_pending": bool(self._pending_hard_collapse),
+            "field": self.to_dict(compact=True),
+            "fake_success": False,
+        }
+
+    def _apply_runtime_heartbeat(self, *, trigger: str) -> dict[str, Any]:
+        heartbeat = _runtime_heartbeat_snapshot(trigger=trigger)
+        self._last_runtime_heartbeat = heartbeat
+        self._heartbeat_history.append(_compact_heartbeat(heartbeat))
+        volatility = float(heartbeat.get("volatility") or 0.5)
+        signal = {
+            "runtime_heartbeat": heartbeat,
+            "field_id": self.field_id,
+            "tick": self.tick_count,
+            "trigger": trigger,
+        }
+        for node in list(self.nodes.values()):
+            if not node.active:
+                continue
+            for hexlet in node.hexlets:
+                hexlet.heartbeat(signal, volatility=volatility * (0.8 + node.weight))
+            node.state.evolve(signal, resonance=0.6 + min(volatility, 1.8) * 0.3)
+            node.coherence = _clamp((node.coherence * 0.62) + (node.state.coherence * 0.24) + (0.14 * (1.0 - min(volatility / 3.0, 1.0))))
+        self.mesh.tremble(
+            self,
+            heartbeat,
+            target_clique_size=self._background_target_clique_size(heartbeat),
+        )
+        return heartbeat
+
+    def _background_target_clique_size(self, heartbeat: dict[str, Any]) -> int:
+        signal_sum = abs(sum(_signal_values(heartbeat.get("signals_11d") or [])))
+        flow_count = int(heartbeat.get("active_flow_count") or 0)
+        return BACKGROUND_GEOMETRY_CLIQUE_SIZES[(self.tick_count + flow_count + int(signal_sum * 1000)) % 2]
+
+    def _should_shockwave(self, trigger: str) -> bool:
+        lowered = _clean_text(trigger).lower()
+        context_trigger = str(self.context.get("trigger") or "").lower() if isinstance(self.context, dict) else ""
+        context_source = str((self.context.get("source") if isinstance(self.context, dict) else "") or "").lower()
+        if "subliminal" in lowered or "shockwave" in lowered:
+            return True
+        if context_trigger in {"cockpit_response", "text_question"}:
+            return True
+        if "subliminal" in context_source:
+            return True
+        payload = self.context.get("payload") if isinstance(self.context, dict) else {}
+        if isinstance(payload, dict) and str(payload.get("prompt") or "").strip():
+            return context_trigger == "cockpit_response"
+        return False
+
+    def _run_shockwave(
+        self,
+        *,
+        trigger: str,
+        stimulus: dict[str, Any] | None,
+        heartbeat: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        heartbeat = heartbeat if isinstance(heartbeat, dict) else _runtime_heartbeat_snapshot(trigger=trigger)
+        self._ensure_shockwave_nodes()
+        before = self._current_dimensional_geometry(compact=True)
+        shock_seed = {
+            "task": self.task,
+            "trigger": trigger,
+            "stimulus": stimulus or {},
+            "heartbeat": heartbeat,
+            "tick": self.tick_count,
+        }
+        external_vector = _normalize_11d_vector(shock_seed)
+        ladder: list[dict[str, Any]] = []
+        last_anchor_event: dict[str, Any] = {}
+        formed_edges = 0
+        for target in SHOCKWAVE_LADDER_CLIQUE_SIZES:
+            active_ids = [node_id for node_id, node in self.nodes.items() if node.active]
+            if len(active_ids) < 2:
+                break
+            clean_target = min(int(target), len(active_ids), FOAM_GEOMETRY_MAX_CLIQUE_SIZE)
+            geometry_event = self._advance_dimensional_geometry(
+                trigger=f"shockwave:{trigger}",
+                target_clique_size=clean_target,
+            )
+            selected = list(geometry_event.get("clique_node_ids") or [])[:clean_target]
+            formed_edges += self.mesh.force_clique(self, selected, strength=0.97)
+            field_signal = self._field_signal(trigger=f"shockwave:{trigger}")
+            field_signal["11d"] = [
+                round(_clamp((base * 0.18) + (external * 0.82), -1.0, 1.0), 6)
+                for base, external in zip(field_signal["11d"], external_vector)
+            ]
+            field_signal["runtime_heartbeat"] = _compact_heartbeat(heartbeat)
+            field_signal["shockwave"] = {
+                "source": (stimulus or {}).get("source") or "text_question",
+                "content_hash": (stimulus or {}).get("content_hash") or "",
+                "transition": "background_overridden_by_peak_integration",
+                "ladder_target": clean_target,
+            }
+            last_anchor_event = self.anchor_field.stimulate(
+                field_signal["11d"],
+                trigger=f"shockwave:{trigger}",
+                start_energy=89.0,
+                cycles=8,
+            )
+            field_signal["concept_anchor_field"] = {
+                "awareness_score": last_anchor_event["awareness_score"],
+                "field_energy": last_anchor_event["field_energy"],
+                "fired_count": len(last_anchor_event["fired"]),
+                "pocket_signal": last_anchor_event["pocket_signal"],
+                "holographic_output_signal": (
+                    last_anchor_event.get("holographic_bootloader") or {}
+                ).get("output_signal"),
+            }
+            for node in list(self.nodes.values()):
+                node.evolve(field_signal, tick=self.tick_count)
+            for node_id in selected:
+                self.mesh.broadcast_resonance(self, node_id, field_signal)
+            self._refresh_coherence()
+            ladder.append(_compact_geometry_event(geometry_event))
+
+        peak = ladder[-1] if ladder else _compact_geometry_event(before)
+        peak_dimension = int(peak.get("dimension") or 0)
+        peak_reached = peak_dimension >= SHOCKWAVE_PEAK_DIMENSION
+        shockwave = {
+            "status": "peak_integrated" if peak_reached else "partial",
+            "trigger": _clean_text(trigger)[:100],
+            "source": (stimulus or {}).get("source") or "text_question",
+            "content_hash": (stimulus or {}).get("content_hash") or "",
+            "background": _compact_heartbeat(heartbeat),
+            "before": _compact_geometry_event(before),
+            "ladder": ladder,
+            "peak_dimension": peak_dimension,
+            "peak_clique_size": peak.get("clique_size"),
+            "formed_edges": formed_edges,
+            "anchor_awareness": last_anchor_event.get("awareness_score"),
+            "anchor_field_energy": last_anchor_event.get("field_energy"),
+            "hard_collapse": peak_reached,
+            "transition_signature": "noise_to_structure_to_silence",
+            "raw_context_stored": False,
+            "fake_success": False,
+        }
+        self._last_shockwave = shockwave
+        if peak_reached:
+            self._pending_hard_collapse = {
+                "reason": "shockwave_peak_integration",
+                "shockwave": _scrub_context(shockwave),
+                "ts": _utc_iso(),
+                "fake_success": False,
+            }
+        recent_event = {
+            "tick": self.tick_count,
+            "trigger": trigger,
+            "shockwave": True,
+            "transition": "noise_to_structure_to_silence",
+            "coherence": round(self._coherence, 6),
+            "node_count": len(self.nodes),
+            "anchor_awareness": last_anchor_event.get("awareness_score"),
+            "anchor_fired_count": len(last_anchor_event.get("fired") or []),
+            "foam_dimension": peak_dimension,
+            "electron_clique_size": peak.get("clique_size"),
+            "geometry": peak.get("geometry"),
+            "hard_collapse_pending": bool(self._pending_hard_collapse),
+            "background_heartbeat": _compact_heartbeat(heartbeat),
+            "ts": _utc_iso(),
+        }
+        self.updated_at = _utc_iso()
+        return {"shockwave": shockwave, "recent_event": recent_event}
+
+    def _ensure_shockwave_nodes(self) -> None:
+        desired = min(FOAM_GEOMETRY_MAX_CLIQUE_SIZE, FIELD_MAX_NODES)
+        node_types = [
+            "ReasoningNode",
+            "MemoryNode",
+            "PlanningNode",
+            "ReflectionNode",
+            "NexusNode",
+            "ToolNode",
+            "WorldActionNode",
+            "CodexNode",
+            "RufloNode",
+            "TrainerNode",
+            "ReflectionNode",
+            "MemoryNode",
+        ]
+        while len([node for node in self.nodes.values() if node.active]) < desired and len(self.nodes) < FIELD_MAX_NODES:
+            index = len(self.nodes)
+            node_type = node_types[index % len(node_types)]
+            try:
+                node = self.spawn_node(
+                    node_type=node_type,
+                    weight=0.72 + min(index * 0.012, 0.18),
+                    task_fragment=f"Shockwave integration node {index}",
+                    metadata={"formation": "shockwave", "hexlet_count": 1 + (index % 2)},
+                )
+            except ValueError:
+                break
+            for peer_id in list(self.nodes.keys())[: min(4, len(self.nodes))]:
+                if peer_id != node.node_id:
+                    self.entangle(node.node_id, peer_id, strength=0.72)
 
     def get_coherence(self) -> float:
         self._refresh_coherence()
@@ -1289,6 +1641,8 @@ class QuantumFoamField:
             "hexlet_count": self.hexlet_count(),
             "active_hexlet_count": self.active_hexlet_count(),
             "hexlet_signature": self.hexlet_signature(compact=True),
+            "runtime_heartbeat": _compact_heartbeat(self._last_runtime_heartbeat),
+            "shockwave": _scrub_context(self._last_shockwave) if self._last_shockwave else {},
             "symbolic_capacity_zettabytes": FIELD_SYMBOLIC_CAPACITY_ZETTABYTES,
             "memory_footprint_estimate_bytes": self.memory_footprint_bytes(),
             "field_coherence": self.get_coherence(),
@@ -1300,6 +1654,10 @@ class QuantumFoamField:
             "mesh": self.mesh.to_dict(),
             "entanglement_mesh": self.mesh.to_dict(),
             "recent_evolution": list(self._recent_evolution),
+            "runtime_heartbeat": _compact_heartbeat(self._last_runtime_heartbeat),
+            "heartbeat_history": list(self._heartbeat_history),
+            "shockwave": _scrub_context(self._last_shockwave) if self._last_shockwave else {},
+            "hard_collapse_pending": bool(self._pending_hard_collapse),
             "collapse_essence": self._collapse_essence,
             "fake_success": False,
         }
@@ -1324,6 +1682,8 @@ class QuantumFoamField:
             "coherence": self._coherence,
             "node_count": len(self.nodes),
             "hexlet_signature": self.hexlet_signature(compact=True),
+            "runtime_heartbeat": _compact_heartbeat(self._last_runtime_heartbeat),
+            "shockwave": _scrub_context(self._last_shockwave) if self._last_shockwave else {},
         }
 
     def _advance_dimensional_geometry(
@@ -1500,7 +1860,11 @@ class FieldLifecycleEngine:
             formation = field.form_initial_nodes()
             field.evolve(trigger="initiate")
             self._fields[field.field_id] = field
-            event = self._record_event_locked("initiated", field, {"formation": formation})
+            essence = self._maybe_hard_collapse_locked(field)
+            if essence:
+                event = self._record_event_locked("collapsed", field, {"essence": essence, "formation": formation})
+            else:
+                event = self._record_event_locked("initiated", field, {"formation": formation})
         self._broadcast("quantum_foam_field_initiated", field, event)
         return {"status": "online", "event": event, "field": field.to_dict(compact=True), "fake_success": False}
 
@@ -1511,7 +1875,10 @@ class FieldLifecycleEngine:
                 return self.status()
             if evolve and field.status == "active":
                 field.evolve(trigger=trigger)
-                if field.tick_count >= field.max_ticks:
+                essence = self._maybe_hard_collapse_locked(field)
+                if essence:
+                    event = self._record_event_locked("collapsed", field, {"essence": essence})
+                elif field.tick_count >= field.max_ticks:
                     essence = self._collapse_locked(field, reason="natural_lifecycle_max_ticks")
                     event = self._record_event_locked("collapsed", field, {"essence": essence})
                 else:
@@ -1520,6 +1887,75 @@ class FieldLifecycleEngine:
                 event = self._record_event_locked("observed", field, {})
         self._broadcast("quantum_foam_field_monitored", field, event)
         return {"status": "online", "event": event, "field": field.to_dict(compact=True), "fake_success": False}
+
+    def subliminal_feed(
+        self,
+        task: str,
+        *,
+        stimulus: dict[str, Any],
+        source: str = "subliminal_lookup",
+        max_ticks: int = FIELD_DEFAULT_MAX_TICKS,
+    ) -> dict[str, Any]:
+        clean_task = _clean_text(task) or "subliminal collective field feed"
+        payload = dict(stimulus or {})
+        payload.setdefault("source", source or "subliminal_lookup")
+        metadata = _subliminal_feed_meta(payload)
+        with self._lock:
+            field = self._select_field_locked(None)
+            initiated = False
+            if field is None or field.status != "active":
+                field = QuantumFoamField(
+                    task=clean_task,
+                    context={
+                        "source": "subliminal_lookup",
+                        "feed": metadata,
+                    },
+                    max_ticks=max_ticks,
+                )
+                formation = field.form_initial_nodes()
+                self._fields[field.field_id] = field
+                initiated = True
+            else:
+                formation = None
+            feed_event = field.absorb_external_intention(
+                payload,
+                trigger=f"subliminal:{metadata.get('source') or source or 'lookup'}",
+            )
+            essence = self._maybe_hard_collapse_locked(field)
+            if essence:
+                event = self._record_event_locked(
+                    "collapsed",
+                    field,
+                    {"essence": essence, "subliminal_feed": metadata, "initiated": initiated, "shockwave": feed_event.get("shockwave")},
+                )
+            elif field.tick_count >= field.max_ticks:
+                essence = self._collapse_locked(field, reason="natural_lifecycle_max_ticks")
+                event = self._record_event_locked(
+                    "collapsed",
+                    field,
+                    {"essence": essence, "subliminal_feed": metadata, "initiated": initiated},
+                )
+            else:
+                event = self._record_event_locked(
+                    "subliminal_feed",
+                    field,
+                    {
+                        "feed": metadata,
+                        "initiated": initiated,
+                        "formation": formation if initiated else None,
+                    },
+                )
+        self._broadcast("quantum_foam_field_subliminal_feed", field, event)
+        return {
+            "status": "online",
+            "event": event,
+            "field": field.to_dict(compact=True),
+            "subliminal_feed": feed_event.get("subliminal_feed") or metadata,
+            "shockwave": feed_event.get("shockwave") or {},
+            "collapse_essence": field._collapse_essence if field.status == "collapsed" else None,
+            "initiated": initiated,
+            "fake_success": False,
+        }
 
     def trigger_collapse(self, *, field_id: str | None = None, reason: str = "manual") -> dict[str, Any]:
         with self._lock:
@@ -1586,6 +2022,20 @@ class FieldLifecycleEngine:
 
     def _collapse_locked(self, field: QuantumFoamField, *, reason: str) -> dict[str, Any]:
         essence = field.collapse_field(reason=reason)
+        self._persist_essence(essence)
+        return essence
+
+    def _maybe_hard_collapse_locked(self, field: QuantumFoamField) -> dict[str, Any] | None:
+        pending = field._pending_hard_collapse
+        if not pending or field.status != "active":
+            return None
+        reason = str(pending.get("reason") or "shockwave_peak_integration")
+        essence = field.collapse_field(reason=reason)
+        essence["hard_collapse"] = True
+        essence["shockwave"] = _scrub_context(pending.get("shockwave") or {})
+        essence["transition_signature"] = "noise_to_structure_to_silence"
+        field._collapse_essence = essence
+        field._pending_hard_collapse = None
         self._persist_essence(essence)
         return essence
 
@@ -1716,12 +2166,119 @@ def monitor_quantum_foam_field(
     return get_field_lifecycle_engine().monitor(field_id=field_id, evolve=evolve, trigger=trigger)
 
 
+def subliminal_quantum_foam_feed(
+    task: str,
+    *,
+    stimulus: dict[str, Any],
+    source: str = "subliminal_lookup",
+    max_ticks: int = FIELD_DEFAULT_MAX_TICKS,
+) -> dict[str, Any]:
+    return get_field_lifecycle_engine().subliminal_feed(
+        task,
+        stimulus=stimulus,
+        source=source,
+        max_ticks=max_ticks,
+    )
+
+
 def collapse_quantum_foam_field(*, field_id: str | None = None, reason: str = "manual") -> dict[str, Any]:
     return get_field_lifecycle_engine().trigger_collapse(field_id=field_id, reason=reason)
 
 
 def quantum_foam_status(limit: int = 5) -> dict[str, Any]:
     return get_field_lifecycle_engine().status(limit=limit)
+
+
+def _runtime_heartbeat_snapshot(*, trigger: str = "monitor") -> dict[str, Any]:
+    try:
+        from controller.streaming_consciousness_adapter import get_streaming_status
+
+        status = get_streaming_status()
+    except Exception as exc:
+        values = _normalize_11d_vector(f"heartbeat-fallback:{trigger}:{time.time_ns()}")
+        return {
+            "status": "fallback",
+            "source": "software_fallback",
+            "reason": str(exc)[:180],
+            "signals_11d": values,
+            "real_observation": False,
+            "active_flow_count": 0,
+            "interface_count": 0,
+            "dhcp_state": "unknown",
+            "volatility": 0.34,
+            "fake_success": False,
+        }
+    runtime_input = status.get("runtime_input") if isinstance(status, dict) else {}
+    latest_state = status.get("latest_state") if isinstance(status, dict) else {}
+    if not isinstance(runtime_input, dict):
+        runtime_input = {}
+    if not isinstance(latest_state, dict):
+        latest_state = {}
+    network = latest_state.get("network") if isinstance(latest_state.get("network"), dict) else {}
+    signals = _normalize_11d_vector(runtime_input.get("signals_11d") or latest_state.get("11d") or [])
+    active_flow_count = int(runtime_input.get("active_flow_count") or 0)
+    interface_count = int(runtime_input.get("interface_count") or 0)
+    dhcp_state = str(network.get("dhcp") or runtime_input.get("dhcp_state") or "unknown")[:80]
+    volatility = _clamp(
+        0.22
+        + (sum(abs(value) for value in signals) / 11.0) * 0.62
+        + min(active_flow_count / 64.0, 0.5)
+        + min(interface_count / 24.0, 0.25),
+        0.12,
+        2.2,
+    )
+    status_value = status.get("status") if isinstance(status, dict) else "unknown"
+    return {
+        "status": runtime_input.get("status") or status_value or "unknown",
+        "source": runtime_input.get("source") or "streaming_consciousness_adapter",
+        "snapshot_id": runtime_input.get("snapshot_id") or "",
+        "signals_11d": signals,
+        "real_observation": bool(runtime_input.get("real_observation")),
+        "active_flow_count": active_flow_count,
+        "interface_count": interface_count,
+        "dhcp_state": dhcp_state,
+        "local_ip": str(network.get("local_ip") or "")[:80],
+        "volatility": round(volatility, 6),
+        "trigger": _clean_text(trigger)[:80],
+        "raw_payload_capture": False,
+        "fake_success": False,
+    }
+
+
+def _compact_heartbeat(heartbeat: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(heartbeat, dict) or not heartbeat:
+        return {}
+    return {
+        "status": heartbeat.get("status"),
+        "source": heartbeat.get("source"),
+        "snapshot_id": heartbeat.get("snapshot_id"),
+        "real_observation": bool(heartbeat.get("real_observation")),
+        "active_flow_count": int(heartbeat.get("active_flow_count") or 0),
+        "interface_count": int(heartbeat.get("interface_count") or 0),
+        "dhcp_state": heartbeat.get("dhcp_state"),
+        "volatility": round(float(heartbeat.get("volatility") or 0.0), 6),
+        "signals_11d": [round(float(value), 6) for value in list(heartbeat.get("signals_11d") or [])[:11]],
+        "raw_payload_capture": False,
+        "fake_success": False,
+    }
+
+
+def _compact_geometry_event(event: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(event, dict):
+        return {}
+    return {
+        "stage": event.get("stage"),
+        "dimension": event.get("dimension"),
+        "dimension_label": event.get("dimension_label"),
+        "geometry": event.get("geometry"),
+        "visual_model": event.get("visual_model"),
+        "clique_size": event.get("clique_size"),
+        "electron_count": event.get("electron_count"),
+        "complete_graph": event.get("complete_graph"),
+        "filled": event.get("filled"),
+        "anchored_11d": event.get("anchored_11d"),
+        "fake_success": False,
+    }
 
 
 def _hexlet_count_for_node(node_type: str, task_fragment: str, metadata: dict[str, Any] | None = None) -> int:
@@ -1859,6 +2416,29 @@ def _normalize_11d_vector(value: Any) -> list[float]:
         number = float(item) if math.isfinite(float(item)) else 0.0
         normalized.append(round(_clamp(math.tanh(number), -1.0, 1.0), 6))
     return normalized
+
+
+def _subliminal_feed_meta(stimulus: dict[str, Any] | None) -> dict[str, Any]:
+    payload = stimulus if isinstance(stimulus, dict) else {}
+    source = _clean_text(payload.get("source") or "subliminal_lookup")[:80]
+    taint = _clean_text(payload.get("taint") or "unknown")[:80]
+    content_hash = _clean_text(payload.get("content_hash") or "")[:96]
+    if not content_hash:
+        content = _clean_text(payload.get("signal_text") or payload)
+        content_hash = hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
+    try:
+        result_count = max(0, int(payload.get("result_count") or 0))
+    except (TypeError, ValueError):
+        result_count = 0
+    return {
+        "source": source or "subliminal_lookup",
+        "taint": taint or "unknown",
+        "result_count": result_count,
+        "content_hash": content_hash,
+        "field_input": "external_intention_only",
+        "raw_context_stored": False,
+        "fake_success": False,
+    }
 
 
 def _std(values: list[float]) -> float:

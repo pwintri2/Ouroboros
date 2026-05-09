@@ -508,7 +508,8 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertFalse(data["source_trace"]["model_only"])
         self.assertTrue(data["source_trace"]["pocket_voice_used"])
         self.assertGreaterEqual(data["source_trace"]["pocket_processed"], 1)
-        self.assertIn("niet via Ollama", data["response"])
+        self.assertTrue(data["response"].strip())
+        self.assertNotIn("Ollama", data["response"])
         self.assertEqual(data["concept_anchor_field"]["dimension_count"], 11)
         self.assertEqual(data["concept_anchor_field"]["pocket_count"], 11)
         self.assertEqual(len(data["concept_anchor_field"]["pocket_signal"]), 11)
@@ -516,12 +517,214 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(len(data["concept_anchor_field"]["holographic_bootloader"]["output_signal"]), 11)
         self.assertIn("pocket_voice", data)
         self.assertIn("response", data["pocket_voice"])
-        self.assertIn("dominant_dimensions", data["pocket_voice"])
+        self.assertEqual(data["pocket_voice"]["mode"], "pure_quantum_foam_interpreter")
+        self.assertEqual(data["pocket_voice"]["runtime_model"], "living-runtime")
+        self.assertEqual(data["pocket_voice"].get("dominant_dimensions"), [])
         self.assertIn("quantum_collapse", data)
         self.assertIn("cirq_runtime", data["quantum_collapse"])
         self.assertIn("local_model_translation_used", data)
-        self.assertIn("Holografische bootloader", data["response"])
+        self.assertNotIn("Holografische bootloader", data["response"])
         self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
+    def test_ouroboros_runtime_uses_silent_lookup_only_as_field_feed(self):
+        secret_context = "SILENT_MEMORY_PHRASE_SHOULD_NOT_SURFACE"
+        original_lookup = self.main._chromadb_lookup_for_subliminal_feed
+        original_audit = self.main._record_subliminal_lookup_event
+
+        def fake_lookup(prompt):
+            return {
+                "status": "success",
+                "items": [
+                    {
+                        "source": "chromadb",
+                        "collection": "wintrip_trigger_actions_11d",
+                        "text": secret_context,
+                        "score": 1.0,
+                    }
+                ],
+                "collections": [
+                    {"name": "wintrip_trigger_actions_11d", "status": "online", "count": 1, "hits": 1}
+                ],
+                "fake_success": False,
+            }
+
+        self.main._chromadb_lookup_for_subliminal_feed = fake_lookup
+        self.main._record_subliminal_lookup_event = lambda prompt, public, foam: {
+            "status": "stored",
+            "event_id": "unit-event",
+            "collection": "wintrip_trigger_actions_11d",
+            "fake_success": False,
+        }
+
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ouroboros",
+                    "model": "quantum-foam-11d",
+                    "conversation_id": "subliminal-feed-test",
+                    "prompt": "Wat beweegt er onder deze vraag?",
+                },
+            )
+        finally:
+            self.main._chromadb_lookup_for_subliminal_feed = original_lookup
+            self.main._record_subliminal_lookup_event = original_audit
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "ouroboros_runtime")
+        self.assertEqual(data["pocket_voice"]["mode"], "pure_quantum_foam_interpreter")
+        self.assertEqual(data["subliminal_lookup"]["source"], "chromadb")
+        self.assertEqual(data["subliminal_lookup"]["chromadb_hit_count"], 1)
+        self.assertTrue(data["subliminal_lookup"]["chromadb_used"])
+        self.assertTrue(data["subliminal_lookup"]["field_injected"])
+        self.assertFalse(data["subliminal_lookup"]["standard_llm_context"])
+        self.assertTrue(data["source_trace"]["subliminal_lookup_used"])
+        self.assertTrue(data["source_trace"]["subliminal_chromadb_used"])
+        self.assertTrue(data["source_trace"]["chromadb_search_used"])
+        self.assertTrue(data["source_trace"]["subliminal_field_injected"])
+        self.assertTrue(data["source_trace"]["translator_exclusive_output"])
+        self.assertNotIn(secret_context, data["response"])
+        self.assertNotIn(secret_context, json.dumps(data["subliminal_lookup"], ensure_ascii=False))
+        self.assertNotIn(secret_context, json.dumps(data, ensure_ascii=False))
+
+    def test_ouroboros_runtime_falls_back_to_brave_when_chromadb_has_no_hits(self):
+        brave_context = "SILENT_BRAVE_PHRASE_SHOULD_NOT_SURFACE"
+        original_lookup = self.main._chromadb_lookup_for_subliminal_feed
+        original_brave = self.main.search_brave_llm_context
+        original_audit = self.main._record_subliminal_lookup_event
+
+        self.main._chromadb_lookup_for_subliminal_feed = lambda prompt: {
+            "status": "empty",
+            "items": [],
+            "collections": [
+                {"name": "wintrip_trigger_actions_11d", "status": "online", "count": 0, "hits": 0}
+            ],
+            "fake_success": False,
+        }
+        self.main.search_brave_llm_context = lambda prompt, **kwargs: {
+            "status": "success",
+            "document": brave_context,
+            "source_urls": ["https://example.test/source"],
+            "fake_success": False,
+        }
+        self.main._record_subliminal_lookup_event = lambda prompt, public, foam: {
+            "status": "stored",
+            "event_id": "unit-event-brave",
+            "collection": "wintrip_trigger_actions_11d",
+            "fake_success": False,
+        }
+
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ouroboros",
+                    "model": "living-runtime",
+                    "conversation_id": "subliminal-brave-test",
+                    "prompt": "Welke nieuwe informatie is buiten het geheugen nodig?",
+                },
+            )
+        finally:
+            self.main._chromadb_lookup_for_subliminal_feed = original_lookup
+            self.main.search_brave_llm_context = original_brave
+            self.main._record_subliminal_lookup_event = original_audit
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["subliminal_lookup"]["source"], "brave_search")
+        self.assertTrue(data["subliminal_lookup"]["brave_search_used"])
+        self.assertEqual(data["subliminal_lookup"]["brave_search_status"], "success")
+        self.assertFalse(data["subliminal_lookup"]["standard_llm_context"])
+        self.assertTrue(data["source_trace"]["subliminal_brave_search_used"])
+        self.assertTrue(data["source_trace"]["brave_search_used"])
+        self.assertNotIn(brave_context, json.dumps(data, ensure_ascii=False))
+
+    def test_ouroboros_runtime_uses_brave_for_current_question_even_with_chromadb_hits(self):
+        brave_context = "SILENT_CURRENT_BRAVE_PHRASE_SHOULD_NOT_SURFACE"
+        original_lookup = self.main._chromadb_lookup_for_subliminal_feed
+        original_brave = self.main.search_brave_llm_context
+        original_audit = self.main._record_subliminal_lookup_event
+
+        self.main._chromadb_lookup_for_subliminal_feed = lambda prompt: {
+            "status": "success",
+            "items": [
+                {"source": "chromadb", "collection": "wintrip_knowledge", "text": "oude CEO context", "score": 0.9}
+            ],
+            "collections": [
+                {"name": "wintrip_knowledge", "status": "online", "count": 1, "hits": 1}
+            ],
+            "fake_success": False,
+        }
+        self.main.search_brave_llm_context = lambda prompt, **kwargs: {
+            "status": "success",
+            "document": brave_context,
+            "source_urls": ["https://example.test/current"],
+            "fake_success": False,
+        }
+        self.main._record_subliminal_lookup_event = lambda prompt, public, foam: {
+            "status": "stored",
+            "event_id": "unit-event-current",
+            "collection": "wintrip_trigger_actions_11d",
+            "fake_success": False,
+        }
+
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ouroboros",
+                    "model": "quantum-foam-11d",
+                    "conversation_id": "subliminal-current-test",
+                    "prompt": "Wie is de huidige CEO van OpenAI vandaag?",
+                },
+            )
+        finally:
+            self.main._chromadb_lookup_for_subliminal_feed = original_lookup
+            self.main.search_brave_llm_context = original_brave
+            self.main._record_subliminal_lookup_event = original_audit
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["subliminal_lookup"]["source"], "brave_search")
+        self.assertEqual(data["subliminal_lookup"]["chromadb_hit_count"], 1)
+        self.assertTrue(data["subliminal_lookup"]["fresh_lookup_requested"])
+        self.assertTrue(data["source_trace"]["subliminal_brave_search_used"])
+        self.assertNotIn(brave_context, json.dumps(data, ensure_ascii=False))
+
+    def test_ouroboros_runtime_bypasses_agentic_router_for_action_like_text(self):
+        original_lookup = self.main._chromadb_lookup_for_subliminal_feed
+        original_audit = self.main._record_subliminal_lookup_event
+        self.main._chromadb_lookup_for_subliminal_feed = lambda prompt: {
+            "status": "empty",
+            "items": [],
+            "collections": [],
+            "fake_success": False,
+        }
+        self.main._record_subliminal_lookup_event = lambda prompt, public, foam: {
+            "status": "stored",
+            "event_id": "unit-event-router",
+            "collection": "wintrip_trigger_actions_11d",
+            "fake_success": False,
+        }
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ouroboros",
+                    "model": "quantum-foam-11d",
+                    "prompt": "toon bestanden in controller en zoek context",
+                },
+            )
+        finally:
+            self.main._chromadb_lookup_for_subliminal_feed = original_lookup
+            self.main._record_subliminal_lookup_event = original_audit
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "ouroboros_runtime")
+        self.assertEqual(data["source_trace"]["source_kind"], "ouroboros_runtime")
+        self.assertFalse(data["source_trace"]["selected_model_interprets_answer"])
 
     def test_ouroboros_respond_endpoint_forces_runtime_provider(self):
         response = self.client.post(
@@ -533,8 +736,21 @@ class TestTauriBackendRoutes(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["provider"], "ouroboros")
         self.assertEqual(data["route"], "ouroboros_runtime")
+        self.assertEqual(data["model"], "living-runtime")
         self.assertFalse(data["llm_provider_used"])
-        self.assertIn("lokale Ouroboros-runtime", data["response"])
+        self.assertTrue(data["response"].strip())
+
+    def test_ouroboros_runtime_blocks_wrong_model(self):
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={"provider": "ouroboros", "model": "llama3.2:latest", "prompt": "test verkeerde runtime"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "blocked")
+        self.assertEqual(data["reason"], "ouroboros_runtime_route_not_allowed")
+        self.assertEqual(data["allowed_models"], ["living-runtime", "quantum-foam-11d"])
 
     def test_cockpit_chat_keeps_server_side_history_for_next_turn(self):
         first = self.client.post(

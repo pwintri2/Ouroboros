@@ -230,7 +230,11 @@ class LivingOuroborosLoop:
             anchor_field = {}
         thought = _entry_text(tick.get("thought")) or str(status.get("current_thought") or "")
         question = _entry_text(tick.get("question")) or str(status.get("current_question") or "")
-        pocket_voice = _fresh_streaming_pocket_voice(clean_prompt)
+        pocket_voice = _fresh_streaming_pocket_voice(
+            clean_prompt,
+            quantum_foam=quantum_foam,
+            provider_context=provider_context or {},
+        )
         response = _format_local_response(
             prompt=clean_prompt,
             thought=thought,
@@ -244,7 +248,7 @@ class LivingOuroborosLoop:
         return {
             "status": "success",
             "provider": "ouroboros",
-            "model": "living-runtime",
+            "model": _pure_runtime_model(provider_context or {}),
             "route": "ouroboros_runtime",
             "response": response,
             "local_only": True,
@@ -571,6 +575,8 @@ def _format_local_response(
     voice_summary = str(voice.get("summary") or "").strip()
     voice_status = str(voice.get("status") or "")
     voice_model = str(voice.get("model") or "")
+    if voice.get("mode") == "pure_quantum_foam_interpreter" and voice_response:
+        return voice_response
     topology = voice.get("pocket_topology") if isinstance(voice.get("pocket_topology"), dict) else {}
     network_flow = voice.get("network_flow") if isinstance(voice.get("network_flow"), dict) else {}
     if voice_response:
@@ -641,7 +647,12 @@ def _format_local_response(
     )
 
 
-def _fresh_streaming_pocket_voice(prompt: str) -> dict[str, Any]:
+def _fresh_streaming_pocket_voice(
+    prompt: str,
+    *,
+    quantum_foam: dict[str, Any] | None = None,
+    provider_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Run one bounded 11D pocket tick and return its prompt-aware language layer."""
 
     try:
@@ -652,7 +663,15 @@ def _fresh_streaming_pocket_voice(prompt: str) -> dict[str, Any]:
         event = tick.get("last_event") if isinstance(tick, dict) else {}
         if not isinstance(event, dict):
             event = {}
-        translator = PocketLanguageTranslator(cooldown_seconds=0, timeout=30)
+        if isinstance(quantum_foam, dict) and quantum_foam:
+            event["quantum_foam"] = quantum_foam
+        context = provider_context if isinstance(provider_context, dict) else {}
+        translator = PocketLanguageTranslator(
+            cooldown_seconds=0,
+            timeout=30,
+            provider=str(context.get("requested_provider") or context.get("provider") or ""),
+            runtime_model=str(context.get("model") or ""),
+        )
         voice = translator.translate(event, user_prompt=prompt)
         quantum = event.get("quantum") if isinstance(event.get("quantum"), dict) else {}
         voice["quantum_runtime"] = quantum.get("runtime") or quantum.get("sdk")
@@ -675,6 +694,11 @@ def _fresh_streaming_pocket_voice(prompt: str) -> dict[str, Any]:
             "reason": str(exc)[:300],
             "fake_success": False,
         }
+
+
+def _pure_runtime_model(provider_context: dict[str, Any]) -> str:
+    model = str((provider_context or {}).get("model") or "").strip()
+    return model if model in {"living-runtime", "quantum-foam-11d"} else "living-runtime"
 
 
 def _compact_tick(tick: Any) -> dict[str, Any]:
@@ -731,7 +755,10 @@ def _compact_pocket_voice(info: Any) -> dict[str, Any]:
         return {}
     return {
         "status": info.get("status"),
+        "mode": info.get("mode"),
         "model": info.get("model"),
+        "runtime_model": info.get("runtime_model"),
+        "route_provider": info.get("route_provider"),
         "source": info.get("source"),
         "summary": info.get("summary"),
         "response": info.get("response"),

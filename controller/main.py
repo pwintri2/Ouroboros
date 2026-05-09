@@ -5,6 +5,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import os
 import sys
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -1047,7 +1048,8 @@ async def cockpit_chat(req: CockpitChatRequest):
 
 @app.post("/api/ouroboros/respond")
 async def ouroboros_runtime_respond(req: CockpitChatRequest):
-    update = {"provider": "ouroboros", "model": req.model or "living-runtime"}
+    runtime_model = req.model if str(req.model or "").strip() in OUROBOROS_RUNTIME_MODELS else "living-runtime"
+    update = {"provider": "ouroboros", "model": runtime_model}
     runtime_req = req.model_copy(update=update) if hasattr(req, "model_copy") else req.copy(update=update)
     return await _cockpit_chat_payload(runtime_req)
 
@@ -1145,6 +1147,18 @@ MULTI_API_KEY_ENV: dict[str, str] = {
     "mistral": "MISTRAL_API_KEY",
 }
 ROO_CLOUD_COCKPIT_PROVIDERS: tuple[str, ...] = ("openai", "anthropic", "google")
+OUROBOROS_RUNTIME_MODELS: tuple[str, ...] = ("living-runtime", "quantum-foam-11d")
+SUBLIMINAL_LOOKUP_LIMIT = 5
+SUBLIMINAL_SIGNAL_CHAR_LIMIT = 3000
+SUBLIMINAL_CHROMA_COLLECTIONS: tuple[str, ...] = (
+    "wintrip_trigger_actions_11d",
+    "wintrip_agentic_sessions_11d",
+    "wintrip_knowledge",
+    "wintrip_training_11d",
+    "wintrip_world_understanding",
+)
+SUBLIMINAL_CHROMA_SCAN_LIMIT = 200
+SUBLIMINAL_CHROMA_MIN_SCORE = 0.16
 PROVIDER_ALIASES: dict[str, str] = {
     "local": "ollama",
     "ollama": "ollama",
@@ -1222,7 +1236,7 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             "available": True,
             "enabled": True,
             "local_only": True,
-            "models": ["living-runtime", "quantum-foam-11d"],
+            "models": list(OUROBOROS_RUNTIME_MODELS),
             "default_model": "living-runtime",
             "status": "online",
             "reason": "Lokale runtime-response uit Living Loop, Quantum Foam en 11D pockets; geen Ollama-call.",
@@ -1341,16 +1355,677 @@ def _normalize_cockpit_provider(provider: Optional[str]) -> tuple[str, str]:
 
 
 def _default_cockpit_model(provider: str, requested_model: Optional[str] = None) -> str:
+    if provider == "ouroboros":
+        model = str(requested_model or "").strip()
+        return model if model in OUROBOROS_RUNTIME_MODELS else "living-runtime"
     if requested_model:
         return requested_model
-    if provider == "ouroboros":
-        return "living-runtime"
     if provider == "roo":
         return _active_base(_safe_model_names())
     if provider == "ollama":
         return _active_base(_safe_model_names())
     options = MULTI_API_PROVIDER_MODELS.get(provider) or []
     return options[0] if options else ""
+
+
+def _is_ouroboros_runtime_request(requested_provider: str, provider: str, model: str) -> bool:
+    return requested_provider == "ouroboros" and provider == "ouroboros" and model in OUROBOROS_RUNTIME_MODELS
+
+
+def _blocked_ouroboros_runtime_payload(
+    *,
+    requested_provider: str,
+    provider: str,
+    model: str,
+    tools: list[dict[str, Any]],
+    return_tools: bool,
+) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "provider": provider,
+        "requested_provider": requested_provider,
+        "model": model,
+        "route": "ouroboros_runtime",
+        "local_only": True,
+        "llm_provider_used": False,
+        "response": "",
+        "error": "Ouroboros pure translator requires Motor=ouroboros and model=living-runtime or quantum-foam-11d.",
+        "reason": "ouroboros_runtime_route_not_allowed",
+        "allowed_provider": "ouroboros",
+        "allowed_models": list(OUROBOROS_RUNTIME_MODELS),
+        "tool_schemas": tools if return_tools else [],
+        "tool_schema_count": len(tools) if return_tools else 0,
+        "fake_success": False,
+    }
+
+
+def _ouroboros_subliminal_lookup_and_feed(prompt: object) -> dict[str, Any]:
+    """Silent Chroma/Brave lookup that perturbs QF-CF without becoming LLM context."""
+
+    clean_prompt = _subliminal_clean_text(prompt, limit=900)
+    if not clean_prompt or clean_prompt.startswith("/"):
+        return {
+            "public": {
+                "status": "skipped",
+                "route": "subliminal_quantum_foam",
+                "source": "none",
+                "field_injected": False,
+                "standard_llm_context": False,
+                "response_context_injected": False,
+                "fake_success": False,
+            },
+            "foam": {},
+            "fake_success": False,
+        }
+
+    lookup = _collective_unconscious_lookup(clean_prompt)
+    public = dict(lookup.get("public") or {})
+    feed = lookup.get("feed") if isinstance(lookup.get("feed"), dict) else {}
+    foam = _inject_subliminal_feed_into_quantum_foam(clean_prompt, feed) if feed.get("signal_text") else {
+        "status": "skipped",
+        "reason": "no_subliminal_signal",
+        "injected": False,
+        "fake_success": False,
+    }
+    public["field_injected"] = bool(foam.get("injected"))
+    public["field_status"] = str(foam.get("status") or "")
+    public["standard_llm_context"] = False
+    public["response_context_injected"] = False
+    audit = _record_subliminal_lookup_event(clean_prompt, public, foam)
+    if audit:
+        public["audit_status"] = audit.get("status")
+        public["audit_event_id"] = audit.get("event_id")
+        public["audit_collection"] = audit.get("collection")
+    return {"public": public, "foam": foam, "fake_success": False}
+
+
+def _collective_unconscious_lookup(prompt: str) -> dict[str, Any]:
+    chroma_lookup = _chromadb_lookup_for_subliminal_feed(prompt)
+    chroma_status = str(chroma_lookup.get("status") or "unknown")
+    chroma_items = chroma_lookup.get("items") if isinstance(chroma_lookup.get("items"), list) else []
+    needs_fresh_lookup = _subliminal_prompt_needs_current_lookup(prompt)
+
+    if chroma_items and not needs_fresh_lookup:
+        feed = _subliminal_feed_from_items(
+            "chromadb",
+            chroma_items,
+            taint="local_chromadb",
+        )
+        return {
+            "feed": feed,
+            "public": _public_subliminal_lookup(
+                status="fed",
+                feed=feed,
+                chroma_status=chroma_status,
+                chroma_hit_count=len(chroma_items),
+                chroma_collections=chroma_lookup.get("collections") or [],
+                brave_status="not_run",
+            ),
+            "fake_success": False,
+        }
+
+    brave_status = "not_run"
+    brave_items: list[dict[str, Any]] = []
+    try:
+        brave_result = search_brave_llm_context(
+            prompt,
+            maximum_number_of_urls=SUBLIMINAL_LOOKUP_LIMIT,
+            maximum_number_of_tokens=4096,
+        )
+        brave_status = str((brave_result or {}).get("status") or "unknown")
+        brave_items = _brave_items_for_subliminal_feed(brave_result)
+    except Exception as exc:
+        brave_status = f"error:{str(exc)[:120]}"
+
+    if brave_items:
+        feed = _subliminal_feed_from_items(
+            "brave_search",
+            brave_items,
+            taint="untrusted_web",
+        )
+        public = _public_subliminal_lookup(
+            status="fed",
+            feed=feed,
+            chroma_status=chroma_status,
+            chroma_hit_count=len(chroma_items),
+            chroma_collections=chroma_lookup.get("collections") or [],
+            brave_status=brave_status,
+        )
+        public["fresh_lookup_requested"] = needs_fresh_lookup
+        return {
+            "feed": feed,
+            "public": public,
+            "fake_success": False,
+        }
+
+    if chroma_items:
+        feed = _subliminal_feed_from_items(
+            "chromadb",
+            chroma_items,
+            taint="local_chromadb",
+        )
+        public = _public_subliminal_lookup(
+            status="fed",
+            feed=feed,
+            chroma_status=chroma_status,
+            chroma_hit_count=len(chroma_items),
+            chroma_collections=chroma_lookup.get("collections") or [],
+            brave_status=brave_status,
+        )
+        public["fresh_lookup_requested"] = needs_fresh_lookup
+        return {
+            "feed": feed,
+            "public": public,
+            "fake_success": False,
+        }
+
+    empty_feed = {
+        "source": "none",
+        "taint": "none",
+        "result_count": 0,
+        "content_hash": "",
+        "signal_text": "",
+        "fake_success": False,
+    }
+    return {
+        "feed": empty_feed,
+        "public": _public_subliminal_lookup(
+            status="no_results",
+            feed=empty_feed,
+            chroma_status=chroma_status,
+            chroma_hit_count=0,
+            chroma_collections=chroma_lookup.get("collections") or [],
+            brave_status=brave_status,
+        ),
+        "fake_success": False,
+    }
+
+
+def _chromadb_lookup_for_subliminal_feed(prompt: str) -> dict[str, Any]:
+    try:
+        from controller.chroma_runtime import chroma_client
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": f"chroma_runtime_unavailable:{str(exc)[:160]}",
+            "items": [],
+            "collections": [],
+            "fake_success": False,
+        }
+
+    try:
+        client = chroma_client()
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": f"chromadb_unavailable:{str(exc)[:160]}",
+            "items": [],
+            "collections": [],
+            "fake_success": False,
+        }
+
+    items: list[dict[str, Any]] = []
+    collection_reports: list[dict[str, Any]] = []
+    for collection_name in _subliminal_chroma_collection_names():
+        report = {"name": collection_name, "status": "unknown", "count": 0, "hits": 0}
+        try:
+            collection = client.get_collection(name=collection_name)
+            report["count"] = int(collection.count()) if callable(getattr(collection, "count", None)) else 0
+        except Exception as exc:
+            report["status"] = "missing"
+            report["reason"] = str(exc)[:120]
+            collection_reports.append(report)
+            continue
+        try:
+            collection_items = _query_chroma_collection_for_subliminal_feed(collection, collection_name, prompt)
+            report["status"] = "online"
+            report["hits"] = len(collection_items)
+            items.extend(collection_items)
+        except Exception as exc:
+            report["status"] = "error"
+            report["reason"] = str(exc)[:160]
+        collection_reports.append(report)
+
+    items.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    items = items[:SUBLIMINAL_LOOKUP_LIMIT]
+    status = "success" if items else ("empty" if any(item.get("status") == "online" for item in collection_reports) else "unavailable")
+    return {
+        "status": status,
+        "items": items,
+        "count": len(items),
+        "collections": collection_reports,
+        "fake_success": False,
+    }
+
+
+def _query_chroma_collection_for_subliminal_feed(collection: Any, collection_name: str, prompt: str) -> list[dict[str, Any]]:
+    query_items = _query_chroma_semantic(collection, collection_name, prompt)
+    lexical_items = _query_chroma_lexical(collection, collection_name, prompt)
+    by_hash: dict[str, dict[str, Any]] = {}
+    for item in query_items + lexical_items:
+        text = str(item.get("text") or "")
+        if not text:
+            continue
+        score = float(item.get("score") or 0.0)
+        if score < SUBLIMINAL_CHROMA_MIN_SCORE:
+            continue
+        key = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+        previous = by_hash.get(key)
+        if previous is None or score > float(previous.get("score") or 0.0):
+            by_hash[key] = item
+    items = list(by_hash.values())
+    items.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    return items[:SUBLIMINAL_LOOKUP_LIMIT]
+
+
+def _query_chroma_semantic(collection: Any, collection_name: str, prompt: str) -> list[dict[str, Any]]:
+    query = getattr(collection, "query", None)
+    if not callable(query):
+        return []
+    include = ["documents", "metadatas", "distances"]
+    attempts: list[dict[str, Any]] = []
+    if collection_name in {"wintrip_trigger_actions_11d", "wintrip_agentic_sessions_11d"}:
+        attempts.append({"query_embeddings": [_subliminal_11d_embedding(prompt)], "include": include})
+    attempts.append({"query_texts": [prompt], "include": include})
+    for kwargs in attempts:
+        try:
+            raw = query(n_results=SUBLIMINAL_LOOKUP_LIMIT, **kwargs)
+        except Exception:
+            continue
+        items = _items_from_chroma_query(raw, collection_name, prompt)
+        if items:
+            return items
+    return []
+
+
+def _query_chroma_lexical(collection: Any, collection_name: str, prompt: str) -> list[dict[str, Any]]:
+    getter = getattr(collection, "get", None)
+    if not callable(getter):
+        return []
+    try:
+        count = int(collection.count()) if callable(getattr(collection, "count", None)) else SUBLIMINAL_CHROMA_SCAN_LIMIT
+    except Exception:
+        count = SUBLIMINAL_CHROMA_SCAN_LIMIT
+    if count <= 0:
+        return []
+    try:
+        raw = getter(limit=max(1, min(count, SUBLIMINAL_CHROMA_SCAN_LIMIT)), include=["documents", "metadatas"])
+    except Exception:
+        return []
+    docs = raw.get("documents") if isinstance(raw, dict) else []
+    metas = raw.get("metadatas") if isinstance(raw, dict) else []
+    ids = raw.get("ids") if isinstance(raw, dict) else []
+    items: list[dict[str, Any]] = []
+    for index, doc in enumerate(docs or []):
+        text = _redact_subliminal_text(doc or "")
+        metadata = metas[index] if isinstance(metas, list) and index < len(metas) and isinstance(metas[index], dict) else {}
+        score = _subliminal_relevance_score(prompt, text, metadata)
+        if score < SUBLIMINAL_CHROMA_MIN_SCORE:
+            continue
+        items.append(
+            {
+                "text": text,
+                "source": "chromadb",
+                "collection": collection_name,
+                "id": str((ids or [""])[index]) if isinstance(ids, list) and index < len(ids) else "",
+                "score": round(score, 6),
+            }
+        )
+    items.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    return items[:SUBLIMINAL_LOOKUP_LIMIT]
+
+
+def _items_from_chroma_query(raw: Any, collection_name: str, prompt: str) -> list[dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return []
+    docs = (raw.get("documents") or [[]])[0] if raw.get("documents") else []
+    metas = (raw.get("metadatas") or [[]])[0] if raw.get("metadatas") else []
+    ids = (raw.get("ids") or [[]])[0] if raw.get("ids") else []
+    distances = (raw.get("distances") or [[]])[0] if raw.get("distances") else []
+    items: list[dict[str, Any]] = []
+    for index, doc in enumerate(docs or []):
+        text = _redact_subliminal_text(doc or "")
+        metadata = metas[index] if isinstance(metas, list) and index < len(metas) and isinstance(metas[index], dict) else {}
+        distance = distances[index] if isinstance(distances, list) and index < len(distances) else None
+        lexical_score = _subliminal_relevance_score(prompt, text, metadata)
+        distance_score = _distance_to_relevance(distance)
+        score = max(lexical_score, distance_score if lexical_score > 0.0 else 0.0)
+        if score < SUBLIMINAL_CHROMA_MIN_SCORE:
+            continue
+        items.append(
+            {
+                "text": text,
+                "source": "chromadb",
+                "collection": collection_name,
+                "id": str(ids[index]) if isinstance(ids, list) and index < len(ids) else "",
+                "score": round(score, 6),
+                "distance": distance,
+            }
+        )
+    return items
+
+
+def _subliminal_chroma_collection_names() -> list[str]:
+    configured = os.getenv("WINTRIP_SUBLIMINAL_CHROMA_COLLECTIONS", "")
+    if configured.strip():
+        names = [item.strip() for item in configured.split(",") if item.strip()]
+    else:
+        names = list(SUBLIMINAL_CHROMA_COLLECTIONS)
+    output: list[str] = []
+    for name in names:
+        if name and name not in output:
+            output.append(name)
+    return output
+
+
+def _subliminal_prompt_needs_current_lookup(prompt: str) -> bool:
+    text = _subliminal_clean_text(prompt, limit=600).lower()
+    markers = (
+        "vandaag",
+        "huidig",
+        "huidige",
+        "laatste",
+        "nieuwste",
+        "recent",
+        "nu ",
+        "op dit moment",
+        "current",
+        "latest",
+        "today",
+        "recent",
+        "now",
+        "news",
+        "ceo",
+        "president",
+        "prijs",
+        "price",
+        "weer",
+        "weather",
+        "versie",
+        "version",
+        "schema",
+        "schedule",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _memory_items_for_subliminal_feed(tool_result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    payload = (tool_result or {}).get("result") if isinstance(tool_result, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    matches = payload.get("matches") if isinstance(payload.get("matches"), list) else []
+    items: list[dict[str, Any]] = []
+    for match in matches[:SUBLIMINAL_LOOKUP_LIMIT]:
+        if not isinstance(match, dict):
+            continue
+        text = _redact_subliminal_text(match.get("text") or match.get("content") or "")
+        if not text:
+            continue
+        items.append(
+            {
+                "text": text,
+                "source": _subliminal_clean_text(match.get("source") or "memory_search", limit=120),
+                "tier": _subliminal_clean_text(match.get("tier") or "", limit=80),
+            }
+        )
+    return items
+
+
+def _brave_items_for_subliminal_feed(result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(result, dict) or str(result.get("status") or "") != "success":
+        return []
+    document = _redact_subliminal_text(result.get("document") or "")
+    if document:
+        return [
+            {
+                "text": document,
+                "source": "brave:llm_context",
+                "source_count": len(result.get("source_urls") or []),
+            }
+        ]
+    matches = result.get("matches") if isinstance(result.get("matches"), list) else []
+    items: list[dict[str, Any]] = []
+    for match in matches[:SUBLIMINAL_LOOKUP_LIMIT]:
+        if not isinstance(match, dict):
+            continue
+        text = _redact_subliminal_text(
+            " ".join(
+                str(part or "")
+                for part in (
+                    match.get("title"),
+                    match.get("description"),
+                    " ".join(match.get("extra_snippets") or []) if isinstance(match.get("extra_snippets"), list) else "",
+                )
+            )
+        )
+        if text:
+            items.append({"text": text, "source": "brave:web_search"})
+    return items
+
+
+def _subliminal_feed_from_items(source: str, items: list[dict[str, Any]], *, taint: str) -> dict[str, Any]:
+    fragments: list[str] = []
+    for item in items[:SUBLIMINAL_LOOKUP_LIMIT]:
+        text = _redact_subliminal_text(item.get("text") or "")
+        if not text:
+            continue
+        fragments.append(text)
+    signal_text = "\n\n".join(fragments)[:SUBLIMINAL_SIGNAL_CHAR_LIMIT]
+    content_hash = hashlib.sha256(
+        f"{source}\n{taint}\n{signal_text}".encode("utf-8", errors="ignore")
+    ).hexdigest()
+    return {
+        "source": source,
+        "taint": taint,
+        "result_count": len(fragments),
+        "content_hash": content_hash,
+        "signal_text": signal_text,
+        "intention": "collective_unconscious_feed",
+        "raw_context_stored": False,
+        "fake_success": False,
+    }
+
+
+def _inject_subliminal_feed_into_quantum_foam(prompt: str, feed: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from ouroboros_esoteric.quantum_foam import subliminal_quantum_foam_feed
+
+        result = subliminal_quantum_foam_feed(
+            f"cockpit_subliminal: {prompt[:240]}",
+            stimulus=feed,
+            source=str(feed.get("source") or "subliminal_lookup"),
+            max_ticks=12,
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": str(exc)[:240],
+            "injected": False,
+            "fake_success": False,
+        }
+    return _compact_subliminal_foam_result(result)
+
+
+def _compact_subliminal_foam_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {"status": "error", "injected": False, "fake_success": False}
+    field = result.get("field") if isinstance(result.get("field"), dict) else {}
+    event = result.get("event") if isinstance(result.get("event"), dict) else {}
+    feed = result.get("subliminal_feed") if isinstance(result.get("subliminal_feed"), dict) else {}
+    return {
+        "status": str(result.get("status") or "unknown"),
+        "injected": str(result.get("status") or "") in {"online", "absorbed"},
+        "event_action": event.get("action"),
+        "field_id": field.get("field_id"),
+        "tick_count": field.get("tick_count"),
+        "field_coherence": field.get("field_coherence"),
+        "source": feed.get("source"),
+        "content_hash": feed.get("content_hash"),
+        "result_count": feed.get("result_count"),
+        "raw_context_stored": False,
+        "fake_success": False,
+    }
+
+
+def _public_subliminal_lookup(
+    *,
+    status: str,
+    feed: dict[str, Any],
+    chroma_status: str,
+    chroma_hit_count: int,
+    chroma_collections: list[dict[str, Any]],
+    brave_status: str,
+) -> dict[str, Any]:
+    source = str(feed.get("source") or "none")
+    return {
+        "status": status,
+        "route": "subliminal_quantum_foam",
+        "source": source,
+        "result_count": int(feed.get("result_count") or 0),
+        "content_hash": str(feed.get("content_hash") or ""),
+        "chromadb_status": chroma_status,
+        "chromadb_hit_count": int(chroma_hit_count or 0),
+        "chromadb_collections": _public_chroma_collection_reports(chroma_collections),
+        "chromadb_used": chroma_status not in {"not_run", "unavailable"},
+        "chromadb_feed_used": source == "chromadb",
+        "memory_search_status": chroma_status,
+        "brave_search_status": brave_status,
+        "brave_search_used": source == "brave_search",
+        "field_injected": False,
+        "standard_llm_context": False,
+        "response_context_injected": False,
+        "raw_context_stored": False,
+        "fake_success": False,
+    }
+
+
+def _public_chroma_collection_reports(collections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    for item in collections[:10]:
+        if not isinstance(item, dict):
+            continue
+        reports.append(
+            {
+                "name": str(item.get("name") or "")[:120],
+                "status": str(item.get("status") or "")[:80],
+                "count": int(item.get("count") or 0),
+                "hits": int(item.get("hits") or 0),
+            }
+        )
+    return reports
+
+
+def _subliminal_relevance_score(prompt: str, text: str, metadata: dict[str, Any] | None = None) -> float:
+    prompt_tokens = _subliminal_tokens(prompt)
+    if not prompt_tokens:
+        return 0.0
+    body_tokens = _subliminal_tokens(text)
+    metadata_text = " ".join(str(value or "") for value in (metadata or {}).values())
+    metadata_tokens = _subliminal_tokens(metadata_text)
+    overlap = len(prompt_tokens & body_tokens)
+    metadata_overlap = len(prompt_tokens & metadata_tokens)
+    denominator = max(3, min(len(prompt_tokens), 8))
+    score = (overlap / denominator) + (metadata_overlap / denominator * 0.35)
+    prompt_clean = _subliminal_clean_text(prompt, limit=160).lower()
+    text_clean = _subliminal_clean_text(text, limit=2000).lower()
+    if len(prompt_clean) >= 12 and prompt_clean in text_clean:
+        score += 0.45
+    if any(token in text_clean for token in prompt_tokens if len(token) >= 7):
+        score += 0.08
+    return min(score, 1.0)
+
+
+def _subliminal_tokens(value: object) -> set[str]:
+    text = _subliminal_clean_text(value, limit=6000).lower()
+    tokens = set(re.findall(r"[a-z0-9_\-]{3,}", text))
+    stopwords = {
+        "the", "and", "for", "met", "een", "het", "dat", "dit", "wat", "wie",
+        "naar", "van", "voor", "onder", "vraag", "vandaag", "current", "huidige",
+    }
+    return {token for token in tokens if token not in stopwords}
+
+
+def _distance_to_relevance(distance: Any) -> float:
+    try:
+        number = float(distance)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    if number < 0:
+        return 0.0
+    return max(0.0, min(0.35, 0.35 / (1.0 + number)))
+
+
+def _subliminal_11d_embedding(text: str) -> list[float]:
+    digest = hashlib.sha256(str(text or "").encode("utf-8", errors="ignore")).digest()
+    return [
+        round(((digest[index * 2] * 256 + digest[index * 2 + 1]) / 65535.0) * 2.0 - 1.0, 6)
+        for index in range(11)
+    ]
+
+
+def _record_subliminal_lookup_event(prompt: str, public: dict[str, Any], foam: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from controller.memory_event_router import record_trigger_action
+
+        prompt_hash = hashlib.sha256(prompt.encode("utf-8", errors="ignore")).hexdigest()
+        return record_trigger_action(
+            trigger="cockpit_chat_text_question",
+            action="subliminal_chromadb_brave_feed_quantum_foam",
+            route="ouroboros_runtime",
+            status=str(public.get("status") or "unknown"),
+            payload={
+                "prompt_hash": prompt_hash,
+                "prompt_chars": len(prompt),
+                "provider": "ouroboros",
+                "standard_llm_context": False,
+            },
+            result={
+                "subliminal_lookup": public,
+                "subliminal_foam": foam,
+            },
+            approval_required=False,
+            approval_status="not_required_readonly",
+            source_trace={
+                "chromadb_used": public.get("chromadb_used"),
+                "brave_search_used": public.get("brave_search_used"),
+                "field_injected": public.get("field_injected"),
+                "standard_llm_context": False,
+            },
+            metadata_11d={
+                "d2_physical_source": "ouroboros_runtime",
+                "d3_physical_container": "wintrip_trigger_actions_11d",
+                "d5_persona_actor": "ouroboros",
+                "d6_persona_intent": "silent_lookup_as_quantum_foam_intention",
+                "d8_karmic_taint": "readonly_subliminal_lookup",
+                "d11_field": "qfcf_11d_pocket:subliminal_lookup",
+            },
+            pocket={
+                "subliminal_lookup": public,
+                "raw_context_stored": False,
+            },
+        )
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)[:160], "fake_success": False}
+
+
+def _redact_subliminal_text(value: object, *, limit: int = SUBLIMINAL_SIGNAL_CHAR_LIMIT) -> str:
+    text = _subliminal_clean_text(value, limit=limit)
+    if not text:
+        return ""
+    patterns = (
+        r"(?i)\b(api[_-]?key|token|secret|password|bearer)\b\s*[:=]\s*[^\s,;]+",
+        r"(?i)\bbearer\s+[a-z0-9._\-+/=]+",
+        r"(?i)\bsk-[a-z0-9_\-]{16,}",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, "[REDACTED]", text)
+    return text[:limit]
+
+
+def _subliminal_clean_text(value: object, *, limit: int = 1000) -> str:
+    return " ".join(str(value or "").replace("\x00", " ").strip().split())[: max(0, int(limit or 0))]
 
 
 def _roo_model_choices(local_models: Optional[list[str]] = None) -> list[str]:
@@ -1794,18 +2469,31 @@ def _ouroboros_runtime_chat_payload(
     tools: list[dict[str, Any]],
     chat_context: dict[str, Any],
 ) -> dict[str, Any]:
+    if not _is_ouroboros_runtime_request(requested_provider, "ouroboros", model):
+        return _blocked_ouroboros_runtime_payload(
+            requested_provider=requested_provider,
+            provider="ouroboros",
+            model=model,
+            tools=tools,
+            return_tools=_should_return_tool_schemas(req),
+        )
+    subliminal = _ouroboros_subliminal_lookup_and_feed(req.prompt)
+    provider_context = {
+        "requested_provider": requested_provider,
+        "provider": "ouroboros",
+        "model": model,
+        "role": req.role,
+        "history_count": len(req.history or []),
+        "subliminal_lookup": subliminal.get("public") or {},
+        "subliminal_foam": subliminal.get("foam") or {},
+    }
     try:
         from ouroboros_esoteric.ouroboros_consciousness_loop import living_response
 
         result = living_response(
             req.prompt,
             conversation_id=chat_context.get("conversation_id") or req.conversation_id or "",
-            provider_context={
-                "requested_provider": requested_provider,
-                "model": model,
-                "role": req.role,
-                "history_count": len(req.history or []),
-            },
+            provider_context=provider_context,
         )
     except Exception as exc:
         result = {
@@ -1830,6 +2518,16 @@ def _ouroboros_runtime_chat_payload(
     result["llm_provider_used"] = False
     result["tool_schemas"] = tools if _should_return_tool_schemas(req) else []
     result["tool_schema_count"] = len(tools) if _should_return_tool_schemas(req) else 0
+    result["subliminal_lookup"] = subliminal.get("public") or {}
+    result["subliminal_foam"] = subliminal.get("foam") or {}
+    provenance = dict(result.get("provenance") or {}) if isinstance(result.get("provenance"), dict) else {}
+    provenance["subliminal_lookup_used"] = bool(
+        (subliminal.get("public") or {}).get("status") == "fed"
+    )
+    provenance["subliminal_source"] = str((subliminal.get("public") or {}).get("source") or "")
+    provenance["subliminal_field_injected"] = bool((subliminal.get("public") or {}).get("field_injected"))
+    provenance["translator_exclusive_output"] = True
+    result["provenance"] = provenance
     result["fake_success"] = False
     return result
 
@@ -1967,6 +2665,23 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     timeout_seconds = _cockpit_chat_timeout_seconds()
     slash_timeout_seconds = _cockpit_slash_dispatch_timeout_seconds()
     chat_context = _rebuild_chat_context(req, provider, model)
+    if provider == "ouroboros":
+        requested_model = str(req.model or "").strip()
+        invalid_requested_model = bool(requested_model) and requested_model not in OUROBOROS_RUNTIME_MODELS
+        if invalid_requested_model or not _is_ouroboros_runtime_request(requested_provider, provider, model):
+            return _with_cockpit_self_context(
+                _blocked_ouroboros_runtime_payload(
+                    requested_provider=requested_provider,
+                    provider=provider,
+                    model=requested_model or model,
+                    tools=tools,
+                    return_tools=_should_return_tool_schemas(req),
+                ),
+                chat_context,
+                provider,
+                requested_model or model,
+                include_living_echo=False,
+            )
     if inline_approval.get("approval") == APPROVAL_PHRASE and inline_approval.get("resume_only") and not str(req.approval or "").strip():
         pending = consume_pending_approval(chat_context.get("conversation_id"))
         if pending:
@@ -2076,6 +2791,38 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         )
         return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
 
+    if provider == "ouroboros":
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _ouroboros_runtime_chat_payload,
+                    req,
+                    requested_provider=requested_provider,
+                    model=model,
+                    tools=tools,
+                    chat_context=chat_context,
+                ),
+                timeout=min(timeout_seconds, 20.0),
+            )
+        except asyncio.TimeoutError:
+            return _with_cockpit_self_context(
+                _chat_timeout_payload(
+                    requested_provider=requested_provider,
+                    provider="ouroboros",
+                    model=model,
+                    route="ouroboros_runtime",
+                    timeout_seconds=min(timeout_seconds, 20.0),
+                    local_only=True,
+                    tools=tools,
+                    return_tools=_should_return_tool_schemas(req),
+                ),
+                chat_context,
+                provider,
+                model,
+                include_living_echo=False,
+            )
+        return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
+
     fast_result = _fast_agentic_action_payload(
         req,
         requested_provider=requested_provider,
@@ -2131,38 +2878,6 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         result.setdefault("tool_schemas", tools if _should_return_tool_schemas(req) else [])
         result.setdefault("tool_schema_count", len(tools) if _should_return_tool_schemas(req) else 0)
         result.setdefault("llm_provider_used", provider != "ouroboros")
-        return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
-
-    if provider == "ouroboros":
-        try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _ouroboros_runtime_chat_payload,
-                    req,
-                    requested_provider=requested_provider,
-                    model=model,
-                    tools=tools,
-                    chat_context=chat_context,
-                ),
-                timeout=min(timeout_seconds, 20.0),
-            )
-        except asyncio.TimeoutError:
-            return _with_cockpit_self_context(
-                _chat_timeout_payload(
-                    requested_provider=requested_provider,
-                    provider="ouroboros",
-                    model=model,
-                    route="ouroboros_runtime",
-                    timeout_seconds=min(timeout_seconds, 20.0),
-                    local_only=True,
-                    tools=tools,
-                    return_tools=_should_return_tool_schemas(req),
-                ),
-                chat_context,
-                provider,
-                model,
-                include_living_echo=False,
-            )
         return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
 
     if _should_route_living_action(req.prompt):
@@ -2454,11 +3169,21 @@ def _cockpit_source_trace(result: dict[str, Any], *, provider: str, model: str) 
     if not tools_executed and tools_used and not blocked_tools:
         tools_executed = tools_used
 
-    brave_used = bool(provenance.get("brave_search_used")) or "brave_search" in tools_executed or "brave_search" in tools_used
+    subliminal_lookup = result.get("subliminal_lookup") if isinstance(result.get("subliminal_lookup"), dict) else {}
+    subliminal_source = str(provenance.get("subliminal_source") or subliminal_lookup.get("source") or "")
+    subliminal_brave_used = bool(subliminal_lookup.get("brave_search_used")) or subliminal_source == "brave_search"
+    subliminal_chromadb_used = bool(subliminal_lookup.get("chromadb_used")) or subliminal_source == "chromadb"
+    subliminal_chromadb_feed_used = bool(subliminal_lookup.get("chromadb_feed_used")) or subliminal_source == "chromadb"
+    brave_used = (
+        bool(provenance.get("brave_search_used"))
+        or "brave_search" in tools_executed
+        or "brave_search" in tools_used
+        or subliminal_brave_used
+    )
     brave_success = bool(provenance.get("brave_search_success")) or any(
         str(step.get("tool") or "") == "brave_search" and str(step.get("status") or "") == "success"
         for step in steps
-    )
+    ) or (subliminal_brave_used and str(subliminal_lookup.get("brave_search_status") or "") == "success")
     agentic_ecosystem_used = bool(provenance.get("agentic_ecosystem_used")) or "agentic_ecosystem_context" in tools_used
     agentic_ecosystem_sources = _trace_list(provenance.get("agentic_ecosystem_sources"))
     pocket_processed = _trace_int(provenance.get("pocket_processed_steps"))
@@ -2487,6 +3212,11 @@ def _cockpit_source_trace(result: dict[str, Any], *, provider: str, model: str) 
         or ((result.get("memory_status") or {}).get("status") if isinstance(result.get("memory_status"), dict) else result.get("memory_status"))
         or ""
     )
+    subliminal_used = bool(provenance.get("subliminal_lookup_used")) or str(subliminal_lookup.get("status") or "") == "fed"
+    subliminal_field_injected = bool(
+        provenance.get("subliminal_field_injected")
+        or subliminal_lookup.get("field_injected")
+    )
     action_status = "blocked" if blocked_tools else ("executed" if tools_executed else "none")
 
     return {
@@ -2498,6 +3228,15 @@ def _cockpit_source_trace(result: dict[str, Any], *, provider: str, model: str) 
         "selected_model_interprets_answer": selected_model_interprets,
         "brave_search_used": brave_used,
         "brave_search_success": brave_success,
+        "subliminal_lookup_used": subliminal_used,
+        "subliminal_source": subliminal_source,
+        "subliminal_field_injected": subliminal_field_injected,
+        "subliminal_chromadb_used": subliminal_chromadb_used,
+        "subliminal_chromadb_feed_used": subliminal_chromadb_feed_used,
+        "subliminal_brave_search_used": subliminal_brave_used,
+        "chromadb_search_used": subliminal_chromadb_used,
+        "chromadb_hit_count": _trace_int(subliminal_lookup.get("chromadb_hit_count")),
+        "translator_exclusive_output": bool(provenance.get("translator_exclusive_output")),
         "agentic_ecosystem_used": agentic_ecosystem_used,
         "agentic_ecosystem_sources": agentic_ecosystem_sources,
         "external_context_used": bool(brave_used or external_tools or route == "world_agent"),

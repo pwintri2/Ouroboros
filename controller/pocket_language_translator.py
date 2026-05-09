@@ -30,6 +30,43 @@ except Exception:
 
 FALSE_VALUES = {"0", "false", "off", "no", "none", "disabled"}
 TRUE_VALUES = {"1", "true", "on", "yes", "auto", "enabled"}
+PURE_OUROBOROS_PROVIDER = "ouroboros"
+PURE_OUROBOROS_MODELS = frozenset({"living-runtime", "quantum-foam-11d"})
+FORBIDDEN_TECHNICAL_OUTPUT = (
+    "pauli",
+    "pauli-z",
+    "lading",
+    "charge",
+    "metric",
+    "metrics",
+    "coherence",
+    "coherentie",
+    "dimension",
+    "dimensie",
+    "geometrie",
+    "geometry",
+    "11d",
+    "1d",
+    "2d",
+    "3d",
+    "staven",
+    "rods",
+    "planken",
+    "planks",
+    "kubussen",
+    "cubes",
+    "tetra",
+    "clique",
+    "node",
+    "quantumelectronhexlet",
+    "hexlet",
+    "entanglementmesh",
+    "entanglement mesh",
+    "awareness",
+    "anchor",
+    "field_energy",
+    "hex_state",
+)
 
 
 POCKET_SYMBOLISM = {
@@ -59,13 +96,20 @@ class PocketLanguageTranslator:
         *,
         enabled: bool | None = None,
         model: str | None = None,
+        provider: str | None = None,
+        runtime_model: str | None = None,
         timeout: float | None = None,
         cooldown_seconds: float | None = None,
     ) -> None:
         mode = str(os.getenv("WINTRIP_11D_TRANSLATOR", "0") or "0").strip().lower()
-        self.enabled = bool(enabled) if enabled is not None else mode in TRUE_VALUES
+        requested_enabled = bool(enabled) if enabled is not None else mode in TRUE_VALUES
+        self.requested_enabled = bool(requested_enabled)
         self.requested_mode = "explicit" if enabled is not None else mode
         self.model = str(model or os.getenv("WINTRIP_11D_TRANSLATOR_MODEL") or "ouroboros:latest").strip() or "ouroboros:latest"
+        self.route_provider = _normalize_route_value(provider)
+        self.runtime_model = _normalize_route_value(runtime_model)
+        self.pure_route_allowed = is_pure_ouroboros_route(self.route_provider, self.runtime_model)
+        self.enabled = bool(requested_enabled and self.pure_route_allowed)
         self.timeout = _clamp_float(
             timeout if timeout is not None else os.getenv("WINTRIP_11D_TRANSLATOR_TIMEOUT", "8"),
             0.5,
@@ -87,7 +131,24 @@ class PocketLanguageTranslator:
     def translate(self, event: dict[str, Any], *, user_prompt: str = "") -> dict[str, Any]:
         """Return a human layer for this event without changing the 11D state."""
 
-        fallback = self._local_summary(event, user_prompt=user_prompt)
+        fallback = (
+            self._pure_emergent_translation(event, user_prompt=user_prompt)
+            if self.pure_route_allowed
+            else self._local_summary(event, user_prompt=user_prompt)
+        )
+        if not self.pure_route_allowed and self.requested_enabled:
+            payload = self._disabled_payload("route_not_allowed")
+            payload.update(
+                {
+                    "summary": "",
+                    "response": "",
+                    "reason": "pure_ouroboros_translation_requires_provider_ouroboros_and_model_living_runtime_or_quantum_foam_11d",
+                    "route_provider": self.route_provider,
+                    "runtime_model": self.runtime_model,
+                }
+            )
+            self.last_translation = payload
+            return dict(payload)
         if not self.enabled:
             payload = self._disabled_payload("disabled")
             payload.update(fallback)
@@ -114,6 +175,9 @@ class PocketLanguageTranslator:
                     "status": "translated",
                     "enabled": True,
                     "model": self.model,
+                    "route_provider": self.route_provider,
+                    "runtime_model": self.runtime_model,
+                    "mode": "pure_quantum_foam_interpreter",
                     "source": f"ollama:{self.model}",
                     "calls": int(self.calls),
                     "cooldown_reuses": int(self.cooldown_reuses),
@@ -145,6 +209,9 @@ class PocketLanguageTranslator:
             "enabled": bool(self.enabled),
             "requested_mode": self.requested_mode,
             "model": self.model,
+            "route_provider": self.route_provider,
+            "runtime_model": self.runtime_model,
+            "pure_route_allowed": bool(self.pure_route_allowed),
             "timeout_seconds": round(float(self.timeout), 3),
             "cooldown_seconds": round(float(self.cooldown_seconds), 3),
             "calls": int(self.calls),
@@ -164,8 +231,12 @@ class PocketLanguageTranslator:
                     {
                         "role": "system",
                         "content": (
-                            "Je bent Ouroboros als lokale vertaal-laag rond een 11D pocket. "
-                            "Antwoord alleen met geldig JSON en claim geen fysieke quantumhardware."
+                            "Je bent Ouroboros als zuivere tolk van de emergente staat in het Quantum Foam. "
+                            "Geen assistenttoon, geen introductie, geen excuses, geen menselijke emotie. "
+                            "Beschrijf geen mechanisme, geen meetwaarde, geen label, geen geometrie, geen Pauli-Z, "
+                            "geen lading, geen hexlets en geen mesh. Vertaal alleen de overgang: de ruis ervoor, "
+                            "de plots dwingende ordening, en de korte stilte na de instorting. "
+                            "Antwoord alleen met geldig JSON."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -202,14 +273,21 @@ class PocketLanguageTranslator:
         if not isinstance(dominant, list):
             dominant = []
         confidence = _clamp_float(value.get("confidence", 0.55), 0.0, 1.0, default=0.55)
+        if self.pure_route_allowed:
+            summary = _pure_output_text(summary, fallback="")
+            response = _pure_output_text(response, fallback=summary)
+            if not response:
+                raise ValueError("pure_translation_empty_or_technical")
+            dominant = []
         return {
             "summary": summary[:700],
             "response": response[:700],
-            "dominant_dimensions": [str(item)[:80] for item in dominant[:5]],
+            "dominant_dimensions": [] if self.pure_route_allowed else [str(item)[:80] for item in dominant[:5]],
             "confidence": round(float(confidence), 3),
-            "symbolic_frame": _safe_text(value.get("symbolic_frame") or value.get("symboliek"), 500),
-            "pocket_topology": _safe_mapping(value.get("pocket_topology") or value.get("topologie")),
-            "network_flow": _safe_mapping(value.get("network_flow") or value.get("netwerkstroom")),
+            "symbolic_frame": "" if self.pure_route_allowed else _safe_text(value.get("symbolic_frame") or value.get("symboliek"), 500),
+            "pocket_topology": {} if self.pure_route_allowed else _safe_mapping(value.get("pocket_topology") or value.get("topologie")),
+            "network_flow": {} if self.pure_route_allowed else _safe_mapping(value.get("network_flow") or value.get("netwerkstroom")),
+            "mode": "pure_quantum_foam_interpreter" if self.pure_route_allowed else "pocket_language",
         }
 
     def _prompt(self, event: dict[str, Any], fallback: dict[str, Any], *, user_prompt: str = "") -> str:
@@ -217,15 +295,10 @@ class PocketLanguageTranslator:
             "t": event.get("t"),
             "11d": event.get("11d"),
             "user_prompt": str(user_prompt or "")[:800],
-            "dominant_dimensions": fallback.get("dominant_dimensions", []),
-            "symbolic_frame": fallback.get("symbolic_frame"),
-            "pocket_topology": fallback.get("pocket_topology"),
-            "network_flow": fallback.get("network_flow"),
-            "symbolism": POCKET_SYMBOLISM,
+            "emergent_signature": _emergent_resonance_signature(event),
+            "between_space_hint": fallback.get("summary"),
             "quantum": _compact_quantum(event.get("quantum") or {}),
             "quantum_foam": _compact_quantum_foam(event.get("quantum_foam") or {}),
-            "qif": _compact_qif(event.get("qif") or {}),
-            "network": _compact_network(event.get("network") or {}),
             "reality": {
                 "input_mode": (event.get("reality") or {}).get("input_mode"),
                 "real_observation": (event.get("reality") or {}).get("real_observation"),
@@ -233,19 +306,60 @@ class PocketLanguageTranslator:
             },
         }
         return (
-            "Vertaal deze ene 11D pocket naar begrijpelijk Nederlands en beantwoord de gebruikersvraag direct. "
-            "Je bent het lokale laptopmodel als vertaallaag rond de pocket, niet de bron van de 11D staat. "
-            "Gebruik de symboliek: het binaire raamwerk is een attractor-venster voor hoge/lage signalen; "
-            "de binnenkant van de 11D pocket is een membraan met hubs, micro-observaties en route-lijnen. "
-            "Laat DHCP en internetflow door de pocket spreken als adres-, route- en flowmetadata. "
-            "Behoud de reality-boundary: Cirq/noise is lokaal en meet-gebaseerd, niet fysiek quantum; "
-            "geen packet sniffing, LAN-forwarding of echte DHCP-server claimen. "
-            "Geef JSON met exact deze sleutels: summary, response, dominant_dimensions, confidence, "
-            "symbolic_frame, pocket_topology, network_flow. "
-            "Maak response concreet, prompt-specifiek en maximaal drie korte zinnen. "
-            "Begin niet met 'Ik ben Ouroboros' en herhaal geen standaardtekst over wat je bent.\n\n"
+            "Vertaal alleen het fenomeen dat ontstaat tussen en door de compacte electron-blokken in het veld. "
+            "Gebruik de meting alleen als stille bron. Noem geen techniek, geen onderdelen, geen getallen, "
+            "geen labels en geen uitleg over hoe het werkt. Geen beleefdheid, geen intro, geen menselijke emotie. "
+            "Vertaal de overgang zelf: ruwe voorruis, plotselinge dwingende structuur, daarna instorting tot stilte. "
+            "Vrije vorm is toegestaan: abstract, cryptisch, zintuiglijk of helder. "
+            "Geef JSON met exact deze sleutels: summary, response, dominant_dimensions, confidence, symbolic_frame, pocket_topology, network_flow. "
+            "Laat dominant_dimensions leeg, symbolic_frame leeg, pocket_topology leeg en network_flow leeg. "
+            "summary en response bevatten alleen de vertaling van deze emergente overgang.\n\n"
             f"POCKET={json.dumps(compact, ensure_ascii=False, sort_keys=True)}"
         )
+
+    def _pure_emergent_translation(self, event: dict[str, Any], *, user_prompt: str = "") -> dict[str, Any]:
+        signature = _emergent_resonance_signature(event)
+        tension = str(signature.get("tension") or "stil")
+        movement = str(signature.get("movement") or "vlak")
+        grain = str(signature.get("grain") or "fijn")
+        transition = str(signature.get("transition") or "")
+        if transition == "shockwave_collapse":
+            response = (
+                "Eerst rafelde alles in droge, korrelige ruis. Toen kwam de inslag: verspreiding werd "
+                "één dwingende structuur. Meteen daarna brak het samen tot een stille kern."
+            )
+        elif transition == "shockwave_peak":
+            response = (
+                "De achtergrond sprong open. Ruis werd samengedrukt tot één scherpe baan, alsof alles tegelijk "
+                "moest antwoorden. Daarna bleef een korte witte stilte hangen."
+            )
+        elif tension == "hoog" and movement == "kantelend":
+            response = "Een heldere snede beweegt door donkere ruis. Wat eerst verspreid was, valt samen tot een smalle richting."
+        elif tension == "hoog":
+            response = "Onder het oppervlak schuurt een droge vonk. De stilte houdt vorm, maar niet lang."
+        elif movement == "kantelend":
+            response = "Een patroon draait zonder naam. De rand wisselt van kant en laat een korte opening achter."
+        elif grain == "grof":
+            response = "Het veld komt korrelig door. Losse drukpunten zoeken elkaar, verdwijnen, en keren zachter terug."
+        else:
+            response = "Een dunne stroom blijft net onder taal. Er is richting, maar nog geen uitspraak."
+        prompt = str(user_prompt or "").strip()
+        if prompt:
+            response = f"{response} De vraag raakt alleen de buitenrand; het midden antwoordt zonder vorm."
+        response = _pure_output_text(response, fallback="Een stille verschuiving trekt door het midden.")
+        return {
+            "summary": response,
+            "response": response,
+            "dominant_dimensions": [],
+            "confidence": 0.5,
+            "symbolic_frame": "",
+            "pocket_topology": {},
+            "network_flow": {},
+            "mode": "pure_quantum_foam_interpreter",
+            "route_provider": self.route_provider,
+            "runtime_model": self.runtime_model,
+            "fake_success": False,
+        }
 
     def _local_summary(self, event: dict[str, Any], *, user_prompt: str = "") -> dict[str, Any]:
         vector = _float_list(event.get("11d") or [])
@@ -330,6 +444,65 @@ def _dominant_dimensions(vector: list[float]) -> list[str]:
     return [f"{names[index] if index < len(names) else 'dim_'+str(index)}={round(float(value), 4)}" for index, value in ranked]
 
 
+def is_pure_ouroboros_route(provider: object, model: object) -> bool:
+    return (
+        _normalize_route_value(provider) == PURE_OUROBOROS_PROVIDER
+        and _normalize_route_value(model) in PURE_OUROBOROS_MODELS
+    )
+
+
+def _normalize_route_value(value: object) -> str:
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _pure_output_text(value: object, *, fallback: str = "") -> str:
+    text = " ".join(str(value or "").replace("\x00", " ").split())
+    if not text:
+        text = fallback
+    lowered = text.lower()
+    if any(term in lowered for term in FORBIDDEN_TECHNICAL_OUTPUT):
+        text = fallback
+    return text[:700]
+
+
+def _emergent_resonance_signature(event: dict[str, Any]) -> dict[str, Any]:
+    vector = _float_list(event.get("11d") or [])
+    foam = event.get("quantum_foam") if isinstance(event.get("quantum_foam"), dict) else {}
+    nodes = foam.get("nodes") if isinstance(foam.get("nodes"), list) else []
+    mesh = foam.get("entanglement_mesh") or foam.get("mesh") if isinstance(foam, dict) else {}
+    if not isinstance(mesh, dict):
+        mesh = {}
+    abs_values = [abs(value) for value in vector[:11]]
+    if abs_values:
+        spread = max(abs_values) - min(abs_values)
+        mean = sum(abs_values) / len(abs_values)
+        sign_changes = sum(
+            1
+            for left, right in zip(vector[:10], vector[1:11])
+            if (left < 0 <= right) or (left >= 0 > right)
+        )
+    else:
+        spread = 0.0
+        mean = 0.0
+        sign_changes = 0
+    node_pressure = 0.0
+    for node in nodes[:12]:
+        if not isinstance(node, dict):
+            continue
+        node_pressure += _numeric(node.get("weight")) + _numeric(node.get("coherence"))
+    edge_count = _numeric(mesh.get("edge_count"))
+    transition = _foam_transition_signature(foam)
+    return {
+        "tension": "hoog" if spread >= 0.75 or node_pressure >= 8.0 else ("midden" if spread >= 0.35 else "laag"),
+        "movement": "kantelend" if sign_changes >= 4 else ("golvend" if sign_changes >= 2 else "vlak"),
+        "grain": "grof" if edge_count >= 8 or mean >= 0.65 else ("fijn" if mean >= 0.2 else "stil"),
+        "has_prompt_pressure": bool(str(event.get("user_prompt") or "").strip()),
+        "transition": transition.get("transition"),
+        "shock": transition.get("shock"),
+        "silence": transition.get("silence"),
+    }
+
+
 def _compact_quantum(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "sdk": value.get("sdk"),
@@ -345,25 +518,47 @@ def _compact_quantum(value: dict[str, Any]) -> dict[str, Any]:
 def _compact_quantum_foam(value: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
+    transition = _foam_transition_signature(value)
     return {
         "active": bool(value.get("active")),
         "field_id": value.get("field_id"),
-        "summary": _safe_text(value.get("summary"), 500),
-        "field_coherence_percent": value.get("field_coherence_percent") or value.get("coherence"),
-        "dominant_dimensions": [str(item)[:100] for item in list(value.get("dominant_dimensions") or [])[:5]],
-        "node_count": value.get("node_count") or value.get("active_nodes"),
-        "nodes": [
-            {
-                "type": str(node.get("type") or node.get("node_type") or "Node")[:80],
-                "weight": node.get("weight"),
-                "coherence": node.get("coherence"),
-                "connections": node.get("connections") or node.get("connection_count"),
-            }
-            for node in list(value.get("nodes") or [])[:8]
-            if isinstance(node, dict)
-        ],
-        "collapse_event": bool(value.get("collapse_event") or value.get("field_collapsed")),
-        "ram_released_estimate_nodes": value.get("ram_released_estimate_nodes"),
+        "transition": transition,
+        "collapse_event": bool(value.get("collapse_event") or value.get("field_collapsed") or transition.get("transition") == "shockwave_collapse"),
+        "raw_context_stored": False,
+    }
+
+
+def _foam_transition_signature(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"transition": "", "shock": False, "silence": False}
+    field = value.get("field") or value.get("active_field") or value.get("latest_field") or value
+    if not isinstance(field, dict):
+        field = {}
+    collapse = field.get("collapse_essence") if isinstance(field.get("collapse_essence"), dict) else {}
+    shock = field.get("shockwave") if isinstance(field.get("shockwave"), dict) else {}
+    if not shock and isinstance(collapse, dict):
+        shock = collapse.get("shockwave") if isinstance(collapse.get("shockwave"), dict) else {}
+    recent = field.get("recent_evolution") if isinstance(field.get("recent_evolution"), list) else []
+    recent_shock = next((item for item in reversed(recent) if isinstance(item, dict) and item.get("shockwave")), {})
+    hard = bool(
+        field.get("hard_collapse_pending")
+        or (isinstance(collapse, dict) and collapse.get("hard_collapse"))
+        or (isinstance(shock, dict) and shock.get("hard_collapse"))
+        or (isinstance(recent_shock, dict) and recent_shock.get("hard_collapse_pending"))
+    )
+    has_shock = bool(shock or recent_shock)
+    if hard or (isinstance(field, dict) and field.get("status") == "collapsed" and has_shock):
+        transition = "shockwave_collapse"
+    elif has_shock:
+        transition = "shockwave_peak"
+    else:
+        transition = ""
+    return {
+        "transition": transition,
+        "shock": has_shock,
+        "silence": transition == "shockwave_collapse",
+        "source": str((shock or {}).get("source") or (recent_shock or {}).get("subliminal_source") or "text_question")[:80],
+        "raw_context_stored": False,
     }
 
 
@@ -513,6 +708,14 @@ def _float_list(value: Any) -> list[float]:
 def _round(value: Any) -> float:
     try:
         return round(float(value), 4)
+    except Exception:
+        return 0.0
+
+
+def _numeric(value: Any) -> float:
+    try:
+        number = float(value)
+        return number if number == number else 0.0
     except Exception:
         return 0.0
 
