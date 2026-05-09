@@ -18,10 +18,67 @@ BACKEND_MODE="${WINTRIP_BACKEND_MODE:-auto}"
 LOCAL_BACKEND_VENV="${WINTRIP_BACKEND_VENV:-$ROOT/.venv_ouroboros_backend}"
 LOCAL_BACKEND_PYTHON="${WINTRIP_BACKEND_PYTHON:-$LOCAL_BACKEND_VENV/bin/python}"
 PYTHON311="${WINTRIP_PYTHON311:-$HOME/.local/bin/python3.11}"
+DOCKER_BIN="${WINTRIP_DOCKER_BIN:-}"
+COMPOSE_BIN="${WINTRIP_DOCKER_COMPOSE_BIN:-}"
 
 if [ -d "$NODE_BIN" ]; then
   export PATH="$NODE_BIN:$PATH"
 fi
+
+discover_docker_bin() {
+  if [ -n "$DOCKER_BIN" ] && [ -x "$DOCKER_BIN" ]; then
+    return 0
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    DOCKER_BIN="$(command -v docker)"
+    export WINTRIP_DOCKER_BIN="$DOCKER_BIN"
+    return 0
+  fi
+  for candidate in /run/host/usr/bin/docker /run/host/usr/local/bin/docker /usr/local/bin/docker /usr/bin/docker; do
+    if [ -x "$candidate" ]; then
+      DOCKER_BIN="$candidate"
+      export WINTRIP_DOCKER_BIN="$DOCKER_BIN"
+      export PATH="$(dirname "$DOCKER_BIN"):$PATH"
+      return 0
+    fi
+  done
+  return 1
+}
+
+discover_compose_bin() {
+  if [ -n "$COMPOSE_BIN" ] && [ -x "$COMPOSE_BIN" ]; then
+    return 0
+  fi
+  for candidate in /run/host/usr/lib/docker/cli-plugins/docker-compose /run/host/usr/libexec/docker/cli-plugins/docker-compose /usr/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose; do
+    if [ -x "$candidate" ]; then
+      COMPOSE_BIN="$candidate"
+      export WINTRIP_DOCKER_COMPOSE_BIN="$COMPOSE_BIN"
+      return 0
+    fi
+  done
+  if command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_BIN="$(command -v docker-compose)"
+    export WINTRIP_DOCKER_COMPOSE_BIN="$COMPOSE_BIN"
+    return 0
+  fi
+  return 1
+}
+
+docker_available() {
+  discover_docker_bin && "$DOCKER_BIN" version >/dev/null 2>&1
+}
+
+compose_up() {
+  if discover_docker_bin && "$DOCKER_BIN" compose version >/dev/null 2>&1; then
+    (cd "$ROOT" && "$DOCKER_BIN" compose up -d --build chroma ouroboros-backend)
+    return $?
+  fi
+  if discover_compose_bin; then
+    (cd "$ROOT" && "$COMPOSE_BIN" up -d --build chroma ouroboros-backend)
+    return $?
+  fi
+  return 1
+}
 
 mkdir -p "$LOG_DIR" "$ROOT/.secrets"
 
@@ -136,9 +193,12 @@ ensure_backend() {
     echo "Backend is al bereikbaar."
     return 0
   fi
-  if [ "$BACKEND_MODE" != "local" ] && command -v docker >/dev/null 2>&1; then
+  if [ "$BACKEND_MODE" != "local" ] && docker_available; then
     echo "Refreshing Docker backend and Chroma..."
-    (cd "$ROOT" && docker compose up -d --build chroma ouroboros-backend)
+    compose_up || {
+      [ "$BACKEND_MODE" = "docker" ] && fail "Docker is bereikbaar, maar docker compose kon niet worden gestart."
+      echo "Docker is bereikbaar, maar compose startte niet; probeer lokale backend fallback."
+    }
     if wait_for_url "$BACKEND_URL/health" 90; then
       return 0
     fi
@@ -146,6 +206,8 @@ ensure_backend() {
     echo "Docker backend werd niet bereikbaar; probeer lokale backend fallback."
   elif [ "$BACKEND_MODE" = "docker" ]; then
     fail "docker ontbreekt; WINTRIP_BACKEND_MODE=docker kan de backend niet starten."
+  elif [ "$BACKEND_MODE" = "local" ]; then
+    echo "Lokale backend mode actief; start lokale backend fallback."
   else
     echo "Docker CLI ontbreekt; probeer lokale backend fallback."
   fi
@@ -249,7 +311,7 @@ main() {
     --bridge-url "$BRIDGE_URL" \
     --smoke \
     --json; then
-    if [ "$BACKEND_MODE" = "local" ] || ! command -v docker >/dev/null 2>&1; then
+    if [ "$BACKEND_MODE" = "local" ] || ! docker_available; then
       echo "Runtime doctor is degraded, maar backend/preview/bridge zijn gestart. Docker runner blijft unavailable zonder Docker CLI." >&2
     else
       fail "runtime doctor smoke faalde."

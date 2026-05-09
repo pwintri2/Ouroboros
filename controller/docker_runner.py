@@ -7,6 +7,7 @@ No secrets logged. Docker socket access requires explicit approval.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -16,6 +17,24 @@ from typing import Any, Mapping
 
 APPROVAL_PHRASE = "Akkoord"
 _DOCKER_LOCK = threading.Lock()
+_DOCKER_CANDIDATES = (
+    "/run/host/usr/bin/docker",
+    "/run/host/usr/local/bin/docker",
+    "/usr/local/bin/docker",
+    "/usr/bin/docker",
+)
+
+
+def _docker_executable() -> str:
+    configured = os.getenv("WINTRIP_DOCKER_BIN") or os.getenv("DOCKER_BIN")
+    candidates = [configured, shutil.which("docker"), *_DOCKER_CANDIDATES]
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if path.exists() and os.access(path, os.X_OK):
+            return str(path)
+    return "docker"
 
 
 def run_docker_job(
@@ -120,10 +139,10 @@ def _check_docker_available() -> dict[str, Any]:
         {"available": bool, "reason": str, "docker_version": str}
     """
     with _DOCKER_LOCK:
-        docker_path = shutil.which("docker") or ""
+        docker_path = _docker_executable()
         try:
             result = subprocess.run(
-                ["docker", "version", "--format={{.Server.Version}}"],
+                [docker_path, "version", "--format={{.Server.Version}}"],
                 text=True,
                 capture_output=True,
                 timeout=3,
@@ -211,9 +230,10 @@ def _dispatch_docker_job(task: str, timeout: int = 120) -> dict[str, Any]:
 
 def _running_container_count() -> int:
     """Return running container count through CLI or SDK."""
+    docker_path = _docker_executable()
     try:
         ps_result = subprocess.run(
-            ["docker", "ps", "--quiet"],
+            [docker_path, "ps", "--quiet"],
             text=True,
             capture_output=True,
             timeout=5,
