@@ -401,6 +401,24 @@ type LivingStatus = {
   memory_count?: number;
 };
 
+type QuantumFoamGeometry = {
+  dimension?: number;
+  dimension_label?: string;
+  geometry?: string;
+  geometry_en?: string;
+  geometry_nl?: string;
+  visual_model?: string;
+  clique_size?: number;
+  electron_count?: number;
+  electron_clique?: {
+    all_to_all_connected?: boolean;
+    actual_edge_count?: number;
+    required_edge_count?: number;
+    electron_ids?: string[];
+    node_ids?: string[];
+  };
+};
+
 type QuantumFoamFieldSummary = {
   field_id?: string;
   status?: string;
@@ -411,6 +429,7 @@ type QuantumFoamFieldSummary = {
   active_node_count?: number;
   field_coherence?: number;
   field_coherence_percent?: number;
+  dimensional_geometry?: QuantumFoamGeometry;
   mesh?: { edge_count?: number };
   nodes?: Array<{
     node_id?: string;
@@ -425,6 +444,7 @@ type QuantumFoamFieldSummary = {
     summary?: string;
     key_insights?: string[];
     ram_released_estimate_nodes?: number;
+    dimensional_geometry?: QuantumFoamGeometry;
   } | null;
 };
 
@@ -2673,6 +2693,11 @@ function QuantumFoamPanel({
   const coherencePercent = Math.max(0, Math.min(100, Math.round((latest?.field_coherence_percent ?? field.field_coherence_percent ?? coherence * 100) || 0)));
   const nodes = latest?.nodes ?? [];
   const collapsed = latest?.collapse_essence ?? null;
+  const geometry = latest?.dimensional_geometry ?? collapsed?.dimensional_geometry ?? null;
+  const geometryLabel = geometry
+    ? `${geometry.dimension_label ?? `${geometry.dimension ?? 0}D`} ${geometry.geometry_en ?? geometry.geometry ?? ""}`.trim()
+    : "--";
+  const cliqueSize = geometry?.clique_size ?? geometry?.electron_count ?? 0;
   const collapseEvent = field.last_event?.action === "collapsed" || latest?.status === "collapsed" || !!collapsed;
   const releasedNodes = collapsed?.ram_released_estimate_nodes ?? field.last_event?.metadata?.essence?.ram_released_estimate_nodes ?? 0;
   return (
@@ -2690,7 +2715,7 @@ function QuantumFoamPanel({
       </div>
       <div className={active ? "field-state-badge active" : "field-state-badge"} aria-label={active ? "Quantum Foam Field active" : "Quantum Foam Field idle"}>
         <strong>Quantum Foam Field {active ? "active" : latest?.status ?? field.status ?? "idle"}</strong>
-        <span>Coherence: {coherencePercent}%</span>
+        <span>Coherence: {coherencePercent}% / {geometryLabel}</span>
       </div>
       <div className="nexus-bars">
         <label>
@@ -2709,6 +2734,8 @@ function QuantumFoamPanel({
         <span>Active <strong>{latest?.active_node_count ?? 0}</strong></span>
         <span>Fields <strong>{field.field_count ?? 0}</strong></span>
         <span>Limit <strong>{field.lifecycle?.max_nodes ?? 25}</strong></span>
+        <span>Foam <strong>{geometryLabel}</strong></span>
+        <span>Clique <strong>{cliqueSize || "--"}</strong></span>
       </div>
       {nodes.length > 0 && (
         <div className="quantum-node-list">

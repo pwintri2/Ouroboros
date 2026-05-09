@@ -17,6 +17,7 @@ from ouroboros_esoteric.quantum_foam import (
     QuantumElectronHexlet,
     QuantumFoamField,
     collapse_quantum_foam_field,
+    foam_geometry_stage_for_clique_size,
     initiate_quantum_foam_field,
     monitor_quantum_foam_field,
     quantum_foam_status,
@@ -102,14 +103,35 @@ class TestQuantumFoamField(unittest.TestCase):
         self.assertEqual(len(essence["dominant_anchors"]), 4)
         self.assertIn("holographic_bootloader", essence)
 
+    def test_foam_geometry_ladder_maps_cliques_to_dimensions(self):
+        rod = foam_geometry_stage_for_clique_size(2)
+        plank = foam_geometry_stage_for_clique_size(3)
+        tetrahedron = foam_geometry_stage_for_clique_size(4)
+        high = foam_geometry_stage_for_clique_size(12)
+
+        self.assertEqual(rod["dimension"], 1)
+        self.assertEqual(rod["visual_model"], "line_segment")
+        self.assertEqual(plank["dimension"], 2)
+        self.assertEqual(plank["visual_model"], "filled_triangle")
+        self.assertEqual(tetrahedron["dimension"], 3)
+        self.assertEqual(tetrahedron["visual_model"], "solid_tetrahedron")
+        self.assertEqual(high["dimension"], 11)
+        self.assertTrue(high["anchored_11d"])
+
     def test_field_resonates_and_reports_coherence(self):
         field = QuantumFoamField(task="Build a Docker Quantum Foam product", max_ticks=4)
         formation = field.form_initial_nodes()
         before = field.to_dict(compact=True)
         after = field.evolve(trigger="test")
+        after_second = field.evolve(trigger="test-second")
 
         self.assertGreaterEqual(formation["desired_nodes"], 5)
+        self.assertEqual(formation["dimensional_geometry"]["dimension"], 1)
+        self.assertEqual(formation["dimensional_geometry"]["clique_size"], 2)
         self.assertGreaterEqual(before["node_count"], 5)
+        self.assertEqual(before["dimensional_geometry"]["dimension"], 1)
+        self.assertEqual(before["dimensional_geometry"]["visual_model"], "line_segment")
+        self.assertTrue(before["dimensional_geometry"]["electron_clique"]["all_to_all_connected"])
         self.assertEqual(before["fundamental_unit"], "QuantumElectronHexlet")
         self.assertEqual(before["hexlet_state_count"], 16)
         self.assertGreaterEqual(before["hexlet_count"], 8)
@@ -126,6 +148,9 @@ class TestQuantumFoamField(unittest.TestCase):
         self.assertEqual(len(after["concept_anchor_field"]["pocket_signal"]), 11)
         self.assertIn("holographic_bootloader", after["concept_anchor_field"])
         self.assertGreater(after["recent_evolution"][-1]["anchor_awareness"], 0.0)
+        self.assertEqual(after["dimensional_geometry"]["dimension"], 1)
+        self.assertEqual(after_second["dimensional_geometry"]["dimension"], 2)
+        self.assertEqual(after_second["dimensional_geometry"]["visual_model"], "filled_triangle")
 
     def test_lifecycle_initiate_monitor_and_collapse_persist_essence(self):
         memory_path = Path(self.tmp.name) / ".secrets" / "memory.json"
@@ -139,6 +164,8 @@ class TestQuantumFoamField(unittest.TestCase):
         self.assertEqual(created["status"], "online")
         self.assertGreaterEqual(created["field"]["node_count"], 5)
         self.assertEqual(created["field"]["concept_anchor_field"]["pocket_count"], 11)
+        self.assertEqual(created["field"]["dimensional_geometry"]["dimension"], 1)
+        self.assertEqual(created["field"]["dimensional_geometry"]["clique_size"], 2)
         self.assertIn("holographic_bootloader", created["field"]["concept_anchor_field"])
         self.assertNotIn("secret-value", str(created))
 
@@ -153,6 +180,8 @@ class TestQuantumFoamField(unittest.TestCase):
         self.assertEqual(collapsed["essence"]["fundamental_unit"], "QuantumElectronHexlet")
         self.assertGreaterEqual(collapsed["essence"]["compressed_hexlet_essence"]["count"], 8)
         self.assertEqual(collapsed["essence"]["concept_anchor_field"]["dimension_count"], 11)
+        self.assertIn("dimensional_geometry", collapsed["essence"])
+        self.assertGreaterEqual(collapsed["essence"]["dimensional_geometry"]["dimension"], 1)
         self.assertEqual(len(collapsed["essence"]["concept_anchor_field"]["pocket_signal"]), 11)
         status = quantum_foam_status()
         self.assertEqual(status["status"], "online")

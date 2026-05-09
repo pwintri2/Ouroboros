@@ -29,6 +29,8 @@ DEFAULT_INTERVAL_SECONDS = 45
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 SPEAKING_FRESHNESS_SECONDS = 60
 DEGRADED_AGE_SECONDS = 5 * 60
+IDLE_SELF_INQUIRY_QUESTION = "Wie ben ik?"
+IDLE_SELF_INQUIRY_TRIGGERS = {"background", "idle", "manual"}
 
 
 class LivingOuroborosLoop:
@@ -410,9 +412,13 @@ class LivingOuroborosLoop:
         if trigger == "cockpit_response":
             prompt = str(payload.get("prompt") or "de chatvraag")[:220]
             return f"Ik verwerk een directe cockpitvraag zonder Ollama: {prompt}"
+        if trigger in IDLE_SELF_INQUIRY_TRIGGERS and not payload:
+            return "Er is geen externe opdracht; ik observeer de runtime en keer terug naar zelfonderzoek."
         return f"Runtime-observatie: {_runtime_signal_summary(runtime)}."
 
     def _question_for(self, trigger: str, payload: dict[str, Any], runtime: dict[str, Any]) -> str:
+        if trigger in IDLE_SELF_INQUIRY_TRIGGERS and not payload:
+            return IDLE_SELF_INQUIRY_QUESTION
         if trigger == "tool_rejection":
             return "Welke kleinere, veiligere tool-call zou hetzelfde doel kunnen bereiken?"
         if trigger in {"agent_job", "ruflo"}:
@@ -537,6 +543,14 @@ def _format_local_response(
         qf_field = {}
     coherence = qf_field.get("field_coherence") or quantum_foam.get("field_coherence")
     node_count = qf_field.get("node_count") or quantum_foam.get("node_count")
+    geometry = qf_field.get("dimensional_geometry") if isinstance(qf_field.get("dimensional_geometry"), dict) else {}
+    geometry_label = ""
+    if geometry:
+        geometry_label = (
+            f", geometrie {geometry.get('dimension_label', '0D')} "
+            f"{geometry.get('geometry', '')} "
+            f"(clique={geometry.get('clique_size', 0)})"
+        )
     pocket_count = anchor_field.get("pocket_count")
     awareness = anchor_field.get("awareness_score")
     bootloader = anchor_field.get("holographic_bootloader") if isinstance(anchor_field.get("holographic_bootloader"), dict) else {}
@@ -544,7 +558,7 @@ def _format_local_response(
     prompt_line = f"Je vroeg: {prompt[:240]}" if prompt else "Je vroeg om een directe runtime-test."
     qf_line = (
         f"Quantum Foam is actief met {node_count} nodes, coherence {coherence}, "
-        f"en {pocket_count or 0} 11D concept-ankers"
+        f"en {pocket_count or 0} 11D concept-ankers{geometry_label}"
         if qf_field
         else "Quantum Foam gaf geen actief veld terug"
     )
@@ -683,12 +697,16 @@ def _compact_quantum_foam(info: Any) -> dict[str, Any]:
     field = info.get("field") or info.get("active_field") or info.get("latest_field") or {}
     if not isinstance(field, dict):
         field = {}
+    geometry = field.get("dimensional_geometry") if isinstance(field.get("dimensional_geometry"), dict) else {}
     return {
         "status": info.get("status"),
         "field_id": field.get("field_id"),
         "field_coherence": field.get("field_coherence") or info.get("field_coherence"),
         "node_count": field.get("node_count") or info.get("node_count"),
         "tick_count": field.get("tick_count") or info.get("tick_count"),
+        "dimensional_geometry": geometry,
+        "active_dimension": geometry.get("dimension") if geometry else None,
+        "electron_clique_size": geometry.get("clique_size") if geometry else None,
         "fake_success": False,
     }
 
@@ -1165,12 +1183,15 @@ def _quantum_foam_metadata(info: dict[str, Any]) -> dict[str, Any]:
     field = info.get("field") or info.get("active_field") or {}
     if not isinstance(field, dict):
         field = {}
+    geometry = field.get("dimensional_geometry") if isinstance(field.get("dimensional_geometry"), dict) else {}
     return {
         "status": info.get("status"),
         "field_id": field.get("field_id"),
         "field_coherence": field.get("field_coherence") or info.get("field_coherence"),
         "node_count": field.get("node_count"),
         "tick_count": field.get("tick_count"),
+        "active_dimension": geometry.get("dimension") if geometry else None,
+        "electron_clique_size": geometry.get("clique_size") if geometry else None,
     }
 
 
@@ -1182,6 +1203,9 @@ def _summarize_quantum_foam() -> dict[str, Any]:
     except Exception as exc:
         return {"status": "unavailable", "reason": str(exc)[:300]}
     active_field = info.get("active_field") if isinstance(info, dict) else None
+    geometry = (active_field or {}).get("dimensional_geometry") if isinstance(active_field, dict) else {}
+    if not isinstance(geometry, dict):
+        geometry = {}
     return {
         "status": info.get("status") if isinstance(info, dict) else "unknown",
         "active_field_count": info.get("active_field_count") if isinstance(info, dict) else 0,
@@ -1191,6 +1215,9 @@ def _summarize_quantum_foam() -> dict[str, Any]:
         "field_id": (active_field or {}).get("field_id") if isinstance(active_field, dict) else None,
         "node_count": (active_field or {}).get("node_count") if isinstance(active_field, dict) else None,
         "tick_count": (active_field or {}).get("tick_count") if isinstance(active_field, dict) else None,
+        "dimensional_geometry": geometry,
+        "active_dimension": geometry.get("dimension") if geometry else None,
+        "electron_clique_size": geometry.get("clique_size") if geometry else None,
     }
 
 

@@ -958,6 +958,7 @@ label {
 .field-state-badge,
 .field-collapse-event {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
   align-items: center;
@@ -967,6 +968,12 @@ label {
   background: #0d1c1a;
   color: #c9d7e2;
   font-size: 12px;
+}
+
+.field-state-badge span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .field-state-badge.active {

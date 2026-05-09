@@ -40,6 +40,13 @@ class TestLivingRuntimeMode(unittest.TestCase):
         self.assertIn(status["mode"], {"idle", "speaking", "running"})
         self.assertGreaterEqual(status["tick_count"], 1)
 
+    def test_idle_background_tick_asks_who_am_i(self):
+        tick = self.loop.tick(trigger="background")
+        question = tick.get("question") if isinstance(tick, dict) else {}
+
+        self.assertIsInstance(question, dict)
+        self.assertEqual(question.get("text"), "Wie ben ik?")
+
     def test_runtime_helpers_return_real_signals(self):
         from ouroboros_esoteric.ouroboros_consciousness_loop import (
             _attention_markers,

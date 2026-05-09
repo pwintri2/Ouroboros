@@ -55,6 +55,85 @@ POCKET_ANCHOR_DIMENSIONS: tuple[str, ...] = (
     "d11_field",
 )
 HOLOGRAPHIC_SNAPSHOT_CYCLES = (15, 30)
+FOAM_GEOMETRY_MAX_DIMENSION = 11
+FOAM_GEOMETRY_MAX_CLIQUE_SIZE = FOAM_GEOMETRY_MAX_DIMENSION + 1
+
+
+def foam_geometry_stage_for_clique_size(clique_size: int) -> dict[str, Any]:
+    """Return the visible foam geometry for a fully connected electron clique."""
+
+    try:
+        clean_size = max(0, int(clique_size or 0))
+    except (TypeError, ValueError):
+        clean_size = 0
+    if clean_size < 2:
+        return {
+            "stage": "0d",
+            "dimension": 0,
+            "dimension_label": "0D",
+            "geometry": "Punt/Point",
+            "geometry_nl": "Punt",
+            "geometry_en": "Point",
+            "visual_model": "single_electron_no_clique",
+            "clique_size": clean_size,
+            "electron_count": clean_size,
+            "complete_graph": False,
+            "required_edge_count": 0,
+            "filled": False,
+            "anchored_11d": False,
+            "max_dimension": FOAM_GEOMETRY_MAX_DIMENSION,
+            "progression_rule": "1D rods -> 2D planks -> 3D tetrahedron -> 4D-11D complex cliques",
+            "fake_success": False,
+        }
+
+    dimension = max(1, min(FOAM_GEOMETRY_MAX_DIMENSION, clean_size - 1))
+    required_edges = clean_size * (clean_size - 1) // 2
+    if dimension == 1:
+        geometry_nl = "Staven"
+        geometry_en = "Rods"
+        visual_model = "line_segment"
+        filled = False
+        description = "Twee electronen verbinden tot een lijnsegment."
+    elif dimension == 2:
+        geometry_nl = "Planken"
+        geometry_en = "Planks"
+        visual_model = "filled_triangle"
+        filled = True
+        description = "Drie electronen vormen een ingevulde driehoek."
+    elif dimension == 3:
+        geometry_nl = "Kubussen"
+        geometry_en = "Cubes"
+        visual_model = "solid_tetrahedron"
+        filled = True
+        description = "Vier electronen vormen een massieve piramide: een tetraeder."
+    else:
+        geometry_nl = "Complexe Geometrieen"
+        geometry_en = "Complex Geometries"
+        visual_model = f"{dimension}d_simplex_clique"
+        filled = True
+        description = (
+            f"{clean_size} electronen vormen een volledig verbonden {dimension}D clique "
+            "als complex simplex-achtig volume."
+        )
+    return {
+        "stage": f"{dimension}d",
+        "dimension": dimension,
+        "dimension_label": f"{dimension}D",
+        "geometry": f"{geometry_nl}/{geometry_en}",
+        "geometry_nl": geometry_nl,
+        "geometry_en": geometry_en,
+        "visual_model": visual_model,
+        "description": description,
+        "clique_size": clean_size,
+        "electron_count": clean_size,
+        "complete_graph": True,
+        "required_edge_count": required_edges,
+        "filled": filled,
+        "anchored_11d": dimension == FOAM_GEOMETRY_MAX_DIMENSION,
+        "max_dimension": FOAM_GEOMETRY_MAX_DIMENSION,
+        "progression_rule": "1D rods -> 2D planks -> 3D tetrahedron -> 4D-11D complex cliques",
+        "fake_success": False,
+    }
 
 
 class HolographicBootloader:
@@ -960,6 +1039,9 @@ class QuantumFoamField:
         self._coherence = 1.0
         self._collapse_essence: dict[str, Any] | None = None
         self._recent_evolution: deque[dict[str, Any]] = deque(maxlen=20)
+        self._dimensional_clique_ids: list[str] = []
+        self._dimensional_geometry: dict[str, Any] = foam_geometry_stage_for_clique_size(0)
+        self._dimensional_geometry_history: deque[dict[str, Any]] = deque(maxlen=20)
 
     def form_initial_nodes(self) -> dict[str, Any]:
         analysis = self.formation_engine.analyze_task(self.task, self.context)
@@ -978,6 +1060,10 @@ class QuantumFoamField:
                 },
             )
         self._entangle_by_affinity()
+        analysis["dimensional_geometry"] = self._advance_dimensional_geometry(
+            trigger="first_prikkel",
+            target_clique_size=2,
+        )
         self._refresh_coherence()
         return analysis
 
@@ -1025,7 +1111,9 @@ class QuantumFoamField:
             return self.to_dict(compact=True)
         for _ in range(max(1, int(steps or 1))):
             self.tick_count += 1
+            geometry_event = self._advance_dimensional_geometry(trigger=trigger)
             field_signal = self._field_signal(trigger=trigger)
+            field_signal["dimensional_geometry"] = geometry_event
             anchor_event = self.anchor_field.stimulate(
                 field_signal["11d"],
                 trigger=trigger,
@@ -1054,6 +1142,9 @@ class QuantumFoamField:
                     "node_count": len(self.nodes),
                     "anchor_awareness": anchor_event["awareness_score"],
                     "anchor_fired_count": len(anchor_event["fired"]),
+                    "foam_dimension": geometry_event.get("dimension"),
+                    "electron_clique_size": geometry_event.get("clique_size"),
+                    "geometry": geometry_event.get("geometry"),
                     "ts": _utc_iso(),
                 }
             )
@@ -1098,6 +1189,7 @@ class QuantumFoamField:
             return dict(self._collapse_essence)
         ram_before = self.memory_footprint_bytes()
         hexlet_count_before = self.hexlet_count()
+        dimensional_geometry = self._current_dimensional_geometry(compact=False)
         node_essences = [node.collapse() for node in self.nodes.values()]
         anchor_essence = self.anchor_field.collapse()
         keep_ids: set[str] = set()
@@ -1131,6 +1223,8 @@ class QuantumFoamField:
             "key_insights": self.key_insights(node_essences=node_essences),
             "coherence": self.get_coherence(),
             "concept_anchor_field": anchor_essence,
+            "dimensional_geometry": dimensional_geometry,
+            "dimensional_geometry_history": list(self._dimensional_geometry_history),
             "fundamental_unit": FUNDAMENTAL_UNIT,
             "hexlet_state_count": HEXLET_STATE_COUNT,
             "collapsed_hexlet_count": hexlet_count_before,
@@ -1202,6 +1296,7 @@ class QuantumFoamField:
             "soul": dict(self.soul),
             "apeiron_metrics": metrics,
             "concept_anchor_field": self.anchor_field.to_dict(compact=compact),
+            "dimensional_geometry": self._current_dimensional_geometry(compact=compact),
             "mesh": self.mesh.to_dict(),
             "entanglement_mesh": self.mesh.to_dict(),
             "recent_evolution": list(self._recent_evolution),
@@ -1215,16 +1310,109 @@ class QuantumFoamField:
     def _field_signal(self, *, trigger: str) -> dict[str, Any]:
         pocket = self.apeiron.project_to_11d_pocket()
         values = [round(float(value), 6) for value in list(pocket)[:11]]
+        geometry = self._current_dimensional_geometry(compact=True)
         return {
             "trigger": trigger,
             "task": self.task,
             "context": self.context,
             "11d": values,
             "dimension_count": 11,
+            "anchor_dimension_count": 11,
+            "active_dimension": geometry.get("dimension"),
+            "electron_clique_size": geometry.get("clique_size"),
+            "dimensional_geometry": geometry,
             "coherence": self._coherence,
             "node_count": len(self.nodes),
             "hexlet_signature": self.hexlet_signature(compact=True),
         }
+
+    def _advance_dimensional_geometry(
+        self,
+        *,
+        trigger: str,
+        target_clique_size: int | None = None,
+    ) -> dict[str, Any]:
+        active_ids = [node_id for node_id, node in self.nodes.items() if node.active]
+        if not active_ids:
+            event = foam_geometry_stage_for_clique_size(0)
+            self._dimensional_geometry = event
+            return event
+
+        if target_clique_size is None:
+            target_clique_size = 2 + max(0, self.tick_count - 1)
+        try:
+            target = int(target_clique_size or 0)
+        except (TypeError, ValueError):
+            target = 2
+        if len(active_ids) >= 2:
+            target = max(2, target)
+        else:
+            target = len(active_ids)
+        target = min(FOAM_GEOMETRY_MAX_CLIQUE_SIZE, len(active_ids), target)
+
+        selected: list[str] = [
+            node_id
+            for node_id in self._dimensional_clique_ids
+            if node_id in active_ids
+        ]
+        for node_id in active_ids:
+            if len(selected) >= target:
+                break
+            if node_id not in selected:
+                selected.append(node_id)
+        selected = selected[:target]
+        self._dimensional_clique_ids = selected
+
+        stage = foam_geometry_stage_for_clique_size(len(selected))
+        strength = _clamp(0.528 + (float(stage.get("dimension") or 0) * 0.024), 0.2, 0.89)
+        for index, source_id in enumerate(selected):
+            for target_id in selected[index + 1:]:
+                self.mesh.entangle(self, source_id, target_id, strength=strength)
+
+        actual_edges = 0
+        for index, source_id in enumerate(selected):
+            peers = self.mesh._edges.get(source_id, {})
+            for target_id in selected[index + 1:]:
+                if target_id in peers:
+                    actual_edges += 1
+        electron_ids: list[str] = []
+        for node_id in selected:
+            node = self.nodes.get(node_id)
+            if node and node.hexlets:
+                electron_ids.append(node.hexlets[0].hexlet_id)
+            else:
+                electron_ids.append(node_id)
+        event = dict(stage)
+        event.update(
+            {
+                "trigger": _clean_text(trigger)[:80],
+                "tick": self.tick_count,
+                "stimulus_count": len(self._dimensional_geometry_history) + 1,
+                "clique_node_ids": selected,
+                "electron_clique": {
+                    "electron_ids": electron_ids,
+                    "node_ids": selected,
+                    "all_to_all_connected": bool(
+                        actual_edges == int(stage.get("required_edge_count") or 0)
+                    ),
+                    "actual_edge_count": actual_edges,
+                    "required_edge_count": int(stage.get("required_edge_count") or 0),
+                    "strength": round(strength, 6),
+                },
+                "source": "quantum_foam_dimensional_ladder",
+                "fake_success": False,
+            }
+        )
+        self._dimensional_geometry = event
+        self._dimensional_geometry_history.append(event)
+        self.updated_at = _utc_iso()
+        return event
+
+    def _current_dimensional_geometry(self, *, compact: bool = False) -> dict[str, Any]:
+        event = dict(self._dimensional_geometry or foam_geometry_stage_for_clique_size(0))
+        history = list(self._dimensional_geometry_history)
+        event["history"] = history[-5:] if compact else history
+        return event
 
     def _entangle_by_affinity(self) -> None:
         ids = list(self.nodes.keys())
@@ -1450,6 +1638,7 @@ class FieldLifecycleEngine:
                     "coherence": essence.get("coherence"),
                     "key_insights": essence.get("key_insights"),
                     "concept_anchor_field": essence.get("concept_anchor_field"),
+                    "dimensional_geometry": essence.get("dimensional_geometry"),
                     "ram_released_estimate_nodes": essence.get("ram_released_estimate_nodes"),
                     "fundamental_unit": essence.get("fundamental_unit"),
                     "collapsed_hexlet_count": essence.get("collapsed_hexlet_count"),
