@@ -344,6 +344,74 @@ label {
   font-size: 12px;
 }
 
+.file-upload-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.attach-btn {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px dashed #3d5068;
+  border-radius: 7px;
+  background: #101a29;
+  color: #91a3b8;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.attach-btn:hover:not(:disabled) {
+  border-color: #40c4aa;
+  color: #e5edf4;
+}
+
+.attach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid #1f7a5d;
+  border-radius: 7px;
+  background: #0b1f1a;
+  color: #9cf0cc;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.file-chip em {
+  color: #6baa90;
+  font-style: normal;
+  font-size: 10px;
+}
+
+.file-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  min-width: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #9cf0cc;
+  cursor: pointer;
+}
+
+.file-chip button:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #ef4444;
+}
+
 .cockpit-grid {
   display: grid;
   grid-template-columns: minmax(340px, 1.25fr) minmax(280px, 0.9fr) minmax(280px, 0.9fr);

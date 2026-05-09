@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -204,6 +205,13 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertTrue(data["provider_options"]["ouroboros"]["local_only"])
         self.assertFalse(data["provider_options"]["ouroboros"]["llm_provider_used"])
         self.assertIn("living-runtime", data["provider_options"]["ouroboros"]["models"])
+        self.assertIn("roo", data["provider_options"])
+        self.assertFalse(data["provider_options"]["roo"]["local_only"])
+        self.assertTrue(data["provider_options"]["roo"]["agent_runtime"])
+        self.assertIn("llama3.2:latest", data["provider_options"]["roo"]["models"])
+        self.assertIn("gpt-4.1", data["provider_options"]["roo"]["models"])
+        self.assertIn("gemini-2.5-pro", data["provider_options"]["roo"]["models"])
+        self.assertIn("openai", data["provider_options"]["roo"]["supported_cockpit_providers"])
         self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
         google_models = data["provider_options"]["google"]["models"]
         self.assertIn("gemini-2.5-flash", google_models)
@@ -223,6 +231,29 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("collections", data)
         self.assertFalse(data["fake_success"])
         self.assertNotIn("api_key", json.dumps(data).lower())
+
+    def test_upload_endpoint_stores_files_and_sanitizes_filename(self):
+        upload_tmp = tempfile.TemporaryDirectory(prefix="cockpit-upload-test-")
+        self.addCleanup(upload_tmp.cleanup)
+        previous_upload_dir = self.main.UPLOAD_DIR
+        self.main.UPLOAD_DIR = upload_tmp.name
+        try:
+            response = self.client.post(
+                "/api/upload",
+                files={"files": ("../note.txt", b"hello upload", "text/plain")},
+            )
+        finally:
+            self.main.UPLOAD_DIR = previous_upload_dir
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["uploaded"], 1)
+        uploaded = data["files"][0]
+        self.assertEqual(uploaded["status"], "ok")
+        self.assertEqual(uploaded["filename"], "note.txt")
+        self.assertTrue(uploaded["path"].startswith(upload_tmp.name))
+        self.assertEqual(Path(uploaded["path"]).read_bytes(), b"hello upload")
 
     def test_cockpit_config_keeps_local_provider_enabled_when_ollama_inventory_is_empty(self):
         original_list_models = self.main.ollama.list_models
@@ -396,6 +427,63 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertNotIn("living_echo", data)
         self.assertTrue(any(command.startswith("/codex") for command in data["commands"]))
         self.assertEqual(self.main.app.state.multi_api_router.calls, [])
+
+    def test_cockpit_roo_provider_blocks_without_approval(self):
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "roo",
+                "model": "llama3.2:latest",
+                "conversation_id": "roo-approval-test",
+                "prompt": "maak een veilig plan",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "blocked")
+        self.assertEqual(data["provider"], "roo")
+        self.assertEqual(data["route"], "roo_runtime")
+        self.assertTrue(data["approval_required"])
+        self.assertIn("pending_approval", data)
+
+    def test_cockpit_roo_provider_submits_job_with_selected_model_after_approval(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="tauri-roo-runtime-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+
+        def fake_roo(job, log, on_progress):
+            return {"status": "completed", "exit_code": 0, "response_preview": job.metadata.get("cockpit_model", "")}
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"roo": fake_roo})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "roo",
+                "model": "llama3.2:latest",
+                "conversation_id": "roo-job-test",
+                "prompt": "maak een veilig plan",
+                "approval": "Akkoord",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "running")
+        self.assertEqual(data["provider"], "roo")
+        self.assertEqual(data["route"], "roo_runtime")
+        job = data["job"]
+        self.assertEqual(job["metadata"]["cockpit_provider"], "ollama")
+        self.assertEqual(job["metadata"]["cockpit_model"], "llama3.2:latest")
 
     def test_cockpit_chat_can_address_ouroboros_runtime_without_ollama(self):
         response = self.client.post(

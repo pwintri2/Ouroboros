@@ -13,7 +13,7 @@ import time
 import requests
 import uvicorn
 from types import SimpleNamespace
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile
 from pydantic import BaseModel
 from typing import Any, List, Dict, Optional
 from dotenv import load_dotenv
@@ -84,6 +84,12 @@ try:
 except Exception:
     def runtime_doctor_payload(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"status": "failed", "blockers": ["controller.runtime_doctor unavailable"], "checks": {}, "fake_success": False}
+
+try:
+    from controller.agent_runtime.adapters.roo_cli import roo_status as roo_cli_runtime_status
+except Exception:
+    def roo_cli_runtime_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "available": False, "reason": "Roo CLI runtime adapter unavailable", "fake_success": False}
 
 load_dotenv()
 
@@ -965,6 +971,48 @@ async def commit_save(req: CommitSaveRequest):
         return {"status": "Error", "detail": result}
 
 
+# === FILE UPLOAD ENDPOINT ===
+UPLOAD_DIR = os.path.join(project_root, "data", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.post("/api/upload")
+async def upload_files(files: List[UploadFile] = FastAPIFile(...)):
+    """Accept one or more file uploads and store them in data/uploads.
+
+    Returns a list of server-side file paths that can be passed straight
+    into the ``files`` field of ``/api/cockpit/chat`` or ``/ask``.
+    """
+    saved: List[Dict[str, Any]] = []
+    for upload in files:
+        safe_name = os.path.basename(upload.filename or "upload")
+        # Prevent name collisions by prepending a timestamp
+        dest_name = f"{int(time.time())}_{safe_name}"
+        dest_path = os.path.join(UPLOAD_DIR, dest_name)
+        try:
+            content = await upload.read()
+            with open(dest_path, "wb") as fh:
+                fh.write(content)
+            saved.append({
+                "filename": safe_name,
+                "path": dest_path,
+                "size": len(content),
+                "status": "ok",
+            })
+        except Exception as exc:
+            saved.append({
+                "filename": safe_name,
+                "path": "",
+                "size": 0,
+                "status": "error",
+                "error": str(exc),
+            })
+    return {
+        "status": "success",
+        "uploaded": len([f for f in saved if f["status"] == "ok"]),
+        "files": saved,
+    }
+
+
 @app.post("/vergadertafel/chat")
 async def vergadertafel_chat(query: QueryRequest):
     """Vergadertafel chat met provider-routing (Gemini/Claude/Ollama)."""
@@ -1096,6 +1144,7 @@ MULTI_API_KEY_ENV: dict[str, str] = {
     "xai": "XAI_API_KEY",
     "mistral": "MISTRAL_API_KEY",
 }
+ROO_CLOUD_COCKPIT_PROVIDERS: tuple[str, ...] = ("openai", "anthropic", "google")
 PROVIDER_ALIASES: dict[str, str] = {
     "local": "ollama",
     "ollama": "ollama",
@@ -1103,6 +1152,10 @@ PROVIDER_ALIASES: dict[str, str] = {
     "living": "ouroboros",
     "qf": "ouroboros",
     "quantum_foam": "ouroboros",
+    "roo": "roo",
+    "roo-code": "roo",
+    "roo_agent": "roo",
+    "roo-agent": "roo",
     "chatgpt": "openai",
     "claude": "anthropic",
     "anthropic": "anthropic",
@@ -1138,8 +1191,13 @@ def _backend_status_payload(models: Optional[list[str]] = None) -> dict[str, Any
 def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, dict[str, Any]]:
     inventory_models = models or []
     models = _local_model_choices(inventory_models)
+    roo_models = _roo_model_choices(models)
     inventory_online = bool(inventory_models)
     key_status = _api_key_status_payload().get("providers", {})
+    try:
+        roo_status = roo_cli_runtime_status(prefer_bridge=True)
+    except Exception as exc:
+        roo_status = {"status": "error", "available": False, "reason": str(exc), "fake_success": False}
     options: dict[str, dict[str, Any]] = {
         "ollama": {
             "provider": "ollama",
@@ -1169,7 +1227,33 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             "status": "online",
             "reason": "Lokale runtime-response uit Living Loop, Quantum Foam en 11D pockets; geen Ollama-call.",
             "llm_provider_used": False,
-        }
+        },
+        "roo": {
+            "provider": "roo",
+            "label": "Roo Code Agent",
+            "available": bool(roo_status.get("available")),
+            "enabled": bool(roo_status.get("available") and roo_models),
+            "local_only": False,
+            "agent_runtime": True,
+            "models": roo_models,
+            "local_models": models,
+            "cloud_models": {
+                provider: MULTI_API_PROVIDER_MODELS.get(provider, [])
+                for provider in ROO_CLOUD_COCKPIT_PROVIDERS
+            },
+            "supported_cockpit_providers": ["ollama", *ROO_CLOUD_COCKPIT_PROVIDERS],
+            "default_model": _active_base(models) or (roo_models[0] if roo_models else ""),
+            "status": roo_status.get("status") or "unknown",
+            "reason": (
+                "Roo Code draait als agent-runtime job en gebruikt het geselecteerde Cockpit-model. "
+                "Lokale modellen gaan via Ollama; ChatGPT/Claude/Gemini gaan via de in Cockpit opgeslagen API key."
+                if roo_status.get("available")
+                else str(roo_status.get("reason") or "Roo CLI is nog niet bereikbaar via host bridge of PATH.")
+            ),
+            "llm_provider_used": True,
+            "runtime_status": roo_status,
+            "approval_required": True,
+        },
     }
     for provider, model_options in MULTI_API_PROVIDER_MODELS.items():
         env_name = MULTI_API_KEY_ENV.get(provider, "")
@@ -1217,9 +1301,10 @@ def _cockpit_config_payload() -> dict[str, Any]:
             "multi_api": {
                 provider: details.get("models", [])
                 for provider, details in provider_options.items()
-                if provider not in {"ollama", "ouroboros"}
+                if provider not in {"ollama", "ouroboros", "roo"}
             },
             "ouroboros": provider_options.get("ouroboros", {}).get("models", []),
+            "roo": provider_options.get("roo", {}).get("models", []),
         },
         "models": models,
         "required_approval_phrase": APPROVAL_PHRASE,
@@ -1260,10 +1345,88 @@ def _default_cockpit_model(provider: str, requested_model: Optional[str] = None)
         return requested_model
     if provider == "ouroboros":
         return "living-runtime"
+    if provider == "roo":
+        return _active_base(_safe_model_names())
     if provider == "ollama":
         return _active_base(_safe_model_names())
     options = MULTI_API_PROVIDER_MODELS.get(provider) or []
     return options[0] if options else ""
+
+
+def _roo_model_choices(local_models: Optional[list[str]] = None) -> list[str]:
+    """Models Roo can launch from Cockpit.
+
+    Roo is a local agent runtime, but its LLM may be local or cloud-backed.
+    Keep xAI/Mistral out until the Roo CLI provider layer supports them.
+    """
+
+    choices: list[str] = []
+    for model_name in local_models or []:
+        if model_name and model_name not in choices:
+            choices.append(model_name)
+    for provider in ROO_CLOUD_COCKPIT_PROVIDERS:
+        for model_name in MULTI_API_PROVIDER_MODELS.get(provider, []):
+            if model_name and model_name not in choices:
+                choices.append(model_name)
+    return choices
+
+
+def _roo_runtime_preflight(requested_provider: str, model: str) -> dict[str, Any]:
+    from controller.roo_cli_runtime import cockpit_provider_for_roo_selection, map_cockpit_provider
+
+    selected_model = str(model or "").strip()
+    cockpit_provider = cockpit_provider_for_roo_selection(requested_provider, selected_model)
+    provider_map = map_cockpit_provider(cockpit_provider, selected_model)
+    if provider_map.get("status") != "mapped":
+        return {
+            "status": "unsupported",
+            "cockpit_provider": cockpit_provider,
+            "cockpit_model": selected_model,
+            "provider_map": provider_map,
+            "reason": str(provider_map.get("reason") or f"Roo ondersteunt Cockpit-provider `{cockpit_provider}` nog niet."),
+            "fake_success": False,
+        }
+    api_key_env = str(provider_map.get("api_key_env") or "")
+    if api_key_env and not _roo_api_key_available(cockpit_provider, api_key_env):
+        return {
+            "status": "missing_api_key",
+            "cockpit_provider": cockpit_provider,
+            "cockpit_model": selected_model,
+            "provider_map": provider_map,
+            "required_key_env": api_key_env,
+            "reason": (
+                f"Roo kan `{selected_model}` pas via `{cockpit_provider}` starten als de API key in Cockpit "
+                f"of via `{api_key_env}` beschikbaar is."
+            ),
+            "fake_success": False,
+        }
+    return {
+        "status": "ready",
+        "cockpit_provider": cockpit_provider,
+        "cockpit_model": selected_model,
+        "provider_map": provider_map,
+        "local_llm": cockpit_provider == "ollama",
+        "fake_success": False,
+    }
+
+
+def _roo_api_key_available(cockpit_provider: str, api_key_env: str) -> bool:
+    if os.getenv(api_key_env):
+        return True
+    aliases = {
+        "chatgpt": "openai",
+        "openai-native": "openai",
+        "openai": "openai",
+        "claude": "anthropic",
+        "anthropic": "anthropic",
+        "gemini": "google",
+        "google": "google",
+    }
+    try:
+        keys = _stored_api_keys()
+    except Exception:
+        keys = {}
+    return bool(keys.get(aliases.get(str(cockpit_provider or "").strip().lower(), str(cockpit_provider or "").strip().lower())))
 
 
 def _agent_tool_schemas(provider: str = "openai") -> list[dict[str, Any]]:
@@ -1374,6 +1537,92 @@ def _should_route_agentic_chat(req: CockpitChatRequest, provider: str) -> bool:
         return False
     intent = classify_agentic_intent(req.prompt, role=req.role or "", approval=req.approval or "")
     return bool(getattr(intent, "is_agentic", False))
+
+
+def _fast_agentic_action_payload(
+    req: CockpitChatRequest,
+    *,
+    requested_provider: str,
+    provider: str,
+    model: str,
+    tools: list[dict[str, Any]],
+    intent: Any,
+) -> dict[str, Any] | None:
+    """Deterministic path for simple read-only computer actions.
+
+    These prompts should not wait for an LLM planner; they are also the runtime
+    smoke canary for "normal chat becomes real action".
+    """
+
+    if not bool(getattr(intent, "is_agentic", False)):
+        return None
+    text = str(req.prompt or "").strip()
+    lowered = text.lower()
+    if text.startswith("/"):
+        return None
+    mutating_markers = ("schrijf", "write", "save", "maak bestand", "delete", "verwijder", "patch", "wijzig")
+    if any(marker in lowered for marker in mutating_markers):
+        return None
+    list_markers = ("toon bestanden", "lijst bestanden", "list files", "ls ", "laat bestanden", "show files")
+    if not any(marker in lowered for marker in list_markers):
+        return None
+
+    path = _fast_list_files_path(lowered)
+    recursive = any(marker in lowered for marker in ("recursive", "recursief", "alles onder", "hele map"))
+    try:
+        from controller.tool_bridge import run_tool_bridge
+
+        tool_result = run_tool_bridge("list_files", {"path": path, "recursive": recursive, "limit": 120})
+    except Exception as exc:
+        tool_result = {"status": "error", "stdout": "", "stderr": str(exc), "reason": str(exc), "fake_success": False}
+    raw = tool_result.get("raw") if isinstance(tool_result.get("raw"), dict) else {}
+    stdout = str(tool_result.get("stdout") or raw.get("stdout") or "")
+    stderr = str(tool_result.get("stderr") or raw.get("stderr") or tool_result.get("reason") or "")
+    status = str(tool_result.get("status") or raw.get("status") or "unknown")
+    step = {
+        "tool": "list_files",
+        "status": status,
+        "args": {"path": path, "recursive": recursive, "limit": 120},
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+    response = stdout.strip() or stderr.strip() or f"list_files gaf status {status}."
+    return {
+        "status": "success" if status == "success" else status,
+        "provider": provider,
+        "requested_provider": requested_provider,
+        "model": model,
+        "route": "agentic_processor",
+        "local_only": provider == "ollama",
+        "llm_provider_used": False,
+        "response": response,
+        "steps": [step],
+        "provenance": {
+            "planner_source": "deterministic_fast_path",
+            "tools_used": ["list_files"] if status == "success" else [],
+            "planned_tools": ["list_files"],
+            "step_count": 1,
+            "pocket_processed_steps": 1,
+        },
+        "tool_schemas": tools if _should_return_tool_schemas(req) else [],
+        "tool_schema_count": len(tools) if _should_return_tool_schemas(req) else 0,
+        "fake_success": False,
+    }
+
+
+def _fast_list_files_path(lowered_prompt: str) -> str:
+    if "controller" in lowered_prompt:
+        return "controller"
+    if "scripts" in lowered_prompt:
+        return "scripts"
+    if "cockpit" in lowered_prompt:
+        return "ouroboros_cockpit"
+    match = re.search(r"(?:in|van|onder|inside|under)\s+([a-z0-9_./-]+)", lowered_prompt)
+    if match:
+        value = match.group(1).strip(" .,;:'\"")
+        if value and value not in {"de", "het", "een", "map", "folder", "directory"}:
+            return value
+    return "."
 
 
 def _copy_cockpit_request(req: CockpitChatRequest, update: dict[str, Any]) -> CockpitChatRequest:
@@ -1501,6 +1750,13 @@ def _slash_agent_timeout_seconds() -> int:
         return 240
 
 
+def _roo_agent_timeout_seconds() -> int:
+    try:
+        return max(300, min(int(os.getenv("WINTRIP_ROO_AGENT_TIMEOUT_SECONDS", "1800")), 7200))
+    except ValueError:
+        return 1800
+
+
 def _cockpit_chat_timeout_seconds() -> float:
     try:
         return max(3.0, min(float(os.getenv("WINTRIP_COCKPIT_CHAT_TIMEOUT_SECONDS", "75")), 85.0))
@@ -1576,6 +1832,123 @@ def _ouroboros_runtime_chat_payload(
     result["tool_schema_count"] = len(tools) if _should_return_tool_schemas(req) else 0
     result["fake_success"] = False
     return result
+
+
+def _roo_runtime_chat_payload(
+    req: CockpitChatRequest,
+    *,
+    requested_provider: str,
+    model: str,
+    tools: list[dict[str, Any]],
+    chat_context: dict[str, Any],
+) -> dict[str, Any]:
+    approval = str(req.approval or "").strip()
+    preflight = _roo_runtime_preflight(requested_provider, model)
+    local_llm = bool(preflight.get("local_llm"))
+    if approval != APPROVAL_PHRASE:
+        return {
+            "status": "blocked",
+            "provider": "roo",
+            "requested_provider": requested_provider,
+            "model": model,
+            "route": "roo_runtime",
+            "local_only": local_llm,
+            "agent_runtime": True,
+            "approval_required": True,
+            "approval_phrase": APPROVAL_PHRASE,
+            "blocked_tools": ["roo_cli"],
+            "cockpit_provider": preflight.get("cockpit_provider"),
+            "cockpit_model": preflight.get("cockpit_model"),
+            "roo_provider_map": preflight.get("provider_map"),
+            "provenance": {
+                "blocked_tools": ["roo_cli"],
+                "planned_tools": ["roo_cli"],
+                "planner_source": "cockpit_roo_runtime",
+            },
+            "response": (
+                f"Roo Code kan bestanden wijzigen en commando's uitvoeren. "
+                f"Vul exact `{APPROVAL_PHRASE}` in om deze Roo job te starten met het geselecteerde model `{model}`."
+            ),
+            "tool_schemas": tools if _should_return_tool_schemas(req) else [],
+            "tool_schema_count": len(tools) if _should_return_tool_schemas(req) else 0,
+            "llm_provider_used": False,
+            "fake_success": False,
+        }
+    if preflight.get("status") != "ready":
+        return {
+            "status": "blocked",
+            "provider": "roo",
+            "requested_provider": requested_provider,
+            "model": model,
+            "route": "roo_runtime",
+            "local_only": False,
+            "agent_runtime": True,
+            "configuration_required": True,
+            "cockpit_provider": preflight.get("cockpit_provider"),
+            "cockpit_model": preflight.get("cockpit_model"),
+            "roo_provider_map": preflight.get("provider_map"),
+            "response": str(preflight.get("reason") or "Roo runtime configuratie ontbreekt."),
+            "reason": str(preflight.get("reason") or ""),
+            "tool_schemas": tools if _should_return_tool_schemas(req) else [],
+            "tool_schema_count": len(tools) if _should_return_tool_schemas(req) else 0,
+            "llm_provider_used": False,
+            "fake_success": False,
+        }
+    try:
+        from controller.agent_runtime.orchestrator import get_orchestrator
+
+        selected_model = str(model or "")
+        cockpit_provider = str(preflight.get("cockpit_provider") or "ollama")
+        provider_map = preflight.get("provider_map") if isinstance(preflight.get("provider_map"), dict) else {}
+        record = get_orchestrator().submit(
+            agent="roo",
+            task=chat_context.get("prompt") or req.prompt,
+            timeout_seconds=_roo_agent_timeout_seconds(),
+            metadata={
+                "prompt": chat_context.get("prompt") or req.prompt,
+                "approval": APPROVAL_PHRASE,
+                "approval_status": "approved",
+                "selected_cockpit_provider": requested_provider,
+                "selected_cockpit_model": selected_model,
+                "cockpit_provider": cockpit_provider,
+                "cockpit_model": selected_model,
+                "roo_provider_map": provider_map,
+                "route": "roo_runtime",
+            },
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "provider": "roo",
+            "requested_provider": requested_provider,
+            "model": model,
+            "route": "roo_runtime",
+            "response": "",
+            "error": str(exc)[:500],
+            "fake_success": False,
+        }
+    return {
+        "status": "running",
+        "provider": "roo",
+        "requested_provider": requested_provider,
+        "model": model,
+        "route": "roo_runtime",
+        "local_only": local_llm,
+        "agent_runtime": True,
+        "cockpit_provider": preflight.get("cockpit_provider"),
+        "cockpit_model": preflight.get("cockpit_model"),
+        "roo_provider_map": preflight.get("provider_map"),
+        "job": record.to_dict(),
+        "response": f"Roo Code job {record.job_id} gestart met Cockpit-model `{model}`.",
+        "provenance": {
+            "tools_used": ["roo_cli"],
+            "planner_source": "cockpit_roo_runtime",
+        },
+        "tool_schemas": tools if _should_return_tool_schemas(req) else [],
+        "tool_schema_count": len(tools) if _should_return_tool_schemas(req) else 0,
+        "llm_provider_used": not local_llm,
+        "fake_success": False,
+    }
 
 
 async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
@@ -1655,6 +2028,8 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
                 req.prompt,
                 approval=req.approval or "",
                 timeout_seconds=_slash_agent_timeout_seconds(),
+                provider=provider,
+                model=model,
             ),
             timeout=slash_timeout_seconds,
         )
@@ -1676,15 +2051,41 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         )
     if slash_result is not None:
         slash_result.setdefault("status", "success")
-        slash_result.setdefault("provider", "slash")
+        if slash_result.get("agent") == "roo" and slash_result.get("tool") == "roo_cli":
+            slash_result.setdefault("provider", "roo")
+            slash_result.setdefault("model", model)
+            slash_result.setdefault("requested_provider", requested_provider)
+        else:
+            slash_result.setdefault("provider", "slash")
+            slash_result.setdefault("model", slash_result.get("agent", "slash"))
         slash_result.setdefault("requested_provider", requested_provider)
-        slash_result.setdefault("model", slash_result.get("agent", "slash"))
         slash_result.setdefault("route", "slash_agent")
         slash_result.setdefault("local_only", True)
         slash_result.setdefault("tool_schemas", [])
         slash_result.setdefault("tool_schema_count", 0)
         slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
         return _with_cockpit_self_context(slash_result, chat_context, provider, model, include_living_echo=False)
+
+    if provider == "roo":
+        result = _roo_runtime_chat_payload(
+            req,
+            requested_provider=requested_provider,
+            model=model,
+            tools=tools,
+            chat_context=chat_context,
+        )
+        return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
+
+    fast_result = _fast_agentic_action_payload(
+        req,
+        requested_provider=requested_provider,
+        provider=provider,
+        model=model,
+        tools=tools,
+        intent=intent,
+    )
+    if fast_result is not None:
+        return _with_cockpit_self_context(fast_result, chat_context, provider, model, include_living_echo=False)
 
     if _should_route_agentic_chat(req, provider):
         planner = _agentic_model_planner(provider, model, history=chat_context.get("history") or [])
@@ -2071,12 +2472,13 @@ def _cockpit_source_trace(result: dict[str, Any], *, provider: str, model: str) 
         "local": "model_only",
         "multi_api": "model_only",
         "ouroboros_runtime": "ouroboros_runtime",
+        "roo_runtime": "agent_runtime",
         "slash_agent": "slash_agent",
         "world_agent": "world_agent",
         "living_action": "living_action",
     }.get(route, route or "unknown")
     model_only = route in {"local", "multi_api"} and not brave_used and not tools_executed
-    selected_model_interprets = route in {"agentic_processor", "local", "multi_api"}
+    selected_model_interprets = route in {"agentic_processor", "local", "multi_api", "roo_runtime"}
     external_tools = _trace_list(provenance.get("external_tools_used"))
     mutating_tools = _trace_list(provenance.get("mutating_tools_attempted"))
     planner_guardrails = _trace_list(provenance.get("planner_guardrails_applied"))

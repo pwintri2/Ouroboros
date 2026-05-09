@@ -60,8 +60,8 @@ def _remote_doctor(backend_url: str, *, preview_url: str = "", bridge_url: str =
         key: value
         for key, value in {
             "backend_url": backend_url,
-            "preview_url": preview_url,
-            "bridge_url": bridge_url,
+            "preview_url": _docker_reachable_url(preview_url),
+            "bridge_url": _docker_reachable_url(bridge_url),
         }.items()
         if value
     }
@@ -70,6 +70,19 @@ def _remote_doctor(backend_url: str, *, preview_url: str = "", bridge_url: str =
         return _request_json("GET", f"{backend_url}/api/ouroboros/runtime/doctor{suffix}", timeout=8)
     except Exception:
         return None
+
+
+def _docker_reachable_url(value: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(str(value or ""))
+    except Exception:
+        return value
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return value
+    netloc = "host.docker.internal"
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return urllib.parse.urlunsplit((parsed.scheme or "http", netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def _run_smoke(backend_url: str) -> dict[str, Any]:

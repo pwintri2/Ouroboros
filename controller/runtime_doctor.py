@@ -13,12 +13,13 @@ import shutil
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 
 
-DOCTOR_VERSION = "2026-05-09.runtime-harness.v2-docker"
+DOCTOR_VERSION = "2026-05-09.runtime-harness.v3-roo-runtime"
 APPROVAL_PHRASE = "Akkoord"
 CRITICAL_CHECKS = (
     "backend_http",
@@ -28,6 +29,7 @@ CRITICAL_CHECKS = (
     "chroma",
     "tool_registry",
     "agentic_router",
+    "roo_runtime",
     "pending_approval_store",
     "docker_runner",
 )
@@ -48,6 +50,7 @@ def runtime_doctor_payload(
         "chroma": _check_chroma(),
         "pending_approval_store": _check_pending_approval_store(),
         "docker_runner": _check_docker_runner(),
+        "roo_runtime": _check_roo_runtime(),
         "codex_gemini": _check_codex_gemini(),
         "last_smoke_test": _check_last_smoke_test(),
     }
@@ -84,10 +87,12 @@ def runtime_doctor_payload(
 
 def runtime_defaults(*, backend_url: str | None = None, preview_url: str | None = None, bridge_url: str | None = None) -> dict[str, str]:
     in_docker = Path("/.dockerenv").exists()
+    default_preview = "http://host.docker.internal:1420" if in_docker else "http://127.0.0.1:1420"
+    default_bridge = "http://host.docker.internal:8766" if in_docker else "http://127.0.0.1:8766"
     return {
         "backend_url": _strip_slash(backend_url or os.getenv("WINTRIP_BACKEND_URL") or "http://127.0.0.1:8010"),
-        "preview_url": _strip_slash(preview_url or os.getenv("WINTRIP_WEB_PREVIEW_URL") or ("http://host.docker.internal:1420" if in_docker else "http://127.0.0.1:1420")),
-        "bridge_url": _strip_slash(bridge_url or os.getenv("WINTRIP_RCLONE_BRIDGE_URL") or ("http://host.docker.internal:8766" if in_docker else "http://127.0.0.1:8766")),
+        "preview_url": _strip_slash(_docker_reachable_url(preview_url or os.getenv("WINTRIP_WEB_PREVIEW_URL") or default_preview, in_docker=in_docker)),
+        "bridge_url": _strip_slash(_docker_reachable_url(bridge_url or os.getenv("WINTRIP_RCLONE_BRIDGE_URL") or default_bridge, in_docker=in_docker)),
         "workspace": str(_workspace_root()),
     }
 
@@ -136,18 +141,33 @@ def load_last_smoke_result() -> dict[str, Any]:
 def _check_source_loaded() -> dict[str, Any]:
     try:
         from controller.agentic_intent import classify_agentic_intent
+        from controller.slash_agent_router import handle_slash_command
 
         intent = classify_agentic_intent("toon bestanden in controller")
+        roo_probe = handle_slash_command("/roo maak een runtime probe", provider="ollama", model="llama3.2:latest")
         module_file = Path(__file__).resolve()
         classifier_file = Path(classify_agentic_intent.__code__.co_filename).resolve()
         git = _git_head(_workspace_root())
-        ok = bool(intent.is_agentic and intent.route == "agentic_processor")
+        roo_ok = (
+            isinstance(roo_probe, dict)
+            and roo_probe.get("status") == "blocked"
+            and roo_probe.get("route") == "roo_runtime"
+            and roo_probe.get("tool") == "roo_cli"
+            and "handoff" not in str(roo_probe.get("status") or "").lower()
+            and "handoff" not in str(roo_probe.get("response") or "").lower()
+        )
+        ok = bool(intent.is_agentic and intent.route == "agentic_processor" and roo_ok)
         return {
             "status": "online" if ok else "failed",
-            "reason": "canonical classifier loaded" if ok else "canonical classifier did not route file action",
+            "reason": "canonical classifier and Roo runtime route loaded" if ok else "canonical source is stale or Roo still routes to handoff",
             "module_file": str(module_file),
             "classifier_file": str(classifier_file),
             "classifier_mtime": classifier_file.stat().st_mtime if classifier_file.exists() else None,
+            "roo_probe": {
+                "status": roo_probe.get("status") if isinstance(roo_probe, dict) else "missing",
+                "route": roo_probe.get("route") if isinstance(roo_probe, dict) else "",
+                "tool": roo_probe.get("tool") if isinstance(roo_probe, dict) else "",
+            },
             "git_head": git.get("head", ""),
             "git_dirty": git.get("dirty", None),
             "fake_success": False,
@@ -345,15 +365,45 @@ def _check_web_preview(url: str) -> dict[str, Any]:
             reason = "preview reachable but Vite rejected the host; restart via scripts/start_ouroboros_preview.sh"
         return {"status": "failed", "reason": reason, "url": url, "fake_success": False}
     body = str(result.get("body") or "")
-    current_source_hint = "Ouroboros" in body and ("/src/main.tsx" in body or "/@vite/client" in body or "/assets/" in body)
+    app_source = _http_request(f"{url.rstrip('/')}/src/App.tsx", timeout=2.5)
+    source_body = str(app_source.get("body") or "")
+    current_source_hint = (
+        "Ouroboros" in body
+        and ("/src/main.tsx" in body or "/@vite/client" in body or "/assets/" in body)
+        and "Roo Code Agent" in source_body
+    )
     return {
         "status": "online" if current_source_hint else "failed",
-        "reason": "Vite preview reachable and serving cockpit source" if current_source_hint else "preview route reachable but source hint missing or stale",
+        "reason": "Vite preview reachable and serving current Roo-enabled cockpit source" if current_source_hint else "preview route reachable but source hint missing or stale",
         "url": url,
         "http_status": result.get("http_status"),
         "source_hint": current_source_hint,
         "fake_success": False,
     }
+
+
+def _check_roo_runtime() -> dict[str, Any]:
+    try:
+        from controller.agent_runtime.adapters.roo_cli import roo_status
+
+        status = roo_status(prefer_bridge=True)
+        available = bool(status.get("available"))
+        providers = [str(item) for item in (status.get("supported_cli_providers") or [])]
+        ollama_supported = bool(status.get("ollama_cli_supported") or "ollama" in providers)
+        ok = available and ollama_supported
+        return {
+            "status": "online" if ok else "failed",
+            "reason": "Roo CLI reachable and Ollama provider supported" if ok else str(status.get("reason") or "Roo CLI is unavailable or stale; /roo/status must work and include ollama support"),
+            "root": status.get("root"),
+            "binary": status.get("binary"),
+            "via_bridge": status.get("via_bridge"),
+            "supported_cli_providers": providers,
+            "ollama_cli_supported": ollama_supported,
+            "secrets_returned": False,
+            "fake_success": False,
+        }
+    except Exception as exc:
+        return {"status": "failed", "reason": str(exc), "secrets_returned": False, "fake_success": False}
 
 
 def _check_host_bridge(url: str) -> dict[str, Any]:
@@ -372,13 +422,26 @@ def _check_host_bridge(url: str) -> dict[str, Any]:
         return {"status": "failed", "reason": reason, "url": url, "token_path": str(token_path), "secrets_returned": False, "fake_success": False}
     body = result.get("json") if isinstance(result.get("json"), dict) else {}
     online = body.get("status") == "online"
+    roo_result = _http_request(f"{url}/roo/status", timeout=2.5, headers={"X-Ouroboros-Bridge-Token": token})
+    roo_body = roo_result.get("json") if isinstance(roo_result.get("json"), dict) else {}
+    roo_online = roo_result.get("status") == "online" and roo_body.get("available") is not None
+    if online and not roo_online:
+        return {
+            "status": "failed",
+            "reason": "stale host bridge: /roo/status ontbreekt of gebruikt oude code; herstart scripts/rclone_host_bridge.py",
+            "url": url,
+            "token_path": str(token_path),
+            "secrets_returned": False,
+            "fake_success": False,
+        }
     return {
         "status": "online" if online else "failed",
-        "reason": "host bridge token accepted" if online else str(body.get("reason") or "host bridge returned non-online status"),
+        "reason": "host bridge token accepted and Roo endpoints loaded" if online else str(body.get("reason") or "host bridge returned non-online status"),
         "url": url,
         "token_path": str(token_path),
         "tool_count": len(body.get("tools") or []),
         "host_bridge_runtime": body.get("host_bridge_runtime") or {},
+        "roo_status": {key: roo_body.get(key) for key in ("status", "available", "root", "ollama_cli_supported")},
         "secrets_returned": False,
         "fake_success": False,
     }
@@ -412,7 +475,7 @@ def _http_request(url: str, *, timeout: float, headers: Mapping[str, str] | None
             return {
                 "status": "online",
                 "http_status": response.status,
-                "body": body[:2000],
+                "body": body[:20000],
                 "json": _redact(parsed) if isinstance(parsed, dict) else {},
                 "fake_success": False,
             }
@@ -445,6 +508,21 @@ def _workspace_root() -> Path:
 
 def _strip_slash(value: str) -> str:
     return str(value or "").strip().rstrip("/")
+
+
+def _docker_reachable_url(value: str, *, in_docker: bool) -> str:
+    if not in_docker:
+        return value
+    try:
+        parsed = urllib.parse.urlsplit(str(value or ""))
+    except Exception:
+        return value
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return value
+    netloc = "host.docker.internal"
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return urllib.parse.urlunsplit((parsed.scheme or "http", netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def _git_head(root: Path) -> dict[str, Any]:

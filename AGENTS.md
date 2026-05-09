@@ -7,7 +7,7 @@ Read `OUROBOROS_IDE_CONTEXT.md` first. This repository is the authoritative impl
 - WintripAI: `/home/pwintri2/WintripAI`
 - Docker runtime: `/workspace`
 - Ruflo: `/home/pwintri2/ruflo`
-- Roo: `/home/pwintri2/Roo`
+- Roo: `/home/pwintri2/Roo-code`
 - Codex: `/home/pwintri2/Codex`
 - DeepSeek: `/home/pwintri2/deepseek`
 - Atlas: `/home/pwintri2/atlas`
@@ -25,7 +25,7 @@ The cockpit chat routes slash-prefixed prompts through `controller/slash_agent_r
 - `/atlas <task>` runs Atlas `ask` against WintripAI when the CLI is launchable.
 - `/ruflo <task>` starts Ruflo swarm coordination through the host bridge.
 - `/claude <task>` runs Claude Code through the host bridge when Claude auth is present.
-- `/roo <task>` uses the Roo Python adapter or writes a Roo handoff task.
+- `/roo <task>` uses safe Roo Python read/list/search adapters or starts a Roo Code CLI agent-runtime job with the Cockpit-selected model. Local selections route to Ollama; supported cloud selections route through the API key stored in Cockpit for that provider.
 - `/agents` shows the catalog.
 
 ## Guardrails

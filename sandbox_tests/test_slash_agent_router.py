@@ -14,15 +14,19 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.old_preapproved = os.environ.get("WINTRIP_SANDBOX_PREAPPROVED")
         self.old_deepseek = os.environ.get("WINTRIP_DEEPSEEK_PATH")
         self.old_atlas = os.environ.get("WINTRIP_ATLAS_PATH")
+        self.old_roo_code = os.environ.get("WINTRIP_ROO_CODE_PATH")
         self.old_bridge_url = os.environ.get("WINTRIP_RCLONE_BRIDGE_URL")
         self.old_bridge_token = os.environ.get("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH")
+        self.old_openai_key = os.environ.get("OPENAI_API_KEY")
         self.tmp = tempfile.TemporaryDirectory(prefix="wintrip-slash-agent-")
         os.environ["WINTRIP_WORKSPACE"] = self.tmp.name
         os.environ["WINTRIP_DEEPSEEK_PATH"] = str(Path(self.tmp.name) / "deepseek")
         os.environ["WINTRIP_ATLAS_PATH"] = str(Path(self.tmp.name) / "atlas")
+        os.environ["WINTRIP_ROO_CODE_PATH"] = str(Path(self.tmp.name) / "Roo-code")
         os.environ.pop("WINTRIP_SANDBOX_PREAPPROVED", None)
         os.environ.pop("WINTRIP_RCLONE_BRIDGE_URL", None)
         os.environ.pop("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH", None)
+        os.environ.pop("OPENAI_API_KEY", None)
         Path(self.tmp.name, "alpha.txt").write_text("hello slash roo\n", encoding="utf-8")
         Path(self.tmp.name, "deepseek", "docs").mkdir(parents=True)
         Path(self.tmp.name, "deepseek", "docs", "SUBAGENTS.md").write_text("# subagents\n", encoding="utf-8")
@@ -35,8 +39,10 @@ class TestSlashAgentRouter(unittest.TestCase):
         self._restore("WINTRIP_SANDBOX_PREAPPROVED", self.old_preapproved)
         self._restore("WINTRIP_DEEPSEEK_PATH", self.old_deepseek)
         self._restore("WINTRIP_ATLAS_PATH", self.old_atlas)
+        self._restore("WINTRIP_ROO_CODE_PATH", self.old_roo_code)
         self._restore("WINTRIP_RCLONE_BRIDGE_URL", self.old_bridge_url)
         self._restore("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH", self.old_bridge_token)
+        self._restore("OPENAI_API_KEY", self.old_openai_key)
 
     def test_parse_slash_command(self):
         parsed = parse_slash_command("/codex voeg tests toe")
@@ -60,6 +66,16 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.assertEqual(result["tool"], "roo_read_file")
         self.assertEqual(result["status"], "success")
         self.assertIn("hello slash roo", result["roo_result"]["stdout"])
+
+    def test_roo_agentic_task_requires_approval(self):
+        result = handle_slash_command("/roo maak een plan", provider="ollama", model="llama3.2:latest")
+
+        self.assertEqual(result["agent"], "roo")
+        self.assertEqual(result["tool"], "roo_cli")
+        self.assertEqual(result["route"], "roo_runtime")
+        self.assertEqual(result["status"], "blocked")
+        self.assertTrue(result["approval_required"])
+        self.assertIn("roo_cli", result["blocked_tools"])
 
     def test_codex_without_approval_is_blocked(self):
         result = handle_slash_command("/codex wijzig niets")
@@ -212,6 +228,108 @@ class TestSlashAgentRouter(unittest.TestCase):
                 break
             time.sleep(0.02)
         self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
+
+    def test_roo_exec_dispatches_to_agent_runtime_with_selected_cockpit_model(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="roo-runtime-test-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+        seen: list[dict] = []
+
+        def fake_adapter(job, log, on_progress):
+            seen.append(job.metadata)
+            return {"status": "completed", "exit_code": 0, "response_preview": "roo ok"}
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"roo": fake_adapter})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+
+        result = handle_slash_command(
+            "/roo maak een plan",
+            approval="Akkoord",
+            provider="ollama",
+            model="llama3.2:latest",
+        )
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["tool"], "roo_cli")
+        self.assertEqual(result["route"], "roo_runtime")
+        self.assertIn("job", result)
+        job_id = result["job"]["job_id"]
+        for _ in range(50):
+            if seen:
+                break
+            time.sleep(0.02)
+        self.assertEqual(seen[0]["cockpit_provider"], "ollama")
+        self.assertEqual(seen[0]["cockpit_model"], "llama3.2:latest")
+        for _ in range(50):
+            if (store.get(job_id) or {}).get("status") == "completed":
+                break
+            time.sleep(0.02)
+        self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
+
+    def test_roo_slash_uses_selected_cloud_cockpit_model_when_key_exists(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        os.environ["OPENAI_API_KEY"] = "sk-test-roo-cloud-key"
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="roo-cloud-runtime-test-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+        seen: list[dict] = []
+
+        def fake_adapter(job, log, on_progress):
+            seen.append(job.metadata)
+            return {"status": "completed", "exit_code": 0, "response_preview": "roo cloud ok"}
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"roo": fake_adapter})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+
+        result = handle_slash_command(
+            "/roo maak een cloud plan",
+            approval="Akkoord",
+            provider="openai",
+            model="gpt-4.1",
+        )
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["route"], "roo_runtime")
+        self.assertFalse(result["local_only"])
+        for _ in range(50):
+            if seen:
+                break
+            time.sleep(0.02)
+        self.assertEqual(seen[0]["cockpit_provider"], "openai")
+        self.assertEqual(seen[0]["cockpit_model"], "gpt-4.1")
+        self.assertEqual(seen[0]["roo_provider_map"]["roo_provider"], "openai-native")
+        job_id = result["job"]["job_id"]
+        for _ in range(50):
+            if (store.get(job_id) or {}).get("status") == "completed":
+                break
+            time.sleep(0.02)
+        self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
+
+    def test_roo_slash_blocks_cloud_model_without_api_key(self):
+        result = handle_slash_command(
+            "/roo maak een cloud plan",
+            approval="Akkoord",
+            provider="openai",
+            model="gpt-4.1",
+        )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["route"], "roo_runtime")
+        self.assertTrue(result["configuration_required"])
+        self.assertIn("API key", result["response"])
 
     def test_ruflo_defaults_to_handoff_instead_of_host_cli(self):
         original_run = slash_agent_router._run_ruflo_swarm

@@ -17,6 +17,7 @@ import {
   KeyRound,
   Layers,
   MessageSquare,
+  Paperclip,
   Pause,
   Play,
   Rocket,
@@ -26,6 +27,7 @@ import {
   TerminalSquare,
   TestTube2,
   Wrench,
+  X,
   XCircle,
 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
@@ -55,6 +57,7 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   worldAgentStatus: "/api/world-agent/status",
   worldAgentGrok: "/api/world-agent/grok/ask",
   worldAgentSearch: "/api/world-agent/memory/search",
+  upload: "/api/upload",
   approvalPhrase: "Akkoord",
 } as const;
 
@@ -549,6 +552,7 @@ const LEGACY_BACKEND_HINT = "http://localhost:8000";
 const PROVIDER_LABELS: Record<string, string> = {
   ouroboros: "Ouroboros Runtime",
   ollama: "Ollama Local",
+  roo: "Roo Code Agent",
   openai: "ChatGPT Pro",
   anthropic: "Claude Opus",
   xai: "Grok",
@@ -561,7 +565,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   groq: "Groq Legacy",
 };
 
-const CANONICAL_PROVIDERS = ["ouroboros", "ollama", "openai", "anthropic", "xai", "mistral", "google"];
+const CANONICAL_PROVIDERS = ["ouroboros", "ollama", "roo", "openai", "anthropic", "xai", "mistral", "google"];
 const API_KEY_PROVIDERS = ["openai", "anthropic", "xai", "mistral", "google", "brave"];
 const API_REQUEST_TIMEOUT_MS = 30_000;
 const CHAT_REQUEST_TIMEOUT_MS = 90_000;
@@ -695,12 +699,15 @@ export default function App() {
   const [codexStatus, setCodexStatus] = useState<CodexStatus>({ status: "unknown" });
   const [codexCapabilities, setCodexCapabilities] = useState<CodexCapabilityInventory>({ status: "unknown" });
   const [codexRunPrompt, setCodexRunPrompt] = useState("");
+  const [uploadedFiles, setUploadedFiles] = useState<Array<{ filename: string; path: string; size: number }>>([]);
+  const [uploading, setUploading] = useState(false);
   const [agentsStatus, setAgentsStatus] = useState<AgentsSubsystemStatus>({ status: "unknown" });
   const [openhandsStatus, setOpenhandsStatus] = useState<OpenHandsSubsystemStatus>({ status: "unknown" });
   const terminalHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const providerInitialized = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const api = useCallback(
     async <T,>(path: string, init?: ApiRequestInit): Promise<T> => {
@@ -1127,7 +1134,8 @@ export default function App() {
     const option = providerChoices.find((item) => item.id === nextProvider) ?? providerChoices[0];
     if (!option) return;
     setProvider(option.id);
-    setModel(option.defaultModel || option.models[0] || "");
+    const keepCurrentModel = option.id === "roo" && model && option.models.includes(model);
+    setModel(keepCurrentModel ? model : option.defaultModel || option.models[0] || "");
   }
 
   async function perform<T>(title: string, action: () => Promise<T>): Promise<T | null> {
@@ -1147,14 +1155,47 @@ export default function App() {
     }
   }
 
+  async function handleFileUpload(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      for (let i = 0; i < fileList.length; i++) {
+        formData.append("files", fileList[i]);
+      }
+      const response = await fetch(`${backend}/api/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      const result = await response.json();
+      if (result.files && Array.isArray(result.files)) {
+        const successFiles = result.files
+          .filter((f: any) => f.status === "ok")
+          .map((f: any) => ({ filename: f.filename, path: f.path, size: f.size }));
+        setUploadedFiles((prev) => [...prev, ...successFiles]);
+        pushEvent("File upload", result);
+      }
+    } catch (error) {
+      pushEvent("File upload error", { status: "error", error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function removeUploadedFile(index: number) {
+    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function sendChat() {
     setChatOutput("");
+    const filePaths = uploadedFiles.map((f) => f.path);
     const reservedWindow = reserveExternalWindow(prompt, approval, approvalPhrase);
     const data = await perform("Agent chat", () =>
       api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.cockpitChat, {
         method: "POST",
         timeoutMs: CHAT_REQUEST_TIMEOUT_MS,
-        body: JSON.stringify({ provider, model, prompt, approval, include_tools: true }),
+        body: JSON.stringify({ provider, model, prompt, approval, include_tools: true, files: filePaths.length ? filePaths : undefined }),
       }),
     );
     if (data) {
@@ -1168,7 +1209,7 @@ export default function App() {
       // Slash-agent dispatched a background job — pull it into the Agent Jobs panel right away
       // instead of waiting for the next 5s poll.
       const job = (data as { job?: { job_id?: string } }).job;
-      if (data.route === "slash_agent" && job?.job_id) {
+      if ((data.route === "slash_agent" || data.route === "roo_runtime") && job?.job_id) {
         setSelectedAgentJobId(job.job_id);
         try {
           const jobsResponse = await api<{ jobs?: AgentJob[] }>("/api/agent-runtime/jobs?limit=20");
@@ -1589,6 +1630,27 @@ export default function App() {
                   ))}
                 </div>
                 <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+                <div className="file-upload-strip">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept=".txt,.md,.csv,.json,.pdf,.docx,.py,.js,.ts,.tsx,.html,.css,.xml,.yaml,.yml,.toml,.log"
+                    style={{ display: "none" }}
+                    onChange={(event) => handleFileUpload(event.target.files)}
+                  />
+                  <button type="button" className="attach-btn" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                    <Paperclip size={14} /> {uploading ? "Uploading…" : "Bestand toevoegen"}
+                  </button>
+                  {uploadedFiles.map((file, index) => (
+                    <span className="file-chip" key={`${file.path}-${index}`}>
+                      {file.filename} <em>({Math.round(file.size / 1024)}KB)</em>
+                      <button type="button" onClick={() => removeUploadedFile(index)} title="Verwijder">
+                        <X size={12} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
                 {slashPrompt && !approvalReady && (
                   <div className="status-pill warn" style={{ alignSelf: "flex-start" }}>
                     Slash agents have approval needed: type <strong>{approvalPhrase}</strong> in the Akkoord field.
@@ -1942,7 +2004,7 @@ function buildProviderChoices(config: CockpitConfig, status: OuroborosStatus): P
   const localModels = configuredLocalModels.length ? configuredLocalModels : [localFallbackModel].filter(Boolean);
   const choices: ProviderChoice[] = CANONICAL_PROVIDERS.map((id) => {
     const details = options[id] ?? { provider: id };
-    const isLocalRuntime = id === "ollama" || id === "ouroboros";
+    const isLocalRuntime = id === "ollama" || id === "ouroboros" || id === "roo";
     const models = id === "ollama" ? localModels : details.models ?? config.available_models?.multi_api?.[id] ?? [];
     const enabled = id === "ollama" ? Boolean(details.enabled ?? true) && models.length > 0 : !!details.enabled;
     return {
@@ -1952,7 +2014,7 @@ function buildProviderChoices(config: CockpitConfig, status: OuroborosStatus): P
       enabled,
       status: details.status ?? (enabled ? "online" : "disabled"),
       models,
-      defaultModel: (id === "ollama" ? status.model?.active_base ?? details.default_model : details.default_model) ?? details.model ?? models[0] ?? "",
+      defaultModel: (id === "ollama" || id === "roo" ? status.model?.active_base ?? details.default_model : details.default_model) ?? details.model ?? models[0] ?? "",
       reason: details.reason ?? details.message ?? (enabled ? "Beschikbaar" : "Niet geconfigureerd."),
       keySource: details.key_source,
       maskedKey: details.masked_key,

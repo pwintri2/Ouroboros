@@ -31,7 +31,7 @@ except Exception:
 APPROVAL_PHRASE = "Akkoord"
 DEFAULT_RUFLO_PATH = "/home/pwintri2/ruflo"
 DEFAULT_CODEX_PATH = "/home/pwintri2/Codex"
-DEFAULT_ROO_PATH = "/home/pwintri2/Roo"
+DEFAULT_ROO_PATH = "/home/pwintri2/Roo-code"
 MAX_TURNS_PER_CONVERSATION = 40
 MAX_CONTEXT_TURNS = 10
 MAX_LESSONS = 160
@@ -57,7 +57,7 @@ def codex_path() -> Path:
 
 
 def roo_path() -> Path:
-    return Path(os.getenv("WINTRIP_ROO_PATH") or DEFAULT_ROO_PATH).expanduser().resolve()
+    return Path(os.getenv("WINTRIP_ROO_CODE_PATH") or os.getenv("WINTRIP_ROO_PATH") or DEFAULT_ROO_PATH).expanduser().resolve()
 
 
 def build_chat_context(

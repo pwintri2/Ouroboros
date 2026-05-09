@@ -3,7 +3,8 @@
 The cockpit chat remains the human entrypoint. Prompts that start with `/`
 are routed to bounded local agent adapters instead of an LLM provider. Codex
 and Ruflo/Claude can run on the host through the authenticated host bridge;
-Roo uses the local Python Roo adapter and task handoff files.
+Roo uses direct read/list/search adapters for safe inspections and the real
+Roo Code CLI as a job for agentic tasks.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ except Exception:
         return Path(os.getenv("WINTRIP_CODEX_PATH") or "/home/pwintri2/Codex").expanduser().resolve()
 
     def roo_path() -> Path:
-        return Path(os.getenv("WINTRIP_ROO_PATH") or "/home/pwintri2/Roo").expanduser().resolve()
+        return Path(os.getenv("WINTRIP_ROO_CODE_PATH") or os.getenv("WINTRIP_ROO_PATH") or "/home/pwintri2/Roo-code").expanduser().resolve()
 
     def ruflo_path() -> Path:
         return Path(os.getenv("WINTRIP_RUFLO_PATH") or "/home/pwintri2/ruflo").expanduser().resolve()
@@ -81,7 +82,9 @@ def slash_command_catalog() -> dict[str, Any]:
             "/atlas ask <opdracht>": "Laat Atlas een vraag/taak beantwoorden via de CLI.",
             "/ruflo <opdracht>": "Start Ruflo swarm-coordinatie rond de opdracht.",
             "/claude <opdracht>": "Laat Claude Code in WintripAI werken als auth beschikbaar is.",
-            "/roo <opdracht>": "Gebruik Roo adapter of maak een Roo IDE-handoff.",
+            "/roo status": "Roo Code CLI/root/runtime status.",
+            "/roo jobs": "Recente Roo jobs uit de agent runtime.",
+            "/roo <opdracht>": "Laat Roo Code agentisch werken met het in Cockpit gekozen model.",
         },
         "roots": _agent_roots(),
         "approval_phrase": APPROVAL_PHRASE,
@@ -90,7 +93,13 @@ def slash_command_catalog() -> dict[str, Any]:
     }
 
 
-def handle_slash_command(prompt: str, approval: str = "", timeout_seconds: int = 1800) -> dict[str, Any] | None:
+def handle_slash_command(
+    prompt: str,
+    approval: str = "",
+    timeout_seconds: int = 1800,
+    provider: str = "",
+    model: str = "",
+) -> dict[str, Any] | None:
     parsed = parse_slash_command(prompt)
     if parsed is None:
         return None
@@ -120,6 +129,10 @@ def handle_slash_command(prompt: str, approval: str = "", timeout_seconds: int =
         ecosystem_sub = _ecosystem_subcommand(command, task, approval=approval, timeout_seconds=timeout_seconds)
         if ecosystem_sub is not None:
             return ecosystem_sub
+    if command == "roo":
+        roo_sub = _roo_subcommand(task, approval=approval, provider=provider, model=model, timeout_seconds=timeout_seconds)
+        if roo_sub is not None:
+            return roo_sub
     if command in HOST_AGENT_COMMANDS and task.lower() in {"status", "jobs", "latest", "laatste"}:
         return _agent_jobs_result(command)
     if not task:
@@ -132,7 +145,7 @@ def handle_slash_command(prompt: str, approval: str = "", timeout_seconds: int =
             "fake_success": False,
         }
     if command == "roo":
-        return execute_roo_agent_task(task=task, approval=approval)
+        return execute_roo_agent_task(task=task, approval=approval, provider=provider, model=model, timeout_seconds=timeout_seconds)
     return execute_host_agent_command(
         agent=command,
         task=task,
@@ -198,7 +211,13 @@ def execute_host_agent_command(
     return {"status": "error", "agent": agent, "reason": "Agent dispatch failed.", "fake_success": False}
 
 
-def execute_roo_agent_task(task: str, approval: str = "") -> dict[str, Any]:
+def execute_roo_agent_task(
+    task: str,
+    approval: str = "",
+    provider: str = "",
+    model: str = "",
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
     started = time.time()
     task = _clip(str(task or "").strip(), MAX_TASK_CHARS)
     if not task:
@@ -227,17 +246,39 @@ def execute_roo_agent_task(task: str, approval: str = "") -> dict[str, Any]:
     except Exception as exc:
         return _agent_result("roo", "roo_adapter", "error", started, reason=str(exc))
 
-    handoff = _write_agent_handoff("roo", task)
-    return _agent_result(
-        "roo",
-        "roo_task_handoff",
-        "handoff",
-        started,
-        response=(
-            "Roo taak staat klaar als IDE-handoff. Gebruik Roo in VS Code op deze taak, "
-            "of specificeer /roo read, /roo list, /roo search, /roo run: voor directe adapter-acties."
-        ),
-        handoff=handoff,
+    effective_approval = _approval_effective(approval)
+    if effective_approval != APPROVAL_PHRASE:
+        local_llm = _roo_selection_is_local(provider, model)
+        return _agent_result(
+            "roo",
+            "roo_cli",
+            "blocked",
+            started,
+            route="roo_runtime",
+            provider="roo",
+            model=str(model or ""),
+            requested_provider=str(provider or ""),
+            local_only=local_llm,
+            approval_required=True,
+            approval_phrase=APPROVAL_PHRASE,
+            blocked_tools=["roo_cli"],
+            provenance={
+                "blocked_tools": ["roo_cli"],
+                "planned_tools": ["roo_cli"],
+                "planner_source": "slash_roo_runtime",
+            },
+            response=(
+                f"/roo wacht op exact {APPROVAL_PHRASE}. Roo Code kan bestanden wijzigen en commando's uitvoeren; "
+                "de Cockpit-modelkeuze wordt na approval aan de Roo job meegegeven."
+            ),
+        )
+    return _submit_roo_agent_runtime(
+        task=task,
+        provider=provider,
+        model=model,
+        approval=effective_approval,
+        timeout_seconds=timeout_seconds,
+        started=started,
     )
 
 
@@ -370,6 +411,67 @@ def _ecosystem_subcommand(agent: str, task: str, approval: str = "", timeout_sec
             prefer_bridge=True,
         )
     return None
+
+
+def _roo_subcommand(
+    task: str,
+    approval: str = "",
+    provider: str = "",
+    model: str = "",
+    timeout_seconds: int = 1800,
+) -> dict[str, Any] | None:
+    text = str(task or "").strip()
+    if not text:
+        return None
+    head, _, rest = text.partition(" ")
+    head_lower = head.lower()
+    rest = rest.strip()
+    if head_lower in {"status", "health"}:
+        return _roo_status_subcommand()
+    if head_lower in {"jobs", "latest", "laatste"}:
+        return _agent_jobs_result("roo")
+    if head_lower in {"run", "ask", "code"}:
+        if not rest:
+            return _agent_result(
+                "roo",
+                "roo_cli",
+                "blocked",
+                time.time(),
+                response="Geef een opdracht mee, bijvoorbeeld /roo run maak de runtime status zichtbaar.",
+            )
+        return execute_roo_agent_task(
+            task=rest,
+            approval=approval,
+            provider=provider,
+            model=model,
+            timeout_seconds=timeout_seconds,
+        )
+    return None
+
+
+def _roo_status_subcommand() -> dict[str, Any]:
+    started = time.time()
+    try:
+        from controller.agent_runtime.adapters.roo_cli import roo_status
+
+        status = roo_status(prefer_bridge=True)
+    except Exception as exc:
+        return _agent_result("roo", "roo_status", "error", started, reason=str(exc)[:500])
+    lines = [
+        f"/roo status: {status.get('status')}",
+        f"- root: {status.get('root')} (present={status.get('root_exists')})",
+        f"- binary: {status.get('binary') or 'n/a'}",
+        f"- node: {status.get('node') or 'n/a'}",
+        f"- runtime reachable: {status.get('runtime_reachable')}",
+        f"- supported providers: {', '.join(list(status.get('supported_cli_providers') or [])[:12]) or '(unknown)'}",
+        f"- ollama supported by CLI: {status.get('ollama_cli_supported')}",
+    ]
+    version_probe = status.get("version_probe") if isinstance(status.get("version_probe"), dict) else {}
+    if version_probe.get("stdout"):
+        lines.append(f"- version: {str(version_probe.get('stdout')).strip()}")
+    if version_probe.get("stderr") and not version_probe.get("stdout"):
+        lines.append(f"- version stderr: {str(version_probe.get('stderr')).strip()[:400]}")
+    return _agent_result("roo", "roo_status", str(status.get("status") or "unknown"), started, roo_status=status, response="\n".join(lines))
 
 
 def _ecosystem_status_subcommand(agent: str) -> dict[str, Any]:
@@ -790,6 +892,157 @@ def _submit_ecosystem_agent_runtime(
             f"Volg live in Agent Jobs of vraag `/{agent} jobs` voor de laatste samenvatting."
         ),
     )
+
+
+def _submit_roo_agent_runtime(
+    task: str,
+    provider: str,
+    model: str,
+    approval: str,
+    timeout_seconds: int,
+    started: float | None = None,
+) -> dict[str, Any]:
+    started = started or time.time()
+    try:
+        from controller.agent_runtime.adapters.roo_cli import roo_status
+        from controller.agent_runtime.orchestrator import get_orchestrator
+        from controller.roo_cli_runtime import cockpit_provider_for_roo_selection, map_cockpit_provider
+
+        selected_provider = str(provider or "").strip().lower()
+        selected_model = str(model or "").strip()
+        cockpit_provider = cockpit_provider_for_roo_selection(selected_provider, selected_model)
+        provider_map = map_cockpit_provider(cockpit_provider, selected_model)
+        if provider_map.get("status") != "mapped":
+            return _agent_result(
+                "roo",
+                "roo_cli",
+                "blocked",
+                started,
+                route="roo_runtime",
+                provider="roo",
+                requested_provider=selected_provider,
+                model=selected_model,
+                local_only=cockpit_provider == "ollama",
+                cockpit_provider=cockpit_provider,
+                cockpit_model=selected_model,
+                roo_provider_map=provider_map,
+                configuration_required=True,
+                response=str(provider_map.get("reason") or f"Roo ondersteunt Cockpit-provider `{cockpit_provider}` nog niet."),
+            )
+        if not _roo_api_key_ready(cockpit_provider, provider_map):
+            return _agent_result(
+                "roo",
+                "roo_cli",
+                "blocked",
+                started,
+                route="roo_runtime",
+                provider="roo",
+                requested_provider=selected_provider,
+                model=selected_model,
+                local_only=False,
+                cockpit_provider=cockpit_provider,
+                cockpit_model=selected_model,
+                roo_provider_map=provider_map,
+                configuration_required=True,
+                response=(
+                    f"Roo kan `{selected_model}` pas via `{cockpit_provider}` starten als de API key "
+                    "in Cockpit of de host-omgeving beschikbaar is."
+                ),
+            )
+        runtime_status = roo_status(prefer_bridge=True)
+        record = get_orchestrator().submit(
+            agent="roo",
+            task=task,
+            timeout_seconds=_roo_agent_timeout_seconds(timeout_seconds),
+            metadata={
+                "prompt": _agent_prompt("Roo Code", task),
+                "slash_agent": "roo",
+                "approval": approval,
+                "approval_status": "approved" if approval == APPROVAL_PHRASE else "missing",
+                "selected_cockpit_provider": selected_provider,
+                "selected_cockpit_model": selected_model,
+                "cockpit_provider": cockpit_provider,
+                "cockpit_model": selected_model,
+                "roo_provider_map": provider_map,
+                "runtime_status": {
+                    "status": runtime_status.get("status"),
+                    "available": runtime_status.get("available"),
+                    "via_bridge": runtime_status.get("via_bridge"),
+                    "ollama_cli_supported": runtime_status.get("ollama_cli_supported"),
+                },
+            },
+        )
+    except Exception as exc:
+        return _agent_result("roo", "roo_cli", "error", started, reason=str(exc)[:500])
+    return _agent_result(
+        "roo",
+        "roo_cli",
+        "running",
+        started,
+        route="roo_runtime",
+        provider="roo",
+        requested_provider=str(provider or "").strip().lower(),
+        model=str(model or "").strip(),
+        local_only=record.metadata.get("cockpit_provider") == "ollama",
+        cockpit_provider=record.metadata.get("cockpit_provider"),
+        cockpit_model=record.metadata.get("cockpit_model"),
+        roo_provider_map=record.metadata.get("roo_provider_map"),
+        job=record.to_dict(),
+        provenance={
+            "tools_used": ["roo_cli"],
+            "planner_source": "slash_roo_runtime",
+        },
+        response=(
+            f"Roo Code job {record.job_id} gestart met Cockpit-model `{model or 'model'}` "
+            f"via provider `{provider or 'auto'}`. Volg live in Agent Jobs of vraag `/roo jobs`."
+        ),
+    )
+
+
+def _roo_agent_timeout_seconds(requested: int | float | None = None) -> int:
+    try:
+        configured = int(os.getenv("WINTRIP_ROO_AGENT_TIMEOUT_SECONDS", "1800"))
+    except ValueError:
+        configured = 1800
+    try:
+        requested_int = int(requested or 0)
+    except (TypeError, ValueError):
+        requested_int = 0
+    return max(300, min(max(configured, requested_int), 7200))
+
+
+def _roo_selection_is_local(provider: str, model: str) -> bool:
+    try:
+        from controller.roo_cli_runtime import cockpit_provider_for_roo_selection
+
+        return cockpit_provider_for_roo_selection(provider, model) == "ollama"
+    except Exception:
+        return str(provider or "").strip().lower() in {"", "local", "ollama"}
+
+
+def _roo_api_key_ready(cockpit_provider: str, provider_map: dict[str, Any]) -> bool:
+    api_key_env = str(provider_map.get("api_key_env") or "")
+    if not api_key_env:
+        return True
+    if os.getenv(api_key_env):
+        return True
+    aliases = {
+        "chatgpt": "openai",
+        "openai-native": "openai",
+        "openai": "openai",
+        "claude": "anthropic",
+        "anthropic": "anthropic",
+        "gemini": "google",
+        "google": "google",
+    }
+    try:
+        from controller.api_key_store import load_provider_api_keys
+
+        keys = load_provider_api_keys()
+    except Exception:
+        keys = {}
+    provider_id = aliases.get(str(cockpit_provider or "").strip().lower(), str(cockpit_provider or "").strip().lower())
+    return bool(keys.get(provider_id))
 
 
 def _host_agent_runtime_adapter(agent: str):

@@ -7,7 +7,7 @@ Doel: WintripAI, Ruflo, Roo en Codex moeten hetzelfde lokale systeembeeld delen 
 - WintripAI workspace: `/home/pwintri2/WintripAI`
 - Docker workspace: `/workspace`
 - Ruflo workspace: `/home/pwintri2/ruflo`
-- Roo workspace: `/home/pwintri2/Roo`
+- Roo workspace: `/home/pwintri2/Roo-code`
 - Codex workspace: `/home/pwintri2/Codex`
 - DeepSeek workspace: `/home/pwintri2/deepseek`
 - Atlas workspace: `/home/pwintri2/atlas`

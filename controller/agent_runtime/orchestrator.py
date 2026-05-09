@@ -1,8 +1,7 @@
 """Agent orchestrator: dispatches jobs to adapters and tracks lifecycle.
 
-Phase 1 supports a single adapter (Codex). Adapters are looked up in
-`AGENT_DISPATCH`; later phases register Claude/Roo/Ruflo adapters by adding
-entries to that map (or overriding via `register_adapter`).
+Adapters are looked up in `AGENT_DISPATCH`; host-only agents can also be
+registered dynamically by routes or slash commands.
 
 The orchestrator is intentionally stateless across processes: state lives in
 `JobStore`. A module-level singleton (`get_orchestrator()`) gives the
@@ -15,6 +14,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -66,10 +66,17 @@ def _default_atlas_adapter(job: JobRecord, log: EventLog, on_progress: Callable[
     return run_atlas_job(job, log, on_progress=on_progress)
 
 
+def _default_roo_adapter(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    from controller.agent_runtime.adapters.roo_cli import run_roo_job
+
+    return run_roo_job(job, log, on_progress=on_progress)
+
+
 AGENT_DISPATCH: dict[str, AdapterFn] = {
     "codex": _default_codex_adapter,
     "deepseek": _default_deepseek_adapter,
     "atlas": _default_atlas_adapter,
+    "roo": _default_roo_adapter,
 }
 
 
@@ -239,6 +246,7 @@ class AgentOrchestrator:
         return updated
 
     def list_jobs(self, agent: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        self._reconcile_stale_jobs(agent=agent, limit=limit)
         return self.store.list_jobs(agent=agent, limit=limit)
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
@@ -400,6 +408,43 @@ class AgentOrchestrator:
             except Exception:
                 pass
 
+    def _reconcile_stale_jobs(self, agent: str | None = None, limit: int = 50) -> None:
+        """Fail old queued jobs that cannot have an in-process worker anymore."""
+
+        try:
+            stale_after = max(30, int(os.getenv("WINTRIP_AGENT_RUNTIME_STALE_QUEUED_SECONDS", "120")))
+        except ValueError:
+            stale_after = 120
+        jobs = self.store.list_jobs(agent=agent, limit=max(50, int(limit or 50)))
+        now = time.time()
+        for job in jobs:
+            if str(job.get("status") or "") != "queued":
+                continue
+            if job.get("started_at"):
+                continue
+            created = _iso_to_timestamp(str(job.get("created_at") or ""))
+            if created is None or now - created < stale_after:
+                continue
+            job_id = str(job.get("job_id") or "")
+            if not job_id:
+                continue
+            reason = "stale_queued_after_runtime_restart"
+            updated = self.store.update(
+                job_id,
+                {
+                    "status": "failed",
+                    "finished_at": utc_now_iso(),
+                    "exit_code": None,
+                    "result_summary": reason,
+                    "response_preview": "Job bleef queued na runtime restart en is fail-closed gemarkeerd.",
+                },
+            )
+            if updated and job.get("events_file"):
+                try:
+                    EventLog(str(job["events_file"])).append("stale_after_restart", {"status": "failed", "reason": reason})
+                except Exception:
+                    pass
+
     def _prompt_markdown(self, job: JobRecord) -> str:
         roots = "\n".join(f"- {root}" for root in job.allowed_roots) or "- (geen)"
         return (
@@ -411,6 +456,15 @@ class AgentOrchestrator:
             f"## Toegestane roots\n{roots}\n\n"
             f"## Opdracht\n\n{job.task}\n"
         )
+
+
+def _iso_to_timestamp(value: str) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
 
 
 def _safe_json(payload: dict[str, Any]) -> str:
@@ -435,7 +489,7 @@ def _default_workspace_root() -> Path:
 def _default_allowed_roots() -> list[str]:
     candidates = [
         os.getenv("WINTRIP_RUFLO_PATH") or "/home/pwintri2/ruflo",
-        os.getenv("WINTRIP_ROO_PATH") or "/home/pwintri2/Roo",
+        os.getenv("WINTRIP_ROO_CODE_PATH") or os.getenv("WINTRIP_ROO_PATH") or "/home/pwintri2/Roo-code",
         os.getenv("WINTRIP_CODEX_PATH") or "/home/pwintri2/Codex",
         os.getenv("WINTRIP_DEEPSEEK_PATH") or "/home/pwintri2/deepseek",
         os.getenv("WINTRIP_ATLAS_PATH") or "/home/pwintri2/atlas",

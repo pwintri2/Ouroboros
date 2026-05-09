@@ -27,7 +27,7 @@ except Exception:
         return Path(os.getenv("WINTRIP_CODEX_PATH") or "/home/pwintri2/Codex").expanduser().resolve()
 
     def roo_path() -> Path:
-        return Path(os.getenv("WINTRIP_ROO_PATH") or "/home/pwintri2/Roo").expanduser().resolve()
+        return Path(os.getenv("WINTRIP_ROO_CODE_PATH") or os.getenv("WINTRIP_ROO_PATH") or "/home/pwintri2/Roo-code").expanduser().resolve()
 
 
 ROO_TOOL_NAMES: tuple[str, ...] = (
@@ -49,7 +49,7 @@ def roo_tools_status() -> dict[str, Any]:
     return {
         "status": "online",
         "available": True,
-        "source": "/home/pwintri2/Roo",
+        "source": str(roo_path()),
         "local_python_adapters": list(ROO_TOOL_NAMES),
         "approval_required_for": ["roo_write_file", "roo_apply_patch", "roo_execute_command"],
         "workspace": str(workspace_root()),

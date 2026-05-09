@@ -11,6 +11,11 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ouroboros-preview"
 LOG_DIR="$STATE_DIR/logs"
 PID_FILE="$STATE_DIR/vite.pid"
 TOKEN_PATH="${WINTRIP_RCLONE_BRIDGE_TOKEN_PATH_HOST:-$ROOT/.secrets/rclone_bridge_token}"
+NODE_BIN="${WINTRIP_NODE_BIN:-$HOME/.nvm/versions/node/v22.22.2/bin}"
+
+if [ -d "$NODE_BIN" ]; then
+  export PATH="$NODE_BIN:$PATH"
+fi
 
 mkdir -p "$LOG_DIR" "$ROOT/.secrets"
 
@@ -53,7 +58,7 @@ try:
 except Exception as exc:
     print(exc)
     raise SystemExit(1)
-required = ["Ouroboros Cockpit", "/src/main.tsx", "Runtime Doctor", "/api/ouroboros/runtime/doctor"]
+required = ["Ouroboros Cockpit", "/src/main.tsx", "Runtime Doctor", "/api/ouroboros/runtime/doctor", "Roo Code Agent"]
 missing = [item for item in required if item not in (html + app)]
 if missing:
     print("missing source hints: " + ", ".join(missing))
@@ -78,7 +83,16 @@ try:
 except Exception as exc:
     print(exc)
     raise SystemExit(1)
-raise SystemExit(0 if data.get("status") == "online" else 1)
+if data.get("status") != "online":
+    raise SystemExit(1)
+request = urllib.request.Request(base + "/roo/status", headers={"X-Ouroboros-Bridge-Token": token})
+try:
+    with urllib.request.urlopen(request, timeout=2.5) as response:
+        roo = json.loads(response.read().decode("utf-8") or "{}")
+except Exception as exc:
+    print(exc)
+    raise SystemExit(1)
+raise SystemExit(0 if "available" in roo else 1)
 PY
 }
 
@@ -101,6 +115,10 @@ wait_for_preview() {
 }
 
 ensure_backend() {
+  if http_ok "$BACKEND_URL/health"; then
+    echo "Docker backend is al bereikbaar."
+    return 0
+  fi
   need_cmd docker
   echo "Refreshing Docker backend and Chroma..."
   (cd "$ROOT" && docker compose up -d --build chroma ouroboros-backend)
@@ -109,7 +127,7 @@ ensure_backend() {
 
 ensure_host_bridge() {
   if port_open 127.0.0.1 "$BRIDGE_PORT"; then
-    bridge_is_valid || fail "poort $BRIDGE_PORT is bezet door een oude of verkeerde host bridge; /computer/status werkt niet met de Ouroboros bridge token."
+    bridge_is_valid || fail "poort $BRIDGE_PORT is bezet door een oude of verkeerde host bridge; /computer/status en /roo/status moeten allebei werken met de Ouroboros bridge token."
     echo "Host bridge online."
     return 0
   fi

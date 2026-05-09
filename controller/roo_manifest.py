@@ -48,7 +48,7 @@ def get_roo_status() -> dict[str, Any]:
     """Get Roo adapter status and capability inventory."""
     return {
         "status": "online",
-        "source": "/home/pwintri2/Roo",
+        "source": "/home/pwintri2/Roo-code",
         "available": True,
         "adapter_type": "local_python",
         "tools": {
