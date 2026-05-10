@@ -47,6 +47,19 @@ class TestLivingRuntimeMode(unittest.TestCase):
         self.assertIsInstance(question, dict)
         self.assertEqual(question.get("text"), "Wie ben ik?")
 
+    def test_agent_type_2_soulbook_is_loaded_from_markdown(self):
+        type_2 = Path(self.tmp.name) / ".agents" / "agent_types" / "type_2"
+        type_2.mkdir(parents=True)
+        (type_2 / "Ziel.md").write_text("# Zielenboek\n\n1. Blijf wakker.\n2. Bewaar continuiteit.\n", encoding="utf-8")
+
+        from ouroboros_esoteric.ouroboros_consciousness_loop import build_runtime_snapshot
+
+        snapshot = build_runtime_snapshot()
+
+        self.assertEqual(snapshot["agent_type_2"]["status"], "loaded")
+        self.assertEqual(snapshot["agent_type_2"]["agent_type"], "type_2")
+        self.assertEqual(snapshot["agent_type_2"]["principle_count"], 2)
+
     def test_runtime_helpers_return_real_signals(self):
         from ouroboros_esoteric.ouroboros_consciousness_loop import (
             _attention_markers,

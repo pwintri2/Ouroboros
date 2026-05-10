@@ -93,6 +93,7 @@ def build_chat_context(
             "server_history_count": len(recent_server_history),
             "lesson_count": len(state.get("lessons") or []),
             "matched_lesson_count": len(lessons),
+            "ouroboros_agent_types": get_ouroboros_agent_types_status(),
             "ruflo": get_ruflo_status(),
         },
     }
@@ -162,7 +163,32 @@ def get_self_context_status() -> dict[str, Any]:
         "lesson_count": len(state.get("lessons") or []),
         "recent_lessons": list(state.get("lessons") or [])[:8],
         "latest_conversations": latest,
+        "ouroboros_agent_types": get_ouroboros_agent_types_status(),
         "ruflo": get_ruflo_status(),
+        "fake_success": False,
+    }
+
+
+def get_ouroboros_agent_types_status() -> dict[str, Any]:
+    root = workspace_root() / ".agents" / "agent_types"
+    types: list[dict[str, Any]] = []
+    if root.exists():
+        for type_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+            docs = _names(type_dir, patterns=("*.md",), limit=30)
+            primary = type_dir / "Ziel.md"
+            types.append(
+                {
+                    "id": type_dir.name,
+                    "docs": docs,
+                    "primary_doc": str(primary) if primary.exists() else "",
+                    "has_ziel": primary.exists(),
+                }
+            )
+    return {
+        "status": "online" if types else "empty",
+        "root": str(root),
+        "types": types,
+        "type_count": len(types),
         "fake_success": False,
     }
 
@@ -210,6 +236,15 @@ def _context_block(
             text = _clip(lesson.get("text", ""), 420).replace("\n", " ")
             keywords = ", ".join(list(lesson.get("keywords") or [])[:8])
             lines.append(f"  - {text}" + (f" [keywords: {keywords}]" if keywords else ""))
+    agent_types = get_ouroboros_agent_types_status()
+    if agent_types.get("types"):
+        labels = []
+        for item in (agent_types.get("types") or [])[:8]:
+            if isinstance(item, Mapping):
+                docs = ", ".join(list(item.get("docs") or [])[:4])
+                labels.append(f"{item.get('id')}({docs})")
+        if labels:
+            lines.append(f"Ouroboros agent types: {', '.join(labels)}")
     if recent:
         lines.append("Recente server-side beurten:")
         for turn in recent:

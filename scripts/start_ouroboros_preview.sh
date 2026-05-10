@@ -7,6 +7,7 @@ BACKEND_URL="${WINTRIP_BACKEND_URL:-http://127.0.0.1:8010}"
 PREVIEW_URL="${WINTRIP_WEB_PREVIEW_URL:-http://127.0.0.1:1420}"
 BRIDGE_URL="${WINTRIP_RCLONE_BRIDGE_URL_HOST:-http://127.0.0.1:8766}"
 BRIDGE_PORT="${WINTRIP_RCLONE_BRIDGE_PORT:-8766}"
+BACKEND_REFRESH_REQUIRED="${WINTRIP_FORCE_BACKEND_REFRESH:-1}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ouroboros-preview"
 LOG_DIR="$STATE_DIR/logs"
 PID_FILE="$STATE_DIR/vite.pid"
@@ -70,11 +71,19 @@ docker_available() {
 
 compose_up() {
   if discover_docker_bin && "$DOCKER_BIN" compose version >/dev/null 2>&1; then
-    (cd "$ROOT" && "$DOCKER_BIN" compose up -d --build chroma ouroboros-backend)
+    if (cd "$ROOT" && "$DOCKER_BIN" compose up -d --build chroma ouroboros-backend); then
+      return 0
+    fi
+    echo "docker compose build faalde; probeer bestaande image met force-recreate omdat /workspace gemount is."
+    (cd "$ROOT" && "$DOCKER_BIN" compose up -d --no-build --force-recreate chroma ouroboros-backend)
     return $?
   fi
   if discover_compose_bin; then
-    (cd "$ROOT" && "$COMPOSE_BIN" up -d --build chroma ouroboros-backend)
+    if (cd "$ROOT" && "$COMPOSE_BIN" up -d --build chroma ouroboros-backend); then
+      return 0
+    fi
+    echo "docker-compose build faalde; probeer bestaande image met force-recreate omdat /workspace gemount is."
+    (cd "$ROOT" && "$COMPOSE_BIN" up -d --no-build --force-recreate chroma ouroboros-backend)
     return $?
   fi
   return 1
@@ -109,6 +118,17 @@ with socket.socket() as sock:
     sock.settimeout(1.0)
     raise SystemExit(0 if sock.connect_ex((sys.argv[1], int(sys.argv[2]))) == 0 else 1)
 PY
+}
+
+first_free_bridge_port() {
+  local candidate
+  for candidate in 8767 8768 8769 8770 8771 8772 8773 8774 8775 8776; do
+    if ! port_open 127.0.0.1 "$candidate"; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 preview_is_current() {
@@ -155,7 +175,16 @@ try:
 except Exception as exc:
     print(exc)
     raise SystemExit(1)
-raise SystemExit(0 if "available" in roo else 1)
+if "available" not in roo:
+    raise SystemExit(1)
+request = urllib.request.Request(base + "/roo/models", headers={"X-Ouroboros-Bridge-Token": token})
+try:
+    with urllib.request.urlopen(request, timeout=8) as response:
+        roo_models = json.loads(response.read().decode("utf-8") or "{}")
+except Exception as exc:
+    print(exc)
+    raise SystemExit(1)
+raise SystemExit(0 if "models" in roo_models else 1)
 PY
 }
 
@@ -184,11 +213,13 @@ refresh_local_backend_pid_file() {
       | awk '$2 ~ /python/ && index($0, " -m uvicorn controller.main:app --host 0.0.0.0 --port 8010") {print $1}' \
       | tail -n 1
   )"
-  [ -n "$backend_pid" ] && echo "$backend_pid" > "$BACKEND_PID_FILE"
+  if [ -n "$backend_pid" ]; then
+    echo "$backend_pid" > "$BACKEND_PID_FILE"
+  fi
 }
 
 ensure_backend() {
-  if http_ok "$BACKEND_URL/health"; then
+  if [ "$BACKEND_REFRESH_REQUIRED" != "1" ] && http_ok "$BACKEND_URL/health"; then
     refresh_local_backend_pid_file
     echo "Backend is al bereikbaar."
     return 0
@@ -260,14 +291,31 @@ ensure_local_backend() {
 }
 
 ensure_host_bridge() {
+  local fallback_port
   if port_open 127.0.0.1 "$BRIDGE_PORT"; then
-    bridge_is_valid || fail "poort $BRIDGE_PORT is bezet door een oude of verkeerde host bridge; /computer/status en /roo/status moeten allebei werken met de Ouroboros bridge token."
-    echo "Host bridge online."
-    return 0
+    if bridge_is_valid; then
+      echo "Host bridge online."
+      return 0
+    fi
+    echo "Host bridge op poort $BRIDGE_PORT is oud; herstarten voor actuele endpoints..."
+    pkill -f "scripts/rclone_host_bridge.py.*--port $BRIDGE_PORT" >/dev/null 2>&1 || true
+    for _ in $(seq 1 10); do
+      port_open 127.0.0.1 "$BRIDGE_PORT" || break
+      sleep 1
+    done
+    if port_open 127.0.0.1 "$BRIDGE_PORT"; then
+      fallback_port="$(first_free_bridge_port)" || fail "poort $BRIDGE_PORT is bezet door een oude host bridge en er is geen vrije fallbackpoort gevonden."
+      BRIDGE_PORT="$fallback_port"
+      BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
+      export WINTRIP_RCLONE_BRIDGE_URL="http://host.docker.internal:$BRIDGE_PORT"
+      BACKEND_REFRESH_REQUIRED=1
+      echo "Gebruik fallback host bridge op $BRIDGE_URL."
+    fi
   fi
   [ -f "$ROOT/scripts/rclone_host_bridge.py" ] || fail "scripts/rclone_host_bridge.py ontbreekt."
+  need_cmd setsid
   echo "Starting host bridge on $BRIDGE_URL..."
-  (cd "$ROOT" && nohup python3 scripts/rclone_host_bridge.py --bind 0.0.0.0 --port "$BRIDGE_PORT" >"$LOG_DIR/host_bridge.log" 2>&1 &)
+  (cd "$ROOT" && setsid -f python3 scripts/rclone_host_bridge.py --bind 0.0.0.0 --port "$BRIDGE_PORT" >"$LOG_DIR/host_bridge.log" 2>&1 < /dev/null)
   for _ in $(seq 1 30); do
     if port_open 127.0.0.1 "$BRIDGE_PORT" && bridge_is_valid; then
       echo "Host bridge online."

@@ -16,7 +16,15 @@ from typing import Any, Callable
 
 from controller.agent_runtime.events import EventLog
 from controller.agent_runtime.models import JobRecord
-from controller.roo_cli_runtime import redact, roo_cli_status, run_roo_cli_task
+from controller.roo_cli_runtime import (
+    map_cockpit_provider,
+    redact,
+    resolve_api_key_for_provider,
+    roo_auth_login,
+    roo_cli_status,
+    roo_cloud_models,
+    run_roo_cli_task,
+)
 
 
 def roo_status(prefer_bridge: bool = True) -> dict[str, Any]:
@@ -28,6 +36,42 @@ def roo_status(prefer_bridge: bool = True) -> dict[str, Any]:
     status = roo_cli_status()
     status["via_bridge"] = False
     return status
+
+
+def roo_models(prefer_bridge: bool = True) -> dict[str, Any]:
+    if prefer_bridge:
+        bridged = _bridge_get("/roo/models")
+        if bridged is not None:
+            bridged["via_bridge"] = True
+            return bridged
+    result = roo_cloud_models()
+    result["via_bridge"] = False
+    return result
+
+
+def roo_login(*, approval: str, prefer_bridge: bool = True) -> dict[str, Any]:
+    if prefer_bridge:
+        bridged = _bridge_post("/roo/auth/login", {"approval": approval, "timeout_seconds": 12})
+        if bridged is not None:
+            bridged["via_bridge"] = True
+            return bridged
+    result = roo_auth_login(approval=approval)
+    result["via_bridge"] = False
+    return result
+
+
+def roo_cloud_auth_status(prefer_bridge: bool = True) -> dict[str, Any]:
+    status = roo_status(prefer_bridge=prefer_bridge)
+    auth_probe = status.get("auth_probe") if isinstance(status.get("auth_probe"), dict) else {}
+    return {
+        "status": "online" if auth_probe.get("logged_in_hint") else "missing",
+        "logged_in": bool(auth_probe.get("logged_in_hint")),
+        "via_bridge": bool(status.get("via_bridge")),
+        "runtime_status": status.get("status"),
+        "source": "roo auth login",
+        "secrets_returned": False,
+        "fake_success": False,
+    }
 
 
 def run_roo_job(
@@ -60,7 +104,7 @@ def run_roo_job(
             }
         )
 
-    api_key = _provider_api_key(cockpit_provider)
+    api_key = _provider_api_key(cockpit_provider, cockpit_model)
     bridged = _bridge_run(
         {
             "task": job.task,
@@ -140,22 +184,14 @@ def _running_in_container() -> bool:
     return Path("/.dockerenv").exists()
 
 
-def _provider_api_key(cockpit_provider: str) -> str:
+def _provider_api_key(cockpit_provider: str, cockpit_model: str = "") -> str:
     """Load a Cockpit-managed API key transiently without storing it in jobs."""
     try:
-        from controller.api_key_store import load_provider_api_keys
-
-        keys = load_provider_api_keys()
+        provider_map = map_cockpit_provider(cockpit_provider, cockpit_model)
+        result = resolve_api_key_for_provider(cockpit_provider, provider_map)
+        return str(result.get("key") or "")
     except Exception:
-        keys = {}
-    provider = str(cockpit_provider or "").strip().lower()
-    aliases = {
-        "chatgpt": "openai",
-        "openai-native": "openai",
-        "claude": "anthropic",
-        "gemini": "google",
-    }
-    return str(keys.get(aliases.get(provider, provider)) or "")
+        return ""
 
 
 def _write_artifacts(job: JobRecord, result: dict[str, Any]) -> None:
@@ -219,6 +255,29 @@ def _bridge_run(body: dict[str, Any]) -> dict[str, Any] | None:
         }
 
 
+def _bridge_post(path: str, body: dict[str, Any]) -> dict[str, Any] | None:
+    base_url, token = _bridge_config()
+    if not base_url or not token:
+        return None
+    data = json.dumps(body).encode("utf-8")
+    try:
+        request = urllib.request.Request(
+            f"{base_url}{path}",
+            data=data,
+            headers={"Content-Type": "application/json", "X-Ouroboros-Bridge-Token": token},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            return json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            return {"status": "error", "reason": str(exc), "fake_success": False}
+    except Exception as exc:
+        return {"status": "bridge_unavailable", "reason": f"Host bridge Roo call failed: {exc}", "transport_error": True, "fake_success": False}
+
+
 def _bridge_config() -> tuple[str, str]:
     base_url = str(os.getenv("WINTRIP_RCLONE_BRIDGE_URL") or "").rstrip("/")
     token_path = os.getenv("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH")
@@ -231,4 +290,4 @@ def _bridge_config() -> tuple[str, str]:
     return base_url, token
 
 
-__all__ = ["roo_status", "run_roo_job"]
+__all__ = ["roo_cloud_auth_status", "roo_login", "roo_models", "roo_status", "run_roo_job"]

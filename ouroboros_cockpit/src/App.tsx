@@ -53,6 +53,8 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   cockpitChat: "/api/cockpit/chat",
   agentTool: "/agent/tool",
   apiKeys: "/api/cockpit/api-keys",
+  subscriptions: "/api/cockpit/subscriptions",
+  rooAuthLogin: "/api/cockpit/roo/auth/login",
   runtimeDoctor: "/api/ouroboros/runtime/doctor",
   worldAgentStatus: "/api/world-agent/status",
   worldAgentGrok: "/api/world-agent/grok/ask",
@@ -94,6 +96,23 @@ type ProviderDetails = {
   default_model?: string;
   key_source?: string;
   masked_key?: string;
+  subscription_active?: boolean;
+  subscription_plan?: string;
+  subscription_login?: {
+    provider?: string;
+    status?: string;
+    logged_in?: boolean;
+    source?: string;
+    secrets_returned?: boolean;
+  };
+  model_catalog_status?: {
+    status?: string;
+    available?: boolean;
+    model_count?: number;
+    via_bridge?: boolean;
+    reason?: string;
+  };
+  roo_cloud_models?: string[];
 };
 
 type CockpitConfig = {
@@ -113,6 +132,7 @@ type CockpitConfig = {
   required_approval_phrase?: string;
   approval?: { required_phrase?: string; case_sensitive?: boolean };
   api_keys?: ApiKeyStatusPayload;
+  subscriptions?: SubscriptionStatusPayload;
   self_context?: {
     status?: string;
     enabled?: boolean;
@@ -557,6 +577,35 @@ type ApiKeyProviderStatus = {
   writable?: boolean;
 };
 
+type SubscriptionProviderStatus = {
+  provider: string;
+  label?: string;
+  active?: boolean;
+  auth_mode?: string;
+  auth_modes_available?: string[];
+  plan_label?: string;
+  status?: string;
+  has_credential?: boolean;
+  api_key_ready?: boolean;
+  masked_credential?: string;
+  expires_at?: number;
+  expired?: boolean;
+  last_validated?: number;
+  validation_status?: string;
+  models?: string[];
+  subscription_url?: string;
+  api_key_url?: string;
+  docs_url?: string;
+  writable?: boolean;
+};
+
+type SubscriptionStatusPayload = {
+  status?: string;
+  providers?: Record<string, SubscriptionProviderStatus>;
+  secrets_returned?: boolean;
+  reason?: string;
+};
+
 type OperationEvent = {
   id: string;
   title: string;
@@ -701,6 +750,7 @@ export default function App() {
   const [lastChatResult, setLastChatResult] = useState<Record<string, unknown> | null>(null);
   const [events, setEvents] = useState<OperationEvent[]>([]);
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
+  const [subscriptionInputs, setSubscriptionInputs] = useState<Record<string, { auth_mode: string; api_key: string; plan_label: string }>>({});
   const [busy, setBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [trainerStatus, setTrainerStatus] = useState<any>(null);
@@ -1328,6 +1378,92 @@ export default function App() {
     );
   }
 
+  async function saveSubscription(providerId: string) {
+    const input = subscriptionInputs[providerId] ?? { auth_mode: "api_key_from_subscription", api_key: "", plan_label: "" };
+    const authMode = input.auth_mode || "api_key_from_subscription";
+    const credential = input.api_key.trim();
+    await perform(`Save ${PROVIDER_LABELS[providerId] ?? providerId} subscription`, () =>
+      api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.subscriptions, {
+        method: "POST",
+        body: JSON.stringify({
+          provider: providerId,
+          auth_mode: authMode,
+          api_key: authMode === "api_key_from_subscription" ? credential : undefined,
+          session_token: authMode === "session_token" ? credential : undefined,
+          refresh_token: authMode === "oauth_refresh_token" ? credential : undefined,
+          plan_label: input.plan_label || undefined,
+          active: true,
+          approval,
+        }),
+      }),
+    );
+    setSubscriptionInputs((previous) => ({ ...previous, [providerId]: { auth_mode: "", api_key: "", plan_label: "" } }));
+  }
+
+  async function deleteSubscription(providerId: string) {
+    await perform(`Delete ${PROVIDER_LABELS[providerId] ?? providerId} subscription`, () =>
+      api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.subscriptions, {
+        method: "POST",
+        body: JSON.stringify({ provider: providerId, delete: true, approval }),
+      }),
+    );
+  }
+
+  async function toggleSubscription(providerId: string, active: boolean) {
+    await perform(`${active ? "Activate" : "Deactivate"} ${PROVIDER_LABELS[providerId] ?? providerId} subscription`, () =>
+      api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.subscriptions, {
+        method: "POST",
+        body: JSON.stringify({ provider: providerId, toggle_active: true, active, approval }),
+      }),
+    );
+  }
+
+  async function validateSubscription(providerId: string) {
+    await perform(`Validate ${PROVIDER_LABELS[providerId] ?? providerId} subscription`, () =>
+      api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.subscriptions, {
+        method: "POST",
+        body: JSON.stringify({ provider: providerId, validate_only: true, approval }),
+      }),
+    );
+  }
+
+  async function startRooCloudLogin() {
+    let reservedWindow: Window | null = null;
+    if (!isLikelyTauriRuntime()) {
+      try {
+        reservedWindow = window.open("about:blank", "_blank");
+      } catch {
+        reservedWindow = null;
+      }
+    }
+    const result = await perform("Roo Cloud login", () =>
+      api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.rooAuthLogin, {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+        timeoutMs: 25000,
+      }),
+    );
+    if (result) {
+      const action = result.frontend_action as { url?: unknown; target?: unknown } | undefined;
+      const authUrl = typeof result.auth_url === "string" ? result.auth_url : typeof action?.url === "string" ? action.url : "";
+      const target = typeof action?.target === "string" ? action.target : "_blank";
+      if (authUrl) {
+        const openResult = await openExternalUrl(authUrl, target, reservedWindow);
+        reservedWindow = null;
+        pushEvent("Roo OAuth page opened", {
+          status: openResult.opened ? "opened" : "blocked_by_browser",
+          detail: openResult.detail,
+          via: openResult.via,
+        });
+      } else {
+        closeReservedWindow(reservedWindow);
+      }
+      await refresh();
+    } else {
+      closeReservedWindow(reservedWindow);
+    }
+  }
+
   async function loopAction(action: "start" | "pause" | "abort") {
     const endpoint =
       action === "start"
@@ -1444,6 +1580,10 @@ export default function App() {
     };
   });
   const selfContext = config.self_context;
+  const rooDetails = (config.provider_options ?? config.providers ?? {}).roo ?? {};
+  const rooLogin = rooDetails.subscription_login;
+  const rooCloudModels = rooDetails.roo_cloud_models ?? [];
+  const rooCatalog = rooDetails.model_catalog_status;
   const chroma = config.chroma ?? {};
   const chromaCollections = chroma.collections ?? {};
   const localModels = config.available_models?.ollama ?? status.model?.available_bases ?? [];
@@ -1455,7 +1595,7 @@ export default function App() {
   const navItems: Array<{ id: ActiveTab; label: string; icon: ReactNode; hint: string }> = [
     { id: "chat", label: "Chat", icon: <MessageSquare size={16} />, hint: `${selfContext?.conversation_count ?? 0} chats` },
     { id: "tools", label: "Tools", icon: <Wrench size={16} />, hint: "shell + tests" },
-    { id: "models", label: "Models", icon: <KeyRound size={16} />, hint: `${localModels.length} local / ${configuredKeyCount} keys` },
+    { id: "models", label: "Models", icon: <KeyRound size={16} />, hint: `${localModels.length} local / ${configuredKeyCount} keys / ${rooLogin?.logged_in ? "Roo login" : "Roo off"}` },
     { id: "agents", label: "Agents", icon: <Bot size={16} />, hint: `${agentJobs.length} jobs` },
     { id: "memory", label: "Memory", icon: <History size={16} />, hint: `${records.total_count ?? 0} records` },
     { id: "trainer", label: "Trainer", icon: <Layers size={16} />, hint: trainerStatus?.status ?? "learning" },
@@ -1785,19 +1925,51 @@ export default function App() {
           <section className="cockpit-grid focus-grid">
             <section className="panel">
               <PanelHeader title="Local Models" />
-              <div className="fact-list">
-                <Fact label="Active base" value={status.model?.active_base ?? model} state={status.model?.status} />
-                <Fact label="Ollama inventory" value={`${status.ollama?.count ?? localModels.length}`} state={status.ollama?.online ? "online" : "offline"} />
-                <Fact label="Subscriptions" value={`${subscriptionProviderCount}`} />
-              </div>
+	              <div className="fact-list">
+	                <Fact label="Active base" value={status.model?.active_base ?? model} state={status.model?.status} />
+	                <Fact label="Ollama inventory" value={`${status.ollama?.count ?? localModels.length}`} state={status.ollama?.online ? "online" : "offline"} />
+		                <Fact label="Cloud providers" value={`${subscriptionProviderCount}`} />
+	              </div>
               <PanelHeader title="Available Local Models" small />
               <div className="model-chip-list">
                 {localModels.map((item) => <button key={item} type="button" onClick={() => { setProvider("ollama"); setModel(item); }}>{item}</button>)}
-              </div>
-            </section>
+	              </div>
+	            </section>
 
-            <section className="panel primary-panel">
-              <PanelHeader title="Subscription Models & API Keys" />
+	            <section className="panel primary-panel">
+	              <PanelHeader title="Roo Cloud Account" />
+	              <div className="fact-list">
+	                <Fact label="Login" value={rooLogin?.logged_in ? "logged in" : "missing"} state={rooLogin?.logged_in ? "online" : "offline"} />
+	                <Fact label="Catalog" value={`${rooCatalog?.model_count ?? rooCloudModels.length}`} state={rooCatalog?.status ?? "unknown"} />
+	                <Fact label="Bridge" value={rooCatalog?.via_bridge ? "host" : "local"} state={rooDetails.status ?? "unknown"} />
+	              </div>
+	              <div className="key-row">
+	                <div>
+	                  <strong>Roo Code Cloud</strong>
+	                  <span>
+	                    {rooLogin?.logged_in
+	                      ? "Gebruikt de ingelogde Roo-account voor modellen zoals openai/gpt-5 en anthropic/claude-opus-4.7."
+	                      : "Start de Roo Cloud login op de host. Dit is de enige web-loginroute die Roo zelf kan gebruiken."}
+	                  </span>
+	                </div>
+	                <button onClick={startRooCloudLogin} disabled={busy || !approvalReady}>
+	                  Login
+	                </button>
+	                <button onClick={refresh} disabled={busy}>
+	                  Refresh
+	                </button>
+	              </div>
+		              {rooCloudModels.length > 0 && (
+		                <div className="model-chip-list">
+		                  {rooCloudModels.map((item) => (
+		                    <button key={item} type="button" onClick={() => { setProvider("roo"); setModel(item); }}>{item}</button>
+		                  ))}
+		                </div>
+		              )}
+	            </section>
+
+	            <section className="panel primary-panel">
+	              <PanelHeader title="Direct API Keys" />
               <div className="key-list">
                 {apiKeyChoices.map((item) => {
                   const key = apiKeyStatus[item.id];
@@ -1826,12 +1998,12 @@ export default function App() {
               </div>
             </section>
 
-            <section className="panel">
-              <PanelHeader title="Provider Catalog" />
-              <div className="role-list">
-                {providerChoices.map((item) => (
-                  <div className="role-row" key={item.id}>
-                    <span>{item.kind === "local" ? "local" : "subscription"}</span>
+	            <section className="panel">
+	              <PanelHeader title="Provider Catalog" />
+	              <div className="role-list">
+	                {providerChoices.map((item) => (
+	                  <div className="role-row" key={item.id}>
+	                    <span>{item.kind === "local" ? "local" : "cloud"}</span>
                     <strong>{item.label}</strong>
                     <em>{item.status}</em>
                   </div>

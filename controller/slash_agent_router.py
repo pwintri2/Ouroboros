@@ -734,8 +734,9 @@ def _agent_jobs_result(agent: str) -> dict[str, Any]:
         lines.append("Nog geen jobs gevonden.")
     for job in jobs[:5]:
         label = f"- {job.get('job_id')}: {job.get('status')}"
-        if job.get("response_preview"):
-            label += f"\n{str(job.get('response_preview')).strip()[-1200:]}"
+        preview = _agent_job_clean_preview(job)
+        if preview:
+            label += f"\n{preview[-1200:]}"
         lines.append(label)
     return _agent_result(
         agent,
@@ -746,6 +747,111 @@ def _agent_jobs_result(agent: str) -> dict[str, Any]:
         latest=latest,
         response="\n".join(lines),
     )
+
+
+def _agent_job_clean_preview(job: dict[str, Any]) -> str:
+    for key in ("output_file", "result_file"):
+        path_text = str(job.get(key) or "")
+        if not path_text:
+            continue
+        text = _read_job_artifact_text(path_text, limit=200000)
+        if key == "result_file":
+            for artifact_text in _read_roo_stdout_artifacts(text):
+                extracted = _extract_roo_preview_from_text(artifact_text)
+                if extracted:
+                    return extracted
+        extracted = _extract_roo_preview_from_text(text)
+        if extracted:
+            return extracted
+    return _extract_roo_preview_from_text(str(job.get("response_preview") or ""))
+
+
+def _read_job_artifact_text(path_text: str, *, limit: int = 200000) -> str:
+    candidates = [Path(path_text)]
+    if path_text.startswith("/workspace/"):
+        candidates.append(workspace_root() / path_text.removeprefix("/workspace/"))
+    host_prefix = "/home/pwintri2/WintripAI/"
+    if path_text.startswith(host_prefix):
+        candidates.append(workspace_root() / path_text.removeprefix(host_prefix))
+    for path in candidates:
+        try:
+            if path.exists() and path.is_file():
+                return path.read_text(encoding="utf-8", errors="replace")[:limit]
+        except Exception:
+            continue
+    return ""
+
+
+def _extract_roo_preview_from_text(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = None
+    extracted = _extract_roo_preview_from_json(parsed)
+    if extracted:
+        return extracted
+    result_content = re.search(r'"type"\s*:\s*"result".{0,400}?"content"\s*:\s*"((?:\\.|[^"\\])*)"', raw, flags=re.S)
+    if result_content:
+        try:
+            return json.loads(f'"{result_content.group(1)}"').strip()
+        except Exception:
+            return result_content.group(1).strip()
+    matches = re.findall(r'"type"\s*:\s*"assistant".{0,1200}?"content"\s*:\s*"((?:\\.|[^"\\])*)"', raw, flags=re.S)
+    if matches:
+        try:
+            return json.loads(f'"{matches[-1]}"').strip()
+        except Exception:
+            return matches[-1].strip()
+    if raw.startswith("{") and '"events"' in raw:
+        return "Roo job voltooid; open Agent Jobs voor de volledige event-trace."
+    if _looks_like_roo_event_fragment(raw):
+        return ""
+    return raw.strip()
+
+
+def _looks_like_roo_event_fragment(text: str) -> bool:
+    raw = str(text or "")
+    markers = sum(1 for marker in ('"done"', '"type"', '"tool_use"', '"thinking"', '"status"', '"content"') if marker in raw)
+    return markers >= 4
+
+
+def _read_roo_stdout_artifacts(result_text: str) -> list[str]:
+    try:
+        parsed = json.loads(result_text)
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    out: list[str] = []
+    for artifact in parsed.get("artifacts") or []:
+        artifact_text = str(artifact or "")
+        if not artifact_text.endswith(("roo_stdout.log", "stdout.log")):
+            continue
+        text = _read_job_artifact_text(artifact_text, limit=200000)
+        if text:
+            out.append(text)
+    return out
+
+
+def _extract_roo_preview_from_json(value: Any) -> str:
+    if isinstance(value, dict):
+        content = value.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        events = value.get("events")
+        if isinstance(events, list):
+            for item in reversed(events):
+                if isinstance(item, dict) and item.get("type") == "assistant":
+                    event_content = item.get("content")
+                    if isinstance(event_content, str) and event_content.strip():
+                        return event_content.strip()
+        response = value.get("response_preview")
+        if isinstance(response, str) and response.strip():
+            return _extract_roo_preview_from_text(response)
+    return ""
 
 
 def _run_ruflo_swarm(task: str, timeout_seconds: int) -> dict[str, Any]:
@@ -929,7 +1035,28 @@ def _submit_roo_agent_runtime(
                 configuration_required=True,
                 response=str(provider_map.get("reason") or f"Roo ondersteunt Cockpit-provider `{cockpit_provider}` nog niet."),
             )
-        if not _roo_api_key_ready(cockpit_provider, provider_map):
+        roo_provider = str(provider_map.get("roo_provider") or "")
+        if roo_provider == "roo" and not (_roo_cloud_auth_ready() or _roo_api_key_ready(cockpit_provider, provider_map)):
+            return _agent_result(
+                "roo",
+                "roo_cli",
+                "blocked",
+                started,
+                route="roo_runtime",
+                provider="roo",
+                requested_provider=selected_provider,
+                model=selected_model,
+                local_only=False,
+                cockpit_provider=cockpit_provider,
+                cockpit_model=selected_model,
+                roo_provider_map=provider_map,
+                configuration_required=True,
+                response=(
+                    f"Roo kan `{selected_model}` pas via Roo Cloud starten nadat Roo Cloud in Cockpit is ingelogd. "
+                    "Ga naar Models -> Roo Cloud Account -> Login."
+                ),
+            )
+        if roo_provider != "roo" and not _roo_api_key_ready(cockpit_provider, provider_map):
             return _agent_result(
                 "roo",
                 "roo_cli",
@@ -1021,9 +1148,18 @@ def _roo_selection_is_local(provider: str, model: str) -> bool:
 
 
 def _roo_api_key_ready(cockpit_provider: str, provider_map: dict[str, Any]) -> bool:
+    """Check if an API key is available from any source: env, key store, or subscription."""
     api_key_env = str(provider_map.get("api_key_env") or "")
     if not api_key_env:
         return True
+    # Try the unified resolver which checks env -> api_key_store -> subscription_store
+    try:
+        from controller.roo_cli_runtime import api_key_available_for_provider
+
+        return api_key_available_for_provider(cockpit_provider, provider_map)
+    except Exception:
+        pass
+    # Fallback: original logic (env + key store only)
     if os.getenv(api_key_env):
         return True
     aliases = {
@@ -1043,6 +1179,16 @@ def _roo_api_key_ready(cockpit_provider: str, provider_map: dict[str, Any]) -> b
         keys = {}
     provider_id = aliases.get(str(cockpit_provider or "").strip().lower(), str(cockpit_provider or "").strip().lower())
     return bool(keys.get(provider_id))
+
+
+def _roo_cloud_auth_ready() -> bool:
+    try:
+        from controller.agent_runtime.adapters.roo_cli import roo_cloud_auth_status
+
+        status = roo_cloud_auth_status(prefer_bridge=True)
+        return bool(status.get("logged_in"))
+    except Exception:
+        return False
 
 
 def _host_agent_runtime_adapter(agent: str):

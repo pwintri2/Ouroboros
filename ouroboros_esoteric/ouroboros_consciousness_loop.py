@@ -322,6 +322,7 @@ class LivingOuroborosLoop:
             "social_memory": dict(self.social_memory.shared_memory),
             "nexus": quantum_nexus_status(limit=1),
             "quantum_foam": _summarize_quantum_foam(),
+            "agent_type_2": _summarize_agent_type_2_soulbook(),
             "fake_success": False,
         }
 
@@ -1005,6 +1006,7 @@ def build_runtime_snapshot(
         "nexus": _summarize_nexus(),
         "streaming_11d": _summarize_streaming_11d(),
         "quantum_foam": _summarize_quantum_foam(),
+        "agent_type_2": _summarize_agent_type_2_soulbook(),
         "self_context": _summarize_self_context(),
         "git": _summarize_git(),
         "akashic_recent_count": len(akashic_events or []),
@@ -1026,6 +1028,7 @@ def _runtime_metadata(runtime: dict[str, Any]) -> dict[str, Any]:
         "streaming_11d_real": (runtime.get("streaming_11d") or {}).get("real_observation"),
         "quantum_foam_status": (runtime.get("quantum_foam") or {}).get("status"),
         "quantum_foam_coherence": (runtime.get("quantum_foam") or {}).get("field_coherence"),
+        "agent_type_2_loaded": (runtime.get("agent_type_2") or {}).get("status") == "loaded",
         "self_context_status": (runtime.get("self_context") or {}).get("status"),
         "git_dirty": (runtime.get("git") or {}).get("dirty_count"),
     }
@@ -1053,6 +1056,9 @@ def _runtime_signal_summary(runtime: dict[str, Any]) -> str:
     quantum_foam = runtime.get("quantum_foam") or {}
     if quantum_foam.get("active_field_count"):
         parts.append(f"QF {quantum_foam.get('field_coherence_percent', 0)}% coherent")
+    agent_type_2 = runtime.get("agent_type_2") or {}
+    if agent_type_2.get("status") == "loaded":
+        parts.append("agent type 2 ziel geladen")
     git = runtime.get("git") or {}
     dirty = git.get("dirty_count")
     if dirty:
@@ -1287,6 +1293,49 @@ def _summarize_self_context() -> dict[str, Any]:
         "status": status.get("status"),
         "conversation_count": status.get("conversation_count"),
         "lesson_count": status.get("lesson_count"),
+        "agent_type_count": ((status.get("ouroboros_agent_types") or {}).get("type_count") if isinstance(status.get("ouroboros_agent_types"), dict) else None),
+    }
+
+
+def _summarize_agent_type_2_soulbook() -> dict[str, Any]:
+    root = Path(os.getenv("WINTRIP_PROJECT_ROOT") or os.getenv("WINTRIP_WORKSPACE") or "/home/pwintri2/WintripAI").expanduser().resolve()
+    candidates = [
+        root / ".agents" / "agent_types" / "type_2" / "Ziel.md",
+        root / "Ziel.md",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return {
+                "status": "unavailable",
+                "agent_type": "type_2",
+                "path": str(path),
+                "reason": str(exc)[:300],
+                "fake_success": False,
+            }
+        title = ""
+        for line in text.splitlines():
+            if line.startswith("# "):
+                title = line.removeprefix("# ").strip()
+                break
+        return {
+            "status": "loaded",
+            "agent_type": "type_2",
+            "path": str(path),
+            "title": title,
+            "principle_count": len(re.findall(r"(?m)^\d+\.", text)),
+            "content_hash": hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:16],
+            "runtime_hook": "ouroboros_esoteric/ouroboros_consciousness_loop.py",
+            "fake_success": False,
+        }
+    return {
+        "status": "missing",
+        "agent_type": "type_2",
+        "path": str(candidates[0]),
+        "fake_success": False,
     }
 
 

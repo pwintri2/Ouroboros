@@ -27,6 +27,9 @@ class TestOuroborosSelfContext(unittest.TestCase):
         (root / ".claude" / "agents" / "python-specialist.md").write_text("agent", encoding="utf-8")
         (root / "plugins" / "ruflo-core").mkdir(parents=True)
         (root / ".agents" / "skills" / "memory-management").mkdir(parents=True)
+        type_2 = Path(self.workspace_tmp.name) / ".agents" / "agent_types" / "type_2"
+        type_2.mkdir(parents=True)
+        (type_2 / "Ziel.md").write_text("# Zielenboek\n\n1. Blijf wakker.\n", encoding="utf-8")
 
     def tearDown(self):
         self.workspace_tmp.cleanup()
@@ -48,6 +51,10 @@ class TestOuroborosSelfContext(unittest.TestCase):
         self.assertIn(self.workspace_tmp.name, context["system_prompt"])
         self.assertEqual(context["self_context"]["ruflo"]["package"]["name"], "ruflo-test")
         self.assertIn("python-specialist", context["self_context"]["ruflo"]["agents"])
+        agent_types = context["self_context"]["ouroboros_agent_types"]
+        self.assertEqual(agent_types["type_count"], 1)
+        self.assertTrue(agent_types["types"][0]["has_ziel"])
+        self.assertIn("Ouroboros agent types: type_2(Ziel)", context["system_prompt"])
 
     def test_recorded_turn_returns_as_server_history_without_secret_leak(self):
         self_context.record_chat_turn(
@@ -117,6 +124,7 @@ class TestOuroborosSelfContext(unittest.TestCase):
         self.assertEqual(status["lesson_count"], 1)
         self.assertEqual(status["latest_conversations"][0]["conversation_id"], "cockpit")
         self.assertIn("WINTRIPAI_CONTEXT.md", status["ruflo"]["ide_context_files"][1])
+        self.assertEqual(status["ouroboros_agent_types"]["types"][0]["id"], "type_2")
 
     def _restore(self, key: str, value: str | None) -> None:
         if value is None:

@@ -87,10 +87,18 @@ except Exception:
         return {"status": "failed", "blockers": ["controller.runtime_doctor unavailable"], "checks": {}, "fake_success": False}
 
 try:
+    from controller.agent_runtime.adapters.roo_cli import roo_login as roo_cli_login
+    from controller.agent_runtime.adapters.roo_cli import roo_models as roo_cli_cloud_models
     from controller.agent_runtime.adapters.roo_cli import roo_status as roo_cli_runtime_status
 except Exception:
+    def roo_cli_login(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "reason": "Roo CLI runtime adapter unavailable", "fake_success": False}
+
     def roo_cli_runtime_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"status": "unavailable", "available": False, "reason": "Roo CLI runtime adapter unavailable", "fake_success": False}
+
+    def roo_cli_cloud_models(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "available": False, "models": [], "reason": "Roo CLI runtime adapter unavailable", "fake_success": False}
 
 load_dotenv()
 
@@ -145,6 +153,23 @@ except Exception:
     load_provider_api_keys = None
     provider_key_status = None
     save_provider_api_key = None
+
+try:
+    from controller.subscription_store import (
+        activate_subscription,
+        delete_subscription,
+        save_subscription,
+        subscription_api_key_for_provider,
+        subscription_status,
+        validate_subscription,
+    )
+except Exception:
+    activate_subscription = None
+    delete_subscription = None
+    save_subscription = None
+    subscription_api_key_for_provider = None
+    subscription_status = None
+    validate_subscription = None
 
 try:
     from controller.ouroboros_self_context import (
@@ -473,6 +498,26 @@ class ProviderApiKeyRequest(BaseModel):
     api_key: Optional[str] = None
     approval: Optional[str] = None
     delete: Optional[bool] = False
+
+class SubscriptionRequest(BaseModel):
+    provider: str
+    auth_mode: Optional[str] = None
+    plan_label: Optional[str] = None
+    session_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    api_key: Optional[str] = None
+    expires_at: Optional[int] = 0
+    active: Optional[bool] = True
+    notes: Optional[str] = None
+    approval: Optional[str] = None
+    delete: Optional[bool] = False
+    validate_only: Optional[bool] = False
+    toggle_active: Optional[bool] = False
+
+
+class RooAuthLoginRequest(BaseModel):
+    approval: Optional[str] = None
+
 
 class OuroborosLoopStartRequest(BaseModel):
     prompt: Optional[str] = None
@@ -1088,6 +1133,27 @@ async def cockpit_api_keys():
 async def cockpit_save_api_key(req: ProviderApiKeyRequest):
     return _save_api_key_payload(req)
 
+# --- Subscription endpoints ---
+
+@app.get("/api/cockpit/subscriptions")
+async def cockpit_subscriptions():
+    """Return subscription status for all known AI subscription providers."""
+    return _subscription_status_payload()
+
+@app.post("/api/cockpit/subscriptions")
+async def cockpit_save_subscription(req: SubscriptionRequest):
+    """Save, delete, validate or toggle a subscription entry."""
+    return _save_subscription_payload(req)
+
+
+@app.post("/api/cockpit/roo/auth/login")
+async def cockpit_roo_auth_login(req: RooAuthLoginRequest):
+    """Launch Roo Code Cloud auth on the host bridge."""
+    try:
+        return roo_cli_login(approval=req.approval or "", prefer_bridge=True)
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)[:1000], "secrets_returned": False, "fake_success": False}
+
 
 def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
     return {
@@ -1205,13 +1271,23 @@ def _backend_status_payload(models: Optional[list[str]] = None) -> dict[str, Any
 def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, dict[str, Any]]:
     inventory_models = models or []
     models = _local_model_choices(inventory_models)
-    roo_models = _roo_model_choices(models)
     inventory_online = bool(inventory_models)
     key_status = _api_key_status_payload().get("providers", {})
     try:
         roo_status = roo_cli_runtime_status(prefer_bridge=True)
     except Exception as exc:
         roo_status = {"status": "error", "available": False, "reason": str(exc), "fake_success": False}
+    try:
+        roo_cloud = roo_cli_cloud_models(prefer_bridge=True)
+    except Exception as exc:
+        roo_cloud = {"status": "error", "available": False, "models": [], "reason": str(exc), "fake_success": False}
+    roo_cloud_model_ids = [str(item) for item in (roo_cloud.get("models") or []) if str(item or "").strip()]
+    roo_models = _roo_model_choices(models, roo_cloud_model_ids)
+    roo_auth_probe = roo_status.get("auth_probe") if isinstance(roo_status.get("auth_probe"), dict) else {}
+    roo_cloud_models_by_provider = {"roo": roo_cloud_model_ids}
+    roo_cloud_models_by_provider.update(
+        {provider: MULTI_API_PROVIDER_MODELS.get(provider, []) for provider in ROO_CLOUD_COCKPIT_PROVIDERS}
+    )
     options: dict[str, dict[str, Any]] = {
         "ollama": {
             "provider": "ollama",
@@ -1251,41 +1327,63 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             "agent_runtime": True,
             "models": roo_models,
             "local_models": models,
-            "cloud_models": {
-                provider: MULTI_API_PROVIDER_MODELS.get(provider, [])
-                for provider in ROO_CLOUD_COCKPIT_PROVIDERS
-            },
-            "supported_cockpit_providers": ["ollama", *ROO_CLOUD_COCKPIT_PROVIDERS],
+            "cloud_models": roo_cloud_models_by_provider,
+            "roo_cloud_models": roo_cloud_model_ids,
+            "supported_cockpit_providers": ["ollama", "roo", *ROO_CLOUD_COCKPIT_PROVIDERS],
             "default_model": _active_base(models) or (roo_models[0] if roo_models else ""),
             "status": roo_status.get("status") or "unknown",
             "reason": (
                 "Roo Code draait als agent-runtime job en gebruikt het geselecteerde Cockpit-model. "
-                "Lokale modellen gaan via Ollama; ChatGPT/Claude/Gemini gaan via de in Cockpit opgeslagen API key."
+                "Roo Cloud-modellen gebruiken de ingelogde Roo-account; lokale modellen gaan via Ollama; "
+                "ChatGPT/Claude/Gemini korte modelnamen gaan via de in Cockpit opgeslagen API key."
                 if roo_status.get("available")
                 else str(roo_status.get("reason") or "Roo CLI is nog niet bereikbaar via host bridge of PATH.")
             ),
             "llm_provider_used": True,
             "runtime_status": roo_status,
+            "model_catalog_status": roo_cloud,
+            "subscription_login": {
+                "provider": "roo",
+                "status": roo_auth_probe.get("status") or "unknown",
+                "logged_in": bool(roo_auth_probe.get("logged_in_hint")),
+                "source": "roo auth login",
+                "secrets_returned": False,
+            },
             "approval_required": True,
         },
     }
+    # Load subscription statuses once for all providers
+    try:
+        sub_statuses = subscription_status() if callable(subscription_status) else {}
+    except Exception:
+        sub_statuses = {}
+
     for provider, model_options in MULTI_API_PROVIDER_MODELS.items():
         env_name = MULTI_API_KEY_ENV.get(provider, "")
         store_status = key_status.get(provider, {})
-        configured = bool(os.getenv(env_name) or store_status.get("configured"))
+        sub_status = sub_statuses.get(provider, {})
+        has_api_key = bool(os.getenv(env_name) or store_status.get("configured"))
+        has_subscription = bool(sub_status.get("active") and sub_status.get("api_key_ready"))
+        configured = has_api_key or has_subscription
+        key_source = store_status.get("source", "missing")
+        if not has_api_key and has_subscription:
+            key_source = "subscription"
         options[provider] = {
             "provider": provider,
             "label": provider.title(),
             "available": bool(MultiAPIRouter is not None and configured),
             "enabled": bool(MultiAPIRouter is not None and configured),
             "configured": configured,
-            "key_source": store_status.get("source", "missing"),
-            "masked_key": store_status.get("masked", ""),
+            "key_source": key_source,
+            "masked_key": store_status.get("masked", "") or sub_status.get("masked_credential", ""),
             "local_only": False,
             "models": model_options,
             "default_model": model_options[0] if model_options else "",
             "status": "configured" if configured else "missing_api_key",
             "router_available": MultiAPIRouter is not None,
+            "subscription_active": has_subscription,
+            "subscription_plan": sub_status.get("plan_label", "") if has_subscription else "",
+            "subscription_status": sub_status.get("status", ""),
         }
     for provider, status in _safe_check_providers().items():
         if provider not in options:
@@ -1324,6 +1422,7 @@ def _cockpit_config_payload() -> dict[str, Any]:
         "required_approval_phrase": APPROVAL_PHRASE,
         "approval": {"required_phrase": APPROVAL_PHRASE, "case_sensitive": True},
         "api_keys": _api_key_status_payload(),
+        "subscriptions": _subscription_status_payload(),
         "self_context": _self_context_status_payload(),
         "chroma": chroma_runtime_status(),
         "slash_agents": slash_command_catalog(),
@@ -2028,7 +2127,7 @@ def _subliminal_clean_text(value: object, *, limit: int = 1000) -> str:
     return " ".join(str(value or "").replace("\x00", " ").strip().split())[: max(0, int(limit or 0))]
 
 
-def _roo_model_choices(local_models: Optional[list[str]] = None) -> list[str]:
+def _roo_model_choices(local_models: Optional[list[str]] = None, roo_cloud_models: Optional[list[str]] = None) -> list[str]:
     """Models Roo can launch from Cockpit.
 
     Roo is a local agent runtime, but its LLM may be local or cloud-backed.
@@ -2039,6 +2138,9 @@ def _roo_model_choices(local_models: Optional[list[str]] = None) -> list[str]:
     for model_name in local_models or []:
         if model_name and model_name not in choices:
             choices.append(model_name)
+    for model_name in roo_cloud_models or []:
+        if model_name and model_name not in choices:
+            choices.append(model_name)
     for provider in ROO_CLOUD_COCKPIT_PROVIDERS:
         for model_name in MULTI_API_PROVIDER_MODELS.get(provider, []):
             if model_name and model_name not in choices:
@@ -2047,7 +2149,7 @@ def _roo_model_choices(local_models: Optional[list[str]] = None) -> list[str]:
 
 
 def _roo_runtime_preflight(requested_provider: str, model: str) -> dict[str, Any]:
-    from controller.roo_cli_runtime import cockpit_provider_for_roo_selection, map_cockpit_provider
+    from controller.roo_cli_runtime import api_key_available_for_provider, cockpit_provider_for_roo_selection, map_cockpit_provider
 
     selected_model = str(model or "").strip()
     cockpit_provider = cockpit_provider_for_roo_selection(requested_provider, selected_model)
@@ -2061,8 +2163,31 @@ def _roo_runtime_preflight(requested_provider: str, model: str) -> dict[str, Any
             "reason": str(provider_map.get("reason") or f"Roo ondersteunt Cockpit-provider `{cockpit_provider}` nog niet."),
             "fake_success": False,
         }
+    roo_provider = str(provider_map.get("roo_provider") or "")
+    if roo_provider == "roo":
+        if _roo_cloud_auth_ready() or api_key_available_for_provider(cockpit_provider, provider_map):
+            return {
+                "status": "ready",
+                "cockpit_provider": cockpit_provider,
+                "cockpit_model": selected_model,
+                "provider_map": provider_map,
+                "local_llm": False,
+                "auth_source": "roo_cloud_login",
+                "fake_success": False,
+            }
+        return {
+            "status": "missing_roo_login",
+            "cockpit_provider": cockpit_provider,
+            "cockpit_model": selected_model,
+            "provider_map": provider_map,
+            "reason": (
+                f"Roo kan `{selected_model}` pas via Roo Cloud starten nadat Roo Cloud in Cockpit is ingelogd. "
+                "Ga naar Models -> Roo Cloud Account -> Login."
+            ),
+            "fake_success": False,
+        }
     api_key_env = str(provider_map.get("api_key_env") or "")
-    if api_key_env and not _roo_api_key_available(cockpit_provider, api_key_env):
+    if api_key_env and not api_key_available_for_provider(cockpit_provider, provider_map):
         return {
             "status": "missing_api_key",
             "cockpit_provider": cockpit_provider,
@@ -2085,7 +2210,18 @@ def _roo_runtime_preflight(requested_provider: str, model: str) -> dict[str, Any
     }
 
 
+def _roo_cloud_auth_ready() -> bool:
+    try:
+        from controller.agent_runtime.adapters.roo_cli import roo_cloud_auth_status
+
+        status = roo_cloud_auth_status(prefer_bridge=True)
+        return bool(status.get("logged_in"))
+    except Exception:
+        return False
+
+
 def _roo_api_key_available(cockpit_provider: str, api_key_env: str) -> bool:
+    """Check if an API key is available from env, key store, or subscription."""
     if os.getenv(api_key_env):
         return True
     aliases = {
@@ -2101,7 +2237,18 @@ def _roo_api_key_available(cockpit_provider: str, api_key_env: str) -> bool:
         keys = _stored_api_keys()
     except Exception:
         keys = {}
-    return bool(keys.get(aliases.get(str(cockpit_provider or "").strip().lower(), str(cockpit_provider or "").strip().lower())))
+    provider_id = aliases.get(str(cockpit_provider or "").strip().lower(), str(cockpit_provider or "").strip().lower())
+    if keys.get(provider_id):
+        return True
+    # Fallback: check subscription store
+    if callable(subscription_api_key_for_provider):
+        try:
+            sub_key = subscription_api_key_for_provider(provider_id)
+            if sub_key:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _agent_tool_schemas(provider: str = "openai") -> list[dict[str, Any]]:
@@ -2318,12 +2465,23 @@ def _rebuild_chat_context(req: CockpitChatRequest, provider: str, model: str) ->
 
 
 def _stored_api_keys() -> dict[str, str]:
+    keys: dict[str, str] = {}
     if callable(load_provider_api_keys):
         try:
-            return load_provider_api_keys()
+            keys.update(load_provider_api_keys())
         except Exception:
-            return {}
-    return {}
+            pass
+    if callable(subscription_api_key_for_provider):
+        for provider in MULTI_API_PROVIDER_MODELS:
+            if keys.get(provider):
+                continue
+            try:
+                value = subscription_api_key_for_provider(provider)
+            except Exception:
+                value = ""
+            if value:
+                keys[provider] = value
+    return keys
 
 
 def _api_key_status_payload() -> dict[str, Any]:
@@ -2391,6 +2549,104 @@ def _save_api_key_payload(req: ProviderApiKeyRequest) -> dict[str, Any]:
             "key_status": provider_status,
             "secrets_returned": False,
             "next_action": "Kies de provider in de cockpit en stuur een testprompt.",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "provider": req.provider,
+            "stderr": str(exc),
+            "secrets_returned": False,
+        }
+
+
+def _subscription_status_payload() -> dict[str, Any]:
+    """Return subscription status for all known providers."""
+    if not callable(subscription_status):
+        return {
+            "status": "unavailable",
+            "providers": {},
+            "secrets_returned": False,
+            "reason": "controller.subscription_store is niet beschikbaar",
+        }
+    try:
+        providers = subscription_status()
+        return {
+            "status": "online",
+            "providers": providers,
+            "secrets_returned": False,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "providers": {},
+            "secrets_returned": False,
+            "reason": str(exc),
+        }
+
+
+def _save_subscription_payload(req: SubscriptionRequest) -> dict[str, Any]:
+    """Handle subscription save/delete/validate/toggle requests."""
+    if (req.approval or "").strip() != APPROVAL_PHRASE:
+        return {
+            "status": "blocked",
+            "provider": req.provider,
+            "stderr": f"Subscription opslag wacht op exact {APPROVAL_PHRASE}.",
+            "secrets_returned": False,
+        }
+    try:
+        if bool(req.validate_only):
+            if not callable(validate_subscription):
+                raise RuntimeError("validate_subscription unavailable")
+            result = validate_subscription(req.provider)
+            return {
+                "status": "success",
+                "action": "validated",
+                "provider": req.provider,
+                "subscription_status": result,
+                "secrets_returned": False,
+            }
+        if bool(req.toggle_active):
+            if not callable(activate_subscription):
+                raise RuntimeError("activate_subscription unavailable")
+            result = activate_subscription(req.provider, bool(req.active))
+            return {
+                "status": "success",
+                "action": "toggled",
+                "provider": req.provider,
+                "subscription_status": result,
+                "secrets_returned": False,
+            }
+        if bool(req.delete):
+            if not callable(delete_subscription):
+                raise RuntimeError("delete_subscription unavailable")
+            result = delete_subscription(req.provider)
+            return {
+                "status": "success",
+                "action": "deleted",
+                "provider": req.provider,
+                "subscription_status": result,
+                "secrets_returned": False,
+            }
+        if not callable(save_subscription):
+            raise RuntimeError("save_subscription unavailable")
+        result = save_subscription(
+            req.provider,
+            auth_mode=req.auth_mode or "",
+            plan_label=req.plan_label or "",
+            session_token=req.session_token or "",
+            refresh_token=req.refresh_token or "",
+            api_key=req.api_key or "",
+            expires_at=int(req.expires_at or 0),
+            active=bool(req.active) if req.active is not None else True,
+            notes=req.notes or "",
+        )
+        return {
+            "status": "success",
+            "action": "saved",
+            "provider": req.provider,
+            "subscription_status": result,
+            "secrets_returned": False,
+            "next_action": "Kies de provider in de cockpit Motor dropdown en test met een prompt.",
         }
     except Exception as exc:
         return {

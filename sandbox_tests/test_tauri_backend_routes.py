@@ -109,6 +109,20 @@ def load_main_with_fakes():
     finally:
         restore_modules(originals)
     main.agent_tools = FakeAgentTools()
+    main.roo_cli_runtime_status = lambda prefer_bridge=True: {
+        "status": "available",
+        "available": True,
+        "auth_probe": {"status": "available", "logged_in_hint": True},
+        "fake_success": False,
+    }
+    main.roo_cli_cloud_models = lambda prefer_bridge=True: {
+        "status": "online",
+        "available": True,
+        "models": ["anthropic/claude-opus-4.7", "roo/code-supernova"],
+        "model_count": 2,
+        "secrets_returned": False,
+        "fake_success": False,
+    }
     main.app.state.multi_api_router = FakeMultiAPIRouter()
     main.app.state.ouroboros_loop = {
         "status": "idle",
@@ -209,6 +223,9 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertFalse(data["provider_options"]["roo"]["local_only"])
         self.assertTrue(data["provider_options"]["roo"]["agent_runtime"])
         self.assertIn("llama3.2:latest", data["provider_options"]["roo"]["models"])
+        self.assertIn("anthropic/claude-opus-4.7", data["provider_options"]["roo"]["models"])
+        self.assertIn("roo/code-supernova", data["provider_options"]["roo"]["roo_cloud_models"])
+        self.assertTrue(data["provider_options"]["roo"]["subscription_login"]["logged_in"])
         self.assertIn("gpt-4.1", data["provider_options"]["roo"]["models"])
         self.assertIn("gemini-2.5-pro", data["provider_options"]["roo"]["models"])
         self.assertIn("openai", data["provider_options"]["roo"]["supported_cockpit_providers"])
@@ -484,6 +501,48 @@ class TestTauriBackendRoutes(unittest.TestCase):
         job = data["job"]
         self.assertEqual(job["metadata"]["cockpit_provider"], "ollama")
         self.assertEqual(job["metadata"]["cockpit_model"], "llama3.2:latest")
+
+    def test_cockpit_roo_provider_uses_roo_cloud_login_for_catalog_model(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="tauri-roo-cloud-runtime-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+
+        def fake_roo(job, log, on_progress):
+            return {"status": "completed", "exit_code": 0, "response_preview": job.metadata.get("cockpit_model", "")}
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"roo": fake_roo})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+        original_auth_ready = self.main._roo_cloud_auth_ready
+        self.main._roo_cloud_auth_ready = lambda: True
+        self.addCleanup(lambda: setattr(self.main, "_roo_cloud_auth_ready", original_auth_ready))
+
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "roo",
+                "model": "anthropic/claude-sonnet-4.6",
+                "conversation_id": "roo-cloud-job-test",
+                "prompt": "maak een veilig plan",
+                "approval": "Akkoord",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "running")
+        self.assertEqual(data["provider"], "roo")
+        self.assertEqual(data["route"], "roo_runtime")
+        job = data["job"]
+        self.assertEqual(job["metadata"]["cockpit_provider"], "roo")
+        self.assertEqual(job["metadata"]["cockpit_model"], "anthropic/claude-sonnet-4.6")
+        self.assertEqual(job["metadata"]["roo_provider_map"]["roo_provider"], "roo")
 
     def test_cockpit_chat_can_address_ouroboros_runtime_without_ollama(self):
         response = self.client.post(
@@ -1154,6 +1213,42 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(saved["status"], "success")
         self.assertFalse(saved["secrets_returned"])
         self.assertNotIn("openai-test-secret-1234", response.text)
+
+    def test_subscription_save_configures_provider_without_returning_secret(self):
+        secret = "sk-subscription-route-secret-123456"
+        response = self.client.post(
+            "/api/cockpit/subscriptions",
+            json={"provider": "openai", "auth_mode": "api_key_from_subscription", "api_key": secret},
+        )
+        self.assertEqual(response.status_code, 200)
+        blocked = response.json()
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertNotIn(secret, response.text)
+
+        response = self.client.post(
+            "/api/cockpit/subscriptions",
+            json={
+                "provider": "openai",
+                "auth_mode": "api_key_from_subscription",
+                "api_key": secret,
+                "plan_label": "ChatGPT Team",
+                "approval": "Akkoord",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        saved = response.json()
+        self.assertEqual(saved["status"], "success")
+        self.assertFalse(saved["secrets_returned"])
+        self.assertTrue(saved["subscription_status"]["api_key_ready"])
+        self.assertNotIn(secret, response.text)
+
+        config = self.client.get("/api/cockpit/config").json()
+        openai = config["provider_options"]["openai"]
+        self.assertTrue(openai["configured"])
+        self.assertEqual(openai["key_source"], "subscription")
+        self.assertTrue(openai["subscription_active"])
+        self.assertFalse(config["subscriptions"]["secrets_returned"])
+        self.assertNotIn(secret, json.dumps(config, ensure_ascii=False))
 
     def test_ollama_create_payload_uses_current_from_system_parameters_shape(self):
         payload = self.main._ollama_create_payload_from_modelfile(

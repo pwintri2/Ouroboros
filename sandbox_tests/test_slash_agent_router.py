@@ -318,6 +318,47 @@ class TestSlashAgentRouter(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
 
+    def test_roo_slash_uses_roo_cloud_login_for_catalog_model_without_api_key(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="roo-cloud-auth-runtime-test-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+        seen: list[dict] = []
+
+        def fake_adapter(job, log, on_progress):
+            seen.append(job.metadata)
+            return {"status": "completed", "exit_code": 0, "response_preview": "roo cloud auth ok"}
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"roo": fake_adapter})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+        original_auth_ready = slash_agent_router._roo_cloud_auth_ready
+        slash_agent_router._roo_cloud_auth_ready = lambda: True
+        self.addCleanup(lambda: setattr(slash_agent_router, "_roo_cloud_auth_ready", original_auth_ready))
+
+        result = handle_slash_command(
+            "/roo maak een cloud plan",
+            approval="Akkoord",
+            provider="roo",
+            model="anthropic/claude-sonnet-4.6",
+        )
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["route"], "roo_runtime")
+        self.assertFalse(result["local_only"])
+        for _ in range(50):
+            if seen:
+                break
+            time.sleep(0.02)
+        self.assertEqual(seen[0]["cockpit_provider"], "roo")
+        self.assertEqual(seen[0]["cockpit_model"], "anthropic/claude-sonnet-4.6")
+        self.assertEqual(seen[0]["roo_provider_map"]["roo_provider"], "roo")
+
     def test_roo_slash_blocks_cloud_model_without_api_key(self):
         result = handle_slash_command(
             "/roo maak een cloud plan",
@@ -330,6 +371,41 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.assertEqual(result["route"], "roo_runtime")
         self.assertTrue(result["configuration_required"])
         self.assertIn("API key", result["response"])
+
+    def test_agent_jobs_summary_extracts_roo_json_content(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="roo-jobs-preview-test-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+
+        def fake_adapter(job, log, on_progress):
+            return {
+                "status": "completed",
+                "exit_code": 0,
+                "response_preview": '{"type":"result","content":"FINAL CLEAN SUMMARY","events":[{"type":"assistant","content":"NOISY"}]}',
+            }
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"roo": fake_adapter})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+
+        started = handle_slash_command("/roo doe iets", approval="Akkoord", provider="ollama", model="llama3.2:latest")
+        job_id = started["job"]["job_id"]
+        for _ in range(50):
+            if (store.get(job_id) or {}).get("status") == "completed":
+                break
+            time.sleep(0.02)
+
+        result = handle_slash_command("/roo jobs")
+
+        self.assertEqual(result["status"], "success")
+        self.assertIn("FINAL CLEAN SUMMARY", result["response"])
+        self.assertNotIn('"events"', result["response"])
 
     def test_ruflo_defaults_to_handoff_instead_of_host_cli(self):
         original_run = slash_agent_router._run_ruflo_swarm

@@ -51,7 +51,7 @@ services:
       WINTRIP_DEEPSEEK_PATH: /deepseek
       WINTRIP_ATLAS_PATH: /atlas
       WINTRIP_OPENHANDS_SERVER_URL: http://host.docker.internal:3000
-      WINTRIP_RCLONE_BRIDGE_URL: http://host.docker.internal:8766
+      WINTRIP_RCLONE_BRIDGE_URL: ${WINTRIP_RCLONE_BRIDGE_URL:-http://host.docker.internal:8766}
       WINTRIP_RCLONE_BRIDGE_TOKEN_PATH: /workspace/.secrets/rclone_bridge_token
       WINTRIP_SLASH_BRIDGE_TIMEOUT_SECONDS: "8"
       WINTRIP_CODEX_PATH: /codex

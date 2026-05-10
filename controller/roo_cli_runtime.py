@@ -4,6 +4,11 @@ The real Roo CLI lives on the host and normally chooses its own provider/API
 key configuration.  This adapter keeps Ouroboros in charge: Cockpit supplies
 the selected provider/model, this module maps that choice onto Roo CLI flags,
 and all mutating Roo runs remain gated by the exact `Akkoord` phrase.
+
+Authentication sources (checked in order):
+1. Environment variable for the provider (e.g. OPENAI_API_KEY)
+2. API key from the Cockpit api_key_store
+3. API key from an AI subscription in subscription_store
 """
 
 from __future__ import annotations
@@ -23,11 +28,15 @@ DEFAULT_ROO_ROOT = "/home/pwintri2/Roo-code"
 DEFAULT_ROO_BINARY = "/home/pwintri2/.local/bin/roo"
 DEFAULT_NODE_BIN = "/home/pwintri2/.nvm/versions/node/v22.22.2/bin"
 MAX_CAPTURE_CHARS = 12000
+MAX_PARSE_CHARS = 2_000_000
+ROO_MODELS_CACHE_SECONDS = 60
 
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
     re.compile(r"(?i)authorization:\s*bearer\s+[A-Za-z0-9._\-]+"),
     re.compile(r"(?i)(ROO_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|OPENROUTER_API_KEY)\s*=\s*[^ \n]+"),
+    re.compile(r"\b(sk-[A-Za-z0-9._\-]{12,})\b"),
+    re.compile(r"\b(AIza[0-9A-Za-z_\-]{12,})\b"),
 )
 
 COCKPIT_TO_ROO_PROVIDER: dict[str, str] = {
@@ -53,6 +62,7 @@ ROO_SUPPORTED_COCKPIT_PROVIDERS: tuple[str, ...] = (
     "google",
     "gemini",
     "openrouter",
+    "roo",
 )
 
 ROO_API_KEY_ENV: dict[str, str] = {
@@ -63,6 +73,8 @@ ROO_API_KEY_ENV: dict[str, str] = {
     "roo": "ROO_API_KEY",
     "vercel-ai-gateway": "VERCEL_AI_GATEWAY_API_KEY",
 }
+
+_ROO_MODELS_CACHE: dict[str, Any] = {"ts": 0.0, "payload": None}
 
 
 def roo_root() -> Path:
@@ -115,7 +127,7 @@ def map_cockpit_provider(provider: object, model: object = "") -> dict[str, Any]
     if clean_provider == "roo-agent":
         clean_provider = "roo"
     if clean_provider == "roo" and clean_model:
-        clean_provider = infer_provider_from_model(clean_model)
+        clean_provider = "roo" if _looks_like_roo_cloud_model_id(clean_model) else infer_provider_from_model(clean_model)
     roo_provider = COCKPIT_TO_ROO_PROVIDER.get(clean_provider)
     if not roo_provider:
         return {
@@ -157,6 +169,8 @@ def infer_provider_from_model(model: object) -> str:
 def cockpit_provider_for_roo_selection(provider: object, model: object = "") -> str:
     clean_provider = str(provider or "").strip().lower()
     if clean_provider in {"", "roo", "roo-agent", "roo_agent", "roo-code"}:
+        if _looks_like_roo_cloud_model_id(model):
+            return "roo"
         return infer_provider_from_model(model)
     return clean_provider
 
@@ -227,6 +241,89 @@ def roo_cli_status() -> dict[str, Any]:
         "approval_phrase": APPROVAL_PHRASE,
         "fake_success": False,
     }
+
+
+def roo_cloud_models(*, timeout_seconds: int = 12, max_models: int = 120) -> dict[str, Any]:
+    """Return the Roo Cloud model catalog from the authenticated Roo CLI.
+
+    This is intentionally metadata-only: no auth token or full CLI stdout is
+    returned to the backend/Cockpit.
+    """
+
+    now = time.time()
+    cached = _ROO_MODELS_CACHE.get("payload")
+    if isinstance(cached, dict) and now - float(_ROO_MODELS_CACHE.get("ts") or 0.0) < ROO_MODELS_CACHE_SECONDS:
+        payload = dict(cached)
+        payload["models"] = list(cached.get("models") or [])
+        payload["cached"] = True
+        return payload
+
+    env = runtime_env()
+    binary = resolve_roo_binary(env)
+    if not binary:
+        return {
+            "status": "missing",
+            "available": False,
+            "models": [],
+            "model_count": 0,
+            "reason": "Roo CLI binary niet gevonden.",
+            "secrets_returned": False,
+            "fake_success": False,
+        }
+
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            [str(binary), "list", "models", "--format", "json"],
+            text=True,
+            capture_output=True,
+            timeout=max(1, int(timeout_seconds or 12)),
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "timeout",
+            "available": False,
+            "models": [],
+            "model_count": 0,
+            "reason": "Roo CLI modelcatalogus gaf geen antwoord binnen de timeout.",
+            "duration_seconds": round(time.time() - started, 3),
+            "secrets_returned": False,
+            "fake_success": False,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "available": False,
+            "models": [],
+            "model_count": 0,
+            "reason": redact(str(exc))[:1000],
+            "duration_seconds": round(time.time() - started, 3),
+            "secrets_returned": False,
+            "fake_success": False,
+        }
+
+    parsed = _parse_json(proc.stdout)
+    models = _extract_roo_model_ids(parsed, max_models=max_models)
+    status = "online" if proc.returncode == 0 and models else "error"
+    reason = "" if status == "online" else (redact(proc.stderr or proc.stdout)[-1000:] or "Roo CLI gaf geen modelcatalogus terug.")
+    payload = {
+        "status": status,
+        "available": status == "online",
+        "models": models,
+        "model_count": len(models),
+        "exit_code": proc.returncode,
+        "stderr": redact(proc.stderr[-1000:]),
+        "reason": reason,
+        "duration_seconds": round(time.time() - started, 3),
+        "secrets_returned": False,
+        "fake_success": False,
+    }
+    if status == "online":
+        _ROO_MODELS_CACHE["ts"] = time.time()
+        _ROO_MODELS_CACHE["payload"] = dict(payload)
+    return payload
 
 
 def build_roo_command(
@@ -329,8 +426,10 @@ def run_roo_cli_task(
     provider_map = command_payload.get("provider_map") if isinstance(command_payload.get("provider_map"), dict) else {}
     env_extra: dict[str, str] = {}
     api_key_env = str(provider_map.get("api_key_env") or "")
-    if api_key_env and api_key:
-        env_extra[api_key_env] = api_key
+    key_resolution = resolve_api_key_for_provider(provider, provider_map, explicit_key=api_key)
+    resolved_api_key = str(key_resolution.get("key") or "")
+    if api_key_env and resolved_api_key:
+        env_extra[api_key_env] = resolved_api_key
     env = runtime_env(env_extra)
     command = list(command_payload["command"])
     before = _read_workspace_status(workspace_path)
@@ -371,9 +470,10 @@ def run_roo_cli_task(
             "fake_success": False,
         }
 
+    stdout_for_parse = _read_text_for_parse(stdout_file)
     stdout_text = redact(_read_tail(stdout_file))
     stderr_text = redact(_read_tail(stderr_file))
-    parsed_output = _parse_json(stdout_text)
+    parsed_output = _parse_json(redact(stdout_for_parse)) or _parse_json(stdout_text)
     try:
         output_file.write_text(json.dumps(parsed_output if parsed_output is not None else {"stdout": stdout_text}, indent=2), encoding="utf-8")
     except Exception:
@@ -381,7 +481,7 @@ def run_roo_cli_task(
     after = _read_workspace_status(workspace_path)
     changed_files = _changed_status_paths(before, after)
     status = "failed" if timed_out or return_code else "completed"
-    response_preview = _response_preview(parsed_output, stdout_text, stderr_text)
+    response_preview = _response_preview(parsed_output, stdout_for_parse or stdout_text, stderr_text)
     category = _classify_result(
         status=status,
         exit_code=return_code,
@@ -396,6 +496,9 @@ def run_roo_cli_task(
         "duration_seconds": round(time.time() - started, 3),
         "command": command_payload["public_command"],
         "provider_map": provider_map,
+        "api_key_available": bool(key_resolution.get("usable")),
+        "api_key_source": str(key_resolution.get("source") or "none"),
+        "secrets_returned": False,
         "stdout": stdout_text,
         "stderr": stderr_text,
         "parsed_output": parsed_output,
@@ -404,6 +507,86 @@ def run_roo_cli_task(
         "dirty_files": [item.get("path", "") for item in (after or []) if item.get("path")],
         "artifacts": [str(path) for path in (prompt_file, stdout_file, stderr_file, output_file) if path.exists()],
         "runtime_status": roo_cli_status(),
+        "fake_success": False,
+    }
+
+
+def roo_auth_login(*, approval: str, timeout_seconds: int = 10) -> dict[str, Any]:
+    """Launch the Roo Code Cloud auth flow on the host.
+
+    The command is intentionally started detached because the CLI may keep
+    waiting for the browser callback.  The follow-up status check is
+    `roo auth status` via `roo_cli_status()`.
+    """
+
+    if str(approval or "").strip() != APPROVAL_PHRASE:
+        return {
+            "status": "blocked",
+            "approval_required": True,
+            "approval_phrase": APPROVAL_PHRASE,
+            "reason": "Roo Cloud login wijzigt host-authenticatie en vereist exact Akkoord.",
+            "fake_success": False,
+        }
+    env = runtime_env()
+    binary = resolve_roo_binary(env)
+    if not binary:
+        return {"status": "failed", "reason": "Roo CLI binary niet gevonden.", "category": "binary_missing", "fake_success": False}
+
+    out_dir = host_workspace_root() / "out" / "roo_auth"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stdout_file = out_dir / "roo_auth_login_stdout.log"
+    stderr_file = out_dir / "roo_auth_login_stderr.log"
+    command = [str(binary), "auth", "login"]
+    started = time.time()
+    try:
+        with stdout_file.open("w", encoding="utf-8") as stdout_handle, stderr_file.open("w", encoding="utf-8") as stderr_handle:
+            proc = subprocess.Popen(
+                command,
+                cwd=str(host_workspace_root()),
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                text=True,
+                env=env,
+                start_new_session=True,
+            )
+        try:
+            return_code = proc.wait(timeout=max(1, int(timeout_seconds or 10)))
+        except subprocess.TimeoutExpired:
+            return_code = None
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "reason": redact(str(exc))[:1000],
+            "category": "spawn_failed",
+            "duration_seconds": round(time.time() - started, 3),
+            "fake_success": False,
+        }
+
+    status_payload = roo_cli_status()
+    auth_probe = status_payload.get("auth_probe") if isinstance(status_payload.get("auth_probe"), dict) else {}
+    logged_in = bool(auth_probe.get("logged_in_hint"))
+    stdout_text = redact(_read_tail(stdout_file, limit=8000))
+    stderr_text = redact(_read_tail(stderr_file, limit=4000))
+    auth_url = _extract_auth_url(f"{stdout_text}\n{stderr_text}")
+    frontend_action = (
+        {"type": "open_url", "url": auth_url, "target": "_blank", "source": "roo_auth_login"}
+        if auth_url
+        else None
+    )
+    return {
+        "status": "completed" if return_code == 0 or logged_in else "launched",
+        "exit_code": return_code,
+        "logged_in": logged_in,
+        "reason": "Roo Cloud login gestart; rond de browserflow af en refresh daarna de modelcatalogus." if return_code is None and not logged_in else "",
+        "auth_url": auth_url,
+        "frontend_action": frontend_action,
+        "stdout_summary": _summarize_auth_output(stdout_text),
+        "stderr_summary": _summarize_auth_output(stderr_text),
+        "command": public_command(command),
+        "duration_seconds": round(time.time() - started, 3),
+        "runtime_status": status_payload,
+        "artifacts": [str(stdout_file), str(stderr_file)],
+        "secrets_returned": False,
         "fake_success": False,
     }
 
@@ -417,16 +600,19 @@ def redact(text: object) -> str:
 
 def public_command(command: list[str]) -> list[str]:
     public: list[str] = []
-    skip_next = False
+    replacement_for_next = ""
     for item in command:
-        if skip_next:
-            public.append("[REDACTED_PATH]")
-            skip_next = False
+        if replacement_for_next:
+            public.append(replacement_for_next)
+            replacement_for_next = ""
             continue
         text = str(item)
         if text == "--prompt-file":
             public.append(text)
-            skip_next = True
+            replacement_for_next = "[REDACTED_PATH]"
+        elif text in {"--api-key", "-k"}:
+            public.append(text)
+            replacement_for_next = "[REDACTED]"
         else:
             public.append(redact(text)[:260])
     return public
@@ -513,6 +699,29 @@ def _read_tail(path: Path, limit: int = MAX_CAPTURE_CHARS) -> str:
     return data[-limit:]
 
 
+def _extract_auth_url(text: str) -> str:
+    for match in re.finditer(r"https?://[^\s\"'<>]+", str(text or "")):
+        url = match.group(0).rstrip(").,;")
+        if "app.roocode.com/cli/sign-in" in url:
+            return url
+    return ""
+
+
+def _summarize_auth_output(text: str) -> str:
+    clean = re.sub(r"https?://[^\s\"'<>]+", "[AUTH_URL]", str(text or ""))
+    return redact(clean)[-1200:]
+
+
+def _read_text_for_parse(path: Path, limit: int = MAX_PARSE_CHARS) -> str:
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    if len(data) > limit:
+        return data[:limit]
+    return data
+
+
 def _parse_json(text: str) -> Any:
     stripped = str(text or "").strip()
     if not stripped:
@@ -523,7 +732,45 @@ def _parse_json(text: str) -> Any:
         return None
 
 
+def _extract_roo_model_ids(parsed: Any, *, max_models: int = 120) -> list[str]:
+    raw_models: Any = []
+    if isinstance(parsed, dict):
+        raw_models = parsed.get("models") or parsed.get("data") or []
+    elif isinstance(parsed, list):
+        raw_models = parsed
+
+    candidates: list[str] = []
+    if isinstance(raw_models, dict):
+        candidates = [str(key) for key in raw_models.keys()]
+    elif isinstance(raw_models, list):
+        for item in raw_models:
+            if isinstance(item, str):
+                candidates.append(item)
+            elif isinstance(item, dict):
+                value = item.get("id") or item.get("name") or item.get("model")
+                if value:
+                    candidates.append(str(value))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for model_id in candidates:
+        clean = " ".join(str(model_id or "").strip().split())
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        out.append(clean)
+        if len(out) >= max(1, int(max_models or 120)):
+            break
+    return out
+
+
 def _response_preview(parsed_output: Any, stdout: str, stderr: str) -> str:
+    extracted = _extract_roo_response_text(parsed_output)
+    if extracted:
+        return redact(extracted)[-2000:]
+    raw_extracted = _extract_roo_response_text_from_raw(stdout)
+    if raw_extracted:
+        return redact(raw_extracted)[-2000:]
     if isinstance(parsed_output, dict):
         for key in ("result", "response", "text", "message", "content"):
             value = parsed_output.get(key)
@@ -531,6 +778,47 @@ def _response_preview(parsed_output: Any, stdout: str, stderr: str) -> str:
                 return redact(str(value))[-2000:]
         return redact(json.dumps(parsed_output, ensure_ascii=False))[-2000:]
     return redact(stdout or stderr)[-2000:]
+
+
+def _extract_roo_response_text_from_raw(text: str) -> str:
+    raw = str(text or "")
+    match = re.search(r'"type"\s*:\s*"result".{0,400}?"content"\s*:\s*"((?:\\.|[^"\\])*)"', raw, flags=re.S)
+    if match:
+        try:
+            return json.loads(f'"{match.group(1)}"').strip()
+        except Exception:
+            return match.group(1).strip()
+    matches = re.findall(r'"type"\s*:\s*"assistant".{0,1200}?"content"\s*:\s*"((?:\\.|[^"\\])*)"', raw, flags=re.S)
+    if matches:
+        try:
+            return json.loads(f'"{matches[-1]}"').strip()
+        except Exception:
+            return matches[-1].strip()
+    return ""
+
+
+def _extract_roo_response_text(parsed_output: Any) -> str:
+    if isinstance(parsed_output, dict):
+        content = parsed_output.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        events = parsed_output.get("events")
+        if isinstance(events, list):
+            return _extract_last_assistant_content(events)
+    if isinstance(parsed_output, list):
+        return _extract_last_assistant_content(parsed_output)
+    return ""
+
+
+def _extract_last_assistant_content(events: list[Any]) -> str:
+    for item in reversed(events):
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "assistant":
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    return ""
 
 
 def _classify_result(*, status: str, exit_code: int | None, stderr: str, details: str = "") -> str:
@@ -565,6 +853,28 @@ def _roo_reasoning_effort(roo_provider: str, model: object) -> str:
     if clean_provider == "openai-native" and clean_model.startswith(("gpt-4.1", "gpt-4o", "gpt-3.5")):
         return "disabled"
     return ""
+
+
+def _looks_like_roo_cloud_model_id(model: object) -> bool:
+    text = str(model or "").strip().lower()
+    if ":" in text or "/" not in text:
+        return False
+    provider_prefix = text.split("/", 1)[0]
+    return provider_prefix in {
+        "anthropic",
+        "openai",
+        "google",
+        "meta-llama",
+        "x-ai",
+        "mistralai",
+        "qwen",
+        "deepseek",
+        "moonshotai",
+        "minimax",
+        "roo",
+        "xai",
+        "zai",
+    }
 
 
 def _read_workspace_status(cwd: Path) -> list[dict[str, str]] | None:
@@ -616,17 +926,126 @@ def _terminate(proc: Any) -> None:
             pass
 
 
+# ---------------------------------------------------------------------------
+# Subscription-aware API key resolution
+# ---------------------------------------------------------------------------
+
+# Map from Roo CLI provider names to subscription store provider ids
+_ROO_PROVIDER_TO_SUBSCRIPTION: dict[str, str] = {
+    "anthropic": "anthropic",
+    "gemini": "google",
+    "openai-native": "openai",
+    "openrouter": "openrouter",
+}
+
+
+def resolve_api_key_for_provider(
+    cockpit_provider: str,
+    provider_map: dict[str, Any] | None = None,
+    *,
+    explicit_key: str = "",
+) -> dict[str, Any]:
+    """Resolve the API key for a provider from all available sources.
+
+    Priority order:
+    1. Explicitly passed key (from cockpit form)
+    2. Environment variable
+    3. API key store (cockpit saved keys)
+    4. Subscription store (AI subscription credentials)
+
+    Returns a dict with:
+    - ``key``: the resolved API key (empty if none found)
+    - ``source``: where the key was found
+    - ``usable``: bool indicating whether we have a usable key
+    """
+    if explicit_key and len(explicit_key.strip()) >= 8:
+        return {"key": explicit_key.strip(), "source": "explicit", "usable": True}
+
+    if provider_map is None:
+        provider_map = map_cockpit_provider(cockpit_provider)
+    if provider_map.get("status") != "mapped":
+        return {"key": "", "source": "unmapped", "usable": False, "reason": provider_map.get("reason", "")}
+
+    roo_provider = str(provider_map.get("roo_provider") or "")
+    api_key_env = str(provider_map.get("api_key_env") or "")
+    if roo_provider == "roo":
+        if api_key_env:
+            env_value = os.getenv(api_key_env, "")
+            if env_value:
+                return {"key": env_value, "source": "env", "usable": True}
+        try:
+            status = roo_cli_status()
+            auth_probe = status.get("auth_probe") if isinstance(status.get("auth_probe"), dict) else {}
+            if auth_probe.get("logged_in_hint"):
+                return {"key": "", "source": "roo_auth_login", "usable": True}
+        except Exception:
+            pass
+
+    # 1. Environment variable
+    if api_key_env:
+        env_value = os.getenv(api_key_env, "")
+        if env_value:
+            return {"key": env_value, "source": "env", "usable": True}
+
+    # 2. API key store
+    try:
+        from controller.api_key_store import load_provider_api_keys
+
+        aliases = {
+            "chatgpt": "openai",
+            "openai-native": "openai",
+            "openai": "openai",
+            "claude": "anthropic",
+            "anthropic": "anthropic",
+            "gemini": "google",
+            "google": "google",
+        }
+        keys = load_provider_api_keys()
+        store_provider = aliases.get(str(cockpit_provider or "").strip().lower(), str(cockpit_provider or "").strip().lower())
+        store_key = keys.get(store_provider, "")
+        if store_key:
+            return {"key": store_key, "source": "api_key_store", "usable": True}
+    except Exception:
+        pass
+
+    # 3. Subscription store
+    subscription_provider = _ROO_PROVIDER_TO_SUBSCRIPTION.get(roo_provider, "")
+    if not subscription_provider:
+        # Try cockpit provider name directly
+        subscription_provider = str(cockpit_provider or "").strip().lower()
+    try:
+        from controller.subscription_store import subscription_api_key_for_provider
+
+        sub_key = subscription_api_key_for_provider(subscription_provider)
+        if sub_key:
+            return {"key": sub_key, "source": "subscription", "usable": True}
+    except Exception:
+        pass
+
+    return {"key": "", "source": "none", "usable": False}
+
+
+def api_key_available_for_provider(cockpit_provider: str, provider_map: dict[str, Any] | None = None) -> bool:
+    """Check if an API key is available from any source for the given provider."""
+    result = resolve_api_key_for_provider(cockpit_provider, provider_map)
+    return result.get("usable", False)
+
+
 __all__ = [
     "APPROVAL_PHRASE",
+    "api_key_available_for_provider",
     "build_roo_command",
     "cockpit_provider_for_roo_selection",
     "infer_provider_from_model",
     "installed_supported_providers",
     "map_cockpit_provider",
     "redact",
+    "resolve_api_key_for_provider",
     "resolve_roo_binary",
     "roo_api_key_env_for_cockpit_provider",
+    "roo_auth_login",
     "roo_cli_status",
+    "roo_cloud_models",
     "roo_root",
     "run_roo_cli_task",
 ]

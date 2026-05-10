@@ -47,7 +47,7 @@ from controller.rclone_drive_adapter import RcloneDriveAdapter, get_rclone_drive
 from controller.computer_actions import computer_actions_status, run_computer_action  # noqa: E402
 from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory  # noqa: E402
 from controller.ouroboros_self_context import get_ruflo_status  # noqa: E402
-from controller.roo_cli_runtime import roo_cli_status, run_roo_cli_task  # noqa: E402
+from controller.roo_cli_runtime import roo_auth_login, roo_cli_status, roo_cloud_models, run_roo_cli_task  # noqa: E402
 from controller.slash_agent_router import execute_host_agent_command  # noqa: E402
 from controller.world_agent import ask_grok_via_world_agent, recent_world_actions, search_world_memory, world_agent_status  # noqa: E402
 from controller.world_agent import open_url_via_world_agent  # noqa: E402
@@ -116,6 +116,11 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
             return
         if path == "/roo/status":
             result = roo_cli_status()
+            result["via_bridge"] = False
+            self._json(result)
+            return
+        if path == "/roo/models":
+            result = roo_cloud_models()
             result["via_bridge"] = False
             self._json(result)
             return
@@ -298,6 +303,14 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
                 timeout_seconds=int(body.get("timeout_seconds") or 600),
                 api_key=str(body.get("api_key") or ""),
                 mode=str(body.get("mode") or "code"),
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/roo/auth/login":
+            result = roo_auth_login(
+                approval=str(body.get("approval") or ""),
+                timeout_seconds=int(body.get("timeout_seconds") or 10),
             )
             result["via_bridge"] = False
             self._json(result, status=403 if result.get("status") == "blocked" else 200)
