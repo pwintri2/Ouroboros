@@ -47,7 +47,7 @@ def get_approved_records(limit: int = 1000) -> list[dict[str, Any]]:
         approved = []
         if results and results["documents"]:
             for doc, meta in zip(results["documents"], results["metadatas"]):
-                if meta and meta.get("approval_status") == "approved":
+                if meta and meta.get("approval_status") == "approved" and _truthy(meta.get("learnable")) and not _truthy(meta.get("audit_only")):
                     approved.append({
                         "document": doc,
                         "metadata": meta,
@@ -56,6 +56,14 @@ def get_approved_records(limit: int = 1000) -> list[dict[str, Any]]:
         return approved
     except Exception:
         return []
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "learnable"}
 
 
 def count_approved_records() -> int:

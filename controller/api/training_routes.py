@@ -158,6 +158,7 @@ def _preview_payload(
         },
         "dreamcycle": {
             **dream.metadata(),
+            "dream_anchor_hz": 418.0,
             "dream_hz": round(dream_hz, 6),
             "frequency_source": frequency_source,
             "samples": _frequency_samples(item.content_hash, target_hz=dream_hz),
@@ -267,9 +268,17 @@ def _store_training_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         "approval_status": payload["approval_status"],
         "diff_hash": payload["diff_hash"],
         "resonance_score": float(payload["resonance"]["score"]),
+        "dream_anchor_hz": 418.0,
         "dream_hz": float(payload["dreamcycle"]["dream_hz"]),
         "frequency_band": payload["dreamcycle"]["frequency_band"],
         "content_hash": hashlib.sha256(payload["scrubbed_text"].encode("utf-8")).hexdigest(),
+        "learnable": True,
+        "audit_only": False,
+        "source_authority": "local_approved_training_data",
+        "source_scope": "local_only",
+        "training_source": "local_approved_browser_snapshot",
+        "approval_source": "philip_akkoord_local",
+        "source_policy": "local_approved_no_external_fetch_at_export",
     }
     geometry = payload.get("geometry_11d") or measure_geometry_11d(metadata["dream_hz"])
     metadata.update(

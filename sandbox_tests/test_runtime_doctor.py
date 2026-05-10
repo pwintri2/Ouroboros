@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from controller.runtime_doctor import load_last_smoke_result, runtime_doctor_payload, save_smoke_result
+from controller.runtime_doctor import _check_ooda_hippocampus, load_last_smoke_result, runtime_doctor_payload, save_smoke_result
+
+
+class FakeOODACollection:
+    def count(self):
+        return 3
 
 
 class TestRuntimeDoctor(unittest.TestCase):
@@ -48,6 +53,17 @@ class TestRuntimeDoctor(unittest.TestCase):
         self.assertEqual(result["route"], "agentic_processor")
         self.assertEqual(result["tool"], "list_files")
         self.assertFalse(result["fake_success"])
+
+    def test_ooda_hippocampus_health_check_is_canonical(self):
+        result = _check_ooda_hippocampus(collection=FakeOODACollection())
+
+        self.assertEqual(result["status"], "online")
+        self.assertEqual(result["collection"], "wintrip_ooda_dreamcycle_11d")
+        self.assertEqual(result["dream_anchor_hz"], 418.0)
+        self.assertGreaterEqual(float(result["dream_hz"]), 418.0)
+        self.assertLessEqual(float(result["dream_hz"]), 432.0)
+        self.assertEqual(result["missing_11d_layers"], [])
+        self.assertTrue(result["scalar_metadata"])
 
 
 if __name__ == "__main__":

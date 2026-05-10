@@ -357,6 +357,30 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertIn("Brave Search: niet gebruikt", result["response"])
         save_session.assert_called_once()
 
+    def test_emits_canonical_ooda_phases_for_agentic_run(self):
+        plan = '[{"tool":"prompt_understanding","args":{"prompt":"hi"}}]'
+        processor = AgenticProcessor(
+            agent_tools=FakeAgentTools(),
+            ollama_client=FakeOllama([plan, "Synthese."]),
+        )
+        events = []
+
+        def fake_record(**kwargs):
+            events.append(dict(kwargs))
+            return {"status": "stored", "stored": True, "event_id": f"event-{len(events)}", "fake_success": False}
+
+        with patch("controller.agentic_processor.record_ooda_event", side_effect=fake_record):
+            with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+                processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+                result = processor.run("Vat lokaal samen", model="gemma4")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([event["phase"] for event in events], ["observe", "orient", "decide", "act", "reflect"])
+        self.assertEqual(len({event["session_id"] for event in events}), 1)
+        self.assertTrue(all(event["event_kind"] == "agentic_processor" for event in events))
+        self.assertTrue(all(event["learnable"] is False for event in events))
+        self.assertTrue(all(event["audit_only"] is True for event in events))
+
     def test_blocks_agentic_mail_social_and_codex_actions_without_approval(self):
         plan = (
             '[{"tool":"mail_read_recent","args":{"limit":2}},'

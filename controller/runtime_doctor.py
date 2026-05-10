@@ -27,6 +27,7 @@ CRITICAL_CHECKS = (
     "web_preview",
     "host_bridge",
     "chroma",
+    "ooda_hippocampus",
     "tool_registry",
     "agentic_router",
     "roo_runtime",
@@ -48,6 +49,7 @@ def runtime_doctor_payload(
         "tool_registry": _check_tool_registry(),
         "agentic_router": _check_agentic_router(),
         "chroma": _check_chroma(),
+        "ooda_hippocampus": _check_ooda_hippocampus(),
         "pending_approval_store": _check_pending_approval_store(),
         "docker_runner": _check_docker_runner(),
         "roo_runtime": _check_roo_runtime(),
@@ -227,8 +229,9 @@ def _check_agentic_router() -> dict[str, Any]:
 def _check_chroma() -> dict[str, Any]:
     try:
         from controller.chroma_runtime import chroma_runtime_status
+        from controller.ooda_hippocampus import ooda_collection_name
 
-        result = chroma_runtime_status(["wintrip_trigger_actions_11d", "wintrip_agentic_sessions_11d"])
+        result = chroma_runtime_status(["wintrip_trigger_actions_11d", "wintrip_agentic_sessions_11d", ooda_collection_name()])
         status = "online" if result.get("status") == "online" and result.get("available") else "failed"
         return {
             "status": status,
@@ -237,6 +240,29 @@ def _check_chroma() -> dict[str, Any]:
             "remote_url": result.get("remote_url"),
             "persist_dir": result.get("persist_dir"),
             "collections": result.get("collections") or {},
+            "fake_success": False,
+        }
+    except Exception as exc:
+        return {"status": "failed", "reason": str(exc), "fake_success": False}
+
+
+def _check_ooda_hippocampus(*, collection: Any | None = None) -> dict[str, Any]:
+    try:
+        from controller.ooda_hippocampus import ooda_hippocampus_status
+
+        result = ooda_hippocampus_status(collection=collection)
+        online = result.get("status") == "online"
+        return {
+            "status": "online" if online else "failed",
+            "reason": result.get("reason") or ("OODA DreamCycle Hippocampus online" if online else "OODA DreamCycle Hippocampus unavailable"),
+            "collection": result.get("collection"),
+            "count": result.get("count", 0),
+            "dream_anchor_hz": result.get("dream_anchor_hz"),
+            "dream_hz": result.get("dream_hz"),
+            "frequency_band": result.get("frequency_band"),
+            "supported_phases": result.get("supported_phases") or [],
+            "missing_11d_layers": result.get("missing_11d_layers") or [],
+            "scalar_metadata": bool(result.get("scalar_metadata")),
             "fake_success": False,
         }
     except Exception as exc:

@@ -271,6 +271,9 @@ class StreamStorage:
             "scrubber_version": item.scrubber_version,
             "blocked_patterns": item.blocked_patterns,
             "allowed_actions": item.allowed_actions,
+            "dream_anchor_hz": 418.0,
+            "learnable": bool(item.approval_status == "approved"),
+            "audit_only": bool(item.approval_status != "approved"),
         }
         metadata.update(dream_sample.metadata())
         geometry_11d = measure_geometry_11d(dream_sample.hz)

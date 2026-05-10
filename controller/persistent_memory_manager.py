@@ -27,8 +27,32 @@ def save_agentic_session(session: Mapping[str, Any], *, collection: Any | None =
     document = _compact_document(payload)
     digest = hashlib.sha256(document.encode("utf-8", errors="replace")).hexdigest()
     item_id = str(payload.get("session_id") or f"agentic_session_{uuid.uuid4()}")
+    canonical_metadata: dict[str, Any] = {}
+    try:
+        from controller.ooda_hippocampus import build_ooda_metadata
+
+        canonical_metadata = build_ooda_metadata(
+            phase="reflect",
+            session_id=item_id,
+            event_kind="agentic_session",
+            route=str(payload.get("route") or "agentic_processor"),
+            status=status,
+            payload=payload,
+            approval_required=bool(payload.get("approval_required")),
+            approval_status=str(payload.get("approval_status") or ("required" if payload.get("approval_required") else "not_required")),
+            source="controller.persistent_memory_manager",
+            source_type="agentic_session",
+            taint=str(payload.get("taint") or "local_agentic_session"),
+            learnable=False,
+            audit_only=True,
+            collection_name=_agentic_collection_name(),
+            content_hash=digest,
+        )
+    except Exception:
+        canonical_metadata = {}
     metadata = _flatten_metadata(
         {
+            **canonical_metadata,
             "type": "agentic_session_11d",
             "status": status,
             "goal": goal[:500],
@@ -42,6 +66,8 @@ def save_agentic_session(session: Mapping[str, Any], *, collection: Any | None =
             "source_type": "agentic_session",
         }
     )
+    metadata["type"] = "agentic_session_11d"
+    metadata["content_hash"] = digest
     try:
         target = collection or _agentic_collection()
         _enforce_memory_cap(target, max_items=_agentic_memory_max() - 1)

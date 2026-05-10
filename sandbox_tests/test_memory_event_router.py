@@ -55,6 +55,10 @@ class TestMemoryEventRouter(unittest.TestCase):
         self.assertNotIn("do-not-store", joined)
         self.assertEqual(row["metadata"]["dimension_count"], 11)
         self.assertEqual(row["metadata"]["d3_physical_container"], "wintrip_trigger_actions_11d")
+        self.assertEqual(row["metadata"]["dream_anchor_hz"], 418.0)
+        self.assertGreaterEqual(float(row["metadata"]["dream_hz"]), 418.0)
+        self.assertLessEqual(float(row["metadata"]["dream_hz"]), 432.0)
+        self.assertNotEqual(row["metadata"]["d9_resonance_frequency"], "528.000000Hz")
         self.assertEqual(len(row["embedding"]), 11)
 
     def test_build_record_merges_11d_overrides_without_losing_dimensions(self):

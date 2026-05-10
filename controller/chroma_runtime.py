@@ -16,6 +16,7 @@ from urllib.parse import urlparse, urlunparse
 DEFAULT_KNOWLEDGE_COLLECTION = "wintrip_knowledge"
 DEFAULT_TRAINING_COLLECTION = "wintrip_training_11d"
 DEFAULT_WORLD_COLLECTION = "wintrip_world_understanding"
+DEFAULT_OODA_DREAM_COLLECTION = "wintrip_ooda_dreamcycle_11d"
 
 
 def workspace_root() -> Path:
@@ -85,6 +86,7 @@ def chroma_runtime_config(*, persist_dir: str | os.PathLike[str] | None = None) 
             "knowledge": os.getenv("WINTRIP_KNOWLEDGE_COLLECTION", DEFAULT_KNOWLEDGE_COLLECTION),
             "training": os.getenv("WINTRIP_TRAINING_COLLECTION", DEFAULT_TRAINING_COLLECTION),
             "world": os.getenv("WINTRIP_WORLD_AGENT_COLLECTION", DEFAULT_WORLD_COLLECTION),
+            "ooda_dreamcycle": os.getenv("WINTRIP_OODA_DREAM_COLLECTION", DEFAULT_OODA_DREAM_COLLECTION),
         },
         "fake_success": False,
     }

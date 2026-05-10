@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import uuid
 from datetime import datetime
 from datetime import timezone
 from typing import Any, Callable, Mapping
@@ -98,6 +99,19 @@ def should_use_agentic_processor(prompt: object, *, role: object = "", approval:
         return False
     return bool(_canonical_should_use_agentic_processor(prompt, role=role, approval=approval))
 
+
+def _record_ooda_event_safe(**kwargs: Any) -> dict[str, Any]:
+    try:
+        from controller.ooda_hippocampus import record_ooda_event
+
+        return record_ooda_event(**kwargs)
+    except Exception as exc:
+        return {"status": "error", "stored": False, "reason": str(exc)[:300], "fake_success": False}
+
+
+def _approval_status(approval: str, *, required: bool = False) -> str:
+    return "approved" if str(approval or "").strip() == "Akkoord" else ("required" if required else "not_required")
+
 class WintripOrchestrator:
     def __init__(
         self,
@@ -171,11 +185,40 @@ class WintripOrchestrator:
         if not clean_prompt:
             return {"status": "blocked", "route": "living_action", "reason": "Prompt ontbreekt.", "fake_success": False}
 
+        session_id = f"living_action_{uuid.uuid4()}"
+        _record_ooda_event_safe(
+            phase="observe",
+            session_id=session_id,
+            event_kind="living_action",
+            route="living_action",
+            status="observed",
+            payload={"prompt": clean_prompt},
+            approval_status=_approval_status(approval),
+            source="controller.orchestrator",
+            source_type="living_action",
+            taint="local_legacy_ooda",
+            learnable=False,
+            audit_only=True,
+        )
         loop = self._living_loop or self._start_living_consciousness_loop()
         timeline: list[dict[str, Any]] = []
         observe = self._living_tick("living_action_observe", {"prompt": clean_prompt})
         if observe:
             timeline.append({"phase": "observe", "tick": observe})
+        _record_ooda_event_safe(
+            phase="orient",
+            session_id=session_id,
+            event_kind="living_action",
+            route="living_action",
+            status="oriented",
+            payload={"loop_available": loop is not None, "observe_tick": observe},
+            approval_status=_approval_status(approval),
+            source="controller.orchestrator",
+            source_type="living_action",
+            taint="local_legacy_ooda",
+            learnable=False,
+            audit_only=True,
+        )
 
         decision_payload = self._living_decision(clean_prompt, approval=approval)
         decision = dict(decision_payload.get("decision") or decision_payload)
@@ -188,9 +231,38 @@ class WintripOrchestrator:
             {"prompt": clean_prompt, "tool": tool, "reason": decision.get("reason", "")},
         )
         timeline.append({"phase": "decide", "decision": decision, "tick": decide_tick})
+        _record_ooda_event_safe(
+            phase="decide",
+            session_id=session_id,
+            event_kind="living_action",
+            route="living_action",
+            status="decided",
+            payload={"tool": tool, "decision": decision},
+            approval_status=_approval_status(approval),
+            source="controller.orchestrator",
+            source_type="living_action",
+            taint="local_legacy_ooda",
+            learnable=False,
+            audit_only=True,
+        )
 
         result = self._run_levendige_tool(tool, args, prompt=clean_prompt, approval=approval, max_iterations=max_iterations)
         action_status = str(result.get("status") or "unknown")
+        _record_ooda_event_safe(
+            phase="act",
+            session_id=session_id,
+            event_kind="living_action",
+            route="living_action",
+            status=action_status,
+            payload={"tool": tool, "result": result},
+            approval_required=bool(result.get("approval_required")),
+            approval_status=_approval_status(approval, required=bool(result.get("approval_required"))),
+            source="controller.orchestrator",
+            source_type="living_action",
+            taint="local_legacy_ooda",
+            learnable=False,
+            audit_only=True,
+        )
         self._remember_living_action(tool=tool, prompt=clean_prompt, result=result, decision=decision)
         self._notify_living_tool(tool=tool, status=action_status, result=result, decision=decision)
 
@@ -204,6 +276,21 @@ class WintripOrchestrator:
             },
         )
         timeline.append({"phase": "reflect", "tick": reflect})
+        _record_ooda_event_safe(
+            phase="reflect",
+            session_id=session_id,
+            event_kind="living_action",
+            route="living_action",
+            status=action_status,
+            payload={"tool": tool, "status": action_status, "reflect": reflect},
+            approval_required=bool(result.get("approval_required")),
+            approval_status=_approval_status(approval, required=bool(result.get("approval_required"))),
+            source="controller.orchestrator",
+            source_type="living_action",
+            taint="local_legacy_ooda",
+            learnable=False,
+            audit_only=True,
+        )
         living_status = self._living_status(limit=8)
         response = self._format_living_action_response(tool, decision, result, living_status)
         payload = {
@@ -557,6 +644,20 @@ class WintripOrchestrator:
             return self.agentic_process(str(prompt or ""), max_steps=max_iterations or 8)
 
         print(f"\n🚀 [Regiekamer]: Start Autonome OODA Loop voor taak: '{prompt}'")
+        session_id = f"legacy_execute_task_{uuid.uuid4()}"
+        _record_ooda_event_safe(
+            phase="observe",
+            session_id=session_id,
+            event_kind="legacy_execute_task",
+            route="orchestrator.execute_task",
+            status="observed",
+            payload={"prompt": str(prompt or ""), "max_iterations": max_iterations},
+            source="controller.orchestrator",
+            source_type="legacy_execute_task",
+            taint="local_legacy_ooda",
+            learnable=False,
+            audit_only=True,
+        )
         task = TaskModel(task_name=prompt, max_iterations=max_iterations)
         
         # --- OBSERVE & ORIENT ---
@@ -589,6 +690,20 @@ class WintripOrchestrator:
                 for m in memories:
                     full_context += f"- Bron ({m['metadata'].get('source_type', 'unknown')}): {m['content']}\n\n"
                 full_context += "[/GEHEUGEN CONTEXT]\n\nGebruik deze kennis strikt bij het schrijven van je oplossing als het relevant is.\n"
+
+        _record_ooda_event_safe(
+            phase="orient",
+            session_id=session_id,
+            event_kind="legacy_execute_task",
+            route="orchestrator.execute_task",
+            status="oriented",
+            payload={"url_count": len(urls), "context_chars": len(full_context)},
+            source="controller.orchestrator",
+            source_type="legacy_execute_task",
+            taint="local_legacy_ooda",
+            learnable=False,
+            audit_only=True,
+        )
 
         # Initial Fast-Fail Developer prompt
         SANDBOX_CODE_RULES = """
@@ -637,6 +752,19 @@ KRITIEKE REGELS VOOR CODE GENERATIE:
                 ai_response = self.ollama.chat(enriched_message, system_prompt=system_prompt, model="llama3.1:latest")
 
             python_code = self._extract_code(ai_response)
+            _record_ooda_event_safe(
+                phase="decide",
+                session_id=session_id,
+                event_kind="legacy_execute_task",
+                route="orchestrator.execute_task",
+                status="code_generated",
+                payload={"iteration": task.iteration_count + 1, "code_chars": len(python_code)},
+                source="controller.orchestrator",
+                source_type="legacy_execute_task",
+                taint="local_legacy_ooda",
+                learnable=False,
+                audit_only=True,
+            )
             
             # API failure protection
             if python_code.startswith("LOKALE OLLAMA ERROR") or python_code.startswith("CLOUD GROQ ERROR"):
@@ -654,6 +782,19 @@ KRITIEKE REGELS VOOR CODE GENERATIE:
                 
             raw_output = result_dict.get('logs', '')
             status = result_dict.get('status', 'error')
+            _record_ooda_event_safe(
+                phase="act",
+                session_id=session_id,
+                event_kind="legacy_execute_task",
+                route="orchestrator.execute_task",
+                status=str(status or "unknown"),
+                payload={"iteration": task.iteration_count + 1, "result": result_dict},
+                source="controller.orchestrator",
+                source_type="legacy_execute_task",
+                taint="local_legacy_ooda",
+                learnable=False,
+                audit_only=True,
+            )
             
             # Print output explicitly for terminal users
             print(f"📄 [Sandbox Output]:\n{'-'*20}\n{raw_output.strip()}\n{'-'*20}")
@@ -672,6 +813,19 @@ KRITIEKE REGELS VOOR CODE GENERATIE:
                 insight = f"Runtime Crash (Exit code {result_dict.get('exit_code')}): {insight}"
             
             print(f"📊 [Status Check]: Klassering = {color} | Inzicht = {insight}")
+            _record_ooda_event_safe(
+                phase="reflect",
+                session_id=session_id,
+                event_kind="legacy_execute_task",
+                route="orchestrator.execute_task",
+                status=color,
+                payload={"iteration": task.iteration_count + 1, "insight": insight, "task_status": task.status},
+                source="controller.orchestrator",
+                source_type="legacy_execute_task",
+                taint="local_legacy_ooda",
+                learnable=False,
+                audit_only=True,
+            )
             
             # 4. Iterate: Werk states bij
             task.record_iteration(color, insight)

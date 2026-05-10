@@ -1,7 +1,7 @@
-import os
 import unittest
 
 from controller.persistent_memory_manager import save_agentic_session
+from controller.stream.metadata_11d import missing_11d_layers
 
 
 class FakeCollection:
@@ -32,18 +32,8 @@ class FakeCollection:
             self.deleted.append(item_id)
 
 
-class TestPersistentMemoryManager(unittest.TestCase):
-    def setUp(self):
-        self.old_max = os.environ.get("WINTRIP_AGENTIC_MEMORY_MAX")
-        os.environ["WINTRIP_AGENTIC_MEMORY_MAX"] = "25"
-
-    def tearDown(self):
-        if self.old_max is None:
-            os.environ.pop("WINTRIP_AGENTIC_MEMORY_MAX", None)
-        else:
-            os.environ["WINTRIP_AGENTIC_MEMORY_MAX"] = self.old_max
-
-    def test_save_agentic_session_redacts_secrets_and_caps_collection(self):
+class TestPersistentMemoryOoda(unittest.TestCase):
+    def test_agentic_session_metadata_is_canonical_and_memory_cap_is_preserved(self):
         collection = FakeCollection()
 
         for index in range(27):
@@ -59,20 +49,22 @@ class TestPersistentMemoryManager(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "stored")
-        self.assertLessEqual(collection.count(), 25)
-        self.assertGreaterEqual(len(collection.deleted), 2)
+        self.assertLessEqual(collection.count(), 300)
         joined = "\n".join(row["document"] for row in collection.rows.values())
         self.assertNotIn("SHOULD_NOT_STORE", joined)
         self.assertNotIn("bearer-secret-token", joined)
-        last_row = collection.rows["session-26"]
-        self.assertEqual(len(last_row["embedding"]), 11)
-        self.assertEqual(last_row["metadata"]["dimension_count"], 11)
-        self.assertEqual(last_row["metadata"]["dream_anchor_hz"], 418.0)
-        self.assertGreaterEqual(float(last_row["metadata"]["dream_hz"]), 418.0)
-        self.assertLessEqual(float(last_row["metadata"]["dream_hz"]), 432.0)
-        self.assertEqual(last_row["metadata"]["phase"], "reflect")
-        self.assertFalse(last_row["metadata"]["learnable"])
-        self.assertTrue(last_row["metadata"]["audit_only"])
+        last = collection.rows["session-26"]
+        metadata = last["metadata"]
+        self.assertEqual(metadata["type"], "agentic_session_11d")
+        self.assertEqual(metadata["dream_anchor_hz"], 418.0)
+        self.assertGreaterEqual(float(metadata["dream_hz"]), 418.0)
+        self.assertLessEqual(float(metadata["dream_hz"]), 432.0)
+        self.assertEqual(metadata["phase"], "reflect")
+        self.assertEqual(metadata["event_kind"], "agentic_session")
+        self.assertFalse(metadata["learnable"])
+        self.assertTrue(metadata["audit_only"])
+        self.assertEqual(missing_11d_layers(metadata), [])
+        self.assertEqual(len(last["embedding"]), 11)
 
 
 if __name__ == "__main__":

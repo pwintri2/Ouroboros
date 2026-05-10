@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from controller.agent_tools import REGISTERED_TOOLS, agent_tool_schemas
+from controller.ooda_hippocampus import record_ooda_event
 from controller.persistent_memory_manager import save_agentic_session
 from controller.quantum_foam_field import agentic_foam_event, foam_context_for_pocket
 from controller.tool_bridge import TOOL_BRIDGE_TOOLS, WRITE_TOOLS, run_tool_bridge, tool_bridge_status
@@ -177,6 +178,22 @@ class AgenticProcessor:
             "steps": [],
             "fake_success": False,
         }
+        self._record_ooda_phase(
+            phase="observe",
+            session_id=session_id,
+            status="observed",
+            payload={"goal": clean_goal, "provider": provider or self.provider, "model": model or self.model},
+            approval=approval,
+            state=state,
+        )
+        self._record_ooda_phase(
+            phase="orient",
+            session_id=session_id,
+            status="oriented",
+            payload={"tool_catalog_count": len(tool_catalog["schemas"]), "pocket_status": pocket_before.get("status")},
+            approval=approval,
+            state=state,
+        )
         try:
             plan_payload = self.plan(
                 clean_goal,
@@ -190,8 +207,24 @@ class AgenticProcessor:
             steps = plan_payload["steps"]
             state["plan"] = steps
             state["planner"] = plan_payload.get("planner", {})
+            self._record_ooda_phase(
+                phase="decide",
+                session_id=session_id,
+                status="planned",
+                payload={"planner": state["planner"], "steps": steps},
+                approval=approval,
+                state=state,
+            )
             execution = self.execute_plan(steps, approval=approval, state=state)
             state.update(execution)
+            self._record_ooda_phase(
+                phase="act",
+                session_id=session_id,
+                status=str(execution.get("status") or "unknown"),
+                payload={"step_count": execution.get("step_count"), "steps": state.get("steps"), "reason": execution.get("reason")},
+                approval=approval,
+                state=state,
+            )
             state["quantum_foam_collapse"] = self._foam_event(
                 clean_goal,
                 phase=f"agentic_{state.get('status') or 'complete'}",
@@ -221,6 +254,19 @@ class AgenticProcessor:
             state["duration_seconds"] = round(time.time() - started, 3)
             state["memory_status"] = save_agentic_session(state)
             state["provenance"] = _build_provenance(state)
+            self._record_ooda_phase(
+                phase="reflect",
+                session_id=session_id,
+                status=str(state.get("status") or "unknown"),
+                payload={
+                    "duration_seconds": state.get("duration_seconds"),
+                    "memory_status": state.get("memory_status"),
+                    "provenance": state.get("provenance"),
+                    "reason": state.get("reason"),
+                },
+                approval=approval,
+                state=state,
+            )
         return state
 
     def discover_tools(self, provider: str = "openai") -> dict[str, Any]:
@@ -482,6 +528,37 @@ class AgenticProcessor:
             return payload if isinstance(payload, dict) else {}
         except Exception as exc:
             return {"status": "unavailable", "reason": str(exc)[:240], "fake_success": False}
+
+    def _record_ooda_phase(
+        self,
+        *,
+        phase: str,
+        session_id: str,
+        status: str,
+        payload: Mapping[str, Any],
+        approval: str,
+        state: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            approval_required = bool(state.get("approval_required"))
+            approval_status = "approved" if str(approval or "").strip() == APPROVAL_PHRASE else ("required" if approval_required else "not_required")
+            return record_ooda_event(
+                phase=phase,
+                session_id=session_id,
+                event_kind="agentic_processor",
+                route="agentic_processor",
+                status=status,
+                payload=payload,
+                approval_required=approval_required,
+                approval_status=approval_status,
+                source="controller.agentic_processor",
+                source_type="agentic_processor",
+                taint="local_agentic_session",
+                learnable=False,
+                audit_only=True,
+            )
+        except Exception as exc:
+            return {"status": "error", "stored": False, "reason": str(exc)[:300], "fake_success": False}
 
     def _normalize_steps(self, parsed: Any) -> list[dict[str, Any]]:
         if isinstance(parsed, dict):

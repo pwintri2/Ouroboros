@@ -129,9 +129,11 @@ def build_trigger_action_record(
         route=route,
         trigger=trigger,
         action=action,
+        status=status,
         ts=ts,
         approval_required=approval_required,
         approval_status=approval_status,
+        source_trace=source_trace or {},
         extra=metadata_11d or {},
     )
     draft = {
@@ -218,6 +220,9 @@ def _record_metadata(record: TriggerActionRecord) -> dict[str, str | int | float
         "redaction_version": record.redaction_version,
         **record.metadata_11d,
     }
+    metadata["type"] = "trigger_action_record"
+    metadata["event_id"] = record.event_id
+    metadata["content_hash"] = record.content_hash
     return _flatten_metadata(metadata)
 
 
@@ -226,29 +231,36 @@ def _metadata_11d(
     route: str,
     trigger: str,
     action: str,
+    status: str,
     ts: str,
     approval_required: bool,
     approval_status: str,
+    source_trace: Mapping[str, Any],
     extra: Mapping[str, Any],
 ) -> dict[str, Any]:
-    base = {
-        "dimension_count": 11,
-        "d1_physical_body": "trigger_action_record",
-        "d2_physical_source": str(route or "unknown")[:120],
-        "d3_physical_container": _collection_name(),
-        "d4_chronology": ts,
-        "d5_persona_actor": "ouroboros",
-        "d6_persona_intent": str(trigger or "unknown")[:240],
-        "d7_persona_relation": "wintrip_ouroboros_action_loop",
-        "d8_karmic_taint": f"approval_required={bool(approval_required)}:{approval_status or 'not_required'}",
-        "d9_resonance_frequency": "528.000000Hz",
-        "d10_resonance_score": "audit:1.000000",
-        "d11_field": f"qfcf_11d_pocket:action={str(action or 'unknown')[:120]}",
-    }
-    for key, value in (extra or {}).items():
-        if key in base or key.startswith("d") or key == "dimension_count":
-            base[str(key)] = _redact(value)
-    return base
+    from controller.ooda_hippocampus import build_ooda_metadata
+
+    session_id = str((source_trace or {}).get("session_id") or f"trigger_action:{route or 'unknown'}")[:160]
+    return dict(
+        build_ooda_metadata(
+            phase="act",
+            session_id=session_id,
+            event_kind="trigger_action",
+            route=route,
+            status=status,
+            payload={"trigger": trigger, "action": action},
+            approval_required=approval_required,
+            approval_status=approval_status,
+            source="controller.memory_event_router",
+            source_type="trigger_action",
+            taint="local_audit",
+            learnable=False,
+            audit_only=True,
+            collection_name=_collection_name(),
+            ts=ts,
+            extra=extra or {},
+        )
+    )
 
 
 def _summarize_result(value: Any) -> Any:
