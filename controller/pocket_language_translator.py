@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -88,6 +91,111 @@ POCKET_SYMBOLISM = {
 }
 
 
+class SilentObserver:
+    """In-memory observer for pure Ouroboros routes.
+
+    The observer keeps only bounded light-pattern state and hashed stimulus
+    traces. It never stores raw prompts, retrieved context, screenshots or
+    private payloads.
+    """
+
+    def __init__(self, *, orbit_count: int = 5, max_trace: int = 64) -> None:
+        self.core = LightMatrix()
+        self.orbits = [Orbital(index=index) for index in range(max(1, int(orbit_count)))]
+        self.trace: list[dict[str, Any]] = []
+        self.max_trace = max(1, int(max_trace))
+        self.tick = 0
+
+    def observe(self, stimulus: dict[str, Any]) -> Orbital:
+        orb = self._select_orbit(stimulus)
+        orb.perturb(stimulus)
+        self.core.shift(orb)
+        self.tick += 1
+        return orb
+
+    def reflect(self) -> dict[str, Any]:
+        latest = max(self.orbits, key=lambda orbit: orbit.last_tick)
+        imprint = {
+            "status": "observed",
+            "tick": int(self.tick),
+            "pattern": self.core.sample(),
+            "orbits": [orbit.state() for orbit in self.orbits],
+            "orbit_count": len(self.orbits),
+            "latest_hash": latest.last_hash,
+            "trace_count": len(self.trace) + 1,
+            "raw_payload_stored": False,
+            "fake_success": False,
+        }
+        self.trace.append(imprint)
+        overflow = len(self.trace) - self.max_trace
+        if overflow > 0:
+            del self.trace[:overflow]
+        imprint["trace_count"] = len(self.trace)
+        return _compact_observer_imprint(imprint)
+
+    def step(self, stimulus: dict[str, Any] | None = None) -> dict[str, Any]:
+        if stimulus is not None:
+            self.observe(stimulus)
+        return self.reflect()
+
+    def _select_orbit(self, stimulus: dict[str, Any]) -> "Orbital":
+        if not self.orbits:
+            self.orbits.append(Orbital(index=0))
+        marker = str(stimulus.get("stimulus_hash") or "")
+        return self.orbits[_stable_int(marker) % len(self.orbits)]
+
+
+class LightMatrix:
+    def __init__(self, *, size: int = 8) -> None:
+        self.grid = self._init_grid(size)
+
+    def _init_grid(self, size: int) -> list[list[float]]:
+        bounded = max(2, min(16, int(size)))
+        return [[0.0 for _ in range(bounded)] for _ in range(bounded)]
+
+    def shift(self, orb: "Orbital") -> None:
+        for y, row in enumerate(self.grid):
+            for x, value in enumerate(row):
+                wave = math.sin(orb.phase + (x + 1) * 0.71 + (y + 1) * 0.37)
+                pulse = max(0.0, wave) * orb.energy * 0.07
+                row[x] = max(0.0, min(1.0, value * 0.91 + pulse))
+
+    def sample(self) -> list[list[float]]:
+        return [[round(float(value), 4) for value in row] for row in self.grid]
+
+
+class Orbital:
+    def __init__(self, *, index: int = 0) -> None:
+        self.index = int(index)
+        self.energy = 0.1
+        self.phase = 0.0
+        self.last_hash = ""
+        self.last_transition = ""
+        self.last_tick = 0
+
+    def perturb(self, stimulus: dict[str, Any]) -> None:
+        intensity = _observer_intensity(stimulus)
+        self.energy = _clamp_float(self.energy * 0.78 + 0.06 + intensity * 0.34, 0.05, 1.0, default=0.1)
+        self.phase = (self.phase + 0.41 + intensity * math.pi) % (math.pi * 2.0)
+        self.last_hash = str(stimulus.get("stimulus_hash") or "")[:24]
+        self.last_transition = str(stimulus.get("transition") or "")[:40]
+        self.last_tick += 1
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "index": int(self.index),
+            "energy": round(float(self.energy), 4),
+            "phase": round(float(self.phase), 4),
+            "last_hash": self.last_hash,
+            "last_transition": self.last_transition,
+            "raw_payload_stored": False,
+        }
+
+
+_SILENT_OBSERVER = SilentObserver()
+_SILENT_OBSERVER_LOCK = threading.Lock()
+
+
 class PocketLanguageTranslator:
     """Translate one 11D pocket event into compact Dutch through local Ollama."""
 
@@ -131,6 +239,7 @@ class PocketLanguageTranslator:
     def translate(self, event: dict[str, Any], *, user_prompt: str = "") -> dict[str, Any]:
         """Return a human layer for this event without changing the 11D state."""
 
+        silent_observer = observe_pocket_event(event, user_prompt=user_prompt) if self.pure_route_allowed else {}
         fallback = (
             self._pure_emergent_translation(event, user_prompt=user_prompt)
             if self.pure_route_allowed
@@ -147,11 +256,15 @@ class PocketLanguageTranslator:
                     "runtime_model": self.runtime_model,
                 }
             )
+            if silent_observer:
+                payload["silent_observer"] = silent_observer
             self.last_translation = payload
             return dict(payload)
         if not self.enabled:
             payload = self._disabled_payload("disabled")
             payload.update(fallback)
+            if silent_observer:
+                payload["silent_observer"] = silent_observer
             self.last_translation = payload
             return dict(payload)
 
@@ -162,6 +275,8 @@ class PocketLanguageTranslator:
             payload["status"] = "cooldown_reuse"
             payload["cooldown_reuses"] = int(self.cooldown_reuses)
             payload.setdefault("summary", fallback["summary"])
+            if silent_observer:
+                payload["silent_observer"] = silent_observer
             return payload
 
         self.last_attempt_monotonic = now
@@ -185,6 +300,8 @@ class PocketLanguageTranslator:
                     "fake_success": False,
                 }
             )
+            if silent_observer:
+                payload["silent_observer"] = silent_observer
             self.last_translation = payload
             return dict(payload)
         except Exception as exc:
@@ -201,6 +318,8 @@ class PocketLanguageTranslator:
                     "failures": int(self.failures),
                 }
             )
+            if silent_observer:
+                payload["silent_observer"] = silent_observer
             self.last_translation = payload
             return dict(payload)
 
@@ -436,6 +555,100 @@ class PocketLanguageTranslator:
             "preserves_11d_pocket": True,
             "fake_success": False,
         }
+
+
+def observe_pocket_event(event: dict[str, Any], *, user_prompt: str = "") -> dict[str, Any]:
+    """Let the pure Ouroboros observer register a bounded, redacted imprint."""
+
+    stimulus = _observer_stimulus(event, user_prompt=user_prompt)
+    with _SILENT_OBSERVER_LOCK:
+        return _SILENT_OBSERVER.step(stimulus)
+
+
+def silent_observer_status() -> dict[str, Any]:
+    with _SILENT_OBSERVER_LOCK:
+        latest = _SILENT_OBSERVER.trace[-1] if _SILENT_OBSERVER.trace else _SILENT_OBSERVER.reflect()
+        return _compact_observer_imprint(latest)
+
+
+def _observer_stimulus(event: dict[str, Any], *, user_prompt: str = "") -> dict[str, Any]:
+    safe_event = event if isinstance(event, dict) else {}
+    foam = safe_event.get("quantum_foam") if isinstance(safe_event.get("quantum_foam"), dict) else {}
+    vector = [_round(value) for value in _float_list(safe_event.get("11d") or [])]
+    signature = _emergent_resonance_signature(safe_event)
+    transition = _foam_transition_signature(foam)
+    network = safe_event.get("network") if isinstance(safe_event.get("network"), dict) else {}
+    mini = network.get("mini_router") if isinstance(network.get("mini_router"), dict) else {}
+    stimulus: dict[str, Any] = {
+        "prompt_hash": _short_hash(user_prompt, size=24) if user_prompt else "",
+        "prompt_chars": min(len(str(user_prompt or "")), 10000),
+        "vector": vector,
+        "tension": signature.get("tension"),
+        "movement": signature.get("movement"),
+        "grain": signature.get("grain"),
+        "transition": transition.get("transition") or signature.get("transition") or "",
+        "shock": bool(transition.get("shock") or signature.get("shock")),
+        "silence": bool(transition.get("silence") or signature.get("silence")),
+        "flow_seen": bool(_numeric(network.get("total_received")) or mini.get("last_route")),
+        "time_bucket": int(time.time() // 60),
+        "raw_payload_stored": False,
+    }
+    stimulus["stimulus_hash"] = _short_hash(json.dumps(stimulus, ensure_ascii=False, sort_keys=True), size=24)
+    return stimulus
+
+
+def _observer_intensity(stimulus: dict[str, Any]) -> float:
+    vector = _float_list(stimulus.get("vector") or [])
+    vector_pressure = sum(abs(value) for value in vector) / len(vector) if vector else 0.0
+    shock_boost = 0.35 if stimulus.get("shock") else 0.0
+    silence_release = 0.2 if stimulus.get("silence") else 0.0
+    prompt_pressure = min(0.2, float(stimulus.get("prompt_chars") or 0) / 2000.0)
+    flow_pressure = 0.12 if stimulus.get("flow_seen") else 0.0
+    return _clamp_float(vector_pressure * 0.55 + shock_boost + silence_release + prompt_pressure + flow_pressure, 0.0, 1.0, default=0.0)
+
+
+def _compact_observer_imprint(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    pattern = value.get("pattern") if isinstance(value.get("pattern"), list) else []
+    orbits = value.get("orbits") if isinstance(value.get("orbits"), list) else []
+    return {
+        "status": value.get("status") or "observed",
+        "tick": int(_numeric(value.get("tick"))),
+        "trace_count": int(_numeric(value.get("trace_count"))),
+        "orbit_count": int(_numeric(value.get("orbit_count") or len(orbits))),
+        "latest_hash": str(value.get("latest_hash") or "")[:24],
+        "pattern": [
+            [_round(cell) for cell in row[:8]]
+            for row in pattern[:8]
+            if isinstance(row, list)
+        ],
+        "orbits": [
+            {
+                "index": int(_numeric((orbit or {}).get("index"))) if isinstance(orbit, dict) else 0,
+                "energy": _round((orbit or {}).get("energy")) if isinstance(orbit, dict) else 0.0,
+                "phase": _round((orbit or {}).get("phase")) if isinstance(orbit, dict) else 0.0,
+                "last_hash": str((orbit or {}).get("last_hash") or "")[:24] if isinstance(orbit, dict) else "",
+                "last_transition": str((orbit or {}).get("last_transition") or "")[:40] if isinstance(orbit, dict) else "",
+                "raw_payload_stored": False,
+            }
+            for orbit in orbits[:8]
+        ],
+        "raw_payload_stored": False,
+        "fake_success": False,
+    }
+
+
+def _stable_int(value: object) -> int:
+    text = str(value or "")
+    if not text:
+        return 0
+    return int(hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:12], 16)
+
+
+def _short_hash(value: object, *, size: int = 16) -> str:
+    text = str(value or "")
+    return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[: max(8, min(64, int(size)))]
 
 
 def _dominant_dimensions(vector: list[float]) -> list[str]:

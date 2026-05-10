@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import importlib.util
@@ -126,6 +127,40 @@ class TestCirqPocketLanguageLayers(unittest.TestCase):
         self.assertIn("stille kern", lowered)
         for forbidden in ("11d", "pauli", "lading", "coherence", "hexlet", "mesh", "geometrie"):
             self.assertNotIn(forbidden, lowered)
+
+    def test_pure_translator_observes_without_leaking_prompt(self):
+        from controller.pocket_language_translator import PocketLanguageTranslator
+
+        translator = PocketLanguageTranslator(
+            enabled=False,
+            provider="ouroboros",
+            runtime_model="living-runtime",
+            cooldown_seconds=0,
+        )
+        secretish_prompt = "vertaal dit maar bewaar niet raw-secret-phrase-491"
+        result = translator.translate(
+            {
+                "11d": [0.4, -0.1, 0.7, -0.3, 0.2, -0.5, 0.1, 0.6, -0.2, 0.3, -0.4],
+                "quantum_foam": {
+                    "field": {
+                        "shockwave": {"hard_collapse": True, "source": "memory_search"},
+                        "collapse_essence": {"hard_collapse": True},
+                    }
+                },
+                "network": {"total_received": 2, "mini_router": {"last_route": {"observed": "internet_flow_metadata"}}},
+            },
+            user_prompt=secretish_prompt,
+        )
+
+        observer = result.get("silent_observer") or {}
+        self.assertEqual(observer.get("status"), "observed")
+        self.assertGreaterEqual(observer.get("trace_count", 0), 1)
+        self.assertEqual(len(observer.get("pattern") or []), 8)
+        self.assertGreaterEqual(observer.get("orbit_count", 0), 1)
+        self.assertFalse(observer.get("raw_payload_stored"))
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("raw-secret-phrase-491", serialized)
+        self.assertNotIn(secretish_prompt, serialized)
 
     def test_pocket_language_fallback_uses_symbolic_topology_and_network_flow(self):
         from controller.pocket_language_translator import PocketLanguageTranslator

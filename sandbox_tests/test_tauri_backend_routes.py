@@ -520,6 +520,8 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["pocket_voice"]["mode"], "pure_quantum_foam_interpreter")
         self.assertEqual(data["pocket_voice"]["runtime_model"], "living-runtime")
         self.assertEqual(data["pocket_voice"].get("dominant_dimensions"), [])
+        self.assertEqual((data["pocket_voice"].get("silent_observer") or {}).get("status"), "observed")
+        self.assertNotIn("Kun jij zelf antwoorden zonder Ollama?", json.dumps(data["tick"], ensure_ascii=False))
         self.assertIn("quantum_collapse", data)
         self.assertIn("cirq_runtime", data["quantum_collapse"])
         self.assertIn("local_model_translation_used", data)

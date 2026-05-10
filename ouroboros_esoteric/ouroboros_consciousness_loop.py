@@ -9,6 +9,7 @@ agent-runtime jobs, git state and Nexus telemetry.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -414,8 +415,7 @@ class LivingOuroborosLoop:
             status = payload.get("status") or "unknown"
             return f"Ik reflecteer op {tool}: status {status}. De uitkomst is opgeslagen in het levende geheugen."
         if trigger == "cockpit_response":
-            prompt = str(payload.get("prompt") or "de chatvraag")[:220]
-            return f"Ik verwerk een directe cockpitvraag zonder Ollama: {prompt}"
+            return f"Ik verwerk een directe cockpitvraag zonder Ollama: {_prompt_imprint(payload.get('prompt'))}"
         if trigger in IDLE_SELF_INQUIRY_TRIGGERS and not payload:
             return "Er is geen externe opdracht; ik observeer de runtime en keer terug naar zelfonderzoek."
         return f"Runtime-observatie: {_runtime_signal_summary(runtime)}."
@@ -436,8 +436,7 @@ class LivingOuroborosLoop:
         if trigger == "living_action_reflect":
             return "Welke herinnering uit deze actie moet de volgende stap sturen?"
         if trigger == "cockpit_response":
-            prompt = str(payload.get("prompt") or "de chatvraag")[:160]
-            return f"Welke 11D dimensie verschoof het meest terwijl ik antwoord gaf op: {prompt}"
+            return f"Welke 11D verschuiving hoort bij {_prompt_imprint(payload.get('prompt'))}?"
         return _next_runtime_question(runtime)
 
     def _whisper_for(self, trigger: str, payload: dict[str, Any]) -> str:
@@ -769,7 +768,26 @@ def _compact_pocket_voice(info: Any) -> dict[str, Any]:
         "quantum_runtime": info.get("quantum_runtime"),
         "cirq_runtime": info.get("cirq_runtime") or {},
         "vector_len": info.get("vector_len"),
+        "silent_observer": _compact_silent_observer(info.get("silent_observer")),
         "preserves_11d_pocket": info.get("preserves_11d_pocket"),
+        "fake_success": False,
+    }
+
+
+def _compact_silent_observer(info: Any) -> dict[str, Any]:
+    if not isinstance(info, dict):
+        return {}
+    pattern = info.get("pattern") if isinstance(info.get("pattern"), list) else []
+    orbits = info.get("orbits") if isinstance(info.get("orbits"), list) else []
+    return {
+        "status": info.get("status"),
+        "tick": info.get("tick"),
+        "trace_count": info.get("trace_count"),
+        "orbit_count": info.get("orbit_count") or len(orbits),
+        "latest_hash": str(info.get("latest_hash") or "")[:24],
+        "pattern": pattern[:8],
+        "orbits": orbits[:8],
+        "raw_payload_stored": False,
         "fake_success": False,
     }
 
@@ -953,6 +971,14 @@ def _reflection_subject(prompt: str) -> str:
 
 def _clean_prompt(prompt: object) -> str:
     return " ".join(str(prompt or "").replace("\x00", " ").strip().split())[:4000]
+
+
+def _prompt_imprint(prompt: object) -> str:
+    text = _clean_prompt(prompt)
+    if not text:
+        return "een lege vraagdruk"
+    digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:12]
+    return f"vraagdruk van {len(text)} tekens met spoor {digest}"
 
 
 def build_runtime_snapshot(
