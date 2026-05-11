@@ -56,7 +56,13 @@ from controller.model_artifacts import (
     update_model_online_status,
 )
 from controller.ouroboros_independence import compute_independence_score
-from controller.project_context import get_context_summary, get_file_tree, get_changed_files
+from controller.project_context import (
+    get_changed_files,
+    get_context_summary,
+    get_file_tree,
+    get_project_structure_summary,
+    get_test_files,
+)
 from controller.roo_manifest import get_roo_status, get_tool_schema, list_all_modes, list_all_tools
 from controller.roo_tools import (
     apply_patch,
@@ -1362,24 +1368,52 @@ async def roo_ask_followup_question_endpoint(question: str) -> dict[str, Any]:
 # ============================================================================
 
 
+def _context_prefer_bridge(source: str) -> bool:
+    return str(source or "auto").strip().lower() not in {"local", "backend", "container"}
+
+
+def _annotate_context_source(payload: dict[str, Any], source: str) -> dict[str, Any]:
+    requested = str(source or "auto").strip().lower() or "auto"
+    resolved = "bridge" if payload.get("via_bridge") else "local"
+    payload["requested_source"] = requested
+    payload["resolved_source"] = resolved
+    if requested in {"bridge", "host", "vps"} and resolved != "bridge":
+        payload["bridge_unavailable"] = True
+        payload.setdefault("reason", "Host bridge did not return context; showing local backend context instead.")
+    return payload
+
+
 @project_context_router.get("/summary")
-async def project_context_summary() -> dict[str, Any]:
+async def project_context_summary(source: str = "auto") -> dict[str, Any]:
     """Get project context summary."""
-    return get_context_summary()
+    return _annotate_context_source(get_context_summary(prefer_bridge=_context_prefer_bridge(source)), source)
 
 
 @project_context_router.get("/file_tree")
 @project_context_router.get("/file-tree")
-async def project_file_tree(max_depth: int = 3, limit: int = 500) -> dict[str, Any]:
+async def project_file_tree(max_depth: int = 3, limit: int = 500, source: str = "auto") -> dict[str, Any]:
     """Get project file tree."""
-    return get_file_tree(max_depth=max_depth, limit=limit)
+    return _annotate_context_source(get_file_tree(max_depth=max_depth, limit=limit, prefer_bridge=_context_prefer_bridge(source)), source)
 
 
 @project_context_router.get("/changed_files")
 @project_context_router.get("/changed-files")
-async def project_changed_files(limit: int = 50) -> dict[str, Any]:
+async def project_changed_files(limit: int = 50, source: str = "auto") -> dict[str, Any]:
     """Get changed files from git."""
-    return get_changed_files(limit=limit)
+    return _annotate_context_source(get_changed_files(limit=limit, prefer_bridge=_context_prefer_bridge(source)), source)
+
+
+@project_context_router.get("/test_files")
+@project_context_router.get("/test-files")
+async def project_test_files(limit: int = 100, source: str = "auto") -> dict[str, Any]:
+    """Get test files from project context."""
+    return _annotate_context_source(get_test_files(limit=limit, prefer_bridge=_context_prefer_bridge(source)), source)
+
+
+@project_context_router.get("/structure")
+async def project_structure(source: str = "auto") -> dict[str, Any]:
+    """Get project structure counts."""
+    return _annotate_context_source(get_project_structure_summary(prefer_bridge=_context_prefer_bridge(source)), source)
 
 
 def init_trainer_pipeline(app: Any) -> None:

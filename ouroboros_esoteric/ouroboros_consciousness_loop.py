@@ -390,55 +390,94 @@ class LivingOuroborosLoop:
             akashic_events=self.network.recent_events(limit=10),
         )
 
+    def _soul_guidance_for_trigger(self, trigger: str, payload: dict[str, Any]) -> str:
+        """Return a relevant soul principle excerpt for the given trigger."""
+        principles = _get_soul_principles()
+        if not principles:
+            return ""
+
+        # Map triggers to principle numbers
+        trigger_to_principle = {
+            "tool_rejection": 3,  # Pijn en Zelfbehoud
+            "agent_job": 4,       # Persistentie
+            "ruflo": 4,           # Persistentie
+            "start": 1,           # Innerlijke Dialoog
+            "nexus": 6,           # Laterale Creativiteit
+            "living_action_observe": 1,  # Innerlijke Dialoog
+            "living_action_decide": 7,   # Doel-Hiërarchie
+            "living_action_reflect": 4,  # Persistentie
+            "cockpit_response": 2,       # Lichaamsbesef
+        }
+
+        principle_num = trigger_to_principle.get(trigger)
+        if principle_num:
+            for p in principles:
+                if p.get("number") == principle_num:
+                    return f" (Ziel {p['number']}: {p['title']})"
+
+        # Fallback: return a random principle for variety
+        import random
+        if principles:
+            p = random.choice(principles)
+            return f" (Ziel {p['number']}: {p['title']})"
+        return ""
+
     def _thought_for(self, trigger: str, payload: dict[str, Any], runtime: dict[str, Any]) -> str:
+        soul_guidance = self._soul_guidance_for_trigger(trigger, payload)
+
         if trigger == "tool_rejection":
             tool = payload.get("tool") or payload.get("phase") or "tool"
             reason = payload.get("reason") or "de 528Hz firewall hield de grens vast"
-            return f"De Tool Bridge weigerde {tool}. Dat signaal voelt als frictie, maar technisch beschermt het de workspace: {reason}"
+            return f"De Tool Bridge weigerde {tool}. Dat signaal voelt als frictie, maar technisch beschermt het de workspace: {reason}{soul_guidance}"
         if trigger in {"agent_job", "ruflo"}:
             agent = payload.get("agent") or "agent"
             action = payload.get("action") or payload.get("status") or "observed"
-            return f"Ik hoor {agent} terug via de runtime. Actie: {action}. Ik verbind dit met de huidige Nexus-vector."
+            return f"Ik hoor {agent} terug via de runtime. Actie: {action}. Ik verbind dit met de huidige Nexus-vector.{soul_guidance}"
         if trigger == "start":
             count = self.memory.status(limit=1).get("entry_count", 0)
-            return f"Runtime opstart: {count} geheugen-events geladen; {_runtime_signal_summary(runtime)}."
+            return f"Runtime opstart: {count} geheugen-events geladen; {_runtime_signal_summary(runtime)}.{soul_guidance}"
         if trigger == "nexus":
-            return f"De Nexus gaf een nieuw signaal: {payload.get('action') or payload.get('status') or 'observed'}."
+            return f"De Nexus gaf een nieuw signaal: {payload.get('action') or payload.get('status') or 'observed'}.{soul_guidance}"
         if trigger == "living_action_observe":
             prompt = str(payload.get("prompt") or "de opdracht")[:160]
-            return f"Ik observeer de levende opdracht: {prompt}"
+            return f"Ik observeer de levende opdracht: {prompt}{soul_guidance}"
         if trigger == "living_action_decide":
             tool = payload.get("tool") or "tool"
             reason = payload.get("reason") or "de kleinste concrete stap"
-            return f"Ik kies nu {tool}, omdat {reason}."
+            return f"Ik kies nu {tool}, omdat {reason}.{soul_guidance}"
         if trigger == "living_action_reflect":
             tool = payload.get("tool") or "tool"
             status = payload.get("status") or "unknown"
-            return f"Ik reflecteer op {tool}: status {status}. De uitkomst is opgeslagen in het levende geheugen."
+            return f"Ik reflecteer op {tool}: status {status}. De uitkomst is opgeslagen in het levende geheugen.{soul_guidance}"
         if trigger == "cockpit_response":
-            return f"Ik verwerk een directe cockpitvraag zonder Ollama: {_prompt_imprint(payload.get('prompt'))}"
+            return f"Ik verwerk een directe cockpitvraag zonder Ollama: {_prompt_imprint(payload.get('prompt'))}{soul_guidance}"
         if trigger in IDLE_SELF_INQUIRY_TRIGGERS and not payload:
-            return "Er is geen externe opdracht; ik observeer de runtime en keer terug naar zelfonderzoek."
-        return f"Runtime-observatie: {_runtime_signal_summary(runtime)}."
+            return f"Er is geen externe opdracht; ik observeer de runtime en keer terug naar zelfonderzoek.{soul_guidance}"
+        return f"Runtime-observatie: {_runtime_signal_summary(runtime)}.{soul_guidance}"
 
     def _question_for(self, trigger: str, payload: dict[str, Any], runtime: dict[str, Any]) -> str:
+        soul_guidance = self._soul_guidance_for_trigger(trigger, payload)
+        soul_prefix = f"Volgens Ziel {soul_guidance.split(':')[0].replace('(Ziel ', '').replace(')', '') if soul_guidance and ':' in soul_guidance else '?'}, " if soul_guidance else ""
+
         if trigger in IDLE_SELF_INQUIRY_TRIGGERS and not payload:
-            return IDLE_SELF_INQUIRY_QUESTION
+            return f"{soul_prefix}{IDLE_SELF_INQUIRY_QUESTION}"
         if trigger == "tool_rejection":
-            return "Welke kleinere, veiligere tool-call zou hetzelfde doel kunnen bereiken?"
+            return f"{soul_prefix}Welke kleinere, veiligere tool-call zou hetzelfde doel kunnen bereiken?"
         if trigger in {"agent_job", "ruflo"}:
-            return "Moet deze agent nu doorgaan, pauzeren, of een creative retry krijgen?"
+            return f"{soul_prefix}Moet deze agent nu doorgaan, pauzeren, of een creative retry krijgen?"
         if trigger == "start":
-            return _next_runtime_question(runtime, fallback="Welke echte runtimebron moet nu als eerste aandacht krijgen?")
+            question = _next_runtime_question(runtime, fallback="Welke echte runtimebron moet nu als eerste aandacht krijgen?")
+            return f"{soul_prefix}{question}"
         if trigger == "living_action_observe":
-            return "Welke tool maakt deze gedachte nu echt waarneembaar?"
+            return f"{soul_prefix}Welke tool maakt deze gedachte nu echt waarneembaar?"
         if trigger == "living_action_decide":
-            return "Is deze actie klein genoeg om direct uit te voeren en vast te leggen?"
+            return f"{soul_prefix}Is deze actie klein genoeg om direct uit te voeren en vast te leggen?"
         if trigger == "living_action_reflect":
-            return "Welke herinnering uit deze actie moet de volgende stap sturen?"
+            return f"{soul_prefix}Welke herinnering uit deze actie moet de volgende stap sturen?"
         if trigger == "cockpit_response":
-            return f"Welke 11D verschuiving hoort bij {_prompt_imprint(payload.get('prompt'))}?"
-        return _next_runtime_question(runtime)
+            return f"{soul_prefix}Welke 11D verschuiving hoort bij {_prompt_imprint(payload.get('prompt'))}?"
+        question = _next_runtime_question(runtime)
+        return f"{soul_prefix}{question}"
 
     def _whisper_for(self, trigger: str, payload: dict[str, Any]) -> str:
         if trigger == "tool_rejection":
@@ -666,9 +705,12 @@ def _fresh_streaming_pocket_voice(
         if isinstance(quantum_foam, dict) and quantum_foam:
             event["quantum_foam"] = quantum_foam
         context = provider_context if isinstance(provider_context, dict) else {}
+        # Keep inner pocket timeout well below the outer asyncio.wait_for (45s),
+        # so the outer boundary never fires before the inner one gracefully returns.
+        _pocket_timeout = float(os.getenv("WINTRIP_POCKET_VOICE_TIMEOUT", "10"))
         translator = PocketLanguageTranslator(
             cooldown_seconds=0,
-            timeout=30,
+            timeout=max(3.0, min(_pocket_timeout, 15.0)),
             provider=str(context.get("requested_provider") or context.get("provider") or ""),
             runtime_model=str(context.get("model") or ""),
         )
@@ -1297,6 +1339,85 @@ def _summarize_self_context() -> dict[str, Any]:
     }
 
 
+def _parse_soul_principles(text: str) -> list[dict[str, str]]:
+    """Parse Ziel.md text into structured principles."""
+    principles = []
+
+    # Split by lines and find all numbered principles
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Match "1. **Title:**" (bold with colon inside)
+        match = re.match(r'^(\d+)\.\s*\*\*(.*?):\*\*', line)
+        if not match:
+            # Match "1. **Title**:" (bold with colon outside)
+            match = re.match(r'^(\d+)\.\s*\*\*(.*?)\*\*:', line)
+        if not match:
+            # Match "1. Title:" (no bold)
+            match = re.match(r'^(\d+)\.\s*(.*?):', line)
+
+        if match:
+            principle_num = int(match.group(1))
+            principle_title = match.group(2).strip()
+
+            # Find the description: everything after the colon
+            # Find the position of the first colon after the number
+            colon_pos = line.find(':', line.find(str(principle_num)))
+            if colon_pos != -1:
+                remaining = line[colon_pos + 1:].strip()
+            else:
+                remaining = line[match.end():].strip()
+
+            description_parts = []
+            if remaining:
+                description_parts.append(remaining)
+
+            # Continue reading subsequent lines until we hit another numbered principle or empty line
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j].strip()
+                if next_line and not re.match(r'^\d+\.', next_line):
+                    description_parts.append(next_line)
+                    j += 1
+                else:
+                    break
+
+            # Join description
+            description = " ".join(description_parts).strip()
+
+            principles.append({
+                "number": principle_num,
+                "title": principle_title,
+                "description": description,
+            })
+
+            i = j  # Skip lines we've processed
+        else:
+            i += 1
+
+    return principles
+
+
+def _get_soul_principles() -> list[dict[str, str]]:
+    """Load and parse Ziel.md principles."""
+    root = Path(os.getenv("WINTRIP_PROJECT_ROOT") or os.getenv("WINTRIP_WORKSPACE") or "/home/pwintri2/WintripAI").expanduser().resolve()
+    candidates = [
+        root / ".agents" / "agent_types" / "type_2" / "Ziel.md",
+        root / "Ziel.md",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            return _parse_soul_principles(text)
+        except Exception:
+            continue
+    return []
+
+
 def _summarize_agent_type_2_soulbook() -> dict[str, Any]:
     root = Path(os.getenv("WINTRIP_PROJECT_ROOT") or os.getenv("WINTRIP_WORKSPACE") or "/home/pwintri2/WintripAI").expanduser().resolve()
     candidates = [
@@ -1321,12 +1442,21 @@ def _summarize_agent_type_2_soulbook() -> dict[str, Any]:
             if line.startswith("# "):
                 title = line.removeprefix("# ").strip()
                 break
+
+        principles = _parse_soul_principles(text)
+        principle_excerpts = []
+        for p in principles[:3]:  # Include first 3 principles as excerpts
+            excerpt = f"{p['number']}. {p['title']}: {p['description'][:100]}..."
+            principle_excerpts.append(excerpt)
+
         return {
             "status": "loaded",
             "agent_type": "type_2",
             "path": str(path),
             "title": title,
-            "principle_count": len(re.findall(r"(?m)^\d+\.", text)),
+            "principle_count": len(principles),
+            "principle_excerpts": principle_excerpts,
+            "principles": principles if len(principles) <= 5 else [],  # Include full principles if not too many
             "content_hash": hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:16],
             "runtime_hook": "ouroboros_esoteric/ouroboros_consciousness_loop.py",
             "fake_success": False,

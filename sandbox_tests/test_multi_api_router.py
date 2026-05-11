@@ -116,6 +116,8 @@ class TestMultiAPIRouter(unittest.IsolatedAsyncioTestCase):
             ("ChatGPT Pro", "openai"),
             ("anthropic", "anthropic"),
             ("Claude Opus", "anthropic"),
+            ("DeepSeek", "deepseek"),
+            ("deekseek", "deepseek"),
             ("xai", "xai"),
             ("Grok", "xai"),
             ("google", "google"),
@@ -228,6 +230,12 @@ class TestMultiAPIRouter(unittest.IsolatedAsyncioTestCase):
                 {"anthropic": "anthropic-key"},
                 {"content": [{"type": "text", "text": "claude ok"}]},
                 "anthropic",
+            ),
+            (
+                "DeepSeek",
+                {"deepseek": "deepseek-key"},
+                {"choices": [{"message": {"content": "deepseek ok"}}]},
+                "deepseek",
             ),
             (
                 "Grok",
@@ -383,6 +391,21 @@ class TestMultiAPIRouter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["provider_status_code"], 400)
         self.assertEqual(result["provider_error"], "Model not found")
         self.assertEqual(result["error"], "Model not found")
+
+    async def test_deepseek_model_prefix_routes_to_openai_compatible_endpoint(self):
+        factory = RecordingFactory({"choices": [{"message": {"content": "deepseek ok"}}]})
+        router = MultiAPIRouter(api_keys={"DEEPSEEK_API_KEY": "deepseek-env-key"}, client_factory=factory)
+
+        result = await router.route_chat("", "deepseek-reasoner", "Hello", tools=[NEUTRAL_TOOL])
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["provider"], "deepseek")
+        self.assertEqual(result["model"], "deepseek-reasoner")
+        post = factory.client.posts[0]
+        self.assertEqual(post["url"], "https://api.deepseek.com/chat/completions")
+        self.assertEqual(post["headers"]["authorization"], "Bearer deepseek-env-key")
+        self.assertEqual(post["json"]["model"], "deepseek-reasoner")
+        self.assertEqual(post["json"]["tools"][0]["function"]["name"], "memory_search")
 
 
 if __name__ == "__main__":

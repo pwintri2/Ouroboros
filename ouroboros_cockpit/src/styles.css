@@ -1171,6 +1171,43 @@ label {
   background: #19283b;
 }
 
+.agent-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-shortcuts button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  min-height: 54px;
+  justify-content: stretch;
+  text-align: left;
+  font-size: 12px;
+}
+
+.agent-shortcuts button span,
+.agent-shortcuts button em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-shortcuts button em {
+  grid-column: 2;
+  color: #91a3b8;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.agent-shortcuts button.online {
+  border-color: #1f7a5d;
+}
+
+.agent-shortcuts button.warn {
+  border-color: #7a5a1f;
+}
+
 .tool-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1472,4 +1509,77 @@ label {
   display: grid;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.context-toolbar,
+.vps-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.vps-actions.secondary {
+  align-items: center;
+  border-top: 1px solid #1d2634;
+  padding-top: 10px;
+}
+
+.vps-actions span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.context-toolbar span,
+.vps-reason {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.context-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.context-source-card {
+  border: 1px solid #1d2634;
+  border-radius: 7px;
+  padding: 12px;
+  background: #0d1420;
+}
+
+.context-source-card h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  letter-spacing: 0;
+}
+
+.vps-panel {
+  border-top: 1px solid #1d2634;
+  border-bottom: 1px solid #1d2634;
+  padding: 12px 0;
+  margin-bottom: 16px;
+}
+
+.vps-inputs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.vps-inputs label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.vps-result {
+  margin-top: 10px;
+  max-height: 360px;
+  overflow: auto;
 }

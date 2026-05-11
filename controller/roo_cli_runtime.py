@@ -22,6 +22,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    from controller.ouroboros_paths import roo_code_path
+except Exception:
+    def roo_code_path() -> Path:
+        configured = os.getenv("WINTRIP_ROO_CODE_PATH") or os.getenv("WINTRIP_ROO_PATH") or DEFAULT_ROO_ROOT
+        return Path(configured).expanduser().resolve()
+
 
 APPROVAL_PHRASE = "Akkoord"
 DEFAULT_ROO_ROOT = "/home/pwintri2/Roo-code"
@@ -78,8 +85,7 @@ _ROO_MODELS_CACHE: dict[str, Any] = {"ts": 0.0, "payload": None}
 
 
 def roo_root() -> Path:
-    configured = os.getenv("WINTRIP_ROO_CODE_PATH") or os.getenv("WINTRIP_ROO_PATH") or DEFAULT_ROO_ROOT
-    return Path(configured).expanduser().resolve()
+    return roo_code_path()
 
 
 def host_workspace_root() -> Path:
@@ -531,6 +537,26 @@ def roo_auth_login(*, approval: str, timeout_seconds: int = 10) -> dict[str, Any
     binary = resolve_roo_binary(env)
     if not binary:
         return {"status": "failed", "reason": "Roo CLI binary niet gevonden.", "category": "binary_missing", "fake_success": False}
+
+    preflight_status = roo_cli_status()
+    preflight_auth = preflight_status.get("auth_probe") if isinstance(preflight_status.get("auth_probe"), dict) else {}
+    if preflight_auth.get("logged_in_hint"):
+        return {
+            "status": "completed",
+            "exit_code": 0,
+            "logged_in": True,
+            "reason": "Roo Cloud is al ingelogd; geen nieuwe browserflow nodig.",
+            "auth_url": "",
+            "frontend_action": None,
+            "stdout_summary": str(preflight_auth.get("stdout") or "")[:500],
+            "stderr_summary": "",
+            "command": [str(binary), "auth", "status"],
+            "duration_seconds": 0.0,
+            "runtime_status": preflight_status,
+            "artifacts": [],
+            "secrets_returned": False,
+            "fake_success": False,
+        }
 
     out_dir = host_workspace_root() / "out" / "roo_auth"
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from controller.agent_runtime.events import EventLog
 from controller.agent_runtime.models import JobRecord
+from controller.ouroboros_paths import atlas_path, deepseek_path
 from controller.status_contracts import run_probe
 
 
@@ -39,11 +40,11 @@ APPROVAL_PHRASE = "Akkoord"
 
 
 def deepseek_root() -> Path:
-    return Path(os.getenv("WINTRIP_DEEPSEEK_PATH") or DEFAULT_DEEPSEEK_ROOT).expanduser().resolve()
+    return deepseek_path()
 
 
 def atlas_root() -> Path:
-    return Path(os.getenv("WINTRIP_ATLAS_PATH") or DEFAULT_ATLAS_ROOT).expanduser().resolve()
+    return atlas_path()
 
 
 def ecosystem_agent_status(agent: str, *, prefer_bridge: bool = True) -> dict[str, Any]:
@@ -85,12 +86,16 @@ def discover_deepseek_capabilities(root: Path | None = None) -> dict[str, Any]:
     entrypoints: list[dict[str, str]] = []
     if base.exists():
         for path, label, kind in (
+            (base / "README.md", "README", "doc"),
+            (base / "docs", "docs", "directory"),
             (base / "npm" / "deepseek-tui" / "bin" / "deepseek-tui.js", "npm TUI wrapper", "script"),
             (base / "npm" / "deepseek-tui" / "bin" / "deepseek.js", "npm wrapper", "script"),
             (base / "npm" / "deepseek-tui" / "bin" / "downloads" / "deepseek-tui", "downloaded TUI binary", "binary"),
             (base / "crates" / "tui" / "Cargo.toml", "tui cargo crate", "manifest"),
             (base / "docs" / "SUBAGENTS.md", "sub-agent role docs", "doc"),
             (base / "docs" / "TOOL_SURFACE.md", "tool surface docs", "doc"),
+            (base / "docs" / "deepseek-tui.md", "DeepSeek TUI guide", "doc"),
+            (base / "docs" / "deepcode.md", "DeepCode guide", "doc"),
         ):
             if path.exists():
                 entrypoints.append({"kind": kind, "label": label, "path": str(path)})
@@ -460,7 +465,35 @@ def runtime_env() -> dict[str, str]:
     ]
     env["PATH"] = os.pathsep.join([item for item in [*extras, env.get("PATH", "")] if item])
     env.setdefault("WINTRIP_HOST_WORKSPACE", str(_workspace_root()))
+    _inject_provider_api_keys(env)
     return env
+
+
+def _inject_provider_api_keys(env: dict[str, str]) -> None:
+    """Let ecosystem CLIs use Cockpit-saved API keys without exposing them."""
+
+    if not env.get("DEEPSEEK_API_KEY"):
+        deepseek_key = _stored_provider_api_key("deepseek")
+        if deepseek_key:
+            env["DEEPSEEK_API_KEY"] = deepseek_key
+
+
+def _stored_provider_api_key(provider: str) -> str:
+    try:
+        from controller.api_key_store import load_provider_api_keys
+
+        keys = load_provider_api_keys()
+        value = str(keys.get(provider) or "")
+        if value:
+            return value
+    except Exception:
+        pass
+    try:
+        from controller.subscription_store import subscription_api_key_for_provider
+
+        return str(subscription_api_key_for_provider(provider) or "")
+    except Exception:
+        return ""
 
 
 def node_status(*, min_major: int, env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -608,6 +641,7 @@ def _run_cli_job(
     stderr_text = redact(_read_tail(stderr_path, 16000))
     cli_payload = _parse_json_object(stdout_text)
     cli_error = _cli_error_text(cli_payload)
+    cli_output = _cli_output_text(cli_payload)
     cli_reported_failed = str(cli_payload.get("status") or "").strip().lower() in {"failed", "error"} if cli_payload else False
     workspace_after = read_workspace_status(cwd)
     changed_files = changed_status_paths(workspace_before, workspace_after)
@@ -616,7 +650,7 @@ def _run_cli_job(
     if job.output_file:
         artifact_candidates.append(Path(job.output_file))
     artifacts = [str(path) for path in artifact_candidates if path.exists()]
-    output_text = (cli_error or stdout_text or stderr_text).strip()[-16000:]
+    output_text = (cli_error or cli_output or stdout_text or stderr_text).strip()[-16000:]
     if job.output_file:
         try:
             Path(job.output_file).write_text(output_text, encoding="utf-8")
@@ -1198,6 +1232,20 @@ def _cli_error_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _cli_output_text(payload: dict[str, Any]) -> str:
+    if not payload:
+        return ""
+    output = payload.get("output")
+    if isinstance(output, str):
+        return output.strip()
+    if output is not None:
+        try:
+            return json.dumps(output, ensure_ascii=False)
+        except Exception:
+            return str(output).strip()
+    return ""
+
+
 def _result_reason(category: str, cli_error: str, timed_out: bool, cancelled: bool) -> str:
     if cancelled:
         return "Job was cancelled."
@@ -1214,14 +1262,19 @@ def classify_result(status: str, exit_code: int | None, stdout: str, stderr: str
     if timed_out:
         return "timeout"
     blob = f"{stdout}\n{stderr}".lower()
-    if (
-        "api key" in blob
-        or "auth set" in blob
-        or "not authenticated" in blob
-        or "login" in blob
-        or "unauthorized" in blob
-        or "failed to send message" in blob
-    ):
+    auth_markers = (
+        "api key not found",
+        "api key missing",
+        "missing api key",
+        "no api key",
+        "invalid api key",
+        "failed to send message",
+        "auth set",
+        "not authenticated",
+        "authentication failed",
+        "unauthorized",
+    )
+    if any(marker in blob for marker in auth_markers):
         return "auth_missing"
     if status == "completed":
         return "ok"

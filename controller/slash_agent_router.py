@@ -390,6 +390,8 @@ def _ecosystem_subcommand(agent: str, task: str, approval: str = "", timeout_sec
         return _ecosystem_doctor_subcommand(agent, timeout_seconds=timeout_seconds)
     if head_lower in {"version", "--version"}:
         return _ecosystem_version_subcommand(agent)
+    if head_lower in {"read", "lees", "list", "ls", "search", "zoek"}:
+        return _ecosystem_source_subcommand(agent, head_lower, rest)
     run_heads = {"run", "exec"}
     if agent == "atlas":
         run_heads.add("ask")
@@ -411,6 +413,35 @@ def _ecosystem_subcommand(agent: str, task: str, approval: str = "", timeout_sec
             prefer_bridge=True,
         )
     return None
+
+
+def _ecosystem_source_subcommand(agent: str, verb: str, rest: str) -> dict[str, Any]:
+    started = time.time()
+    try:
+        root = _ecosystem_source_root(agent)
+        if not root.exists():
+            return _agent_result(agent, f"{agent}_source", "missing", started, response=f"{agent} root is niet zichtbaar: {root}")
+        if verb in {"list", "ls"}:
+            target = _resolve_ecosystem_source_path(agent, root, rest or ".")
+            if target is None:
+                return _agent_result(agent, f"{agent}_source_list", "blocked", started, response="Pad valt buiten de agent-root of lijkt secret-achtig.")
+            items = _safe_list_source(target)
+            return _agent_result(agent, f"{agent}_source_list", "success", started, response="\n".join(items) + ("\n" if items else ""), root=str(root), path=str(target))
+        if verb in {"read", "lees"}:
+            target = _resolve_ecosystem_source_path(agent, root, rest or "README.md")
+            if target is None or not target.is_file():
+                return _agent_result(agent, f"{agent}_source_read", "blocked", started, response="Bestand is niet veilig leesbaar of bestaat niet.")
+            text = target.read_text(encoding="utf-8", errors="replace")[:12000]
+            return _agent_result(agent, f"{agent}_source_read", "success", started, response=text, root=str(root), path=str(target))
+        query_path, _, pattern = str(rest or "").partition(" ")
+        target = _resolve_ecosystem_source_path(agent, root, query_path or ".")
+        if target is None:
+            return _agent_result(agent, f"{agent}_source_search", "blocked", started, response="Pad valt buiten de agent-root of lijkt secret-achtig.")
+        pattern = pattern or "."
+        matches = _safe_search_source(target, pattern)
+        return _agent_result(agent, f"{agent}_source_search", "success", started, response="\n".join(matches) + ("\n" if matches else ""), root=str(root), path=str(target), match_count=len(matches))
+    except Exception as exc:
+        return _agent_result(agent, f"{agent}_source", "error", started, reason=str(exc)[:500])
 
 
 def _roo_subcommand(
@@ -1000,6 +1031,73 @@ def _submit_ecosystem_agent_runtime(
     )
 
 
+def _ecosystem_source_root(agent: str) -> Path:
+    from controller.agent_runtime.adapters.ecosystem_cli import atlas_root, deepseek_root
+
+    return deepseek_root() if agent == "deepseek" else atlas_root()
+
+
+def _resolve_ecosystem_source_path(agent: str, root: Path, raw_path: str) -> Path | None:
+    text = str(raw_path or ".").strip().replace("\\", "/") or "."
+    alias, _, rest = text.partition("/")
+    if alias.lower() == agent:
+        text = rest or "."
+    if _secretish_path(text):
+        return None
+    candidate = Path(text)
+    target = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+    try:
+        target.relative_to(root.resolve())
+    except ValueError:
+        return None
+    try:
+        rel = str(target.relative_to(root.resolve()))
+    except ValueError:
+        rel = str(target)
+    return None if _secretish_path(rel) else target
+
+
+def _safe_list_source(target: Path, *, limit: int = 160) -> list[str]:
+    if target.is_file():
+        return [target.name]
+    if not target.exists():
+        return []
+    items: list[str] = []
+    for child in sorted(target.iterdir(), key=lambda item: item.name.lower()):
+        if child.name.startswith(".git") or _secretish_path(child.name):
+            continue
+        items.append(child.name + ("/" if child.is_dir() else ""))
+        if len(items) >= limit:
+            items.append("... truncated")
+            break
+    return items
+
+
+def _safe_search_source(target: Path, pattern: str, *, limit: int = 120) -> list[str]:
+    regex = re.compile(pattern)
+    roots = [target] if target.is_file() else [path for path in target.rglob("*") if path.is_file()]
+    matches: list[str] = []
+    for path in roots:
+        if any(_secretish_path(part) for part in path.parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if regex.search(line):
+                matches.append(f"{path}:{line_no}:{line[:260]}")
+                if len(matches) >= limit:
+                    matches.append("... truncated")
+                    return matches
+    return matches
+
+
+def _secretish_path(value: str) -> bool:
+    lowered = str(value or "").casefold()
+    return any(marker in lowered for marker in ("secret", "token", "key", "auth", "cookie", "session", ".env", "credential"))
+
+
 def _submit_roo_agent_runtime(
     task: str,
     provider: str,
@@ -1552,13 +1650,15 @@ def _catalog_text() -> str:
 
 
 def _agent_roots() -> dict[str, str]:
+    from controller.ouroboros_paths import atlas_path, deepseek_path
+
     return {
         "wintripai": str(workspace_root()),
         "ruflo": str(ruflo_path()),
         "roo": str(roo_path()),
         "codex": str(codex_path()),
-        "deepseek": str(Path(os.getenv("WINTRIP_DEEPSEEK_PATH") or "/home/pwintri2/deepseek").expanduser()),
-        "atlas": str(Path(os.getenv("WINTRIP_ATLAS_PATH") or "/home/pwintri2/atlas").expanduser()),
+        "deepseek": str(deepseek_path()),
+        "atlas": str(atlas_path()),
     }
 
 

@@ -61,6 +61,7 @@ services:
       CODEX_BINARY: /codex_native/bin/linux-x86_64/codex
       OLLAMA_HOST: http://host.docker.internal:11434
       BRAVE_API_KEY: ${BRAVE_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       WINTRIP_NS_API_KEY: ${WINTRIP_NS_API_KEY:-}
       NS_API_KEY: ${NS_API_KEY:-}
       NS_APP_API_KEY: ${NS_APP_API_KEY:-}

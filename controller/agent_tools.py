@@ -51,6 +51,11 @@ REGISTERED_TOOLS: tuple[str, ...] = (
     "vps_login_check",
     "vps_sync_preview",
     "vps_sync_execute",
+    "vps_ui_sync_preview",
+    "vps_ui_sync_execute",
+    "chroma_sync_status",
+    "chroma_sync_preview",
+    "chroma_sync_execute",
     "chatgpt_browser_ask",
     "world_grok_ask",
     "mail_read_recent",
@@ -148,7 +153,7 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "ns_travel_advice": _tool_schema(
         "ns_travel_advice",
-        "Haalt officiële NS-reisadviezen op voor Nederlandse trein/OV-vragen. Read-only; geen Akkoord nodig. Zonder NS API key geeft deze tool géén verzonnen tijden, maar een officiële plannerlink.",
+        "Gebruikt de officiële NS Reisplanner als browser/zichtbare-bron route voor Nederlandse treinvragen. Read-only; geen Akkoord nodig. Exacte tijden worden alleen genoemd als ze zichtbaar uit de officiële plannerpagina of expliciet opt-in NS API komen.",
         {
             "from_station": {"type": "string", "description": "Vertrekstation, naam of NS-code."},
             "to_station": {"type": "string", "description": "Aankomststation, naam of NS-code."},
@@ -156,13 +161,14 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "time": {"type": "string", "description": "Optionele tijd HH:MM."},
             "datetime": {"type": "string", "description": "Optionele ISO datetime; heeft voorrang op date/time."},
             "search_for_arrival": {"type": "boolean", "description": "True wanneer de opgegeven tijd een gewenste aankomsttijd is."},
+            "browser_lookup": {"type": "boolean", "description": "Probeer de officiële plannerpagina als zichtbare browserbron te lezen; standaard aan."},
             "query": {"type": "string", "description": "Originele gebruikersvraag voor audit/context."},
         },
         ["from_station", "to_station"],
     ),
     "ov9292_travel_advice": _tool_schema(
         "ov9292_travel_advice",
-        "Read-only 9292/OV reisplanner fallback. Zonder geautoriseerde 9292 API wordt niets gescrapet en geeft de tool alleen officiële plannerlinks plus de waarschuwing dat exacte tijden een autoritatieve bron vereisen.",
+        "Read-only 9292/OV reisplanner via officiële plannerpagina waar mogelijk. Er wordt geen geheime 9292 API verondersteld; exacte tijden worden alleen genoemd als ze zichtbaar uit de officiële planner komen.",
         {
             "from_place": {"type": "string", "description": "Vertrekplaats, halte of station."},
             "to_place": {"type": "string", "description": "Aankomstplaats, halte of station."},
@@ -170,6 +176,7 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "time": {"type": "string", "description": "Optionele tijd HH:MM."},
             "datetime": {"type": "string", "description": "Optionele ISO datetime; heeft voorrang op date/time."},
             "search_for_arrival": {"type": "boolean", "description": "True wanneer de opgegeven tijd een gewenste aankomsttijd is."},
+            "browser_lookup": {"type": "boolean", "description": "Probeer de officiële plannerpagina als zichtbare browserbron te lezen; standaard aan."},
             "query": {"type": "string", "description": "Originele gebruikersvraag voor audit/context."},
         },
         [],
@@ -278,6 +285,51 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "source_path": {"type": "string", "description": "Optioneel workspace-subpad; standaard de WintripAI workspace."},
             "timeout_seconds": {"type": "integer", "description": "Timeout in seconden."},
             "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor echte sync."},
+        },
+        ["approval"],
+    ),
+    "vps_ui_sync_preview": _tool_schema(
+        "vps_ui_sync_preview",
+        "Maakt een dry-run van de gebouwde Cockpit UI artifact sync: ouroboros_cockpit/dist/ naar de vaste VPS Ouroboros webroot. Muteert niets.",
+        {
+            "remote_path": {"type": "string", "description": "Leeg voor vaste webroot of veilige child onder /var/www/philip-wintrip.nl/html/Ouroboros/."},
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconden."},
+        },
+        [],
+    ),
+    "vps_ui_sync_execute": _tool_schema(
+        "vps_ui_sync_execute",
+        "Bouwt de lokale Cockpit UI en synchroniseert de dist artifact naar de VPS webroot. Vereist exact Akkoord.",
+        {
+            "remote_path": {"type": "string", "description": "Leeg voor vaste webroot of veilige child onder /var/www/philip-wintrip.nl/html/Ouroboros/."},
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconden."},
+            "build_first": {"type": "boolean", "description": "Bouw de UI lokaal voordat rsync start; standaard true."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor build + echte sync."},
+        },
+        ["approval"],
+    ),
+    "chroma_sync_status": _tool_schema(
+        "chroma_sync_status",
+        "Toont lokale en VPS ChromaDB status via SSH/host bridge zonder documenten of secrets terug te geven.",
+        {
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconden."},
+        },
+        [],
+    ),
+    "chroma_sync_preview": _tool_schema(
+        "chroma_sync_preview",
+        "Maakt een niet-muterende preview van welke Chroma records lokaal en op de VPS ontbreken. Geeft geen raw documenten terug.",
+        {
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconden."},
+        },
+        [],
+    ),
+    "chroma_sync_execute": _tool_schema(
+        "chroma_sync_execute",
+        "Voert een bidirectionele ChromaDB merge uit via SSH: VPS records naar lokaal en lokale records naar VPS. Vereist exact Akkoord.",
+        {
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconden."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor de merge."},
         },
         ["approval"],
     ),
@@ -613,6 +665,7 @@ class AgentToolRegistry:
                     time_value=str(args.get("time") or ""),
                     datetime_value=str(args.get("datetime") or args.get("dateTime") or ""),
                     search_for_arrival=bool(args.get("search_for_arrival", False)),
+                    browser_lookup=_bool_arg(args.get("browser_lookup"), default=True),
                     query=str(args.get("query") or args.get("prompt") or ""),
                 )
             elif tool_name == "ov9292_travel_advice":
@@ -623,6 +676,7 @@ class AgentToolRegistry:
                     time_value=str(args.get("time") or ""),
                     datetime_value=str(args.get("datetime") or args.get("dateTime") or ""),
                     search_for_arrival=bool(args.get("search_for_arrival", False)),
+                    browser_lookup=_bool_arg(args.get("browser_lookup"), default=True),
                     query=str(args.get("query") or args.get("prompt") or ""),
                 )
             elif tool_name == "connector_intent_preview":
@@ -683,6 +737,31 @@ class AgentToolRegistry:
                     remote_path=str(args.get("remote_path") or args.get("remote_target") or ""),
                     source_path=str(args.get("source_path") or ""),
                     timeout_seconds=_int(args.get("timeout_seconds"), default=120),
+                )
+            elif tool_name == "vps_ui_sync_preview":
+                result = self.vps_ui_sync_preview(
+                    remote_path=str(args.get("remote_path") or args.get("remote_target") or ""),
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=120),
+                )
+            elif tool_name == "vps_ui_sync_execute":
+                result = self.vps_ui_sync_execute(
+                    approval=str(args.get("approval") or ""),
+                    remote_path=str(args.get("remote_path") or args.get("remote_target") or ""),
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=120),
+                    build_first=_bool_arg(args.get("build_first"), default=True),
+                )
+            elif tool_name == "chroma_sync_status":
+                result = self.chroma_sync_status(
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=45),
+                )
+            elif tool_name == "chroma_sync_preview":
+                result = self.chroma_sync_preview(
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=120),
+                )
+            elif tool_name == "chroma_sync_execute":
+                result = self.chroma_sync_execute(
+                    approval=str(args.get("approval") or ""),
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=300),
                 )
             elif tool_name == "chatgpt_browser_ask":
                 result = self.chatgpt_browser_ask(
@@ -1005,6 +1084,7 @@ class AgentToolRegistry:
         time_value: str = "",
         datetime_value: str = "",
         search_for_arrival: bool = False,
+        browser_lookup: bool | None = None,
         query: str = "",
     ) -> dict[str, Any]:
         from_station = " ".join(str(from_station or "").split())
@@ -1021,7 +1101,6 @@ class AgentToolRegistry:
 
         date_time = _ns_datetime(date=date, time_value=time_value, datetime_value=datetime_value)
         planner_url = _ns_planner_url(from_station, to_station, date_time=date_time, search_for_arrival=search_for_arrival)
-        key = _ns_api_key()
         base_payload = {
             "from_station": from_station,
             "to_station": to_station,
@@ -1032,23 +1111,48 @@ class AgentToolRegistry:
             "query": query,
             "planner_url": planner_url,
             "authoritative": False,
-            "source": "NS Reisplanner / NS API",
+            "source": "NS Reisplanner official planner page",
+            "api_available": False,
+            "api_mode": "disabled_by_default",
         }
-        if not key:
-            stdout = (
-                "NS API key ontbreekt. Er zijn geen officiële treintijden opgehaald en ik mag geen tijden uit Brave/snippets afleiden.\n"
-                f"Open de officiële NS Reisplanner: {planner_url}\n"
-                "Configureer WINTRIP_NS_API_KEY, NS_API_KEY, NS_APP_API_KEY of NS_API_SUBSCRIPTION_KEY voor live reisadviezen."
-            )
-            return _tool_result(
-                "ns_travel_advice",
-                "preview",
-                result={**base_payload, "configured": False, "missing_api_key": True},
-                stdout=stdout,
+        browser = _official_travel_browser_lookup(
+            provider="ns",
+            planner_url=planner_url,
+            from_place=from_station,
+            to_place=to_station,
+            date_time=date_time,
+            search_for_arrival=search_for_arrival,
+            enabled=browser_lookup,
+        )
+        if not _ns_api_enabled():
+            payload = {**base_payload, "configured": False, "api_skipped": True, "browser_lookup": browser}
+            return _official_planner_tool_result(
+                tool_name="ns_travel_advice",
+                payload=payload,
+                browser=browser,
+                planner_links=[planner_url],
                 source="ns_travel_advice",
-                approval_status="not_required_readonly",
-                metadata_11d={"dimension_count": 11, "source_type": "ns_travel_advice", "taint": "official_missing_key"},
-                next_action="Configureer een NS API key of open de officiële plannerlink; noem geen exacte tijden zonder officiële data.",
+                fallback_intro=(
+                    "Ik gebruik voor NS standaard de officiële Reisplanner-pagina in plaats van de verborgen/API-route. "
+                    "Er zijn geen tijden verzonnen uit snippets."
+                ),
+                metadata_source_type="ns_travel_advice",
+            )
+
+        key = _ns_api_key()
+        if not key:
+            payload = {**base_payload, "configured": False, "missing_api_key": True, "api_requested": True, "browser_lookup": browser}
+            return _official_planner_tool_result(
+                tool_name="ns_travel_advice",
+                payload=payload,
+                browser=browser,
+                planner_links=[planner_url],
+                source="ns_travel_advice",
+                fallback_intro=(
+                    "NS API opt-in staat aan, maar de API key ontbreekt. "
+                    "Ik val terug op de officiële Reisplanner-pagina en verzin geen tijden."
+                ),
+                metadata_source_type="ns_travel_advice",
             )
 
         params = {
@@ -1109,7 +1213,16 @@ class AgentToolRegistry:
             )
 
         summary = _summarize_ns_trips(raw)
-        payload = {**base_payload, "configured": True, "authoritative": True, "advice": summary, "raw": raw}
+        payload = {
+            **base_payload,
+            "configured": True,
+            "api_available": True,
+            "api_mode": "opt_in",
+            "authoritative": True,
+            "source": "official_ns_api_opt_in",
+            "advice": summary,
+            "raw": raw,
+        }
         stdout = json.dumps(
             {
                 "source": "official_ns_api",
@@ -1144,12 +1257,23 @@ class AgentToolRegistry:
         time_value: str = "",
         datetime_value: str = "",
         search_for_arrival: bool = False,
+        browser_lookup: bool | None = None,
         query: str = "",
     ) -> dict[str, Any]:
         from_place = " ".join(str(from_place or "").split())
         to_place = " ".join(str(to_place or "").split())
         date_time = _ns_datetime(date=date, time_value=time_value, datetime_value=datetime_value)
         links = _ov9292_planner_links(from_place, to_place, date_time=date_time, search_for_arrival=search_for_arrival, query=query)
+        planner_url = links[1] if len(links) > 1 and "/reisadvies" in links[1] else links[0]
+        browser = _official_travel_browser_lookup(
+            provider="9292",
+            planner_url=planner_url,
+            from_place=from_place,
+            to_place=to_place,
+            date_time=date_time,
+            search_for_arrival=search_for_arrival,
+            enabled=browser_lookup,
+        )
         payload = {
             "from_place": from_place,
             "to_place": to_place,
@@ -1158,30 +1282,27 @@ class AgentToolRegistry:
             "datetime": date_time,
             "search_for_arrival": bool(search_for_arrival),
             "query": query,
-            "planner_url": links[0],
+            "planner_url": planner_url,
             "official_links": links,
             "authoritative": False,
             "configured": False,
             "api_available": False,
-            "source": "9292 official planner link fallback",
+            "source": "9292 official planner page",
+            "browser_lookup": browser,
             "scraped": False,
             "session_material_used": False,
         }
-        stdout = (
-            "Er is geen geautoriseerde 9292 API-adapter geconfigureerd. Ik heb geen login/session-materiaal gebruikt en niet gescrapet.\n"
-            "Exacte vertrek-, aankomst- en overstaptijden vereisen een autoritatieve bron zoals de officiële 9292 planner of een geautoriseerde API.\n"
-            "Officiële plannerlinks:\n"
-            + "\n".join(f"- {link}" for link in links)
-        )
-        return _tool_result(
-            "ov9292_travel_advice",
-            "preview",
-            result=payload,
-            stdout=stdout,
+        return _official_planner_tool_result(
+            tool_name="ov9292_travel_advice",
+            payload=payload,
+            browser=browser,
+            planner_links=links,
             source="ov9292_travel_advice",
-            approval_status="not_required_readonly",
-            metadata_11d={"dimension_count": 11, "source_type": "ov9292_travel_advice", "taint": "official_link_fallback"},
-            next_action="Open de officiële 9292 planner of configureer een geautoriseerde 9292 API; noem geen exacte tijden zonder autoritatieve data.",
+            fallback_intro=(
+                "Ik gebruik voor 9292 de officiële plannerpagina en geen verborgen API of login/session-materiaal. "
+                "Er zijn geen tijden verzonnen uit snippets."
+            ),
+            metadata_source_type="ov9292_travel_advice",
         )
 
     def connector_intent_preview(
@@ -1667,6 +1788,213 @@ class AgentToolRegistry:
             stored_to_memory=False,
             metadata_11d={"dimension_count": 11, "source_type": "vps_sync_execute", "taint": "host_mutation_audit", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
             next_action="Controleer de VPS site en bewaar alleen auditmetadata; credentials zijn niet opgeslagen of teruggegeven.",
+        )
+
+    def vps_ui_sync_preview(self, *, remote_path: str = "", timeout_seconds: int = 120) -> dict[str, Any]:
+        try:
+            from controller.vps_deploy_adapter import VPSDeployAdapter
+
+            raw = VPSDeployAdapter().ui_sync_preview(
+                remote_path=remote_path,
+                timeout_seconds=max(10, min(int(timeout_seconds or 120), 900)),
+            )
+        except Exception as exc:
+            return _tool_result(
+                "vps_ui_sync_preview",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="vps_deploy:ui_sync_preview",
+                next_action="Controleer of de UI dist bestaat en de host bridge SSH/rsync kan bereiken.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        return _tool_result(
+            "vps_ui_sync_preview",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "preview" else _stringify(payload),
+            source="vps_deploy:ui_sync_preview",
+            approval_status="not_required_dry_run",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "vps_ui_sync_preview", "taint": "host_deploy_metadata_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Review de UI dry-run; vps_ui_sync_execute bouwt eerst lokaal en vereist exact Akkoord.",
+        )
+
+    def vps_ui_sync_execute(self, *, approval: str = "", remote_path: str = "", timeout_seconds: int = 120, build_first: bool = True) -> dict[str, Any]:
+        if str(approval or "").strip() != "Akkoord":
+            ziel_policy = ziel_guardrail_note()
+            payload = {
+                "remote_path": remote_path,
+                "approval_required": True,
+                "executed": False,
+                "mutated": False,
+                "remote_target": "/var/www/philip-wintrip.nl/html/Ouroboros/",
+                "ui_artifact_source": "ouroboros_cockpit/dist",
+                "secrets_returned": False,
+                "ziel_policy": ziel_policy,
+            }
+            return _tool_result(
+                "vps_ui_sync_execute",
+                "blocked",
+                result=payload,
+                stdout=_stringify(payload),
+                stderr="VPS UI sync execution requires exact Akkoord.",
+                source="vps_deploy:ui_sync_execute",
+                approval_status="pending_philip_akkoord",
+                metadata_11d={"dimension_count": 11, "source_type": "vps_ui_sync_execute_gate", "taint": "host_mutation_gate", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+                next_action="Vraag Philip om exact Akkoord na review van vps_ui_sync_preview.",
+            )
+        try:
+            from controller.vps_deploy_adapter import VPSDeployAdapter
+
+            raw = VPSDeployAdapter().ui_sync_execute(
+                approval=approval,
+                remote_path=remote_path,
+                timeout_seconds=max(10, min(int(timeout_seconds or 120), 900)),
+                build_first=build_first,
+            )
+        except Exception as exc:
+            return _tool_result(
+                "vps_ui_sync_execute",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="vps_deploy:ui_sync_execute",
+                approval_status="approved",
+                next_action="Controleer UI build/npm en de host bridge/rsync fout zonder secrets te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        return _tool_result(
+            "vps_ui_sync_execute",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "success" else _stringify(payload),
+            source="vps_deploy:ui_sync_execute",
+            approval_status="approved",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "vps_ui_sync_execute", "taint": "host_mutation_audit", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Controleer de VPS UI in de browser; alleen dist artifacts zijn naar de webroot gestuurd.",
+        )
+
+    def chroma_sync_status(self, *, timeout_seconds: int = 45) -> dict[str, Any]:
+        try:
+            from controller.chroma_sync_adapter import ChromaSyncAdapter
+
+            raw = ChromaSyncAdapter().status(timeout_seconds=max(10, min(int(timeout_seconds or 45), 300)))
+        except Exception as exc:
+            return _tool_result(
+                "chroma_sync_status",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="chroma_sync:status",
+                next_action="Controleer Chroma sync config in .secrets/vps.env en host SSH bereikbaarheid.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        return _tool_result(
+            "chroma_sync_status",
+            "success" if status in {"ready", "online", "degraded"} else status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status in {"ready", "online", "degraded"} else _stringify(payload),
+            source="chroma_sync:status",
+            approval_status="not_required_status",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "chroma_sync_status", "taint": "memory_metadata_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik chroma_sync_preview om ontbrekende records te tellen; execute vereist exact Akkoord.",
+        )
+
+    def chroma_sync_preview(self, *, timeout_seconds: int = 120) -> dict[str, Any]:
+        try:
+            from controller.chroma_sync_adapter import ChromaSyncAdapter
+
+            raw = ChromaSyncAdapter().preview(timeout_seconds=max(10, min(int(timeout_seconds or 120), 900)))
+        except Exception as exc:
+            return _tool_result(
+                "chroma_sync_preview",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="chroma_sync:preview",
+                next_action="Controleer lokale/VPS Chroma bereikbaarheid; preview hoort geen documenten terug te geven.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        return _tool_result(
+            "chroma_sync_preview",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "preview" else _stringify(payload),
+            source="chroma_sync:preview",
+            approval_status="not_required_dry_run",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "chroma_sync_preview", "taint": "memory_metadata_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Review missing_on_local/missing_on_remote; chroma_sync_execute versmelt pas na exact Akkoord.",
+        )
+
+    def chroma_sync_execute(self, *, approval: str = "", timeout_seconds: int = 300) -> dict[str, Any]:
+        if str(approval or "").strip() != "Akkoord":
+            ziel_policy = ziel_guardrail_note()
+            payload = {
+                "approval_required": True,
+                "executed": False,
+                "mutated": False,
+                "raw_documents_returned": False,
+                "secrets_returned": False,
+                "ziel_policy": ziel_policy,
+            }
+            return _tool_result(
+                "chroma_sync_execute",
+                "blocked",
+                result=payload,
+                stdout=_stringify(payload),
+                stderr="Chroma merge execution requires exact Akkoord.",
+                source="chroma_sync:execute",
+                approval_status="pending_philip_akkoord",
+                metadata_11d={"dimension_count": 11, "source_type": "chroma_sync_execute_gate", "taint": "memory_mutation_gate", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+                next_action="Vraag Philip om exact Akkoord na review van chroma_sync_preview.",
+            )
+        try:
+            from controller.chroma_sync_adapter import ChromaSyncAdapter
+
+            raw = ChromaSyncAdapter().execute(
+                approval=approval,
+                timeout_seconds=max(30, min(int(timeout_seconds or 300), 900)),
+            )
+        except Exception as exc:
+            return _tool_result(
+                "chroma_sync_execute",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="chroma_sync:execute",
+                approval_status="approved",
+                next_action="Controleer Chroma/SSH fout; raw documenten worden niet in tooloutput gezet.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        return _tool_result(
+            "chroma_sync_execute",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "success" else _stringify(payload),
+            source="chroma_sync:execute",
+            approval_status="approved",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "chroma_sync_execute", "taint": "memory_mutation_audit", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Controleer na de merge beide Chroma statuspanelen; raw geheugeninhoud is niet geretourneerd.",
         )
 
     def chatgpt_browser_ask(self, question: str, approval: str) -> dict[str, Any]:
@@ -2769,6 +3097,13 @@ def _ns_api_key() -> str:
     return ""
 
 
+def _ns_api_enabled() -> bool:
+    mode = os.getenv("WINTRIP_NS_API_MODE", "").strip().lower()
+    if mode in {"api", "on", "true", "1"}:
+        return True
+    return _bool_arg(os.getenv("WINTRIP_TRAVEL_USE_NS_API"), default=False)
+
+
 def _ns_datetime(*, date: str = "", time_value: str = "", datetime_value: str = "") -> str:
     if datetime_value.strip():
         return datetime_value.strip()
@@ -2831,6 +3166,199 @@ def _ov9292_planner_links(
     if query:
         links.append("https://9292.nl/zoeken?" + urlencode({"q": " ".join(str(query or "").split())[:400]}))
     return _unique_texts(links)
+
+
+def _official_travel_browser_lookup(
+    *,
+    provider: str,
+    planner_url: str,
+    from_place: str,
+    to_place: str,
+    date_time: str,
+    search_for_arrival: bool,
+    enabled: bool | None,
+) -> dict[str, Any]:
+    if not _travel_browser_lookup_enabled(enabled):
+        return {
+            "status": "skipped",
+            "enabled": False,
+            "authoritative": False,
+            "official_visible_text": False,
+            "browser_action_performed": False,
+            "reason": "browser lookup disabled",
+            "planner_url": planner_url,
+            "secrets_returned": False,
+            "fake_success": False,
+        }
+    try:
+        from controller.browser_research import read_visible_text
+
+        raw = read_visible_text(planner_url)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "enabled": True,
+            "authoritative": False,
+            "official_visible_text": False,
+            "browser_action_performed": False,
+            "reason": str(exc)[:500],
+            "planner_url": planner_url,
+            "secrets_returned": False,
+            "fake_success": False,
+        }
+
+    if not isinstance(raw, dict):
+        raw = {"status": "error", "reason": "browser lookup returned non-dict"}
+    text = str(raw.get("scrubbed_text") or raw.get("visible_text") or "")
+    snippets = _travel_visible_snippets(text, from_place=from_place, to_place=to_place)
+    time_source = "\n".join(snippets) if snippets else text
+    visible_times = _extract_time_values(time_source)
+    raw_status = str(raw.get("status") or "unknown")
+    browser_performed = bool(raw.get("browser_action_performed"))
+    official_visible = raw_status == "success" and browser_performed and bool(text.strip())
+    place_match = _contains_route_places(text, from_place=from_place, to_place=to_place)
+    authoritative = bool(official_visible and snippets and len(visible_times) >= 2 and place_match)
+    return {
+        "status": "success" if authoritative else raw_status,
+        "enabled": True,
+        "provider": provider,
+        "planner_url": planner_url,
+        "date_time": date_time,
+        "search_for_arrival": bool(search_for_arrival),
+        "authoritative": authoritative,
+        "official_visible_text": official_visible,
+        "browser_action_performed": browser_performed,
+        "raw_status": raw_status,
+        "reason": str(raw.get("reason") or ""),
+        "next_action": str(raw.get("next_action") or ""),
+        "title": str(raw.get("title") or ""),
+        "source_url": str(raw.get("source_url") or raw.get("url") or planner_url),
+        "visible_times": visible_times,
+        "visible_snippets": snippets,
+        "visible_text_excerpt": _compact_visible_excerpt(text),
+        "approval_status": str(raw.get("approval_status") or "not_required_readonly"),
+        "secrets_returned": False,
+        "fake_success": False,
+    }
+
+
+def _official_planner_tool_result(
+    *,
+    tool_name: str,
+    payload: dict[str, Any],
+    browser: dict[str, Any],
+    planner_links: list[str],
+    source: str,
+    fallback_intro: str,
+    metadata_source_type: str,
+) -> dict[str, Any]:
+    authoritative = bool(browser.get("authoritative"))
+    payload = {
+        **payload,
+        "authoritative": authoritative,
+        "official_visible_text": bool(browser.get("official_visible_text")),
+        "visible_planner_authoritative": authoritative,
+        "visible_times": list(browser.get("visible_times") or []),
+        "visible_snippets": list(browser.get("visible_snippets") or []),
+        "secrets_returned": False,
+        "fake_success": False,
+    }
+    lines = [fallback_intro]
+    if authoritative:
+        lines.append("Zichtbare officiële plannerdata gevonden. Exacte tijden mogen alleen uit deze snippets komen:")
+        lines.extend(f"- {snippet}" for snippet in payload["visible_snippets"][:5])
+    else:
+        reason = str(browser.get("reason") or browser.get("raw_status") or browser.get("status") or "geen routekaart zichtbaar").strip()
+        lines.append(f"Er zijn geen officiële treintijden/OV-tijden zichtbaar opgehaald ({reason}); ik noem daarom geen exacte tijden.")
+    lines.append("Officiële plannerlinks:")
+    lines.extend(f"- {link}" for link in planner_links)
+    status = "success" if authoritative else "preview"
+    taint = "official_visible_planner" if authoritative else "official_link_fallback"
+    next_action = (
+        "Gebruik alleen de zichtbare officiële snippets voor tijden; controleer de planner bij twijfel."
+        if authoritative
+        else "Open de officiële plannerlink handmatig of zorg dat Playwright/browser lookup de routekaart zichtbaar kan lezen."
+    )
+    return _tool_result(
+        tool_name,
+        status,
+        result=payload,
+        stdout="\n".join(lines),
+        source=source,
+        approval_status="not_required_readonly",
+        metadata_11d={"dimension_count": 11, "source_type": metadata_source_type, "taint": taint},
+        next_action=next_action,
+    )
+
+
+def _travel_browser_lookup_enabled(value: bool | None) -> bool:
+    if value is not None:
+        return bool(value)
+    return _bool_arg(os.getenv("WINTRIP_TRAVEL_BROWSER_LOOKUP"), default=True)
+
+
+def _travel_visible_snippets(text: str, *, from_place: str, to_place: str) -> list[str]:
+    route_terms = (
+        "reis",
+        "advies",
+        "vertrek",
+        "aankomst",
+        "overstap",
+        "spoor",
+        "perron",
+        "platform",
+        "intercity",
+        "sprinter",
+        "trein",
+        "bus",
+        "tram",
+        "metro",
+        "lopen",
+        "walk",
+        "departure",
+        "arrival",
+    )
+    lines = [" ".join(line.split()) for line in str(text or "").splitlines()]
+    lines = [line for line in lines if line]
+    snippets: list[str] = []
+    for index, line in enumerate(lines):
+        if not _extract_time_values(line):
+            continue
+        window = " ".join(lines[max(0, index - 2) : min(len(lines), index + 3)])
+        lowered = window.lower()
+        if any(term in lowered for term in route_terms) or _contains_route_places(window, from_place=from_place, to_place=to_place):
+            snippets.append(window[:500])
+        if len(snippets) >= 5:
+            break
+    return _unique_texts(snippets)
+
+
+def _extract_time_values(text: str) -> list[str]:
+    values: list[str] = []
+    for match in re.finditer(r"\b([01]?\d|2[0-3])[:.](\d{2})\b", str(text or "")):
+        values.append(f"{int(match.group(1)):02d}:{match.group(2)}")
+    return _unique_texts(values)
+
+
+def _contains_route_places(text: str, *, from_place: str, to_place: str) -> bool:
+    normalized = _normalize_place_text(text)
+    return _place_mentioned(normalized, from_place) and _place_mentioned(normalized, to_place)
+
+
+def _place_mentioned(normalized_text: str, place: str) -> bool:
+    words = [word for word in _normalize_place_text(place).split() if len(word) >= 3 and word not in {"station", "centraal"}]
+    if not words:
+        return True
+    return any(word in normalized_text for word in words[:3])
+
+
+def _normalize_place_text(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).split())
+
+
+def _compact_visible_excerpt(text: str) -> str:
+    clean = " ".join(str(text or "").split())
+    return clean[:1800]
 
 
 def _connector_services_from_prompt(prompt: str, provided: list[Any]) -> list[str]:
@@ -3262,6 +3790,19 @@ def _int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _bool_arg(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "ja", "aan"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "nee", "uit"}:
+        return False
+    return default
 
 
 def _is_number(value: Any) -> bool:

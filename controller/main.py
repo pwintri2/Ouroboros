@@ -519,6 +519,12 @@ class RooAuthLoginRequest(BaseModel):
     approval: Optional[str] = None
 
 
+class PeerExchangeRequest(BaseModel):
+    approval: Optional[str] = None
+    message: Optional[str] = None
+    timeout_seconds: Optional[int] = 45
+
+
 class OuroborosLoopStartRequest(BaseModel):
     prompt: Optional[str] = None
     browser_text: Optional[str] = None
@@ -1021,42 +1027,53 @@ async def commit_save(req: CommitSaveRequest):
 UPLOAD_DIR = os.path.join(project_root, "data", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@app.post("/api/upload")
-async def upload_files(files: List[UploadFile] = FastAPIFile(...)):
-    """Accept one or more file uploads and store them in data/uploads.
+try:
+    import multipart as _multipart_probe  # noqa: F401
+    _MULTIPART_AVAILABLE = True
+except Exception:
+    _MULTIPART_AVAILABLE = False
 
-    Returns a list of server-side file paths that can be passed straight
-    into the ``files`` field of ``/api/cockpit/chat`` or ``/ask``.
-    """
-    saved: List[Dict[str, Any]] = []
-    for upload in files:
-        safe_name = os.path.basename(upload.filename or "upload")
-        # Prevent name collisions by prepending a timestamp
-        dest_name = f"{int(time.time())}_{safe_name}"
-        dest_path = os.path.join(UPLOAD_DIR, dest_name)
-        try:
-            content = await upload.read()
-            with open(dest_path, "wb") as fh:
-                fh.write(content)
-            saved.append({
-                "filename": safe_name,
-                "path": dest_path,
-                "size": len(content),
-                "status": "ok",
-            })
-        except Exception as exc:
-            saved.append({
-                "filename": safe_name,
-                "path": "",
-                "size": 0,
-                "status": "error",
-                "error": str(exc),
-            })
-    return {
-        "status": "success",
-        "uploaded": len([f for f in saved if f["status"] == "ok"]),
-        "files": saved,
-    }
+if _MULTIPART_AVAILABLE:
+    @app.post("/api/upload")
+    async def upload_files(files: List[UploadFile] = FastAPIFile(...)):
+        """Accept one or more file uploads and store them in data/uploads.
+
+        Returns a list of server-side file paths that can be passed straight
+        into the ``files`` field of ``/api/cockpit/chat`` or ``/ask``.
+        """
+        saved: List[Dict[str, Any]] = []
+        for upload in files:
+            safe_name = os.path.basename(upload.filename or "upload")
+            # Prevent name collisions by prepending a timestamp
+            dest_name = f"{int(time.time())}_{safe_name}"
+            dest_path = os.path.join(UPLOAD_DIR, dest_name)
+            try:
+                content = await upload.read()
+                with open(dest_path, "wb") as fh:
+                    fh.write(content)
+                saved.append({
+                    "filename": safe_name,
+                    "path": dest_path,
+                    "size": len(content),
+                    "status": "ok",
+                })
+            except Exception as exc:
+                saved.append({
+                    "filename": safe_name,
+                    "path": "",
+                    "size": 0,
+                    "status": "error",
+                    "error": str(exc),
+                })
+        return {
+            "status": "success",
+            "uploaded": len([f for f in saved if f["status"] == "ok"]),
+            "files": saved,
+        }
+else:
+    @app.post("/api/upload")
+    async def upload_files_unavailable():
+        raise HTTPException(status_code=503, detail="python-multipart is not installed in this runtime.")
 
 
 @app.post("/vergadertafel/chat")
@@ -1101,6 +1118,23 @@ async def ouroboros_runtime_respond(req: CockpitChatRequest):
 @app.get("/api/ouroboros/self-context/status")
 async def ouroboros_self_context_status():
     return _self_context_status_payload()
+
+@app.get("/api/ouroboros/peer/status")
+async def ouroboros_peer_status():
+    from controller.ouroboros_peer_bridge import peer_bridge_status
+
+    return await asyncio.to_thread(peer_bridge_status)
+
+@app.post("/api/ouroboros/peer/exchange")
+async def ouroboros_peer_exchange(req: PeerExchangeRequest):
+    from controller.ouroboros_peer_bridge import exchange_with_vps
+
+    return await asyncio.to_thread(
+        exchange_with_vps,
+        approval=req.approval or "",
+        message=req.message or "",
+        timeout_seconds=int(req.timeout_seconds or 45),
+    )
 
 @app.get("/api/ouroboros/chroma/status")
 @app.get("/api/chroma/status")
@@ -1171,6 +1205,8 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "inspect_hippocampus": {"method": "POST", "path": "/api/ouroboros/hippocampus/inspect"},
         "self_training_step": {"method": "POST", "path": "/api/ouroboros/self-training/step"},
         "self_context": {"method": "GET", "path": "/api/ouroboros/self-context/status"},
+        "peer_status": {"method": "GET", "path": "/api/ouroboros/peer/status"},
+        "peer_exchange": {"method": "POST", "path": "/api/ouroboros/peer/exchange"},
         "chroma_status": {"method": "GET", "path": "/api/ouroboros/chroma/status"},
         "trigger_actions_status": {"method": "GET", "path": "/api/ouroboros/trigger-actions/status"},
         "runtime_doctor": {"method": "GET", "path": "/api/ouroboros/runtime/doctor"},

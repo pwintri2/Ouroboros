@@ -130,6 +130,11 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("vps_login_check", names)
         self.assertIn("vps_sync_preview", names)
         self.assertIn("vps_sync_execute", names)
+        self.assertIn("vps_ui_sync_preview", names)
+        self.assertIn("vps_ui_sync_execute", names)
+        self.assertIn("chroma_sync_status", names)
+        self.assertIn("chroma_sync_preview", names)
+        self.assertIn("chroma_sync_execute", names)
         self.assertIn("roo_apply_patch", names)
         self.assertIn("mail_read_recent", names)
         self.assertIn("social_post_publish", names)
@@ -142,8 +147,10 @@ class TestAgentTools(unittest.TestCase):
         ns = next(schema for schema in schemas if schema["function"]["name"] == "ns_travel_advice")
         self.assertIn("from_station", ns["function"]["parameters"]["required"])
         self.assertIn("to_station", ns["function"]["parameters"]["required"])
+        self.assertIn("browser_lookup", ns["function"]["parameters"]["properties"])
         ov9292 = next(schema for schema in schemas if schema["function"]["name"] == "ov9292_travel_advice")
         self.assertIn("query", ov9292["function"]["parameters"]["properties"])
+        self.assertIn("browser_lookup", ov9292["function"]["parameters"]["properties"])
         self.assertEqual(ov9292["function"]["parameters"]["required"], [])
         connector_preview = next(schema for schema in schemas if schema["function"]["name"] == "connector_intent_preview")
         self.assertIn("prompt", connector_preview["function"]["parameters"]["required"])
@@ -157,6 +164,10 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("query", github_search["function"]["parameters"]["required"])
         vps_execute = next(schema for schema in schemas if schema["function"]["name"] == "vps_sync_execute")
         self.assertIn("approval", vps_execute["function"]["parameters"]["required"])
+        ui_execute = next(schema for schema in schemas if schema["function"]["name"] == "vps_ui_sync_execute")
+        self.assertIn("approval", ui_execute["function"]["parameters"]["required"])
+        chroma_execute = next(schema for schema in schemas if schema["function"]["name"] == "chroma_sync_execute")
+        self.assertIn("approval", chroma_execute["function"]["parameters"]["required"])
         mail = next(schema for schema in schemas if schema["function"]["name"] == "mail_read_recent")
         self.assertIn("approval", mail["function"]["parameters"]["required"])
         ecosystem = next(schema for schema in schemas if schema["function"]["name"] == "agentic_ecosystem_context")
@@ -233,7 +244,14 @@ class TestAgentTools(unittest.TestCase):
         registry = make_registry()
         with patch.dict(
             os.environ,
-            {"WINTRIP_NS_API_KEY": "", "NS_API_KEY": "", "NS_APP_API_KEY": "", "NS_API_SUBSCRIPTION_KEY": ""},
+            {
+                "WINTRIP_NS_API_KEY": "",
+                "NS_API_KEY": "",
+                "NS_APP_API_KEY": "",
+                "NS_API_SUBSCRIPTION_KEY": "",
+                "WINTRIP_TRAVEL_BROWSER_LOOKUP": "0",
+                "WINTRIP_TRAVEL_USE_NS_API": "0",
+            },
             clear=False,
         ):
             result = registry.run_tool(
@@ -251,10 +269,60 @@ class TestAgentTools(unittest.TestCase):
         self.assertEqual(result["status"], "preview")
         self.assertEqual(result["approval_status"], "not_required_readonly")
         self.assertFalse(result["result"]["authoritative"])
-        self.assertTrue(result["result"]["missing_api_key"])
+        self.assertTrue(result["result"]["api_skipped"])
         self.assertIn("www.ns.nl/reisplanner", result["result"]["planner_url"])
         self.assertIn("geen officiële treintijden", result["stdout"])
         self.assertNotIn("12:30", result["stdout"])
+
+    def test_ns_travel_advice_can_use_visible_official_planner_text(self):
+        registry = make_registry()
+        visible = "\n".join(
+            [
+                "Reisadvies Ermelo naar Utrecht Centraal",
+                "Vertrek 12:24 spoor 1",
+                "Intercity richting Utrecht Centraal",
+                "Aankomst 13:28 spoor 19",
+            ]
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "WINTRIP_NS_API_KEY": "",
+                "NS_API_KEY": "",
+                "NS_APP_API_KEY": "",
+                "NS_API_SUBSCRIPTION_KEY": "",
+                "WINTRIP_TRAVEL_BROWSER_LOOKUP": "1",
+                "WINTRIP_TRAVEL_USE_NS_API": "0",
+            },
+            clear=False,
+        ):
+            with patch(
+                "controller.browser_research.read_visible_text",
+                return_value={
+                    "status": "success",
+                    "browser_action_performed": True,
+                    "scrubbed_text": visible,
+                    "source_url": "https://www.ns.nl/reisplanner/#/",
+                    "approval_status": "not_required_readonly",
+                },
+            ):
+                result = registry.run_tool(
+                    "ns_travel_advice",
+                    {
+                        "from_station": "Ermelo",
+                        "to_station": "Utrecht Centraal",
+                        "date": "2026-05-07",
+                        "time": "13:30",
+                        "search_for_arrival": True,
+                    },
+                )
+
+        self.assertToolEnvelope(result, "ns_travel_advice")
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["result"]["authoritative"])
+        self.assertIn("12:24", result["result"]["visible_times"])
+        self.assertIn("13:28", result["result"]["visible_times"])
+        self.assertIn("Zichtbare officiële plannerdata", result["stdout"])
 
     def test_ns_travel_advice_uses_official_api_when_key_is_configured(self):
         registry = make_registry()
@@ -281,7 +349,7 @@ class TestAgentTools(unittest.TestCase):
             b'"destination":{"name":"Utrecht Centraal","plannedDateTime":"2026-05-07T13:28:00+02:00","plannedTrack":"19"}}]}]}'
         )
 
-        with patch.dict(os.environ, {"WINTRIP_NS_API_KEY": "test-key"}, clear=False):
+        with patch.dict(os.environ, {"WINTRIP_NS_API_KEY": "test-key", "WINTRIP_TRAVEL_USE_NS_API": "1"}, clear=False):
             with patch("urllib.request.urlopen", return_value=FakeResponse()) as urlopen:
                 result = registry.run_tool(
                     "ns_travel_advice",
@@ -314,6 +382,7 @@ class TestAgentTools(unittest.TestCase):
                 "time": "13:30",
                 "search_for_arrival": True,
                 "query": "bus tram metro reisplanner via 9292",
+                "browser_lookup": False,
             },
         )
 
@@ -324,7 +393,7 @@ class TestAgentTools(unittest.TestCase):
         self.assertFalse(result["result"]["scraped"])
         self.assertFalse(result["result"]["session_material_used"])
         self.assertIn("9292.nl", result["result"]["planner_url"])
-        self.assertIn("Exacte", result["stdout"])
+        self.assertIn("geen officiële", result["stdout"])
         self.assertNotIn("12:30", result["stdout"])
 
     def test_connector_intent_preview_gates_private_mutating_services_without_execution(self):
@@ -584,6 +653,8 @@ class TestAgentTools(unittest.TestCase):
             ("social_post_publish", {"platform": "x", "content": "Ouroboros update"}),
             ("world_grok_ask", {"question": "Wat is Ouroboros?"}),
             ("codex_job_start", {"task": "Wijzig niets, rapporteer status."}),
+            ("vps_ui_sync_execute", {}),
+            ("chroma_sync_execute", {}),
         ]
         for tool_name, args in cases:
             with self.subTest(tool=tool_name):

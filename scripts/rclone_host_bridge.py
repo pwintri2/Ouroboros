@@ -48,6 +48,7 @@ from controller.computer_actions import computer_actions_status, run_computer_ac
 from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory  # noqa: E402
 from controller.ouroboros_self_context import get_ruflo_status  # noqa: E402
 from controller.vps_deploy_adapter import VPSDeployAdapter  # noqa: E402
+from controller.chroma_sync_adapter import ChromaSyncAdapter  # noqa: E402
 from controller.roo_cli_runtime import roo_auth_login, roo_cli_status, roo_cloud_models, run_roo_cli_task  # noqa: E402
 from controller.slash_agent_router import execute_host_agent_command  # noqa: E402
 from controller.world_agent import ask_grok_via_world_agent, recent_world_actions, search_world_memory, world_agent_status  # noqa: E402
@@ -114,6 +115,15 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
             return
         if path == "/vps/status":
             result = VPSDeployAdapter(workspace=WORKSPACE).status(prefer_bridge=False)
+            result["via_bridge"] = False
+            result["host_bridge_runtime"] = {"status": "online", "server": self.server_version, "fake_success": False}
+            self._json(result)
+            return
+        if path == "/chroma-sync/status":
+            result = ChromaSyncAdapter(workspace=WORKSPACE).status(
+                timeout_seconds=self._query_int(query, "timeout_seconds", 45, minimum=10, maximum=300),
+                prefer_bridge=False,
+            )
             result["via_bridge"] = False
             result["host_bridge_runtime"] = {"status": "online", "server": self.server_version, "fake_success": False}
             self._json(result)
@@ -313,6 +323,43 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
                 remote_path=str(body.get("remote_path") or body.get("remote_target") or ""),
                 source_path=str(body.get("source_path") or ""),
                 timeout_seconds=int(body.get("timeout_seconds") or 120),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/vps/ui-sync-preview":
+            result = VPSDeployAdapter(workspace=WORKSPACE).ui_sync_preview(
+                remote_path=str(body.get("remote_path") or body.get("remote_target") or ""),
+                timeout_seconds=int(body.get("timeout_seconds") or 120),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/vps/ui-sync-execute":
+            result = VPSDeployAdapter(workspace=WORKSPACE).ui_sync_execute(
+                approval=str(body.get("approval") or ""),
+                remote_path=str(body.get("remote_path") or body.get("remote_target") or ""),
+                timeout_seconds=int(body.get("timeout_seconds") or 120),
+                build_first=bool(body.get("build_first", True)),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/chroma-sync/preview":
+            result = ChromaSyncAdapter(workspace=WORKSPACE).preview(
+                timeout_seconds=int(body.get("timeout_seconds") or 120),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/chroma-sync/execute":
+            result = ChromaSyncAdapter(workspace=WORKSPACE).execute(
+                approval=str(body.get("approval") or ""),
+                timeout_seconds=int(body.get("timeout_seconds") or 300),
                 prefer_bridge=False,
             )
             result["via_bridge"] = False

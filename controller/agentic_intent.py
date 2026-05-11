@@ -118,6 +118,7 @@ GMAIL_MARKERS = ("gmail", "google mail", "mailbox", "inbox", "e-mail", "email")
 DRIVE_MARKERS = ("google drive", "gdrive", "g-drive", "drive map", "drive folder")
 GITHUB_MARKERS = ("github", "git hub")
 VPS_MARKERS = ("vps", "ssh", "server login", "server deploy", "rsync", "scp", "remote server")
+CHROMA_SYNC_MARKERS = ("chroma", "chromadb", "vector db", "vector database")
 MUTATING_VERB_RE = re.compile(
     r"(?i)\b("
     r"schrijf|write|save|sla\s+op|maak|create|upload|verwijder|delete|remove|"
@@ -227,6 +228,11 @@ def classify_agentic_intent(prompt: object, *, role: object = "", approval: obje
         "vps_login_check",
         "vps_sync_preview",
         "vps_sync_execute",
+        "vps_ui_sync_preview",
+        "vps_ui_sync_execute",
+        "chroma_sync_status",
+        "chroma_sync_preview",
+        "chroma_sync_execute",
     }
     if metadata["target_tool"] in connector_target_tools:
         return _intent("agentic_processor", True, False, approval_present, "connector_boundary_intent", raw, metadata)
@@ -315,6 +321,9 @@ def _prompt_metadata(prompt: str, *, approval_present: bool = False) -> dict[str
     drive = _wants_drive(lowered)
     github = _wants_github(lowered)
     vps = _wants_vps(lowered)
+    chroma_sync = _wants_chroma_sync(lowered)
+    if chroma_sync:
+        vps = True
     connector_status = _wants_connector_status(lowered)
     browser_action = bool(URL_OR_DOMAIN_RE.search(text) and ACTION_VERB_RE.search(lowered))
     file_mutation = bool(
@@ -348,6 +357,9 @@ def _prompt_metadata(prompt: str, *, approval_present: bool = False) -> dict[str
     if vps:
         categories.append("vps")
         services.append("vps")
+    if chroma_sync:
+        categories.append("chroma_sync")
+        services.append("chroma")
     if browser_action:
         categories.append("browser_action")
         services.append("browser")
@@ -355,8 +367,8 @@ def _prompt_metadata(prompt: str, *, approval_present: bool = False) -> dict[str
         categories.append("local_files")
 
     mutating = bool(MUTATING_VERB_RE.search(lowered) or file_mutation)
-    private = bool((gmail and not connector_status) or (drive and not connector_status) or vps or (github and not connector_status and (_github_private_context(lowered) or mutating)))
-    connector_boundary = bool(gmail or drive or github or vps)
+    private = bool((gmail and not connector_status) or (drive and not connector_status) or vps or chroma_sync or (github and not connector_status and (_github_private_context(lowered) or mutating)))
+    connector_boundary = bool(gmail or drive or github or vps or chroma_sync)
     if browser_action:
         mutating = True
 
@@ -380,7 +392,24 @@ def _prompt_metadata(prompt: str, *, approval_present: bool = False) -> dict[str
         target_tool = "connector_intent_preview"
         routing_hint = "connector_preview_required"
     elif vps:
-        if connector_status:
+        if chroma_sync:
+            if _wants_chroma_execute(lowered):
+                target_tool = "chroma_sync_execute"
+                routing_hint = "chroma_sync_execute_approval_required"
+            elif connector_status:
+                target_tool = "chroma_sync_status"
+                routing_hint = "chroma_sync_status_readonly"
+            else:
+                target_tool = "chroma_sync_preview"
+                routing_hint = "chroma_sync_preview_first"
+        elif "ui" in lowered or "cockpit" in lowered or "frontend" in lowered or "react" in lowered:
+            if _wants_vps_execute(lowered):
+                target_tool = "vps_ui_sync_execute"
+                routing_hint = "vps_ui_sync_execute_approval_required"
+            else:
+                target_tool = "vps_ui_sync_preview"
+                routing_hint = "vps_ui_sync_preview_first"
+        elif connector_status:
             target_tool = "vps_status"
             routing_hint = "vps_status_readonly"
         elif _wants_vps_login_check(lowered):
@@ -474,6 +503,10 @@ def _plan_hints(
         hint["args_hint"] = {"prompt": text[:1000], "services": list(services), "preview_only": True}
     elif target_tool in {"vps_status", "vps_login_check", "vps_sync_preview", "vps_sync_execute"}:
         hint["args_hint"] = {"remote_path": "", "preview_first": target_tool != "vps_sync_execute"}
+    elif target_tool in {"vps_ui_sync_preview", "vps_ui_sync_execute"}:
+        hint["args_hint"] = {"remote_path": "", "preview_first": target_tool != "vps_ui_sync_execute"}
+    elif target_tool in {"chroma_sync_status", "chroma_sync_preview", "chroma_sync_execute"}:
+        hint["args_hint"] = {"timeout_seconds": 120, "preview_first": target_tool == "chroma_sync_execute"}
     elif target_tool == "gmail_search":
         hint["args_hint"] = {"query": "in:inbox", "max_results": 5}
     elif target_tool == "google_drive_list":
@@ -535,6 +568,12 @@ def _wants_vps(lowered: str) -> bool:
     return "server" in lowered and any(marker in lowered for marker in ("login", "deploy", "sync", "ssh", "vps"))
 
 
+def _wants_chroma_sync(lowered: str) -> bool:
+    if not any(marker in lowered for marker in CHROMA_SYNC_MARKERS):
+        return False
+    return any(marker in lowered for marker in ("vps", "remote", "server", "sync", "synchroniseer", "merge", "versmelt", "verbonden", "verbind"))
+
+
 def _wants_vps_login_check(lowered: str) -> bool:
     return any(marker in lowered for marker in ("login check", "check login", "ssh check", "ssh status", "kan ik inloggen", "login status")) or (
         "login" in lowered and any(marker in lowered for marker in ("check", "controleer", "status"))
@@ -545,6 +584,12 @@ def _wants_vps_execute(lowered: str) -> bool:
     if any(marker in lowered for marker in ("dry-run", "dry run", "preview", "voorvertoning", "plan", "toon")):
         return False
     return any(marker in lowered for marker in ("execute", "voer uit", "echt sync", "werkelijk sync", "deploy now", "deploy nu", "publiceer", "sync execute"))
+
+
+def _wants_chroma_execute(lowered: str) -> bool:
+    if any(marker in lowered for marker in ("dry-run", "dry run", "preview", "voorvertoning", "plan", "toon")):
+        return False
+    return any(marker in lowered for marker in ("execute", "voer uit", "merge", "versmelt", "sync execute", "echt sync", "synchroniseer"))
 
 
 def _github_private_context(lowered: str) -> bool:

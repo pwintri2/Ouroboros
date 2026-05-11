@@ -624,6 +624,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   roo: "Roo Code Agent",
   openai: "ChatGPT Pro",
   anthropic: "Claude Opus",
+  deepseek: "DeepSeek API",
   xai: "Grok",
   mistral: "Mistral",
   google: "Gemini",
@@ -634,8 +635,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   groq: "Groq Legacy",
 };
 
-const CANONICAL_PROVIDERS = ["ouroboros", "ollama", "roo", "openai", "anthropic", "xai", "mistral", "google"];
-const API_KEY_PROVIDERS = ["openai", "anthropic", "xai", "mistral", "google", "brave"];
+const CANONICAL_PROVIDERS = ["ouroboros", "ollama", "roo", "openai", "anthropic", "deepseek", "xai", "mistral", "google"];
+const API_KEY_PROVIDERS = ["openai", "anthropic", "deepseek", "xai", "mistral", "google", "brave"];
 const API_REQUEST_TIMEOUT_MS = 30_000;
 const CHAT_REQUEST_TIMEOUT_MS = 90_000;
 
@@ -1605,6 +1606,24 @@ export default function App() {
   const agentJobTerminalStatuses = new Set(["completed", "failed", "cancelled"]);
   const deepseekCapability = externalCapabilities.capabilities?.deepseek;
   const atlasCapability = externalCapabilities.capabilities?.atlas;
+  const deepseekCapabilityStatus = capabilityStatusLabel(deepseekCapability?.status);
+  const atlasCapabilityStatus = capabilityStatusLabel(atlasCapability?.status);
+  const agentShortcuts: Array<{ label: string; slash: string; icon: ReactNode; value: string; ok: boolean }> = [
+    {
+      label: "Roo Code",
+      slash: "/roo",
+      icon: <Bot size={15} />,
+      value: status.roo_adapter?.available ? "online" : status.roo_adapter?.status ?? "unknown",
+      ok: !!status.roo_adapter?.available,
+    },
+    {
+      label: "DeepSeek",
+      slash: "/deepseek",
+      icon: <Layers size={15} />,
+      value: deepseekCapabilityStatus,
+      ok: capabilityStatusOk(deepseekCapability?.status),
+    },
+  ];
   const runtimeDoctorStatus = runtimeDoctor.status ?? "unknown";
   const runtimeDoctorOk = runtimeDoctorStatus === "ready";
   const runtimeDoctorBlockers = Array.isArray(runtimeDoctor.blockers) ? runtimeDoctor.blockers.slice(0, 3) : [];
@@ -1631,6 +1650,25 @@ export default function App() {
               {item.icon}
               <span>{item.label}</span>
               <em>{item.hint}</em>
+            </button>
+          ))}
+        </div>
+
+        <div className="agent-shortcuts">
+          {agentShortcuts.map((item) => (
+            <button
+              className={item.ok ? "online" : "warn"}
+              key={item.slash}
+              onClick={() => {
+                setActiveTab("chat");
+                insertSlash(item.slash);
+              }}
+              title={`${item.slash} ${item.value}`}
+              type="button"
+            >
+              {item.icon}
+              <span>{item.label}</span>
+              <em>{item.value}</em>
             </button>
           ))}
         </div>
@@ -1731,14 +1769,14 @@ export default function App() {
           <StatusPill
             icon={<Layers size={16} />}
             label="DeepSeek"
-            value={deepseekCapability?.status ?? "unknown"}
-            ok={deepseekCapability?.status === "available"}
+            value={deepseekCapabilityStatus}
+            ok={capabilityStatusOk(deepseekCapability?.status)}
           />
           <StatusPill
             icon={<FolderTree size={16} />}
             label="Atlas"
-            value={atlasCapability?.status ?? "unknown"}
-            ok={atlasCapability?.status === "available"}
+            value={atlasCapabilityStatus}
+            ok={capabilityStatusOk(atlasCapability?.status)}
           />
         </header>
 
@@ -2177,7 +2215,7 @@ export default function App() {
         )}
 
         {activeTab === "context" && (
-          <ContextPanel api={api} contextData={contextData} />
+          <ContextPanel api={api} contextData={contextData} approval={approval} approvalReady={approvalReady} />
         )}
 
       </section>
@@ -2474,6 +2512,14 @@ function StatusPill({ icon, label, value, ok }: { icon: React.ReactNode; label: 
       <strong>{value}</strong>
     </div>
   );
+}
+
+function capabilityStatusOk(status?: string) {
+  return ["available", "configured", "detected", "pattern_catalog"].includes(String(status || ""));
+}
+
+function capabilityStatusLabel(status?: string) {
+  return status === "pattern_catalog" ? "catalog" : status ?? "unknown";
 }
 
 function PanelHeader({ title, small = false }: { title: string; small?: boolean }) {
@@ -2940,7 +2986,7 @@ function QuantumFoamPanel({
   );
 }
 
-function Fact({ label, value, state }: { label: string; value: string; state?: string }) {
+function Fact({ label, value, state }: { label: string; value: ReactNode; state?: string }) {
   return (
     <div className="fact-row">
       <span>{label}</span>
@@ -4014,13 +4060,40 @@ function ProjectionPlot({ points }: { points: any[] }) {
   );
 }
 
-function ContextPanel({ api, contextData }: { api: any; contextData: any }) {
+function ContextPanel({ api, contextData, approval, approvalReady }: { api: any; contextData: any; approval: string; approvalReady: boolean }) {
   const [fileTree, setFileTree] = useState<any>(null);
   const [changedFiles, setChangedFiles] = useState<any>(null);
+  const [localContext, setLocalContext] = useState<any>(null);
+  const [bridgeContext, setBridgeContext] = useState<any>(null);
+  const [vpsStatus, setVpsStatus] = useState<any>(null);
+  const [vpsResult, setVpsResult] = useState<any>(null);
+  const [vpsBusy, setVpsBusy] = useState(false);
+  const [chromaSyncStatus, setChromaSyncStatus] = useState<any>(null);
+  const [chromaSyncResult, setChromaSyncResult] = useState<any>(null);
+  const [chromaSyncBusy, setChromaSyncBusy] = useState(false);
+  const [syncSourcePath, setSyncSourcePath] = useState("");
+  const [syncRemotePath, setSyncRemotePath] = useState("");
+
+  const currentBridgeContext = bridgeContext ?? (contextData?.via_bridge ? contextData : null);
+  const currentLocalContext = localContext ?? (!contextData?.via_bridge ? contextData : null);
+
+  useEffect(() => {
+    loadContextSummaries().catch(() => undefined);
+    loadVpsStatus().catch(() => undefined);
+  }, []);
+
+  async function loadContextSummaries() {
+    const [local, bridge] = await Promise.allSettled([
+      api("/context/summary?source=local"),
+      api("/context/summary?source=bridge"),
+    ]);
+    if (local.status === "fulfilled") setLocalContext(local.value);
+    if (bridge.status === "fulfilled") setBridgeContext(bridge.value);
+  }
 
   async function loadFileTree() {
     try {
-      const data = await api("/context/file_tree?max_depth=2&limit=100");
+      const data = await api("/context/file_tree?max_depth=2&limit=100&source=local");
       setFileTree(data);
     } catch (error) {
       console.error("Failed to load file tree:", error);
@@ -4029,20 +4102,138 @@ function ContextPanel({ api, contextData }: { api: any; contextData: any }) {
 
   async function loadChangedFiles() {
     try {
-      const data = await api("/context/changed_files?limit=20");
+      const data = await api("/context/changed_files?limit=20&source=local");
       setChangedFiles(data);
     } catch (error) {
       console.error("Failed to load changed files:", error);
     }
   }
 
+  async function loadVpsStatus() {
+    const data = await api("/agent/tool", {
+      method: "POST",
+      body: JSON.stringify({ tool_name: "vps_status", args: {} }),
+    });
+    setVpsStatus(data);
+    return data;
+  }
+
+  async function runVpsTool(toolName: "vps_login_check" | "vps_sync_preview" | "vps_sync_execute" | "vps_ui_sync_preview" | "vps_ui_sync_execute") {
+    setVpsBusy(true);
+    try {
+      const args: Record<string, unknown> = {};
+      if (toolName === "vps_sync_preview" || toolName === "vps_sync_execute") {
+        args.source_path = syncSourcePath;
+        args.remote_path = syncRemotePath;
+        args.timeout_seconds = 120;
+      }
+      if (toolName === "vps_ui_sync_preview" || toolName === "vps_ui_sync_execute") {
+        args.remote_path = syncRemotePath;
+        args.timeout_seconds = 180;
+      }
+      if (toolName === "vps_sync_execute" || toolName === "vps_ui_sync_execute") args.approval = approval;
+      if (toolName === "vps_ui_sync_execute") args.build_first = true;
+      const data = await api("/agent/tool", {
+        method: "POST",
+        body: JSON.stringify({ tool_name: toolName, args }),
+        timeoutMs: toolName === "vps_ui_sync_execute" ? 300000 : 180000,
+      });
+      setVpsResult(data);
+      await loadVpsStatus();
+    } finally {
+      setVpsBusy(false);
+    }
+  }
+
+  async function loadChromaSyncStatus() {
+    const data = await api("/agent/tool", {
+      method: "POST",
+      body: JSON.stringify({ tool_name: "chroma_sync_status", args: { timeout_seconds: 45 } }),
+      timeoutMs: 90000,
+    });
+    setChromaSyncStatus(data);
+    return data;
+  }
+
+  async function runChromaSyncTool(toolName: "chroma_sync_preview" | "chroma_sync_execute") {
+    setChromaSyncBusy(true);
+    try {
+      const args: Record<string, unknown> = { timeout_seconds: toolName === "chroma_sync_execute" ? 300 : 120 };
+      if (toolName === "chroma_sync_execute") args.approval = approval;
+      const data = await api("/agent/tool", {
+        method: "POST",
+        body: JSON.stringify({ tool_name: toolName, args }),
+        timeoutMs: toolName === "chroma_sync_execute" ? 420000 : 180000,
+      });
+      setChromaSyncResult(data);
+      await loadChromaSyncStatus();
+    } finally {
+      setChromaSyncBusy(false);
+    }
+  }
+
   return (
     <section className="panel context-panel" style={{ gridColumn: "1 / -1", minHeight: "400px" }}>
       <PanelHeader title="Project Context" />
-      <div className="context-summary">
-        <Fact label="Total Files" value={contextData?.structure?.total_files ?? "--"} />
-        <Fact label="Changed Files" value={contextData?.changed_files?.count ?? "--"} />
-        <Fact label="Test Files" value={contextData?.test_files?.count ?? "--"} />
+      <div className="context-toolbar">
+        <button onClick={loadContextSummaries}><RefreshCw size={15} /> Refresh Context</button>
+        <span>{currentBridgeContext?.via_bridge ? "Bridge context online" : "Bridge context not active"}</span>
+      </div>
+      <div className="context-compare">
+        <ContextSummaryCard title="Local Backend" data={currentLocalContext} />
+        <ContextSummaryCard title="Host / Bridge" data={currentBridgeContext} />
+      </div>
+
+      <PanelHeader title="VPS Sync" small />
+      <div className="vps-panel">
+        <div className="context-summary">
+          <Fact label="Adapter" value={vpsStatus?.result?.status ?? "--"} state={vpsStatus?.result?.status === "ready" ? "good" : "warn"} />
+          <Fact label="SSH Alias" value={vpsStatus?.result?.profile?.ssh_host_alias || "not configured"} />
+          <Fact label="Remote Root" value={vpsStatus?.result?.remote_target ?? "/var/www/philip-wintrip.nl/html/Ouroboros/"} />
+          <Fact label="Env File" value={vpsStatus?.result?.env_file?.exists ? "present" : "missing"} state={vpsStatus?.result?.env_file?.exists ? "good" : "warn"} />
+        </div>
+        <div className="vps-reason">{vpsStatus?.result?.reason ?? vpsStatus?.result?.setup_hint ?? "VPS status nog niet geladen."}</div>
+        <div className="vps-inputs">
+          <label>
+            Source path
+            <input value={syncSourcePath} onChange={(event) => setSyncSourcePath(event.target.value)} placeholder="blank = WintripAI workspace" />
+          </label>
+          <label>
+            Remote child path
+            <input value={syncRemotePath} onChange={(event) => setSyncRemotePath(event.target.value)} placeholder="blank = fixed Ouroboros root" />
+          </label>
+        </div>
+        <div className="vps-actions">
+          <button onClick={loadVpsStatus} disabled={vpsBusy}><RefreshCw size={15} /> Status</button>
+          <button onClick={() => runVpsTool("vps_login_check")} disabled={vpsBusy}><KeyRound size={15} /> Login Check</button>
+          <button onClick={() => runVpsTool("vps_sync_preview")} disabled={vpsBusy}><ShieldCheck size={15} /> Dry-run Sync</button>
+          <button onClick={() => runVpsTool("vps_sync_execute")} disabled={vpsBusy || !approvalReady}><Rocket size={15} /> Execute Sync</button>
+        </div>
+        <div className="vps-actions secondary">
+          <button onClick={() => runVpsTool("vps_ui_sync_preview")} disabled={vpsBusy}><ShieldCheck size={15} /> UI Dry-run</button>
+          <button onClick={() => runVpsTool("vps_ui_sync_execute")} disabled={vpsBusy || !approvalReady}><Rocket size={15} /> UI Execute</button>
+          <span>UI Execute bouwt eerst <strong>ouroboros_cockpit/dist</strong> en zet alleen die artifact op de VPS webroot.</span>
+        </div>
+        {!approvalReady && <div className="vps-reason">Voor echte sync moet het Akkoord-veld exact op Akkoord staan. Dry-run muteert niets.</div>}
+        {vpsResult && <pre className="vps-result">{JSON.stringify(vpsResult, null, 2)}</pre>}
+      </div>
+
+      <PanelHeader title="Chroma Merge" small />
+      <div className="vps-panel">
+        <div className="context-summary">
+          <Fact label="Sync" value={chromaSyncStatus?.result?.status ?? "--"} state={chromaSyncStatus?.result?.status === "ready" || chromaSyncStatus?.status === "success" ? "good" : "warn"} />
+          <Fact label="Local Mode" value={chromaSyncStatus?.result?.local?.mode ?? "--"} />
+          <Fact label="Remote Mode" value={chromaSyncStatus?.result?.remote?.mode ?? "--"} />
+          <Fact label="Collections" value={`${chromaSyncStatus?.result?.config?.collections?.length ?? 0}`} />
+        </div>
+        <div className="vps-reason">Preview vergelijkt IDs/content-hashes. Merge verplaatst wel geheugenrecords over SSH, maar de tooloutput toont alleen tellingen.</div>
+        <div className="vps-actions">
+          <button onClick={loadChromaSyncStatus} disabled={chromaSyncBusy}><Database size={15} /> Chroma Status</button>
+          <button onClick={() => runChromaSyncTool("chroma_sync_preview")} disabled={chromaSyncBusy}><ShieldCheck size={15} /> Chroma Preview</button>
+          <button onClick={() => runChromaSyncTool("chroma_sync_execute")} disabled={chromaSyncBusy || !approvalReady}><Rocket size={15} /> Chroma Merge</button>
+        </div>
+        {!approvalReady && <div className="vps-reason">Voor Chroma Merge moet het Akkoord-veld exact op Akkoord staan.</div>}
+        {chromaSyncResult && <pre className="vps-result">{JSON.stringify(chromaSyncResult, null, 2)}</pre>}
       </div>
 
       <PanelHeader title="File Tree" small />
@@ -4057,5 +4248,23 @@ function ContextPanel({ api, contextData }: { api: any; contextData: any }) {
         <pre className="changed-files">{JSON.stringify(changedFiles, null, 2)}</pre>
       )}
     </section>
+  );
+}
+
+function ContextSummaryCard({ title, data }: { title: string; data: any }) {
+  const source = data?.resolved_source ?? (data?.via_bridge ? "bridge" : data ? "local" : "--");
+  const bridgeFallback = data?.bridge_unavailable ? "host bridge fallback" : source;
+  return (
+    <div className="context-source-card">
+      <h3>{title}</h3>
+      <div className="context-summary">
+        <Fact label="Source" value={bridgeFallback} state={source === "bridge" ? "good" : data?.bridge_unavailable ? "warn" : undefined} />
+        <Fact label="Root" value={data?.project_root ?? data?.root ?? "--"} />
+        <Fact label="Total Files" value={data?.structure?.total_files ?? "--"} />
+        <Fact label="Changed Files" value={data?.changed_files?.count ?? "--"} />
+        <Fact label="Test Files" value={data?.test_files?.count ?? "--"} />
+      </div>
+      {data?.reason && <div className="vps-reason">{data.reason}</div>}
+    </div>
   );
 }

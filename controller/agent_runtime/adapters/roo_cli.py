@@ -279,15 +279,82 @@ def _bridge_post(path: str, body: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _bridge_config() -> tuple[str, str]:
-    base_url = str(os.getenv("WINTRIP_RCLONE_BRIDGE_URL") or "").rstrip("/")
-    token_path = os.getenv("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH")
-    if not base_url or not token_path:
+    token_path = _bridge_token_path()
+    if not token_path:
         return "", ""
     try:
         token = Path(token_path).read_text(encoding="utf-8").strip()
     except Exception:
         token = ""
-    return base_url, token
+    if not token:
+        return "", ""
+    for base_url in _bridge_url_candidates():
+        if _bridge_url_reachable(base_url, token):
+            return base_url, token
+    return "", ""
+
+
+def _bridge_token_path() -> str:
+    configured = str(os.getenv("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH") or "").strip()
+    candidates = [
+        configured,
+        "/workspace/.secrets/rclone_bridge_token",
+        str(Path.cwd() / ".secrets" / "rclone_bridge_token"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return configured
+
+
+def _bridge_url_candidates() -> list[str]:
+    configured = str(os.getenv("WINTRIP_RCLONE_BRIDGE_URL") or "").strip().rstrip("/")
+    candidates: list[str] = []
+    if configured:
+        candidates.append(configured)
+    if _vps_static_runtime():
+        candidates.extend(
+            [
+                "http://127.0.0.1:18766",
+                "http://172.17.0.1:18766",
+                "http://host.docker.internal:18766",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                "http://127.0.0.1:8766",
+                "http://127.0.0.1:8767",
+                "http://host.docker.internal:8766",
+            ]
+        )
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        value = candidate.rstrip("/")
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _bridge_url_reachable(base_url: str, token: str) -> bool:
+    try:
+        request = urllib.request.Request(
+            f"{base_url.rstrip('/')}/roo/status",
+            headers={"X-Ouroboros-Bridge-Token": token},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return isinstance(payload, dict) and bool(payload.get("status"))
+    except Exception:
+        return False
+
+
+def _vps_static_runtime() -> bool:
+    root = Path("/workspace")
+    return bool(Path("/.dockerenv").exists() and (root / "Cockpit.html").exists() and (root / "assets").exists())
 
 
 __all__ = ["roo_cloud_auth_status", "roo_login", "roo_models", "roo_status", "run_roo_job"]

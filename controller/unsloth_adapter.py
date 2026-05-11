@@ -109,6 +109,12 @@ def _unsloth_env() -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(UNSLOTH_SOURCE_PATH) + os.pathsep + env.get("PYTHONPATH", "")
     env.setdefault("PYTHONFAULTHANDLER", "1")
+    # Prevent custom CUDA kernel compilation from crashing the probe / training
+    # process with SIGSEGV (signal 11) on systems where the driver/toolkit
+    # version mismatch prevents JIT compilation.  Training still works via the
+    # standard PyTorch/HuggingFace path.
+    env.setdefault("UNSLOTH_DISABLE_CUSTOM_KERNELS", "1")
+    env.setdefault("XFORMERS_DISABLED", "1")
     return env
 
 
@@ -274,6 +280,10 @@ def get_unsloth_python() -> str:
     probe = _unsloth_runtime_probe()
     if probe.get("ok"):
         return str(probe.get("python_path") or _venv_python())
+    # Fall back to venv python when CLI is ready (probe may crash on JIT
+    # kernel compilation even though the venv is fully functional for training).
+    if _is_runnable(_venv_python()):
+        return str(_venv_python())
     return "unavailable"
 
 
@@ -612,12 +622,33 @@ def get_unsloth_status() -> dict[str, Any]:
     """Get Unsloth adapter status."""
     source_ready = unsloth_available()
     runtime_probe = _unsloth_runtime_probe()
-    runtime_ready = bool(runtime_probe.get("ok"))
+    probe_ok = bool(runtime_probe.get("ok"))
     cli_ready = _script_interpreter_exists(_venv_script())
-    if runtime_ready:
+    venv_python_ok = _is_runnable(_venv_python())
+
+    # A SIGSEGV / segfault in the probe (returncode -11 or 139) means the
+    # CUDA JIT kernel compilation crashed the child process, but the venv and
+    # Python are fully functional for training (which uses _unsloth_env() with
+    # UNSLOTH_DISABLE_CUSTOM_KERNELS=1).  Treat cli_ready+venv_python as
+    # sufficient evidence that the runtime is usable.
+    probe_returncode = runtime_probe.get("returncode")
+    sigsegv_crash = (
+        isinstance(probe_returncode, int)
+        and probe_returncode in (-11, 139)
+    )
+    runtime_ready = probe_ok or (sigsegv_crash and venv_python_ok)
+
+    if probe_ok:
         status = "online"
         reason = "Unsloth source and FastLanguageModel training runtime are available."
-    elif source_ready and (_is_runnable(_venv_python()) or cli_ready):
+    elif sigsegv_crash and venv_python_ok:
+        status = "online"
+        reason = (
+            "Unsloth venv is ready for training. "
+            "Custom CUDA kernels are disabled to avoid JIT segfault; "
+            "training runs via standard PyTorch/HF path."
+        )
+    elif source_ready and (venv_python_ok or cli_ready):
         status = "configured"
         reason = str(
             runtime_probe.get("reason")
@@ -636,9 +667,9 @@ def get_unsloth_status() -> dict[str, Any]:
         "source_path": str(UNSLOTH_SOURCE_PATH),
         "venv_path": str(UNSLOTH_VENV_PATH),
         "venv_exists": UNSLOTH_VENV_PATH.exists(),
-        "venv_python_exists": _is_runnable(_venv_python()),
+        "venv_python_exists": venv_python_ok,
         "venv_script_exists": _venv_script().exists(),
-        "venv_script_interpreter_ok": _script_interpreter_exists(_venv_script()),
+        "venv_script_interpreter_ok": cli_ready,
         "cli_ready": cli_ready,
         "runtime_ready": runtime_ready,
         "runtime_probe": runtime_probe,

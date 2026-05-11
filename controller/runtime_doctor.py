@@ -91,8 +91,9 @@ def runtime_doctor_payload(
 
 def runtime_defaults(*, backend_url: str | None = None, preview_url: str | None = None, bridge_url: str | None = None) -> dict[str, str]:
     in_docker = Path("/.dockerenv").exists()
-    default_preview = "http://host.docker.internal:1420" if in_docker else "http://127.0.0.1:1420"
-    default_bridge = "http://host.docker.internal:8766" if in_docker else "http://127.0.0.1:8766"
+    vps_static = _vps_static_runtime()
+    default_preview = "vps-static://Ouroboros/Cockpit.html" if vps_static else ("http://host.docker.internal:1420" if in_docker else "http://127.0.0.1:1420")
+    default_bridge = "vps-optional://host-bridge" if vps_static else ("http://host.docker.internal:8766" if in_docker else "http://127.0.0.1:8766")
     return {
         "backend_url": _strip_slash(backend_url or os.getenv("WINTRIP_BACKEND_URL") or "http://127.0.0.1:8010"),
         "preview_url": _strip_slash(_docker_reachable_url(preview_url or os.getenv("WINTRIP_WEB_PREVIEW_URL") or default_preview, in_docker=in_docker)),
@@ -297,6 +298,14 @@ def _check_docker_runner() -> dict[str, Any]:
     - a safe read-only container listing can be prepared
     - fails closed if Docker is unavailable
     """
+    if _vps_static_runtime() and not shutil.which("docker"):
+        return {
+            "status": "online",
+            "reason": "VPS public backend runs inside Docker; Docker CLI is not required inside the app container.",
+            "mode": "vps_container",
+            "metadata": {"host_root_equivalent": False, "approval_required": True, "runtime_profile": "vps_static"},
+            "fake_success": False,
+        }
     try:
         from controller.docker_runner import docker_runner_status
 
@@ -408,6 +417,16 @@ def _check_last_smoke_test() -> dict[str, Any]:
 
 
 def _check_web_preview(url: str) -> dict[str, Any]:
+    if str(url or "").startswith("vps-static://"):
+        entrypoint = _workspace_root() / "Cockpit.html"
+        return {
+            "status": "online",
+            "reason": "VPS serves the built Cockpit artifact through nginx; Vite preview is not required.",
+            "url": str(url),
+            "entrypoint": str(entrypoint),
+            "source_hint": entrypoint.exists(),
+            "fake_success": False,
+        }
     result = _http_request(url, timeout=2.5)
     if result.get("status") != "online":
         reason = str(result.get("reason") or f"{url} unreachable")
@@ -440,15 +459,28 @@ def _check_roo_runtime() -> dict[str, Any]:
         available = bool(status.get("available"))
         providers = [str(item) for item in (status.get("supported_cli_providers") or [])]
         ollama_supported = bool(status.get("ollama_cli_supported") or "ollama" in providers)
-        ok = available and ollama_supported
+        ok = available and (ollama_supported or _vps_static_runtime())
+        safe_adapter_status: dict[str, Any] = {}
+        if _vps_static_runtime() and not ok:
+            safe_adapter_status = _safe_roo_adapter_status()
+            ok = bool(safe_adapter_status.get("available"))
         return {
             "status": "online" if ok else "failed",
-            "reason": "Roo CLI reachable and Ollama provider supported" if ok else str(status.get("reason") or "Roo CLI is unavailable or stale; /roo/status must work and include ollama support"),
+            "reason": (
+                "Roo safe Python adapters are available in the VPS backend; host Roo CLI bridge is optional here."
+                if ok and _vps_static_runtime() and (safe_adapter_status or not ollama_supported)
+                else "Roo CLI reachable and Ollama provider supported"
+                if ok
+                else str(status.get("reason") or "Roo CLI is unavailable or stale; /roo/status must work and include ollama support")
+            ),
             "root": status.get("root"),
+            "source": status.get("source") or safe_adapter_status.get("source"),
             "binary": status.get("binary"),
             "via_bridge": status.get("via_bridge"),
             "supported_cli_providers": providers,
             "ollama_cli_supported": ollama_supported,
+            "safe_adapter_available": bool(safe_adapter_status.get("available")),
+            "adapter_type": status.get("adapter_type") or safe_adapter_status.get("adapter_type"),
             "secrets_returned": False,
             "fake_success": False,
         }
@@ -456,7 +488,31 @@ def _check_roo_runtime() -> dict[str, Any]:
         return {"status": "failed", "reason": str(exc), "secrets_returned": False, "fake_success": False}
 
 
+def _safe_roo_adapter_status() -> dict[str, Any]:
+    try:
+        from controller.roo_tools import roo_tools_status
+
+        status = roo_tools_status()
+        return status if isinstance(status, dict) else {}
+    except Exception:
+        try:
+            from controller.roo_manifest import get_roo_status
+
+            status = get_roo_status()
+            return status if isinstance(status, dict) else {}
+        except Exception:
+            return {}
+
+
 def _check_host_bridge(url: str) -> dict[str, Any]:
+    if str(url or "").startswith("vps-optional://"):
+        return {
+            "status": "online",
+            "reason": "Host bridge is optional for the public VPS backend; Docker serves the backend directly.",
+            "url": str(url),
+            "secrets_returned": False,
+            "fake_success": False,
+        }
     token_path = Path(os.getenv("WINTRIP_RCLONE_BRIDGE_TOKEN_PATH") or (_workspace_root() / ".secrets" / "rclone_bridge_token")).expanduser()
     try:
         token = token_path.read_text(encoding="utf-8").strip()
@@ -554,6 +610,11 @@ def _workspace_root() -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return Path(__file__).resolve().parents[1]
+
+
+def _vps_static_runtime() -> bool:
+    root = _workspace_root()
+    return bool(Path("/.dockerenv").exists() and (root / "Cockpit.html").exists() and (root / "assets").exists())
 
 
 def _strip_slash(value: str) -> str:

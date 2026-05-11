@@ -18,6 +18,13 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 try:
+    from controller.ouroboros_paths import roo_code_path
+except Exception:
+    def roo_code_path() -> Path:
+        configured = os.getenv("WINTRIP_ROO_CODE_PATH") or os.getenv("WINTRIP_ROO_PATH") or DEFAULT_ROO_PATH
+        return Path(configured).expanduser().resolve()
+
+try:
     from controller.safe_shell import workspace_root
 except Exception:
     def workspace_root() -> Path:
@@ -69,7 +76,7 @@ def codex_path() -> Path:
 
 
 def roo_path() -> Path:
-    return Path(os.getenv("WINTRIP_ROO_CODE_PATH") or os.getenv("WINTRIP_ROO_PATH") or DEFAULT_ROO_PATH).expanduser().resolve()
+    return roo_code_path()
 
 
 def build_chat_context(

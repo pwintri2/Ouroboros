@@ -53,6 +53,29 @@ class TestSubscriptionStoreBasics(unittest.TestCase):
         path = subscription_store_path()
         self.assertEqual(str(path), self.store_path)
 
+    def test_default_store_path_prefers_current_workspace_over_host_workspace_mount(self):
+        from controller.subscription_store import subscription_store_path
+
+        previous = Path.cwd()
+        with tempfile.TemporaryDirectory(prefix="subscription-cwd-") as tmp:
+            with patch.dict(
+                os.environ,
+                {
+                    "WINTRIP_SUBSCRIPTION_STORE": "",
+                    "OUROBOROS_SUBSCRIPTION_STORE": "",
+                    "WINTRIP_WORKSPACE": "",
+                    "WORKSPACE_ROOT": "",
+                    "WINTRIP_PROJECT_ROOT": "",
+                },
+                clear=False,
+            ):
+                os.chdir(tmp)
+                try:
+                    expected = Path(tmp, ".secrets", "ouroboros_subscriptions.json").resolve()
+                    self.assertEqual(subscription_store_path(), expected)
+                finally:
+                    os.chdir(previous)
+
     def test_normalize_provider(self):
         from controller.subscription_store import normalize_subscription_provider
 
@@ -63,6 +86,9 @@ class TestSubscriptionStoreBasics(unittest.TestCase):
         self.assertEqual(normalize_subscription_provider("claude-pro"), "anthropic")
         self.assertEqual(normalize_subscription_provider("gemini"), "google")
         self.assertEqual(normalize_subscription_provider("gemini-advanced"), "google")
+        self.assertEqual(normalize_subscription_provider("deepseek"), "deepseek")
+        self.assertEqual(normalize_subscription_provider("deepseek-chat"), "deepseek")
+        self.assertEqual(normalize_subscription_provider("deekseek"), "deepseek")
         self.assertEqual(normalize_subscription_provider("grok"), "xai")
 
         with self.assertRaises(ValueError):
@@ -108,6 +134,27 @@ class TestSubscriptionStoreBasics(unittest.TestCase):
 
         status = subscription_status()
         self.assertIn(status["openai"]["status"], ("active", "configured"))
+
+    def test_save_deepseek_api_key_subscription(self):
+        from controller.subscription_store import (
+            save_subscription,
+            subscription_api_key_for_provider,
+            subscription_status,
+        )
+
+        result = save_subscription(
+            "deepseek-chat",
+            auth_mode="api_key_from_subscription",
+            api_key="sk-deepseek-test-1234567890",
+            plan_label="DeepSeek API",
+        )
+
+        self.assertEqual(result["provider"], "deepseek")
+        self.assertTrue(result["api_key_ready"])
+        self.assertIn("deepseek-v4-flash", result["models"])
+        self.assertEqual(result["api_key_url"], "https://platform.deepseek.com/api_keys")
+        self.assertEqual(subscription_api_key_for_provider("deepseek"), "sk-deepseek-test-1234567890")
+        self.assertNotIn("sk-deepseek-test-1234567890", json.dumps(subscription_status()))
 
     def test_save_subscription_session_token(self):
         from controller.subscription_store import save_subscription

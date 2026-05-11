@@ -57,6 +57,28 @@ SUBSCRIPTION_PROVIDERS: dict[str, dict[str, Any]] = {
         "api_key_url": "https://console.anthropic.com/settings/keys",
         "docs_url": "https://docs.anthropic.com/en/api/getting-started",
     },
+    "deepseek": {
+        "id": "deepseek",
+        "label": "DeepSeek API Credits",
+        "aliases": (
+            "deepseek-api",
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "deep-seek",
+            "deekseek",
+        ),
+        "api_family": "openai_chat",
+        "auth_modes": ("api_key_from_subscription",),
+        "models": [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
+        "subscription_url": "https://platform.deepseek.com/",
+        "api_key_url": "https://platform.deepseek.com/api_keys",
+        "docs_url": "https://api-docs.deepseek.com/",
+    },
     "google": {
         "id": "google",
         "label": "Gemini Advanced / Google One AI",
@@ -147,9 +169,10 @@ def subscription_store_path() -> Path:
     configured = os.getenv("WINTRIP_SUBSCRIPTION_STORE") or os.getenv("OUROBOROS_SUBSCRIPTION_STORE")
     if configured:
         return Path(configured).expanduser().resolve()
-    workspace = Path(os.getenv("WINTRIP_WORKSPACE") or os.getenv("WORKSPACE_ROOT") or "/workspace")
+    workspace_hint = os.getenv("WINTRIP_WORKSPACE") or os.getenv("WORKSPACE_ROOT") or os.getenv("WINTRIP_PROJECT_ROOT")
+    workspace = Path(workspace_hint).expanduser() if workspace_hint else Path.cwd()
     if not workspace.exists():
-        workspace = Path(os.getenv("WINTRIP_PROJECT_ROOT") or Path.cwd())
+        workspace = Path.cwd()
     return (workspace / ".secrets" / "ouroboros_subscriptions.json").resolve()
 
 

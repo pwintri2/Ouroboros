@@ -14,10 +14,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from controller.ouroboros_paths import atlas_path, deepseek_path, roo_code_path
+
 
 DEFAULT_AGENT_ROOTS: dict[str, str] = {
     "agents": "/home/pwintri2/AgentS",
     "openhands": "/home/pwintri2/OpenHands",
+    "roo": "/home/pwintri2/Roo-code",
     "deepseek": "/home/pwintri2/deepseek",
     "atlas": "/home/pwintri2/atlas",
 }
@@ -83,8 +86,9 @@ def _configured_agent_roots() -> dict[str, str]:
     return {
         "agents": str(os.getenv("WINTRIP_AGENTS_PATH") or DEFAULT_AGENT_ROOTS["agents"]),
         "openhands": str(os.getenv("WINTRIP_OPENHANDS_PATH") or DEFAULT_AGENT_ROOTS["openhands"]),
-        "deepseek": str(os.getenv("WINTRIP_DEEPSEEK_PATH") or DEFAULT_AGENT_ROOTS["deepseek"]),
-        "atlas": str(os.getenv("WINTRIP_ATLAS_PATH") or DEFAULT_AGENT_ROOTS["atlas"]),
+        "roo": str(roo_code_path()),
+        "deepseek": str(deepseek_path()),
+        "atlas": str(atlas_path()),
     }
 
 
@@ -146,6 +150,20 @@ def _scan_root(name: str, root: Path) -> dict[str, Any]:
         "fake_success": False,
     }
     if not exists:
+        if name == "deepseek":
+            result["status"] = "pattern_catalog"
+            result["role_taxonomy"] = list(DEEPSEEK_ROLE_TAXONOMY)
+            result["agentic_patterns"] = list(DEEPSEEK_AGENTIC_PATTERNS)
+            result["safe_notes"].append("DeepSeek root is niet gemount, maar de ingebedde DeepSeek agentische patronen zijn beschikbaar voor planning.")
+            result["reason"] = "DeepSeek source root is not mounted in this runtime; embedded pattern catalog is available."
+            return result
+        if name == "atlas":
+            result["status"] = "pattern_catalog"
+            result["role_taxonomy"] = list(ATLAS_ROLE_TAXONOMY)
+            result["agentic_patterns"] = list(ATLAS_AGENTIC_PATTERNS)
+            result["safe_notes"].append("Atlas root is niet gemount, maar de ingebedde Atlas SDD/agent-crew patronen zijn beschikbaar voor planning.")
+            result["reason"] = "Atlas source root is not mounted in this runtime; embedded pattern catalog is available."
+            return result
         result["safe_notes"].append("Root bestaat niet op deze host.")
         return result
 
@@ -163,7 +181,20 @@ def _scan_root(name: str, root: Path) -> dict[str, Any]:
         _add_if_exists(result, root / "start_openhands.sh", "script", "start_openhands.sh")
         _add_if_exists(result, root / "config.template.toml", "template", "config.template.toml")
         result["safe_notes"].append("Bruikbaar als OpenHands runtime/skills capability; configs en cache worden niet gelezen.")
+    elif name == "roo":
+        _add_if_exists(result, root / "package.json", "manifest", "Roo package")
+        _add_if_exists(result, root / "apps" / "cli", "package", "apps/cli")
+        _add_if_exists(result, root / "webview-ui", "package", "webview-ui")
+        _add_if_exists(result, root / "src", "directory", "src")
+        _add_if_exists(result, root / ".roomodes", "config", ".roomodes")
+        _add_if_exists(result, root / "AGENTS.md", "doc", "AGENTS.md")
+        _add_if_exists(result, root / "README.md", "doc", "README.md")
+        result["safe_notes"].append("Bruikbaar als Roo Code bron, CLI-context en veilige read/list/search root; secrets en lokale auth worden niet gelezen.")
     elif name == "deepseek":
+        _add_if_exists(result, root / "README.md", "doc", "README.md")
+        _add_if_exists(result, root / "docs", "directory", "docs")
+        _add_if_exists(result, root / "docs" / "deepseek-tui.md", "doc", "DeepSeek TUI guide")
+        _add_if_exists(result, root / "docs" / "deepcode.md", "doc", "DeepCode guide")
         _add_if_exists(result, root / "docs" / "SUBAGENTS.md", "doc", "DeepSeek sub-agents")
         _add_if_exists(result, root / "docs" / "TOOL_SURFACE.md", "doc", "DeepSeek tool surface")
         _add_if_exists(result, root / "docs" / "ARCHITECTURE.md", "doc", "DeepSeek architecture")

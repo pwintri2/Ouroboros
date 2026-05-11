@@ -43,6 +43,8 @@ APPROVAL_TOOLS = {
     "codex_job_start",
     "resolve_or_build_function",
     "vps_sync_execute",
+    "vps_ui_sync_execute",
+    "chroma_sync_execute",
 }
 DISPATCH_GATED_TOOLS = {
     "gmail_search",
@@ -70,6 +72,11 @@ EXTERNAL_TOOLS = {
     "vps_login_check",
     "vps_sync_preview",
     "vps_sync_execute",
+    "vps_ui_sync_preview",
+    "vps_ui_sync_execute",
+    "chroma_sync_status",
+    "chroma_sync_preview",
+    "chroma_sync_execute",
     "mail_send",
     "social_post_publish",
     "connector_intent_preview",
@@ -88,6 +95,8 @@ MUTATING_TOOLS = {
     "codex_job_start",
     "resolve_or_build_function",
     "vps_sync_execute",
+    "vps_ui_sync_execute",
+    "chroma_sync_execute",
 }
 COMPLETION_STATUSES = {"success", "stored", "completed", "opened", "login_required", "rate_limited", "skipped", "preview"}
 BLOCKING_STATUSES = {"blocked", "rejected", "approval_required"}
@@ -424,8 +433,8 @@ class AgenticProcessor:
             "Vat deze agentische sessie in het Nederlands samen. "
             "Gebruik alleen uitgevoerde toolresultaten en de 11D-pocket context. "
             "Noem approval-blokkades expliciet en claim geen sociale, mail- of shellactie die niet werkelijk is uitgevoerd. "
-            "Voor trein/OV-tijden is ns_travel_advice de leidende bron voor NS en ov9292_travel_advice een officiële-link fallback voor 9292/bus/tram/metro. "
-            "Als ns_travel_advice of ov9292_travel_advice niet authoritative=true is, noem dan geen exacte vertrek- of aankomsttijden; geef de officiële plannerlink en zeg wat er ontbreekt.\n\n"
+            "Voor trein/OV-tijden zijn ns_travel_advice en ov9292_travel_advice alleen leidend wanneer authoritative=true uit zichtbare officiële plannerdata of expliciete opt-in API komt. "
+            "Als authoritative=true ontbreekt, noem dan geen exacte vertrek- of aankomsttijden; geef de officiële plannerlink en zeg wat er ontbreekt.\n\n"
             "Voor VPS deploy/sync is vps_sync_preview de verplichte eerste stap; claim geen deploy als alleen preview, blocked of error is teruggekomen.\n\n"
             "Wanneer agentic_ecosystem_context is gebruikt, benoem concreet welke lokale DeepSeek/Atlas patronen de route verrijken, zonder te claimen dat hun runtimes zelf zijn gestart.\n\n"
             "Quantum Foam Field is tijdelijk: bij collapse_event=true is de essentie samengevat en het veld opgeruimd; claim dan niet dat het actief blijft.\n\n"
@@ -671,6 +680,11 @@ class AgenticProcessor:
                     "vps_login_check",
                     "vps_sync_preview",
                     "vps_sync_execute",
+                    "vps_ui_sync_preview",
+                    "vps_ui_sync_execute",
+                    "chroma_sync_status",
+                    "chroma_sync_preview",
+                    "chroma_sync_execute",
                     "drive_upload_file",
                     "drive_upload_text",
                     "github_status",
@@ -914,8 +928,9 @@ class AgenticProcessor:
             "Maak een veilig JSON-plan voor Agentic Core. Geef uitsluitend JSON terug: "
             '[{"tool":"tool_name","args":{...},"reason":"kort"}]. '
             "Gebruik memory_search eerst wanneer nuttig. Gebruik brave_search voor actuele internetvragen. "
-            "Gebruik ns_travel_advice voor NS/trein-vragen en ov9292_travel_advice voor 9292/bus/tram/metro/reisplanner fallback; Brave-snippets zijn niet betrouwbaar genoeg voor exacte OV-tijden. "
+            "Gebruik ns_travel_advice voor NS/trein-vragen en ov9292_travel_advice voor 9292/bus/tram/metro/reisplanner via officiële plannerpagina's; Brave-snippets zijn niet betrouwbaar genoeg voor exacte OV-tijden. "
             "Gebruik gmail_status/gmail_search voor Gmail status/read-only search, google_drive_status/google_drive_list voor Drive status/read-only listing, github_status/github_repo/github_search_repositories voor publieke GitHub reads, en vps_status/vps_login_check/vps_sync_preview/vps_sync_execute voor VPS deploys. VPS sync/deploy gewone chat moet altijd eerst vps_sync_preview gebruiken; vps_sync_execute mag alleen na exacte Akkoord en nooit als success worden gefaket. Gmail search en Drive list vereisen exact Akkoord; GitHub writes/issues/pushes ontbreken. Gebruik connector_intent_preview alleen voor muterende connectoracties die geen first-class tool hebben. "
+            "Gebruik vps_ui_sync_preview/vps_ui_sync_execute voor gebouwde Cockpit UI deploys en chroma_sync_status/chroma_sync_preview/chroma_sync_execute voor Chroma merges. Chroma execute en UI execute vereisen exact Akkoord en mogen geen raw documenten of secrets teruggeven. "
             "Gebruik agentic_ecosystem_context voor agentische workflowvragen, sub-agents, multi-agent werk, DeepSeek of Atlas context; dit is lokale read-only verrijking zonder approval. "
             "Gebruik read_file/list_files/search_files/write_file/apply_patch/run_command/safe_shell/run_tests/browser_open_url alleen via de ToolBridge-namen. "
             "Als een gevraagde capability niet in de catalogus staat, gebruik resolve_or_build_function; die mag pas bouwen/testen na exact Akkoord. "
@@ -1363,6 +1378,11 @@ def _connector_step_for_goal(goal: str) -> dict[str, Any] | None:
         "vps_login_check",
         "vps_sync_preview",
         "vps_sync_execute",
+        "vps_ui_sync_preview",
+        "vps_ui_sync_execute",
+        "chroma_sync_status",
+        "chroma_sync_preview",
+        "chroma_sync_execute",
     }
     if target_tool not in connector_tools:
         return None
@@ -1412,6 +1432,24 @@ def _connector_step_for_goal(goal: str) -> dict[str, Any] | None:
             "args": _vps_args_for_goal(goal),
             "reason": "guardrail: zelfs execute/deploy intent routeert eerst naar vps_sync_preview; echte sync vereist aparte Akkoord-stap.",
         }
+    if target_tool == "vps_ui_sync_preview":
+        return {
+            "tool": "vps_ui_sync_preview",
+            "args": {"remote_path": "", "timeout_seconds": 120},
+            "reason": "guardrail: UI deploy start met een artifact dry-run; geen mutatie.",
+        }
+    if target_tool == "vps_ui_sync_execute":
+        return {
+            "tool": "vps_ui_sync_preview",
+            "args": {"remote_path": "", "timeout_seconds": 120},
+            "reason": "guardrail: zelfs UI execute intent routeert eerst naar UI dry-run; echte sync vereist aparte Akkoord-stap.",
+        }
+    if target_tool == "chroma_sync_status":
+        return {"tool": "chroma_sync_status", "args": {"timeout_seconds": 45}, "reason": "guardrail: veilige Chroma sync status zonder documenten."}
+    if target_tool == "chroma_sync_preview":
+        return {"tool": "chroma_sync_preview", "args": {"timeout_seconds": 120}, "reason": "guardrail: Chroma merge begint met een niet-muterende preview."}
+    if target_tool == "chroma_sync_execute":
+        return {"tool": "chroma_sync_preview", "args": {"timeout_seconds": 120}, "reason": "guardrail: Chroma execute intent routeert eerst naar preview; echte merge vereist aparte Akkoord-stap."}
     return {
         "tool": "connector_intent_preview",
         "args": {

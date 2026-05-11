@@ -7,6 +7,7 @@ BACKEND_URL="${WINTRIP_BACKEND_URL:-http://127.0.0.1:8010}"
 PREVIEW_URL="${WINTRIP_WEB_PREVIEW_URL:-http://127.0.0.1:1420}"
 BRIDGE_URL="${WINTRIP_RCLONE_BRIDGE_URL_HOST:-http://127.0.0.1:8766}"
 BRIDGE_PORT="${WINTRIP_RCLONE_BRIDGE_PORT:-8766}"
+DOCKER_BRIDGE_URL="${WINTRIP_RCLONE_BRIDGE_URL_DOCKER:-http://host.docker.internal:$BRIDGE_PORT}"
 BACKEND_REFRESH_REQUIRED="${WINTRIP_FORCE_BACKEND_REFRESH:-1}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ouroboros-preview"
 LOG_DIR="$STATE_DIR/logs"
@@ -70,6 +71,7 @@ docker_available() {
 }
 
 compose_up() {
+  export WINTRIP_RCLONE_BRIDGE_URL="$DOCKER_BRIDGE_URL"
   if discover_docker_bin && "$DOCKER_BIN" compose version >/dev/null 2>&1; then
     if (cd "$ROOT" && "$DOCKER_BIN" compose up -d --build chroma ouroboros-backend); then
       return 0
@@ -184,7 +186,22 @@ try:
 except Exception as exc:
     print(exc)
     raise SystemExit(1)
-raise SystemExit(0 if "models" in roo_models else 1)
+if "models" not in roo_models:
+    raise SystemExit(1)
+
+# Endpoint existence check for the VPS UI artifact and Chroma merge bridge.
+# The Chroma status itself may be degraded when SSH/Chroma are not configured;
+# only a missing route means this is a stale bridge process.
+request = urllib.request.Request(base + "/chroma-sync/status?timeout_seconds=10", headers={"X-Ouroboros-Bridge-Token": token})
+try:
+    with urllib.request.urlopen(request, timeout=12) as response:
+        chroma_sync = json.loads(response.read().decode("utf-8") or "{}")
+except Exception as exc:
+    print(exc)
+    raise SystemExit(1)
+if chroma_sync.get("reason") == "not_found":
+    raise SystemExit(1)
+raise SystemExit(0)
 PY
 }
 
@@ -193,6 +210,38 @@ wait_for_url() {
   local attempts="${2:-60}"
   for _ in $(seq 1 "$attempts"); do
     http_ok "$url" && return 0
+    sleep 1
+  done
+  return 1
+}
+
+backend_is_current() {
+  python3 - "$BACKEND_URL" <<'PY'
+import json, sys, urllib.request
+base = sys.argv[1].rstrip("/")
+try:
+    with urllib.request.urlopen(base + "/health", timeout=2.5) as response:
+        if response.status >= 500:
+            raise SystemExit(1)
+    with urllib.request.urlopen(base + "/agent/status", timeout=4.0) as response:
+        data = json.loads(response.read().decode("utf-8") or "{}")
+except Exception as exc:
+    print(exc)
+    raise SystemExit(1)
+tools = set(data.get("available_tools") or [])
+required = {"vps_ui_sync_preview", "vps_ui_sync_execute", "chroma_sync_preview", "chroma_sync_execute"}
+missing = sorted(required - tools)
+if missing:
+    print("backend mist actuele tools: " + ", ".join(missing))
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+wait_for_backend_current() {
+  local attempts="${1:-90}"
+  for _ in $(seq 1 "$attempts"); do
+    backend_is_current && return 0
     sleep 1
   done
   return 1
@@ -219,7 +268,7 @@ refresh_local_backend_pid_file() {
 }
 
 ensure_backend() {
-  if [ "$BACKEND_REFRESH_REQUIRED" != "1" ] && http_ok "$BACKEND_URL/health"; then
+  if [ "$BACKEND_REFRESH_REQUIRED" != "1" ] && backend_is_current; then
     refresh_local_backend_pid_file
     echo "Backend is al bereikbaar."
     return 0
@@ -230,7 +279,7 @@ ensure_backend() {
       [ "$BACKEND_MODE" = "docker" ] && fail "Docker is bereikbaar, maar docker compose kon niet worden gestart."
       echo "Docker is bereikbaar, maar compose startte niet; probeer lokale backend fallback."
     }
-    if wait_for_url "$BACKEND_URL/health" 90; then
+    if wait_for_backend_current 90; then
       return 0
     fi
     [ "$BACKEND_MODE" = "docker" ] && fail "backend route $BACKEND_URL/health werd niet bereikbaar via Docker."
@@ -276,12 +325,12 @@ ensure_local_backend() {
       WINTRIP_HOST_WORKSPACE="$ROOT" \
       WINTRIP_DB_PATH="${WINTRIP_DB_PATH:-$ROOT/wintrip_brain}" \
       WINTRIP_CHROMA_HTTP_URL="${WINTRIP_CHROMA_HTTP_URL:-}" \
-      WINTRIP_RCLONE_BRIDGE_URL="${WINTRIP_RCLONE_BRIDGE_URL:-$BRIDGE_URL}" \
+      WINTRIP_RCLONE_BRIDGE_URL="${WINTRIP_RCLONE_BRIDGE_URL_LOCAL:-$BRIDGE_URL}" \
       WINTRIP_RCLONE_BRIDGE_TOKEN_PATH="${WINTRIP_RCLONE_BRIDGE_TOKEN_PATH:-$TOKEN_PATH}" \
       OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}" \
       "$LOCAL_BACKEND_PYTHON" -m uvicorn controller.main:app --host 0.0.0.0 --port 8010 >"$BACKEND_LOG" 2>&1 < /dev/null
   )
-  if wait_for_url "$BACKEND_URL/health" 90; then
+  if wait_for_backend_current 90; then
     refresh_local_backend_pid_file
     echo "Local backend online."
     return 0
@@ -307,7 +356,7 @@ ensure_host_bridge() {
       fallback_port="$(first_free_bridge_port)" || fail "poort $BRIDGE_PORT is bezet door een oude host bridge en er is geen vrije fallbackpoort gevonden."
       BRIDGE_PORT="$fallback_port"
       BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
-      export WINTRIP_RCLONE_BRIDGE_URL="http://host.docker.internal:$BRIDGE_PORT"
+      DOCKER_BRIDGE_URL="http://host.docker.internal:$BRIDGE_PORT"
       BACKEND_REFRESH_REQUIRED=1
       echo "Gebruik fallback host bridge op $BRIDGE_URL."
     fi

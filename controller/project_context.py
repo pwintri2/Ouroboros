@@ -52,7 +52,21 @@ SECRET_NAME_MARKERS = (
 
 def get_project_root() -> Path:
     """Get the project root directory."""
-    return workspace_root()
+    configured = workspace_root()
+    module_root = Path(__file__).resolve().parents[1]
+    if _looks_like_project_root(configured):
+        return configured
+    if _looks_like_project_root(module_root):
+        return module_root
+    return configured
+
+
+def _looks_like_project_root(path: Path) -> bool:
+    try:
+        root = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    return root.exists() and ((root / ".git").exists() or (root / "controller").exists())
 
 
 def _bridge_get(path: str, query: dict[str, Any] | None = None) -> dict[str, Any] | None:

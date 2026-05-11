@@ -7,7 +7,14 @@ them - the actual adapters live in controller/roo_tools.py.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+try:
+    from controller.ouroboros_paths import roo_code_path
+except Exception:
+    def roo_code_path() -> Path:
+        return Path("/home/pwintri2/Roo-code").expanduser().resolve()
 
 
 # Roo tool names as implemented in controller/roo_tools.py
@@ -46,11 +53,13 @@ ROO_TASK_STATES: tuple[str, ...] = (
 
 def get_roo_status() -> dict[str, Any]:
     """Get Roo adapter status and capability inventory."""
+    source = roo_code_path()
     return {
         "status": "online",
-        "source": "/home/pwintri2/Roo-code",
+        "source": str(source),
         "available": True,
         "adapter_type": "local_python",
+        "root_exists": source.exists(),
         "tools": {
             "file_operations": [
                 {

@@ -18,6 +18,12 @@ from typing import Any, Iterable
 from controller.safe_shell import run_safe_shell, workspace_root
 
 try:
+    from controller.ouroboros_paths import deepseek_path
+except Exception:
+    def deepseek_path() -> Path:
+        return Path(os.getenv("WINTRIP_DEEPSEEK_PATH") or "/home/pwintri2/deepseek").expanduser().resolve()
+
+try:
     from controller.ouroboros_self_context import codex_path, roo_path, ruflo_path
 except Exception:
     def ruflo_path() -> Path:
@@ -59,8 +65,9 @@ def roo_tools_status() -> dict[str, Any]:
             "ruflo": str(ruflo_path()),
             "roo": str(roo_path()),
             "codex": str(codex_path()),
+            "deepseek": str(deepseek_path()),
         },
-        "path_aliases": ["workspace/...", "wintripai/...", "ruflo/...", "roo/...", "codex/..."],
+        "path_aliases": ["workspace/...", "wintripai/...", "ruflo/...", "roo/...", "codex/...", "deepseek/..."],
         "fake_success": False,
     }
 
@@ -353,7 +360,7 @@ def _resolve_workspace_path(path: str) -> Path:
 
 def _allowed_roots() -> list[Path]:
     roots: list[Path] = [workspace_root()]
-    for root in (ruflo_path(), roo_path(), codex_path()):
+    for root in (ruflo_path(), roo_path(), codex_path(), deepseek_path()):
         if root.exists():
             roots.append(root.resolve())
     unique: list[Path] = []
@@ -379,6 +386,7 @@ def _resolve_alias_path(path: str) -> Path | None:
         "ruflo": ruflo_path(),
         "roo": roo_path(),
         "codex": codex_path(),
+        "deepseek": deepseek_path(),
     }
     base = aliases.get(first.lower())
     if base is None:
@@ -403,7 +411,7 @@ def _display_path(path: Path) -> str:
     rel = path.relative_to(root)
     if root == workspace_root():
         return str(rel) if str(rel) != "." else "."
-    labels = {ruflo_path(): "ruflo", roo_path(): "roo", codex_path(): "codex"}
+    labels = {ruflo_path(): "ruflo", roo_path(): "roo", codex_path(): "codex", deepseek_path(): "deepseek"}
     prefix = labels.get(root, root.name)
     return f"{prefix}/{rel}" if str(rel) != "." else f"{prefix}/"
 
