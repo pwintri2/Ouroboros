@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -37,6 +38,21 @@ class FakeAgentTools:
 
 
 class TestOuroborosStatusContract(unittest.TestCase):
+    def setUp(self):
+        self.old_workspace = os.environ.get("WINTRIP_WORKSPACE")
+        self.workspace_tmp = tempfile.TemporaryDirectory(prefix="ouroboros-status-ziel-")
+        os.environ["WINTRIP_WORKSPACE"] = self.workspace_tmp.name
+        ziel = Path(self.workspace_tmp.name) / ".agents" / "agent_types" / "type_2" / "Ziel.md"
+        ziel.parent.mkdir(parents=True)
+        ziel.write_text("# Zielenboek\n\n1. **Innerlijke Dialoog:** Blijf lokaal.\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.workspace_tmp.cleanup()
+        if self.old_workspace is None:
+            os.environ.pop("WINTRIP_WORKSPACE", None)
+        else:
+            os.environ["WINTRIP_WORKSPACE"] = self.old_workspace
+
     def test_helper_contract_composes_extended_status_without_live_services(self):
         last_tool = {
             "tool_name": "run_tests",
@@ -111,6 +127,9 @@ class TestOuroborosStatusContract(unittest.TestCase):
         self.assertEqual(data["stdout"], "collected 3 tests")
         self.assertEqual(data["stderr"], "Run Tests wacht op Akkoord.")
         self.assertEqual(data["self_modification_pipeline"]["status"], "approval_required")
+        self.assertEqual(data["ziel_policy"]["status"], "loaded")
+        self.assertEqual(data["ziel_policy"]["principle_count"], 1)
+        self.assertIn("ToolBridge", " ".join(data["ziel_policy"]["guardrails"]))
         self.assertEqual(data["learning_11d"]["status"], "learning")
         self.assertTrue(data["learning_11d"]["chromadb"]["available"])
         self.assertFalse(data["fine_tune"]["fake_success"])

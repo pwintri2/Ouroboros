@@ -230,6 +230,10 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("gemini-2.5-pro", data["provider_options"]["roo"]["models"])
         self.assertIn("openai", data["provider_options"]["roo"]["supported_cockpit_providers"])
         self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
+        deepseek_models = data["provider_options"]["deepseek"]["models"]
+        self.assertIn("deepseek-v4-flash", deepseek_models)
+        self.assertIn("deepseek-reasoner", deepseek_models)
+        self.assertIn("deepseek", data["api_keys"]["providers"])
         google_models = data["provider_options"]["google"]["models"]
         self.assertIn("gemini-2.5-flash", google_models)
         self.assertNotIn("gemini-2.0-flash", google_models)
@@ -369,6 +373,24 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("memory_search", tool_names)
         self.assertIn("memory_search", routed_tool_names)
 
+    def test_cockpit_chat_routes_deepseek_api_provider_through_multi_api(self):
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "prompt": "Hallo DeepSeek",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["route"], "multi_api")
+        self.assertEqual(data["provider"], "deepseek")
+        self.assertEqual(data["model"], "deepseek-v4-flash")
+        self.assertEqual(self.main.app.state.multi_api_router.calls[-1]["provider"], "deepseek")
+
     def test_cockpit_chat_routes_complex_goal_to_agentic_processor(self):
         original_should = self.main.should_use_agentic_processor
         original_agentic = getattr(self.main.orchestrator, "agentic_process", None)
@@ -421,6 +443,105 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertTrue(data["source_trace"]["selected_model_interprets_answer"])
         self.assertEqual(calls[0]["provider"], "ollama")
         self.assertEqual(calls[0]["approval"], "Akkoord")
+
+    def test_cockpit_chat_routes_ordinary_web_request_to_agentic_processor_without_approval(self):
+        original_agentic = getattr(self.main.orchestrator, "agentic_process", None)
+        calls = []
+
+        def fake_agentic(prompt, **kwargs):
+            calls.append({"prompt": prompt, **kwargs})
+            return {
+                "status": "success",
+                "route": "agentic_processor",
+                "response": "web grounded answer",
+                "steps": [{"tool": "brave_search", "status": "success"}],
+                "provenance": {
+                    "planner_source": "heuristic_fallback_with_guardrails",
+                    "planned_tools": ["memory_search", "brave_search"],
+                    "tools_used": ["brave_search"],
+                    "external_tools_used": ["brave_search"],
+                    "brave_search_used": True,
+                    "brave_search_success": True,
+                },
+                "fake_success": False,
+            }
+
+        self.main.orchestrator.agentic_process = fake_agentic
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ollama",
+                    "model": "llama3.2:latest",
+                    "prompt": "Zoek online de laatste resultaten over AI agents",
+                },
+            )
+        finally:
+            if original_agentic is None:
+                delattr(self.main.orchestrator, "agentic_process")
+            else:
+                self.main.orchestrator.agentic_process = original_agentic
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "agentic_processor")
+        self.assertEqual(data["response"], "web grounded answer")
+        self.assertTrue(data["self_context"]["agentic_intent"]["read_only"])
+        self.assertEqual(data["self_context"]["agentic_intent"]["target_tool"], "brave_search")
+        self.assertFalse(data["self_context"]["agentic_intent"]["approval_required"])
+        self.assertTrue(data["source_trace"]["brave_search_used"])
+        self.assertEqual(calls[0]["approval"], "")
+
+    def test_cockpit_chat_routes_private_connector_intent_to_gated_agentic_preview(self):
+        original_agentic = getattr(self.main.orchestrator, "agentic_process", None)
+        calls = []
+
+        def fake_agentic(prompt, **kwargs):
+            calls.append({"prompt": prompt, **kwargs})
+            return {
+                "status": "blocked",
+                "route": "agentic_processor",
+                "approval_required": True,
+                "response": "connector intent gated",
+                "steps": [{"tool": "connector_intent_preview", "status": "blocked"}],
+                "provenance": {
+                    "planner_source": "heuristic_fallback_with_guardrails",
+                    "planned_tools": ["connector_intent_preview"],
+                    "tools_used": ["connector_intent_preview"],
+                    "blocked_tools": ["connector_intent_preview"],
+                    "external_tools_used": ["connector_intent_preview"],
+                },
+                "fake_success": False,
+            }
+
+        self.main.orchestrator.agentic_process = fake_agentic
+        try:
+            response = self.client.post(
+                "/api/cockpit/chat",
+                json={
+                    "provider": "ollama",
+                    "model": "llama3.2:latest",
+                    "conversation_id": "connector-preview-route-test",
+                    "prompt": "Lees mijn Gmail inbox en upload de samenvatting naar Google Drive",
+                },
+            )
+        finally:
+            if original_agentic is None:
+                delattr(self.main.orchestrator, "agentic_process")
+            else:
+                self.main.orchestrator.agentic_process = original_agentic
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "agentic_processor")
+        self.assertEqual(data["status"], "blocked")
+        self.assertTrue(data["approval_required"])
+        self.assertEqual(data["self_context"]["agentic_intent"]["target_tool"], "connector_intent_preview")
+        self.assertTrue(data["self_context"]["agentic_intent"]["private"])
+        self.assertTrue(data["source_trace"]["approval_required"])
+        self.assertEqual(data["source_trace"]["tools_blocked"], ["connector_intent_preview"])
+        self.assertIn("pending_approval", data)
+        self.assertEqual(calls[0]["approval"], "")
 
     def test_cockpit_chat_slash_agents_are_intercepted_before_provider(self):
         original_living_echo = self.main._living_chat_echo
@@ -1213,6 +1334,22 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(saved["status"], "success")
         self.assertFalse(saved["secrets_returned"])
         self.assertNotIn("openai-test-secret-1234", response.text)
+
+        deepseek_secret = "deepseek-route-secret-123456"
+        response = self.client.post(
+            "/api/cockpit/api-keys",
+            json={"provider": "deepseek", "api_key": deepseek_secret, "approval": "Akkoord"},
+        )
+        self.assertEqual(response.status_code, 200)
+        saved = response.json()
+        self.assertEqual(saved["status"], "success")
+        self.assertEqual(saved["provider"], "deepseek")
+        self.assertFalse(saved["secrets_returned"])
+        self.assertNotIn(deepseek_secret, response.text)
+
+        config = self.client.get("/api/cockpit/config").json()
+        self.assertTrue(config["provider_options"]["deepseek"]["configured"])
+        self.assertNotIn(deepseek_secret, json.dumps(config, ensure_ascii=False))
 
     def test_subscription_save_configures_provider_without_returning_secret(self):
         secret = "sk-subscription-route-secret-123456"

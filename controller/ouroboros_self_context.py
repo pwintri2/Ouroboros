@@ -27,6 +27,18 @@ except Exception:
             root = Path.cwd()
         return root.resolve()
 
+try:
+    from controller.ziel_policy import compact_ziel_policy, load_ziel_policy, ziel_policy_context_block
+except Exception:
+    def load_ziel_policy(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "unavailable", "loaded": False, "fake_success": False}
+
+    def compact_ziel_policy(policy: Mapping[str, Any] | None = None, *, include_summary: bool = True) -> dict[str, Any]:
+        return {"status": "unavailable", "loaded": False, "fake_success": False}
+
+    def ziel_policy_context_block(policy: Mapping[str, Any] | None = None) -> str:
+        return "Ziel policy unavailable; default guardrails remain enforced."
+
 
 APPROVAL_PHRASE = "Akkoord"
 DEFAULT_RUFLO_PATH = "/home/pwintri2/ruflo"
@@ -76,7 +88,8 @@ def build_chat_context(
     incoming_history = _sanitize_history(history or [])
     merged_history = _merge_history(recent_server_history, incoming_history)
     lessons = _relevant_lessons(prompt, state.get("lessons") or [], limit=MAX_CONTEXT_LESSONS)
-    block = _context_block(prompt=prompt, conversation_id=cid, conversation=conversation, lessons=lessons)
+    ziel_policy = load_ziel_policy()
+    block = _context_block(prompt=prompt, conversation_id=cid, conversation=conversation, lessons=lessons, ziel_policy=ziel_policy)
     enriched_system_prompt = _join_system_prompt(system_prompt, block)
     return {
         "conversation_id": cid,
@@ -93,6 +106,7 @@ def build_chat_context(
             "server_history_count": len(recent_server_history),
             "lesson_count": len(state.get("lessons") or []),
             "matched_lesson_count": len(lessons),
+            "ziel_policy": compact_ziel_policy(ziel_policy),
             "ouroboros_agent_types": get_ouroboros_agent_types_status(),
             "ruflo": get_ruflo_status(),
         },
@@ -163,6 +177,7 @@ def get_self_context_status() -> dict[str, Any]:
         "lesson_count": len(state.get("lessons") or []),
         "recent_lessons": list(state.get("lessons") or [])[:8],
         "latest_conversations": latest,
+        "ziel_policy": compact_ziel_policy(load_ziel_policy()),
         "ouroboros_agent_types": get_ouroboros_agent_types_status(),
         "ruflo": get_ruflo_status(),
         "fake_success": False,
@@ -214,6 +229,7 @@ def _context_block(
     conversation_id: str,
     conversation: dict[str, Any],
     lessons: Sequence[Mapping[str, Any]] | None = None,
+    ziel_policy: Mapping[str, Any] | None = None,
 ) -> str:
     recent = list(conversation.get("turns") or [])[-MAX_CONTEXT_TURNS:]
     lines: list[str] = [
@@ -227,6 +243,9 @@ def _context_block(
         "- Gedraag je continu: gebruik vorige server-side beurten als context, ook als de client geen history meestuurt.",
         "- Behandel ruflo, Roo en Codex als IDE/agent-werkruimtes die samen aan WintripAI mogen werken.",
     ]
+    ziel_block = ziel_policy_context_block(ziel_policy)
+    if ziel_block:
+        lines.append(ziel_block)
     summary = str(conversation.get("summary") or "").strip()
     if summary:
         lines.append(f"- Samenvatting tot nu toe: {summary}")

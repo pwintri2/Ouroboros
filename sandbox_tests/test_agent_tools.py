@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -77,6 +78,12 @@ def make_registry():
     os.environ["WINTRIP_DB_PATH"] = tempfile.mkdtemp(prefix="wintrip-agent-tools-")
     os.environ["WINTRIP_TRAINING_COLLECTION"] = f"agent_tools_{uuid.uuid4().hex}"
     os.environ["WINTRIP_WORKSPACE"] = tempfile.mkdtemp(prefix="wintrip-agent-workspace-")
+    ziel = Path(os.environ["WINTRIP_WORKSPACE"]) / ".agents" / "agent_types" / "type_2" / "Ziel.md"
+    ziel.parent.mkdir(parents=True)
+    ziel.write_text(
+        "# Zielenboek\n\n1. **Veerkracht bij Weerstand (Micro-Retries):** Probeer bounded opnieuw.\n2. **Laterale Creativiteit:** Zoek veilige omwegen.\n",
+        encoding="utf-8",
+    )
     storage = StreamStorage(collection=MockCollection())
     app = SimpleNamespace(state=SimpleNamespace(training_storage=storage, training_events=[]))
     return AgentToolRegistry(kb=DummyKnowledgeBase(), storage=storage, app=app)
@@ -110,6 +117,19 @@ class TestAgentTools(unittest.TestCase):
         self.assertEqual(set(names), set(REGISTERED_TOOLS))
         self.assertIn("brave_search", names)
         self.assertIn("ns_travel_advice", names)
+        self.assertIn("ov9292_travel_advice", names)
+        self.assertIn("connector_intent_preview", names)
+        self.assertIn("gmail_status", names)
+        self.assertIn("gmail_search", names)
+        self.assertIn("google_drive_status", names)
+        self.assertIn("google_drive_list", names)
+        self.assertIn("github_status", names)
+        self.assertIn("github_repo", names)
+        self.assertIn("github_search_repositories", names)
+        self.assertIn("vps_status", names)
+        self.assertIn("vps_login_check", names)
+        self.assertIn("vps_sync_preview", names)
+        self.assertIn("vps_sync_execute", names)
         self.assertIn("roo_apply_patch", names)
         self.assertIn("mail_read_recent", names)
         self.assertIn("social_post_publish", names)
@@ -122,6 +142,21 @@ class TestAgentTools(unittest.TestCase):
         ns = next(schema for schema in schemas if schema["function"]["name"] == "ns_travel_advice")
         self.assertIn("from_station", ns["function"]["parameters"]["required"])
         self.assertIn("to_station", ns["function"]["parameters"]["required"])
+        ov9292 = next(schema for schema in schemas if schema["function"]["name"] == "ov9292_travel_advice")
+        self.assertIn("query", ov9292["function"]["parameters"]["properties"])
+        self.assertEqual(ov9292["function"]["parameters"]["required"], [])
+        connector_preview = next(schema for schema in schemas if schema["function"]["name"] == "connector_intent_preview")
+        self.assertIn("prompt", connector_preview["function"]["parameters"]["required"])
+        gmail_search = next(schema for schema in schemas if schema["function"]["name"] == "gmail_search")
+        self.assertIn("approval", gmail_search["function"]["parameters"]["required"])
+        drive_list = next(schema for schema in schemas if schema["function"]["name"] == "google_drive_list")
+        self.assertIn("approval", drive_list["function"]["parameters"]["required"])
+        github_repo = next(schema for schema in schemas if schema["function"]["name"] == "github_repo")
+        self.assertIn("repo", github_repo["function"]["parameters"]["required"])
+        github_search = next(schema for schema in schemas if schema["function"]["name"] == "github_search_repositories")
+        self.assertIn("query", github_search["function"]["parameters"]["required"])
+        vps_execute = next(schema for schema in schemas if schema["function"]["name"] == "vps_sync_execute")
+        self.assertIn("approval", vps_execute["function"]["parameters"]["required"])
         mail = next(schema for schema in schemas if schema["function"]["name"] == "mail_read_recent")
         self.assertIn("approval", mail["function"]["parameters"]["required"])
         ecosystem = next(schema for schema in schemas if schema["function"]["name"] == "agentic_ecosystem_context")
@@ -267,6 +302,278 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("fromStation=Ermelo", request.full_url)
         self.assertIn("toStation=Utrecht+Centraal", request.full_url)
         self.assertEqual(request.headers["Ocp-apim-subscription-key"], "test-key")
+
+    def test_9292_travel_advice_returns_official_links_without_scraping_or_times(self):
+        registry = make_registry()
+        result = registry.run_tool(
+            "ov9292_travel_advice",
+            {
+                "from_place": "Ermelo",
+                "to_place": "Utrecht Science Park",
+                "date": "2026-05-07",
+                "time": "13:30",
+                "search_for_arrival": True,
+                "query": "bus tram metro reisplanner via 9292",
+            },
+        )
+
+        self.assertToolEnvelope(result, "ov9292_travel_advice")
+        self.assertEqual(result["status"], "preview")
+        self.assertEqual(result["approval_status"], "not_required_readonly")
+        self.assertFalse(result["result"]["authoritative"])
+        self.assertFalse(result["result"]["scraped"])
+        self.assertFalse(result["result"]["session_material_used"])
+        self.assertIn("9292.nl", result["result"]["planner_url"])
+        self.assertIn("Exacte", result["stdout"])
+        self.assertNotIn("12:30", result["stdout"])
+
+    def test_connector_intent_preview_gates_private_mutating_services_without_execution(self):
+        registry = make_registry()
+        result = registry.run_tool(
+            "connector_intent_preview",
+            {
+                "prompt": "Upload rapport naar Google Drive en deploy via VPS",
+                "services": ["google_drive", "vps"],
+                "action_type": "private_mutating",
+            },
+        )
+
+        self.assertToolEnvelope(result, "connector_intent_preview")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["approval_status"], "pending_philip_akkoord")
+        self.assertFalse(result["result"]["executed"])
+        self.assertTrue(result["result"]["preview_only"])
+        self.assertIn("google_drive", result["result"]["services"])
+        self.assertIn("vps", result["result"]["services"])
+        self.assertIn("google_drive_connector", result["result"]["blocked_tools"])
+        self.assertIn("vps_host_action", result["result"]["blocked_tools"])
+        self.assertFalse(result["result"]["secrets_returned"])
+        self.assertEqual(result["result"]["ziel_policy"]["status"], "loaded")
+        self.assertIn("ToolBridge", result["result"]["ziel_policy"]["guardrail"])
+        self.assertIn("ziel_policy_hash", result["metadata_11d"])
+
+    def test_google_connector_statuses_redact_tokens(self):
+        registry = make_registry()
+        google_status = {
+            "status": "connected",
+            "token": {"exists": True, "access_token": "ya29.secret", "refresh_token": "refresh-secret", "has_refresh_token": True},
+            "fake_success": False,
+        }
+        rclone_status = {"status": "ready", "tokens_returned": False, "drive_remotes": ["gdrive"], "fake_success": False}
+
+        class FakeGoogle:
+            def status(self):
+                return google_status
+
+        class FakeRclone:
+            def status(self):
+                return rclone_status
+
+        with patch("controller.google_workspace_adapter.GoogleWorkspaceAdapter", return_value=FakeGoogle()):
+            gmail = registry.run_tool("gmail_status", {})
+        with patch("controller.google_workspace_adapter.GoogleWorkspaceAdapter", return_value=FakeGoogle()):
+            with patch("controller.rclone_drive_adapter.RcloneDriveAdapter", return_value=FakeRclone()):
+                drive = registry.run_tool("google_drive_status", {})
+
+        self.assertToolEnvelope(gmail, "gmail_status")
+        self.assertEqual(gmail["status"], "success")
+        self.assertEqual(gmail["approval_status"], "not_required_status")
+        self.assertEqual(gmail["result"]["ziel_policy"]["status"], "loaded")
+        self.assertNotIn("ya29.secret", gmail["stdout"])
+        self.assertNotIn("refresh-secret", gmail["stdout"])
+        self.assertTrue(gmail["result"]["token"]["has_refresh_token"])
+        self.assertToolEnvelope(drive, "google_drive_status")
+        self.assertEqual(drive["status"], "success")
+        self.assertNotIn("ya29.secret", drive["stdout"])
+        self.assertNotIn("refresh-secret", drive["stdout"])
+
+    def test_gmail_search_is_approval_gated_and_sanitizes_results(self):
+        registry = make_registry()
+        blocked = registry.run_tool("gmail_search", {"query": "in:inbox", "max_results": 2})
+
+        class FakeGoogle:
+            def search_gmail(self, query, approval="", max_results=10):
+                return {
+                    "status": "success",
+                    "operation": "search_gmail",
+                    "items": [{"id": "m1", "subject": "Hallo", "snippet": "token=SECRET123"}],
+                    "access_token": "SHOULD_NOT_RETURN",
+                    "fake_success": False,
+                }
+
+        with patch("controller.google_workspace_adapter.GoogleWorkspaceAdapter", return_value=FakeGoogle()):
+            approved = registry.run_tool("gmail_search", {"query": "in:inbox", "max_results": 2, "approval": "Akkoord"})
+
+        self.assertToolEnvelope(blocked, "gmail_search")
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["approval_status"], "pending_philip_akkoord")
+        self.assertEqual(blocked["result"]["ziel_policy"]["status"], "loaded")
+        self.assertIn("ziel_policy_hash", blocked["metadata_11d"])
+        self.assertToolEnvelope(approved, "gmail_search")
+        self.assertEqual(approved["status"], "success")
+        self.assertEqual(approved["approval_status"], "approved")
+        self.assertNotIn("SECRET123", approved["stdout"])
+        self.assertNotIn("SHOULD_NOT_RETURN", approved["stdout"])
+        self.assertEqual(approved["result"]["access_token"], "[REDACTED]")
+
+    def test_drive_list_is_approval_gated_and_uses_readonly_rclone(self):
+        registry = make_registry()
+        blocked = registry.run_tool("google_drive_list", {"path": "Reports"})
+
+        class FakeRclone:
+            def status(self):
+                return {"status": "ready", "drive_remotes": ["gdrive"], "fake_success": False}
+
+            def list_drive_files(self, **kwargs):
+                return {
+                    "status": "success",
+                    "operation": "list_drive_files",
+                    "items": [{"Name": "rapport.txt", "Path": "Reports/rapport.txt", "token": "SECRET"}],
+                    "fake_success": False,
+                }
+
+        with patch("controller.rclone_drive_adapter.RcloneDriveAdapter", return_value=FakeRclone()):
+            approved = registry.run_tool("google_drive_list", {"path": "Reports", "approval": "Akkoord", "adapter": "rclone"})
+
+        self.assertToolEnvelope(blocked, "google_drive_list")
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["approval_status"], "pending_philip_akkoord")
+        self.assertEqual(blocked["result"]["ziel_policy"]["status"], "loaded")
+        self.assertIn("ziel_policy_hash", blocked["metadata_11d"])
+        self.assertToolEnvelope(approved, "google_drive_list")
+        self.assertEqual(approved["status"], "success")
+        self.assertEqual(approved["approval_status"], "approved")
+        self.assertNotIn("SECRET", approved["stdout"])
+        self.assertEqual(approved["result"]["items"][0]["token"], "[REDACTED]")
+
+    def test_github_tools_are_readonly_and_redact_tokens(self):
+        registry = make_registry()
+
+        class FakeGithub:
+            def status(self):
+                return {
+                    "status": "configured",
+                    "token": {"configured": True, "source": "env:GITHUB_TOKEN", "masked": "ghp_...1234", "secrets_returned": False},
+                    "fake_success": False,
+                }
+
+            def get_repository(self, repo, approval=""):
+                return {
+                    "status": "success",
+                    "operation": "get_repository",
+                    "repo": {"full_name": repo, "private": False, "description": "token=SECRET456"},
+                    "approval_status": "not_required_public_readonly",
+                    "access_token": "ghp_SECRET",
+                    "fake_success": False,
+                }
+
+            def search_repositories(self, query, limit=10, approval=""):
+                return {
+                    "status": "success",
+                    "operation": "search_repositories",
+                    "query": query,
+                    "effective_query": f"{query} is:public",
+                    "items": [{"full_name": "octocat/Hello-World", "private": False}],
+                    "approval_status": "not_required_public_readonly",
+                    "fake_success": False,
+                }
+
+        with patch("controller.github_adapter.GitHubAdapter", return_value=FakeGithub()):
+            status = registry.run_tool("github_status", {})
+            repo = registry.run_tool("github_repo", {"repo": "octocat/Hello-World"})
+            search = registry.run_tool("github_search_repositories", {"query": "ouroboros"})
+
+        self.assertToolEnvelope(status, "github_status")
+        self.assertEqual(status["status"], "success")
+        self.assertNotIn("ghp_SECRET", status["stdout"])
+        self.assertToolEnvelope(repo, "github_repo")
+        self.assertEqual(repo["status"], "success")
+        self.assertNotIn("SECRET456", repo["stdout"])
+        self.assertNotIn("ghp_SECRET", repo["stdout"])
+        self.assertEqual(repo["result"]["access_token"], "[REDACTED]")
+        self.assertToolEnvelope(search, "github_search_repositories")
+        self.assertEqual(search["status"], "success")
+        self.assertIn("is:public", search["result"]["effective_query"])
+
+    def test_vps_tools_preview_first_and_execute_requires_akkoord(self):
+        registry = make_registry()
+
+        class FakeVPS:
+            def status(self):
+                return {
+                    "status": "ready",
+                    "profile": {"profile_id": "test", "ssh_host_alias": "vps-alias", "secrets_returned": False},
+                    "remote_target": "/var/www/philip-wintrip.nl/html/Ouroboros/",
+                    "fake_success": False,
+                }
+
+            def login_check(self, timeout_seconds=120):
+                return {
+                    "status": "success",
+                    "operation": "login_check",
+                    "login_ok": True,
+                    "stdout": "ouroboros-vps-ok token=SECRET",
+                    "secrets_returned": False,
+                    "fake_success": False,
+                }
+
+            def sync_preview(self, remote_path="", source_path="", timeout_seconds=120):
+                return {
+                    "status": "preview",
+                    "operation": "sync_preview",
+                    "dry_run": True,
+                    "executed": False,
+                    "mutated": False,
+                    "remote_target": "/var/www/philip-wintrip.nl/html/Ouroboros/",
+                    "excluded_patterns": [".secrets/", ".env*"],
+                    "stdout": "would sync token=SECRET",
+                    "fake_success": False,
+                }
+
+            def sync_execute(self, approval="", remote_path="", source_path="", timeout_seconds=120):
+                return {
+                    "status": "success",
+                    "operation": "sync_execute",
+                    "dry_run": False,
+                    "executed": True,
+                    "mutated": True,
+                    "remote_target": "/var/www/philip-wintrip.nl/html/Ouroboros/",
+                    "stdout": "sent files token=SECRET",
+                    "fake_success": False,
+                }
+
+        blocked = registry.run_tool("vps_sync_execute", {})
+        with patch("controller.vps_deploy_adapter.VPSDeployAdapter", return_value=FakeVPS()):
+            status = registry.run_tool("vps_status", {})
+            login = registry.run_tool("vps_login_check", {})
+            preview = registry.run_tool("vps_sync_preview", {})
+            executed = registry.run_tool("vps_sync_execute", {"approval": "Akkoord"})
+
+        self.assertToolEnvelope(blocked, "vps_sync_execute")
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["approval_status"], "pending_philip_akkoord")
+        self.assertFalse(blocked["result"]["executed"])
+        self.assertEqual(blocked["result"]["remote_target"], "/var/www/philip-wintrip.nl/html/Ouroboros/")
+        self.assertToolEnvelope(status, "vps_status")
+        self.assertEqual(status["status"], "success")
+        self.assertEqual(status["result"]["ziel_policy"]["status"], "loaded")
+        self.assertNotIn("SECRET", status["stdout"])
+        self.assertToolEnvelope(login, "vps_login_check")
+        self.assertEqual(login["status"], "success")
+        self.assertNotIn("SECRET", login["stdout"])
+        self.assertToolEnvelope(preview, "vps_sync_preview")
+        self.assertEqual(preview["status"], "preview")
+        self.assertEqual(preview["approval_status"], "not_required_dry_run")
+        self.assertEqual(preview["result"]["ziel_policy"]["status"], "loaded")
+        self.assertIn("ziel_policy_hash", preview["metadata_11d"])
+        self.assertFalse(preview["result"]["mutated"])
+        self.assertIn(".secrets/", preview["result"]["excluded_patterns"])
+        self.assertNotIn("SECRET", preview["stdout"])
+        self.assertToolEnvelope(executed, "vps_sync_execute")
+        self.assertEqual(executed["status"], "success")
+        self.assertEqual(executed["approval_status"], "approved")
+        self.assertTrue(executed["result"]["executed"])
+        self.assertNotIn("SECRET", executed["stdout"])
 
     def test_private_and_mutating_agentic_tools_are_approval_gated(self):
         registry = make_registry()

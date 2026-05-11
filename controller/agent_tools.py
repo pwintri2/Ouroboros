@@ -29,6 +29,7 @@ from controller.stream.metadata_11d import build_11d_metadata, missing_11d_layer
 from controller.stream.normalize import normalize
 from controller.stream.resonance import score as stream_resonance_score
 from controller.stream.storage import _resonance_to_importance
+from controller.ziel_policy import ziel_guardrail_note
 
 
 REGISTERED_TOOLS: tuple[str, ...] = (
@@ -37,6 +38,19 @@ REGISTERED_TOOLS: tuple[str, ...] = (
     "browser_research",
     "brave_search",
     "ns_travel_advice",
+    "ov9292_travel_advice",
+    "connector_intent_preview",
+    "gmail_status",
+    "gmail_search",
+    "google_drive_status",
+    "google_drive_list",
+    "github_status",
+    "github_repo",
+    "github_search_repositories",
+    "vps_status",
+    "vps_login_check",
+    "vps_sync_preview",
+    "vps_sync_execute",
     "chatgpt_browser_ask",
     "world_grok_ask",
     "mail_read_recent",
@@ -145,6 +159,127 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "query": {"type": "string", "description": "Originele gebruikersvraag voor audit/context."},
         },
         ["from_station", "to_station"],
+    ),
+    "ov9292_travel_advice": _tool_schema(
+        "ov9292_travel_advice",
+        "Read-only 9292/OV reisplanner fallback. Zonder geautoriseerde 9292 API wordt niets gescrapet en geeft de tool alleen officiële plannerlinks plus de waarschuwing dat exacte tijden een autoritatieve bron vereisen.",
+        {
+            "from_place": {"type": "string", "description": "Vertrekplaats, halte of station."},
+            "to_place": {"type": "string", "description": "Aankomstplaats, halte of station."},
+            "date": {"type": "string", "description": "Optionele datum YYYY-MM-DD."},
+            "time": {"type": "string", "description": "Optionele tijd HH:MM."},
+            "datetime": {"type": "string", "description": "Optionele ISO datetime; heeft voorrang op date/time."},
+            "search_for_arrival": {"type": "boolean", "description": "True wanneer de opgegeven tijd een gewenste aankomsttijd is."},
+            "query": {"type": "string", "description": "Originele gebruikersvraag voor audit/context."},
+        },
+        [],
+    ),
+    "connector_intent_preview": _tool_schema(
+        "connector_intent_preview",
+        "Veilige placeholder voor niet-geïmplementeerde of muterende connector-intenten richting Gmail, Google Drive, GitHub en VPS/login/sync/deploy. Detecteert en gate zonder connector- of hostactie uit te voeren.",
+        {
+            "prompt": {"type": "string", "description": "Originele gebruikersvraag."},
+            "services": {"type": "array", "items": {"type": "string"}, "description": "Gedetecteerde services, bv. gmail, google_drive, github, vps."},
+            "categories": {"type": "array", "items": {"type": "string"}, "description": "Gedetecteerde categorieën."},
+            "action_type": {"type": "string", "description": "read_only, private_read, mutating of private_mutating."},
+            "approval": {"type": "string", "description": "Optioneel; alleen voor audit. Deze placeholder voert geen connectoractie uit."},
+        },
+        ["prompt"],
+    ),
+    "gmail_status": _tool_schema(
+        "gmail_status",
+        "Toont veilige Google Workspace/Gmail connectorstatus zonder mailboxinhoud of OAuth-token terug te geven. Read-only; geen Akkoord nodig.",
+        {},
+        [],
+    ),
+    "gmail_search": _tool_schema(
+        "gmail_search",
+        "Zoekt Gmail read-only via de bestaande Google Workspace adapter. Vereist exact Akkoord omdat mailboxinhoud privé is; verzendt of muteert nooit mail.",
+        {
+            "query": {"type": "string", "description": "Gmail zoekquery, bijvoorbeeld in:inbox of from:naam."},
+            "max_results": {"type": "integer", "description": "Aantal berichten, maximaal 20."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor private Gmail-read."},
+        },
+        ["approval"],
+    ),
+    "google_drive_status": _tool_schema(
+        "google_drive_status",
+        "Toont veilige Google Drive connectorstatus voor Google Workspace en rclone zonder OAuth/rclone-tokenmateriaal terug te geven. Read-only; geen Akkoord nodig.",
+        {},
+        [],
+    ),
+    "google_drive_list": _tool_schema(
+        "google_drive_list",
+        "Lijst Google Drive bestanden read-only via rclone of Google Workspace adapter. Vereist exact Akkoord omdat Drive-inhoud privé is; upload/delete/sync ontbreken.",
+        {
+            "path": {"type": "string", "description": "Optioneel Drive-pad/folderpad."},
+            "remote": {"type": "string", "description": "Optionele rclone remote."},
+            "max_items": {"type": "integer", "description": "Maximaal aantal items, maximaal 100."},
+            "max_depth": {"type": "integer", "description": "Maximale rclone diepte, maximaal 5."},
+            "adapter": {"type": "string", "description": "auto, rclone of google_workspace."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor private Drive-read."},
+        },
+        ["approval"],
+    ),
+    "github_status": _tool_schema(
+        "github_status",
+        "Toont veilige GitHub connectorstatus en tokenbron/maskering zonder token terug te geven. Read-only; geen Akkoord nodig.",
+        {},
+        [],
+    ),
+    "github_repo": _tool_schema(
+        "github_repo",
+        "Haalt read-only GitHub repository metadata op. Publieke repo's vereisen geen Akkoord; private metadata wordt geblokkeerd tenzij exact Akkoord is meegegeven.",
+        {
+            "repo": {"type": "string", "description": "owner/repo of github.com/owner/repo URL."},
+            "approval": {"type": "string", "description": "Alleen nodig voor private repository metadata."},
+        },
+        ["repo"],
+    ),
+    "github_search_repositories": _tool_schema(
+        "github_search_repositories",
+        "Zoekt publieke GitHub repositories read-only via de officiële API. Forceert publieke resultaten en geeft nooit tokens terug.",
+        {
+            "query": {"type": "string", "description": "GitHub repository zoekvraag."},
+            "limit": {"type": "integer", "description": "Aantal repositories, maximaal 20."},
+            "approval": {"type": "string", "description": "Gereserveerd voor audit; private zoekopdrachten blijven geblokkeerd."},
+        },
+        ["query"],
+    ),
+    "vps_status": _tool_schema(
+        "vps_status",
+        "Toont veilige VPS deploy-profielstatus zonder credentials. Remote target staat vast op /var/www/philip-wintrip.nl/html/Ouroboros/.",
+        {},
+        [],
+    ),
+    "vps_login_check": _tool_schema(
+        "vps_login_check",
+        "Controleert read-only of SSH BatchMode login via host SSH agent/config mogelijk is. Geeft nooit credentials terug en muteert niets.",
+        {
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconden, begrensd door de adapter."},
+        },
+        [],
+    ),
+    "vps_sync_preview": _tool_schema(
+        "vps_sync_preview",
+        "Maakt een rsync --dry-run preview naar de vaste Ouroboros VPS target. Muteert niets en sluit secrets/state standaard uit.",
+        {
+            "remote_path": {"type": "string", "description": "Leeg voor vaste root of veilige child onder /var/www/philip-wintrip.nl/html/Ouroboros/."},
+            "source_path": {"type": "string", "description": "Optioneel workspace-subpad; standaard de WintripAI workspace."},
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconden."},
+        },
+        [],
+    ),
+    "vps_sync_execute": _tool_schema(
+        "vps_sync_execute",
+        "Voert rsync naar de vaste Ouroboros VPS target uit. Vereist exact Akkoord; secrets/state blijven standaard uitgesloten.",
+        {
+            "remote_path": {"type": "string", "description": "Leeg voor vaste root of veilige child onder /var/www/philip-wintrip.nl/html/Ouroboros/."},
+            "source_path": {"type": "string", "description": "Optioneel workspace-subpad; standaard de WintripAI workspace."},
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconden."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor echte sync."},
+        },
+        ["approval"],
     ),
     "chatgpt_browser_ask": _tool_schema(
         "chatgpt_browser_ask",
@@ -479,6 +614,75 @@ class AgentToolRegistry:
                     datetime_value=str(args.get("datetime") or args.get("dateTime") or ""),
                     search_for_arrival=bool(args.get("search_for_arrival", False)),
                     query=str(args.get("query") or args.get("prompt") or ""),
+                )
+            elif tool_name == "ov9292_travel_advice":
+                result = self.ov9292_travel_advice(
+                    from_place=str(args.get("from_place") or args.get("from_station") or args.get("from") or ""),
+                    to_place=str(args.get("to_place") or args.get("to_station") or args.get("to") or ""),
+                    date=str(args.get("date") or ""),
+                    time_value=str(args.get("time") or ""),
+                    datetime_value=str(args.get("datetime") or args.get("dateTime") or ""),
+                    search_for_arrival=bool(args.get("search_for_arrival", False)),
+                    query=str(args.get("query") or args.get("prompt") or ""),
+                )
+            elif tool_name == "connector_intent_preview":
+                result = self.connector_intent_preview(
+                    prompt=str(args.get("prompt") or args.get("query") or ""),
+                    services=list(args.get("services") or []),
+                    categories=list(args.get("categories") or []),
+                    action_type=str(args.get("action_type") or ""),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "gmail_status":
+                result = self.gmail_status()
+            elif tool_name == "gmail_search":
+                result = self.gmail_search(
+                    query=str(args.get("query") or args.get("q") or "in:inbox"),
+                    max_results=_int(args.get("max_results") or args.get("limit"), default=5),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "google_drive_status":
+                result = self.google_drive_status()
+            elif tool_name == "google_drive_list":
+                result = self.google_drive_list(
+                    path=str(args.get("path") or args.get("folder") or ""),
+                    remote=str(args.get("remote") or ""),
+                    max_items=_int(args.get("max_items") or args.get("limit"), default=25),
+                    max_depth=_int(args.get("max_depth"), default=1),
+                    adapter=str(args.get("adapter") or "auto"),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "github_status":
+                result = self.github_status()
+            elif tool_name == "github_repo":
+                result = self.github_repo(
+                    repo=str(args.get("repo") or args.get("repository") or args.get("url") or ""),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "github_search_repositories":
+                result = self.github_search_repositories(
+                    query=str(args.get("query") or args.get("q") or args.get("prompt") or ""),
+                    limit=_int(args.get("limit") or args.get("max_results"), default=5),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "vps_status":
+                result = self.vps_status()
+            elif tool_name == "vps_login_check":
+                result = self.vps_login_check(
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=120),
+                )
+            elif tool_name == "vps_sync_preview":
+                result = self.vps_sync_preview(
+                    remote_path=str(args.get("remote_path") or args.get("remote_target") or ""),
+                    source_path=str(args.get("source_path") or ""),
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=120),
+                )
+            elif tool_name == "vps_sync_execute":
+                result = self.vps_sync_execute(
+                    approval=str(args.get("approval") or ""),
+                    remote_path=str(args.get("remote_path") or args.get("remote_target") or ""),
+                    source_path=str(args.get("source_path") or ""),
+                    timeout_seconds=_int(args.get("timeout_seconds"), default=120),
                 )
             elif tool_name == "chatgpt_browser_ask":
                 result = self.chatgpt_browser_ask(
@@ -929,6 +1133,540 @@ class AgentToolRegistry:
             approval_status="not_required_readonly",
             metadata_11d={"dimension_count": 11, "source_type": "ns_travel_advice", "taint": "official_ns_api"},
             next_action="Gebruik alleen deze officiële NS API-output voor exacte vertrek- en aankomsttijden.",
+        )
+
+    def ov9292_travel_advice(
+        self,
+        *,
+        from_place: str = "",
+        to_place: str = "",
+        date: str = "",
+        time_value: str = "",
+        datetime_value: str = "",
+        search_for_arrival: bool = False,
+        query: str = "",
+    ) -> dict[str, Any]:
+        from_place = " ".join(str(from_place or "").split())
+        to_place = " ".join(str(to_place or "").split())
+        date_time = _ns_datetime(date=date, time_value=time_value, datetime_value=datetime_value)
+        links = _ov9292_planner_links(from_place, to_place, date_time=date_time, search_for_arrival=search_for_arrival, query=query)
+        payload = {
+            "from_place": from_place,
+            "to_place": to_place,
+            "date": date,
+            "time": time_value,
+            "datetime": date_time,
+            "search_for_arrival": bool(search_for_arrival),
+            "query": query,
+            "planner_url": links[0],
+            "official_links": links,
+            "authoritative": False,
+            "configured": False,
+            "api_available": False,
+            "source": "9292 official planner link fallback",
+            "scraped": False,
+            "session_material_used": False,
+        }
+        stdout = (
+            "Er is geen geautoriseerde 9292 API-adapter geconfigureerd. Ik heb geen login/session-materiaal gebruikt en niet gescrapet.\n"
+            "Exacte vertrek-, aankomst- en overstaptijden vereisen een autoritatieve bron zoals de officiële 9292 planner of een geautoriseerde API.\n"
+            "Officiële plannerlinks:\n"
+            + "\n".join(f"- {link}" for link in links)
+        )
+        return _tool_result(
+            "ov9292_travel_advice",
+            "preview",
+            result=payload,
+            stdout=stdout,
+            source="ov9292_travel_advice",
+            approval_status="not_required_readonly",
+            metadata_11d={"dimension_count": 11, "source_type": "ov9292_travel_advice", "taint": "official_link_fallback"},
+            next_action="Open de officiële 9292 planner of configureer een geautoriseerde 9292 API; noem geen exacte tijden zonder autoritatieve data.",
+        )
+
+    def connector_intent_preview(
+        self,
+        *,
+        prompt: str,
+        services: list[Any] | None = None,
+        categories: list[Any] | None = None,
+        action_type: str = "",
+        approval: str = "",
+    ) -> dict[str, Any]:
+        clean_prompt = " ".join(str(prompt or "").split())
+        clean_services = _connector_services_from_prompt(clean_prompt, services or [])
+        clean_categories = _unique_texts([*(str(item) for item in (categories or [])), "connector"])
+        mutating = _connector_prompt_mutating(clean_prompt) or str(action_type or "").lower() in {"mutating", "private_mutating"}
+        private = bool(clean_services) or str(action_type or "").lower().startswith("private")
+        final_action_type = "private_mutating" if private and mutating else ("private_read" if private else ("mutating" if mutating else "read_only"))
+        approval_ok = approval_matches(approval)
+        ziel_policy = ziel_guardrail_note()
+        payload = {
+            "prompt_preview": clean_prompt[:500],
+            "services": clean_services,
+            "categories": clean_categories,
+            "action_type": final_action_type,
+            "approval_required": True,
+            "approval_present": approval_ok,
+            "executed": False,
+            "preview_only": True,
+            "adapters_started": [],
+            "blocked_tools": _connector_blocked_tools(clean_services, final_action_type),
+            "ziel_policy": ziel_policy,
+            "policy": "Gmail/Drive/GitHub/VPS gewone-chat intenten worden hier alleen herkend en veilig gegate; adapteruitvoering is bewust buiten deze backend-foundation subtaak gehouden.",
+            "secrets_returned": False,
+        }
+        stdout = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        if approval_ok:
+            status = "preview"
+            approval_status = "approved_preview_only"
+            next_action = "Connector/VPS intent is goedgekeurd maar deze foundation voert geen Gmail/Drive/GitHub/VPS adapter uit; start een aparte adapter-subtaak."
+        else:
+            status = "blocked"
+            approval_status = "pending_philip_akkoord"
+            next_action = "Private of muterende connector/VPS intent gedetecteerd; uitvoering blijft geblokkeerd. Gebruik een aparte goedgekeurde adapter-subtaak."
+        return _tool_result(
+            "connector_intent_preview",
+            status,
+            result=payload,
+            stdout=stdout,
+            stderr="" if status == "preview" else "Private/mutating connector intent gated; no adapter executed.",
+            source="connector_intent_preview",
+            approval_status=approval_status,
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "connector_intent_preview", "taint": "private_intent_metadata_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action=next_action,
+        )
+
+    def gmail_status(self) -> dict[str, Any]:
+        try:
+            from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+            raw = GoogleWorkspaceAdapter().status()
+        except Exception as exc:
+            return _tool_result(
+                "gmail_status",
+                "error",
+                stderr=str(exc),
+                source="google_workspace:gmail_status",
+                next_action="Controleer de Google Workspace adapterconfiguratie zonder tokens te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        payload["secrets_returned"] = False
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        return _tool_result(
+            "gmail_status",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="google_workspace:gmail_status",
+            approval_status="not_required_status",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "gmail_connector_status", "taint": "connector_status_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik gmail_search met exact Akkoord wanneer Philip private mailboxresultaten wil lezen.",
+        )
+
+    def gmail_search(self, query: str, max_results: int = 5, approval: str = "") -> dict[str, Any]:
+        clean_query = " ".join(str(query or "in:inbox").split()) or "in:inbox"
+        limit = max(1, min(int(max_results or 5), 20))
+        if not approval_matches(approval):
+            ziel_policy = ziel_guardrail_note()
+            payload = {"query": clean_query, "max_results": limit, "approval_required": True, "read_only": True, "executed": False, "secrets_returned": False, "ziel_policy": ziel_policy}
+            return _tool_result(
+                "gmail_search",
+                "blocked",
+                result=payload,
+                stdout=_stringify(payload),
+                stderr="Gmail search is private mailbox data and requires exact Akkoord.",
+                source="google_workspace:gmail_search",
+                approval_status="pending_philip_akkoord",
+                metadata_11d={"dimension_count": 11, "source_type": "gmail_private_read_gate", "taint": "private_user_data", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+                next_action="Vraag Philip om exact Akkoord voordat Gmail-resultaten worden gelezen.",
+            )
+        try:
+            from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+            raw = GoogleWorkspaceAdapter().search_gmail(query=clean_query, approval=approval, max_results=limit)
+        except Exception as exc:
+            return _tool_result(
+                "gmail_search",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="google_workspace:gmail_search",
+                approval_status="approved",
+                next_action="Controleer Google OAuth/scopes/live-api instelling zonder tokenmateriaal te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        raw_status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        status = "success" if raw_status == "success" else raw_status
+        return _tool_result(
+            "gmail_search",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "success" else _stringify(payload),
+            source="google_workspace:gmail_search",
+            approval_status="approved",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "gmail_private_readonly", "taint": "private_user_data", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Vat de gevonden mail samen of maak een concept; mail verzenden blijft buiten deze tool.",
+        )
+
+    def google_drive_status(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"status": "unknown", "adapters": {}, "secrets_returned": False, "fake_success": False}
+        statuses: list[str] = []
+        try:
+            from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+            google_status = _sanitize_connector_payload(GoogleWorkspaceAdapter().status())
+            payload["adapters"]["google_workspace"] = google_status
+            statuses.append(str(google_status.get("status") or "unknown"))
+        except Exception as exc:
+            payload["adapters"]["google_workspace"] = {"status": "error", "reason": _redact_operational_text(str(exc)), "fake_success": False}
+        try:
+            from controller.rclone_drive_adapter import RcloneDriveAdapter
+
+            rclone_status = _sanitize_connector_payload(RcloneDriveAdapter().status())
+            payload["adapters"]["rclone_drive"] = rclone_status
+            statuses.append(str(rclone_status.get("status") or "unknown"))
+        except Exception as exc:
+            payload["adapters"]["rclone_drive"] = {"status": "error", "reason": _redact_operational_text(str(exc)), "fake_success": False}
+        payload["status"] = "ready" if any(item in {"connected", "ready", "success", "online"} for item in statuses) else "unavailable"
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        return _tool_result(
+            "google_drive_status",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="google_drive:status",
+            approval_status="not_required_status",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "google_drive_connector_status", "taint": "connector_status_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik google_drive_list met exact Akkoord wanneer Philip private Drive-inhoud wil lezen.",
+        )
+
+    def google_drive_list(
+        self,
+        *,
+        path: str = "",
+        remote: str = "",
+        max_items: int = 25,
+        max_depth: int = 1,
+        adapter: str = "auto",
+        approval: str = "",
+    ) -> dict[str, Any]:
+        limit = max(1, min(int(max_items or 25), 100))
+        depth = max(1, min(int(max_depth or 1), 5))
+        clean_adapter = str(adapter or "auto").strip().lower().replace("-", "_")
+        if clean_adapter in {"google", "workspace"}:
+            clean_adapter = "google_workspace"
+        if clean_adapter not in {"auto", "rclone", "google_workspace"}:
+            return _tool_result(
+                "google_drive_list",
+                "error",
+                stderr="adapter must be auto, rclone or google_workspace.",
+                source="google_drive:list",
+                next_action="Kies adapter=auto, rclone of google_workspace.",
+            )
+        if not approval_matches(approval):
+            ziel_policy = ziel_guardrail_note()
+            payload = {"path": path, "remote": remote, "max_items": limit, "approval_required": True, "read_only": True, "executed": False, "secrets_returned": False, "ziel_policy": ziel_policy}
+            return _tool_result(
+                "google_drive_list",
+                "blocked",
+                result=payload,
+                stdout=_stringify(payload),
+                stderr="Google Drive listing is private data and requires exact Akkoord.",
+                source="google_drive:list",
+                approval_status="pending_philip_akkoord",
+                metadata_11d={"dimension_count": 11, "source_type": "google_drive_private_read_gate", "taint": "private_user_data", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+                next_action="Vraag Philip om exact Akkoord voordat Drive-bestanden worden gelijst.",
+            )
+        raw: dict[str, Any] | None = None
+        adapter_used = ""
+        errors: list[dict[str, Any]] = []
+        if clean_adapter in {"auto", "rclone"}:
+            try:
+                from controller.rclone_drive_adapter import RcloneDriveAdapter
+
+                rclone = RcloneDriveAdapter()
+                rclone_status = rclone.status()
+                if clean_adapter == "rclone" or str(rclone_status.get("status") or "") in {"ready", "success", "online"}:
+                    raw = rclone.list_drive_files(approval=approval, remote=remote, path=path, max_items=limit, max_depth=depth)
+                    adapter_used = "rclone_drive"
+            except Exception as exc:
+                errors.append({"adapter": "rclone_drive", "status": "error", "reason": _redact_operational_text(str(exc))})
+        if raw is None and clean_adapter in {"auto", "google_workspace"}:
+            try:
+                from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+                raw = GoogleWorkspaceAdapter().list_drive_files(approval=approval, page_size=limit)
+                adapter_used = "google_workspace"
+            except Exception as exc:
+                errors.append({"adapter": "google_workspace", "status": "error", "reason": _redact_operational_text(str(exc))})
+        if raw is None:
+            raw = {"status": "error", "operation": "list_drive_files", "reason": "No Google Drive adapter could be selected.", "errors": errors, "fake_success": False}
+        payload = _sanitize_connector_payload({**raw, "adapter_used": adapter_used or clean_adapter, "errors": errors, "read_only": True, "secrets_returned": False})
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        raw_status = str(raw.get("status") or "error")
+        status = "success" if raw_status == "success" else raw_status
+        return _tool_result(
+            "google_drive_list",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "success" else _stringify(payload),
+            source=f"google_drive:list:{adapter_used or clean_adapter}",
+            approval_status="approved",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "google_drive_private_readonly", "taint": "private_user_data", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik de Drive-listing alleen als private read-only context; upload/delete/sync zijn niet beschikbaar in deze tool.",
+        )
+
+    def github_status(self) -> dict[str, Any]:
+        try:
+            from controller.github_adapter import GitHubAdapter
+
+            raw = GitHubAdapter().status()
+        except Exception as exc:
+            return _tool_result(
+                "github_status",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="github:status",
+                next_action="Controleer GitHub token/env/API-key-store configuratie zonder tokens te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        return _tool_result(
+            "github_status",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="github:status",
+            approval_status="not_required_status",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "github_connector_status", "taint": "connector_status_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik github_repo of github_search_repositories voor publieke read-only GitHub metadata.",
+        )
+
+    def github_repo(self, repo: str, approval: str = "") -> dict[str, Any]:
+        try:
+            from controller.github_adapter import GitHubAdapter
+
+            raw = GitHubAdapter().get_repository(repo, approval=approval)
+        except Exception as exc:
+            return _tool_result(
+                "github_repo",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="github:repo",
+                next_action="Controleer de repositorynaam owner/repo en GitHub adapterstatus.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error")
+        approval_status = str(raw.get("approval_status") or ("pending_philip_akkoord" if status == "blocked" else "not_required_public_readonly"))
+        return _tool_result(
+            "github_repo",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "success" else _stringify(payload),
+            source="github:repo",
+            approval_status=approval_status,
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "github_repository_metadata", "taint": "public_web_api" if status == "success" else "connector_guardrail", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik deze metadata read-only; GitHub writes/issues/pushes zijn niet beschikbaar in deze tool.",
+        )
+
+    def github_search_repositories(self, query: str, limit: int = 5, approval: str = "") -> dict[str, Any]:
+        try:
+            from controller.github_adapter import GitHubAdapter
+
+            raw = GitHubAdapter().search_repositories(query, limit=max(1, min(int(limit or 5), 20)), approval=approval)
+        except Exception as exc:
+            return _tool_result(
+                "github_search_repositories",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="github:search_repositories",
+                next_action="Controleer GitHub adapterstatus of probeer een kortere publieke zoekquery.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error")
+        approval_status = str(raw.get("approval_status") or ("pending_philip_akkoord" if status == "blocked" else "not_required_public_readonly"))
+        return _tool_result(
+            "github_search_repositories",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "success" else _stringify(payload),
+            source="github:search_repositories",
+            approval_status=approval_status,
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "github_repository_search", "taint": "public_web_api" if status == "success" else "connector_guardrail", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik publieke GitHub-resultaten als read-only context; mutaties blijven geblokkeerd.",
+        )
+
+    def vps_status(self) -> dict[str, Any]:
+        try:
+            from controller.vps_deploy_adapter import VPSDeployAdapter
+
+            raw = VPSDeployAdapter().status()
+        except Exception as exc:
+            return _tool_result(
+                "vps_status",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="vps_deploy:status",
+                next_action="Controleer VPS profielmetadata zonder credentials te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        return _tool_result(
+            "vps_status",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="vps_deploy:status",
+            approval_status="not_required_status",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "vps_deploy_status", "taint": "connector_status_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik vps_sync_preview voor een niet-muterende dry-run; vps_sync_execute vereist exact Akkoord.",
+        )
+
+    def vps_login_check(self, timeout_seconds: int = 120) -> dict[str, Any]:
+        try:
+            from controller.vps_deploy_adapter import VPSDeployAdapter
+
+            raw = VPSDeployAdapter().login_check(timeout_seconds=max(5, min(int(timeout_seconds or 120), 300)))
+        except Exception as exc:
+            return _tool_result(
+                "vps_login_check",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="vps_deploy:login_check",
+                next_action="Controleer host SSH agent/config zonder credentials in Ouroboros op te slaan.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        return _tool_result(
+            "vps_login_check",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "success" else _stringify(payload),
+            source="vps_deploy:login_check",
+            approval_status="not_required_readonly",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "vps_login_check", "taint": "host_metadata_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Als login_ok=true kan vps_sync_preview veilig een rsync dry-run maken; geen credentials worden teruggegeven.",
+        )
+
+    def vps_sync_preview(self, *, remote_path: str = "", source_path: str = "", timeout_seconds: int = 120) -> dict[str, Any]:
+        try:
+            from controller.vps_deploy_adapter import VPSDeployAdapter
+
+            raw = VPSDeployAdapter().sync_preview(
+                remote_path=remote_path,
+                source_path=source_path,
+                timeout_seconds=max(10, min(int(timeout_seconds or 120), 900)),
+            )
+        except Exception as exc:
+            return _tool_result(
+                "vps_sync_preview",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="vps_deploy:sync_preview",
+                next_action="Controleer VPS profielmetadata en rsync beschikbaarheid; preview mag niets muteren.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        return _tool_result(
+            "vps_sync_preview",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "preview" else _stringify(payload),
+            source="vps_deploy:sync_preview",
+            approval_status="not_required_dry_run",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "vps_sync_preview", "taint": "host_deploy_metadata_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Review de dry-run output; voer pas vps_sync_execute uit met exact Akkoord als de preview klopt.",
+        )
+
+    def vps_sync_execute(self, *, approval: str = "", remote_path: str = "", source_path: str = "", timeout_seconds: int = 120) -> dict[str, Any]:
+        if str(approval or "").strip() != "Akkoord":
+            ziel_policy = ziel_guardrail_note()
+            payload = {
+                "remote_path": remote_path,
+                "source_path": source_path,
+                "approval_required": True,
+                "executed": False,
+                "mutated": False,
+                "remote_target": "/var/www/philip-wintrip.nl/html/Ouroboros/",
+                "secrets_returned": False,
+                "ziel_policy": ziel_policy,
+            }
+            return _tool_result(
+                "vps_sync_execute",
+                "blocked",
+                result=payload,
+                stdout=_stringify(payload),
+                stderr="VPS sync execution requires exact Akkoord.",
+                source="vps_deploy:sync_execute",
+                approval_status="pending_philip_akkoord",
+                metadata_11d={"dimension_count": 11, "source_type": "vps_sync_execute_gate", "taint": "host_mutation_gate", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+                next_action="Vraag Philip om exact Akkoord na review van vps_sync_preview.",
+            )
+        try:
+            from controller.vps_deploy_adapter import VPSDeployAdapter
+
+            raw = VPSDeployAdapter().sync_execute(
+                approval=approval,
+                remote_path=remote_path,
+                source_path=source_path,
+                timeout_seconds=max(10, min(int(timeout_seconds or 120), 900)),
+            )
+        except Exception as exc:
+            return _tool_result(
+                "vps_sync_execute",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="vps_deploy:sync_execute",
+                approval_status="approved",
+                next_action="Inspecteer de host bridge/rsync fout zonder secrets te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        return _tool_result(
+            "vps_sync_execute",
+            status,
+            result=payload,
+            stdout=_stringify(payload),
+            stderr="" if status == "success" else _stringify(payload),
+            source="vps_deploy:sync_execute",
+            approval_status="approved",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "vps_sync_execute", "taint": "host_mutation_audit", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Controleer de VPS site en bewaar alleen auditmetadata; credentials zijn niet opgeslagen of teruggegeven.",
         )
 
     def chatgpt_browser_ask(self, question: str, approval: str) -> dict[str, Any]:
@@ -1708,7 +2446,7 @@ class AgentToolRegistry:
             return {"level": "medium", "label": "Medium: approval-gated local action", "memory_first": True}
         if str(tool or "").startswith("roo_"):
             return {"level": "medium", "label": "Medium: Roo adapter under workspace/approval gates", "memory_first": True}
-        if tool in {"browser_research", "chatgpt_browser_ask", "brave_search", "ns_travel_advice", "world_grok_ask", "mail_read_recent", "mail_send", "social_post_publish", "codex_job_start", "resolve_or_build_function"}:
+        if tool in {"browser_research", "chatgpt_browser_ask", "brave_search", "ns_travel_advice", "ov9292_travel_advice", "world_grok_ask", "mail_read_recent", "mail_send", "gmail_status", "gmail_search", "google_drive_status", "google_drive_list", "github_status", "github_repo", "github_search_repositories", "social_post_publish", "codex_job_start", "resolve_or_build_function"}:
             return {"level": "guarded", "label": "Guarded: external/browser perimeter", "memory_first": True}
         return {"level": "unknown", "label": "No registered tool result yet", "memory_first": False}
 
@@ -2061,6 +2799,90 @@ def _ns_planner_url(from_station: str, to_station: str, *, date_time: str = "", 
     return "https://www.ns.nl/reisplanner/#/?" + urlencode(params)
 
 
+def _ov9292_planner_links(
+    from_place: str,
+    to_place: str,
+    *,
+    date_time: str = "",
+    search_for_arrival: bool = False,
+    query: str = "",
+) -> list[str]:
+    base_params: dict[str, str] = {}
+    if from_place:
+        base_params["from"] = from_place
+    if to_place:
+        base_params["to"] = to_place
+    if date_time:
+        base_params["dateTime"] = date_time[:16]
+        base_params["timeType"] = "arrival" if search_for_arrival else "departure"
+    if query:
+        base_params["query"] = " ".join(str(query or "").split())[:400]
+    links = ["https://9292.nl/" + (("?" + urlencode(base_params)) if base_params else "")]
+    planner_params = {}
+    if from_place:
+        planner_params["vertrek"] = from_place
+    if to_place:
+        planner_params["aankomst"] = to_place
+    if date_time:
+        planner_params["tijd"] = date_time[:16]
+        planner_params["type"] = "aankomst" if search_for_arrival else "vertrek"
+    if planner_params:
+        links.append("https://9292.nl/reisadvies?" + urlencode(planner_params))
+    if query:
+        links.append("https://9292.nl/zoeken?" + urlencode({"q": " ".join(str(query or "").split())[:400]}))
+    return _unique_texts(links)
+
+
+def _connector_services_from_prompt(prompt: str, provided: list[Any]) -> list[str]:
+    lowered = str(prompt or "").lower()
+    services = [str(item).strip().lower().replace(" ", "_") for item in provided if str(item or "").strip()]
+    if "gmail" in lowered or "google mail" in lowered or re.search(r"\b(mail|email|e-mail|inbox)\b", lowered):
+        services.append("gmail")
+    if "google drive" in lowered or "gdrive" in lowered or re.search(r"\bdrive\b", lowered):
+        services.append("google_drive")
+    if "github" in lowered or "git hub" in lowered:
+        services.append("github")
+    if any(marker in lowered for marker in ("vps", "ssh", "rsync", "scp", "deploy", "server login", "remote server")):
+        services.append("vps")
+    return _unique_texts(services)
+
+
+def _connector_prompt_mutating(prompt: str) -> bool:
+    lowered = str(prompt or "").lower()
+    return bool(
+        re.search(
+            r"\b(send|verstuur|reply|antwoord|archive|label|upload|write|schrijf|create|maak|delete|verwijder|deploy|sync|synchroniseer|login|log\s+in|push|merge|commit|ssh|scp|rsync)\b",
+            lowered,
+        )
+    )
+
+
+def _connector_blocked_tools(services: list[str], action_type: str) -> list[str]:
+    mapping = {
+        "gmail": "gmail_connector",
+        "google_drive": "google_drive_connector",
+        "github": "github_connector",
+        "vps": "vps_host_action",
+    }
+    blocked = [mapping.get(service, f"{service}_connector") for service in services]
+    if not blocked:
+        blocked = ["private_connector"]
+    if "mutating" in str(action_type or ""):
+        blocked.append("mutating_connector_action")
+    return _unique_texts(blocked)
+
+
+def _unique_texts(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            output.append(text)
+    return output
+
+
 def _summarize_ns_trips(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, dict):
         return []
@@ -2177,10 +2999,48 @@ def _redact_operational_text(text: str) -> str:
     patterns = (
         re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s,;}]+"),
         re.compile(r"(?i)authorization:\s*bearer\s+[A-Za-z0-9._\-]+"),
+        re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{12,}\b"),
     )
     for pattern in patterns:
         redacted = pattern.sub(lambda match: f"{match.group(1)}=[REDACTED]" if match.groups() else "[REDACTED]", redacted)
     return redacted
+
+
+def _sanitize_connector_payload(value: Any) -> Any:
+    safe_key_names = {
+        "token_type",
+        "has_refresh_token",
+        "tokens_returned",
+        "secrets_returned",
+        "required_key_env",
+        "masked",
+        "store_path",
+        "writable",
+        "configured",
+        "source",
+        "source_type",
+        "fake_success",
+    }
+    sensitive_names = {"access_token", "refresh_token", "client_secret", "api_key", "authorization", "password", "passwd", "secret", "token", "bearer", "private_key", "ssh_key"}
+    if isinstance(value, dict):
+        output: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if lowered == "token" and isinstance(item, dict):
+                output[key_text] = _sanitize_connector_payload(item)
+            elif lowered not in safe_key_names and (lowered in sensitive_names or lowered.endswith("_token") or lowered.endswith("_secret") or lowered.endswith("_key")):
+                output[key_text] = "[REDACTED]" if item not in (None, "", False) else item
+            else:
+                output[key_text] = _sanitize_connector_payload(item)
+        return output
+    if isinstance(value, list):
+        return [_sanitize_connector_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_connector_payload(item) for item in value]
+    if isinstance(value, str):
+        return _redact_operational_text(value)
+    return value
 
 
 def _coherence_metadata(tool_name: str, payload: str) -> dict[str, Any]:

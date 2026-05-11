@@ -1201,6 +1201,7 @@ APPROVAL_PHRASE = "Akkoord"
 MULTI_API_PROVIDER_MODELS: dict[str, list[str]] = {
     "openai": ["gpt-4.1", "gpt-4.1-mini"],
     "anthropic": ["claude-opus-4-6", "claude-sonnet-4-6"],
+    "deepseek": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
     "google": ["gemini-2.5-flash", "gemini-2.5-pro"],
     "xai": ["grok-3", "grok-3-mini"],
     "mistral": ["mistral-large-latest", "mistral-small-latest"],
@@ -1208,9 +1209,18 @@ MULTI_API_PROVIDER_MODELS: dict[str, list[str]] = {
 MULTI_API_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "google": "GOOGLE_API_KEY",
     "xai": "XAI_API_KEY",
     "mistral": "MISTRAL_API_KEY",
+}
+MULTI_API_PROVIDER_LABELS: dict[str, str] = {
+    "openai": "ChatGPT Pro",
+    "anthropic": "Claude Opus",
+    "deepseek": "DeepSeek API",
+    "google": "Gemini",
+    "xai": "Grok",
+    "mistral": "Mistral",
 }
 ROO_CLOUD_COCKPIT_PROVIDERS: tuple[str, ...] = ("openai", "anthropic", "google")
 OUROBOROS_RUNTIME_MODELS: tuple[str, ...] = ("living-runtime", "quantum-foam-11d")
@@ -1239,6 +1249,11 @@ PROVIDER_ALIASES: dict[str, str] = {
     "chatgpt": "openai",
     "claude": "anthropic",
     "anthropic": "anthropic",
+    "deepseek": "deepseek",
+    "deepseek_api": "deepseek",
+    "deep_seek": "deepseek",
+    "deep-seek": "deepseek",
+    "deekseek": "deepseek",
     "gemini": "google",
     "google": "google",
     "grok": "xai",
@@ -1370,7 +1385,7 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             key_source = "subscription"
         options[provider] = {
             "provider": provider,
-            "label": provider.title(),
+            "label": MULTI_API_PROVIDER_LABELS.get(provider, provider.title()),
             "available": bool(MultiAPIRouter is not None and configured),
             "enabled": bool(MultiAPIRouter is not None and configured),
             "configured": configured,
@@ -2378,6 +2393,9 @@ def _fast_agentic_action_payload(
 
     if not bool(getattr(intent, "is_agentic", False)):
         return None
+    target_tool = str(getattr(intent, "target_tool", "") or "")
+    if target_tool in {"brave_search", "ns_travel_advice", "ov9292_travel_advice", "connector_intent_preview", "agentic_ecosystem_context"}:
+        return None
     text = str(req.prompt or "").strip()
     lowered = text.lower()
     if text.startswith("/"):
@@ -3048,6 +3066,7 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
 
     if provider == "ouroboros":
+        _ouroboros_timeout = min(timeout_seconds, 45.0)
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -3058,7 +3077,7 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
                     tools=tools,
                     chat_context=chat_context,
                 ),
-                timeout=min(timeout_seconds, 20.0),
+                timeout=_ouroboros_timeout,
             )
         except asyncio.TimeoutError:
             return _with_cockpit_self_context(
@@ -3067,7 +3086,7 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
                     provider="ouroboros",
                     model=model,
                     route="ouroboros_runtime",
-                    timeout_seconds=min(timeout_seconds, 20.0),
+                    timeout_seconds=_ouroboros_timeout,
                     local_only=True,
                     tools=tools,
                     return_tools=_should_return_tool_schemas(req),
@@ -3347,6 +3366,7 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     result["model"] = result.get("model") or model
     result["route"] = "multi_api"
     result["local_only"] = False
+    result.setdefault("fake_success", False)
     result["tool_schemas"] = tools if _should_return_tool_schemas(req) else []
     result["tool_schema_count"] = len(tools)
     return _with_cockpit_self_context(result, chat_context, provider, model)
@@ -3545,6 +3565,8 @@ def _with_cockpit_self_context(
     response = str(result.get("response") or result.get("message") or "")
     status = str(result.get("status") or "")
     self_context = dict(chat_context.get("self_context") or {})
+    if chat_context.get("agentic_intent") is not None:
+        self_context.setdefault("agentic_intent", chat_context.get("agentic_intent"))
     route = str(result.get("route") or "")
     attach_living_echo = route != "slash_agent" if include_living_echo is None else bool(include_living_echo)
     living_echo = _living_chat_echo() if attach_living_echo else {}

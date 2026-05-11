@@ -29,7 +29,10 @@ class TestOuroborosSelfContext(unittest.TestCase):
         (root / ".agents" / "skills" / "memory-management").mkdir(parents=True)
         type_2 = Path(self.workspace_tmp.name) / ".agents" / "agent_types" / "type_2"
         type_2.mkdir(parents=True)
-        (type_2 / "Ziel.md").write_text("# Zielenboek\n\n1. Blijf wakker.\n", encoding="utf-8")
+        (type_2 / "Ziel.md").write_text(
+            "# Zielenboek\n\n1. **Innerlijke Dialoog:** Blijf wakker.\n2. **Veerkracht bij Weerstand (Micro-Retries):** Probeer bounded opnieuw.\n",
+            encoding="utf-8",
+        )
 
     def tearDown(self):
         self.workspace_tmp.cleanup()
@@ -54,6 +57,12 @@ class TestOuroborosSelfContext(unittest.TestCase):
         agent_types = context["self_context"]["ouroboros_agent_types"]
         self.assertEqual(agent_types["type_count"], 1)
         self.assertTrue(agent_types["types"][0]["has_ziel"])
+        self.assertEqual(context["self_context"]["ziel_policy"]["status"], "loaded")
+        self.assertEqual(context["self_context"]["ziel_policy"]["principle_count"], 2)
+        self.assertIn("Ziel policy loaded", context["system_prompt"])
+        self.assertIn("ToolBridge", context["system_prompt"])
+        self.assertIn("Akkoord", context["system_prompt"])
+        self.assertIn("three similar failures", context["system_prompt"])
         self.assertIn("Ouroboros agent types: type_2(Ziel)", context["system_prompt"])
 
     def test_recorded_turn_returns_as_server_history_without_secret_leak(self):
@@ -125,6 +134,9 @@ class TestOuroborosSelfContext(unittest.TestCase):
         self.assertEqual(status["latest_conversations"][0]["conversation_id"], "cockpit")
         self.assertIn("WINTRIPAI_CONTEXT.md", status["ruflo"]["ide_context_files"][1])
         self.assertEqual(status["ouroboros_agent_types"]["types"][0]["id"], "type_2")
+        self.assertEqual(status["ziel_policy"]["status"], "loaded")
+        self.assertEqual(status["ziel_policy"]["principle_count"], 2)
+        self.assertIn("content_hash", status["ziel_policy"])
 
     def _restore(self, key: str, value: str | None) -> None:
         if value is None:

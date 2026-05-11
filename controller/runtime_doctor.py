@@ -33,6 +33,7 @@ CRITICAL_CHECKS = (
     "roo_runtime",
     "pending_approval_store",
     "docker_runner",
+    "ziel_policy",
 )
 
 
@@ -52,6 +53,7 @@ def runtime_doctor_payload(
         "ooda_hippocampus": _check_ooda_hippocampus(),
         "pending_approval_store": _check_pending_approval_store(),
         "docker_runner": _check_docker_runner(),
+        "ziel_policy": _check_ziel_policy(),
         "roo_runtime": _check_roo_runtime(),
         "codex_gemini": _check_codex_gemini(),
         "last_smoke_test": _check_last_smoke_test(),
@@ -364,6 +366,28 @@ def _check_codex_gemini() -> dict[str, Any]:
         "gemini_path": gemini_path or "",
         "fake_success": False,
     }
+
+
+def _check_ziel_policy() -> dict[str, Any]:
+    try:
+        from controller.ziel_policy import ziel_policy_status
+
+        status = ziel_policy_status()
+        loaded = bool(status.get("loaded"))
+        return {
+            "status": "online" if loaded else "failed",
+            "reason": "Ziel policy loaded as local runtime context" if loaded else str(status.get("reason") or "Ziel.md missing"),
+            "source_path": status.get("source_path", ""),
+            "content_hash": status.get("content_hash", ""),
+            "short_hash": status.get("short_hash", ""),
+            "principle_count": status.get("principle_count", 0),
+            "summary": status.get("summary", ""),
+            "guardrails": status.get("guardrails") or [],
+            "secrets_returned": False,
+            "fake_success": False,
+        }
+    except Exception as exc:
+        return {"status": "failed", "reason": str(exc), "secrets_returned": False, "fake_success": False}
 
 
 def _check_last_smoke_test() -> dict[str, Any]:

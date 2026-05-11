@@ -18,6 +18,12 @@ PROVIDER_ALIASES: dict[str, str] = {
     "chatgpt": "openai",
     "anthropic": "anthropic",
     "claude": "anthropic",
+    "deepseek": "deepseek",
+    "deepseek_api": "deepseek",
+    "deepseek_chat": "deepseek",
+    "deepseek_reasoner": "deepseek",
+    "deep_seek": "deepseek",
+    "deekseek": "deepseek",
     "google": "google",
     "gemini": "google",
     "xai": "xai",
@@ -25,20 +31,25 @@ PROVIDER_ALIASES: dict[str, str] = {
     "mistral": "mistral",
     "brave": "brave",
     "brave_search": "brave",
+    "github": "github",
+    "github_token": "github",
+    "gh": "github",
 }
 
 PROVIDER_KEY_ENVS: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "anthropic": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
+    "deepseek": ("DEEPSEEK_API_KEY",),
     "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     "xai": ("XAI_API_KEY", "GROK_API_KEY"),
     "mistral": ("MISTRAL_API_KEY",),
     "brave": ("BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"),
+    "github": ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_API_TOKEN"),
 }
 
 
 def normalize_provider(provider: str) -> str:
-    normalized = str(provider or "").strip().lower().replace("-", "_")
+    normalized = str(provider or "").strip().lower().replace("-", "_").replace(" ", "_")
     if normalized not in PROVIDER_ALIASES:
         raise ValueError(f"Unsupported provider: {provider}")
     return PROVIDER_ALIASES[normalized]
@@ -48,9 +59,10 @@ def key_store_path() -> Path:
     configured = os.getenv("WINTRIP_API_KEY_STORE") or os.getenv("OUROBOROS_API_KEY_STORE")
     if configured:
         return Path(configured).expanduser().resolve()
-    workspace = Path(os.getenv("WINTRIP_WORKSPACE") or os.getenv("WORKSPACE_ROOT") or "/workspace")
+    workspace_hint = os.getenv("WINTRIP_WORKSPACE") or os.getenv("WORKSPACE_ROOT") or os.getenv("WINTRIP_PROJECT_ROOT")
+    workspace = Path(workspace_hint).expanduser() if workspace_hint else Path.cwd()
     if not workspace.exists():
-        workspace = Path(os.getenv("WINTRIP_PROJECT_ROOT") or Path.cwd())
+        workspace = Path.cwd()
     return (workspace / ".secrets" / "ouroboros_api_keys.json").resolve()
 
 

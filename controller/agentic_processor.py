@@ -11,10 +11,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from controller.agent_tools import REGISTERED_TOOLS, agent_tool_schemas
+from controller.agentic_intent import classify_agentic_intent
 from controller.ooda_hippocampus import record_ooda_event
 from controller.persistent_memory_manager import save_agentic_session
 from controller.quantum_foam_field import agentic_foam_event, foam_context_for_pocket
 from controller.tool_bridge import TOOL_BRIDGE_TOOLS, WRITE_TOOLS, run_tool_bridge, tool_bridge_status
+from controller.ziel_policy import compact_ziel_policy, load_ziel_policy, ziel_policy_context_block
 
 
 APPROVAL_PHRASE = "Akkoord"
@@ -34,20 +36,43 @@ APPROVAL_TOOLS = {
     "chatgpt_browser_ask",
     "world_grok_ask",
     "mail_read_recent",
+    "gmail_search",
+    "google_drive_list",
     "mail_send",
     "social_post_publish",
     "codex_job_start",
     "resolve_or_build_function",
+    "vps_sync_execute",
+}
+DISPATCH_GATED_TOOLS = {
+    "gmail_search",
+    "google_drive_list",
+}
+AGENT_TOOL_DISPATCH_OVERRIDES = {
+    "gmail_search",
 }
 EXTERNAL_TOOLS = {
     "brave_search",
     "ns_travel_advice",
+    "ov9292_travel_advice",
     "browser_research",
     "chatgpt_browser_ask",
     "world_grok_ask",
     "mail_read_recent",
+    "gmail_status",
+    "gmail_search",
+    "google_drive_status",
+    "google_drive_list",
+    "github_status",
+    "github_repo",
+    "github_search_repositories",
+    "vps_status",
+    "vps_login_check",
+    "vps_sync_preview",
+    "vps_sync_execute",
     "mail_send",
     "social_post_publish",
+    "connector_intent_preview",
     "resolve_or_build_function",
 }
 MUTATING_TOOLS = {
@@ -62,6 +87,7 @@ MUTATING_TOOLS = {
     "social_post_publish",
     "codex_job_start",
     "resolve_or_build_function",
+    "vps_sync_execute",
 }
 COMPLETION_STATUSES = {"success", "stored", "completed", "opened", "login_required", "rate_limited", "skipped", "preview"}
 BLOCKING_STATUSES = {"blocked", "rejected", "approval_required"}
@@ -156,6 +182,7 @@ class AgenticProcessor:
             return {"status": "blocked", "route": "agentic_processor", "reason": "Goal ontbreekt.", "fake_success": False}
 
         tool_catalog = self.discover_tools(provider=provider or self.provider)
+        ziel_policy = load_ziel_policy()
         foam_start = self._foam_event(clean_goal, phase="agentic_start")
         pocket_before = self._pocket_context(
             "observe_goal",
@@ -173,6 +200,7 @@ class AgenticProcessor:
             "tool_catalog_count": len(tool_catalog["schemas"]),
             "plan": [],
             "planner": {},
+            "ziel_policy": compact_ziel_policy(ziel_policy),
             "pocket_observe": pocket_before,
             "quantum_foam": foam_start,
             "steps": [],
@@ -203,6 +231,7 @@ class AgenticProcessor:
                 system_prompt=system_prompt,
                 history=history or [],
                 pocket_context=pocket_before,
+                ziel_policy=ziel_policy,
             )
             steps = plan_payload["steps"]
             state["plan"] = steps
@@ -278,6 +307,7 @@ class AgenticProcessor:
             "schemas": schemas,
             "tool_names": [schema["function"]["name"] for schema in schemas if "function" in schema],
             "write_tools_require_approval": sorted(APPROVAL_TOOLS),
+            "ziel_policy": compact_ziel_policy(load_ziel_policy()),
             "tool_bridge": tool_bridge_status(),
             "fake_success": False,
         }
@@ -292,11 +322,13 @@ class AgenticProcessor:
         system_prompt: str | None,
         history: Sequence[Mapping[str, Any]],
         pocket_context: Mapping[str, Any],
+        ziel_policy: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        prompt = self._planning_prompt(goal, approval=approval, tool_catalog=tool_catalog, pocket_context=pocket_context)
-        raw = self._call_llm(prompt, system_prompt=self._planning_system_prompt(system_prompt), model=model, history=history)
+        policy = dict(ziel_policy or load_ziel_policy())
+        prompt = self._planning_prompt(goal, approval=approval, tool_catalog=tool_catalog, pocket_context=pocket_context, ziel_policy=policy)
+        raw = self._call_llm(prompt, system_prompt=self._planning_system_prompt(system_prompt, ziel_policy=policy), model=model, history=history)
         parsed = _parse_plan(raw)
-        planner = {"source": "llm", "raw_preview": str(raw)[:1200]}
+        planner = {"source": "llm", "raw_preview": str(raw)[:1200], "ziel_policy": compact_ziel_policy(policy)}
         if not parsed:
             parsed = self._heuristic_plan(goal, approval=approval)
             planner["source"] = "heuristic_fallback"
@@ -392,8 +424,9 @@ class AgenticProcessor:
             "Vat deze agentische sessie in het Nederlands samen. "
             "Gebruik alleen uitgevoerde toolresultaten en de 11D-pocket context. "
             "Noem approval-blokkades expliciet en claim geen sociale, mail- of shellactie die niet werkelijk is uitgevoerd. "
-            "Voor trein/OV-tijden is ns_travel_advice de leidende bron. "
-            "Als ns_travel_advice niet authoritative=true is, noem dan geen exacte vertrek- of aankomsttijden; geef de officiële plannerlink en zeg wat er ontbreekt.\n\n"
+            "Voor trein/OV-tijden is ns_travel_advice de leidende bron voor NS en ov9292_travel_advice een officiële-link fallback voor 9292/bus/tram/metro. "
+            "Als ns_travel_advice of ov9292_travel_advice niet authoritative=true is, noem dan geen exacte vertrek- of aankomsttijden; geef de officiële plannerlink en zeg wat er ontbreekt.\n\n"
+            "Voor VPS deploy/sync is vps_sync_preview de verplichte eerste stap; claim geen deploy als alleen preview, blocked of error is teruggekomen.\n\n"
             "Wanneer agentic_ecosystem_context is gebruikt, benoem concreet welke lokale DeepSeek/Atlas patronen de route verrijken, zonder te claimen dat hun runtimes zelf zijn gestart.\n\n"
             "Quantum Foam Field is tijdelijk: bij collapse_event=true is de essentie samengevat en het veld opgeruimd; claim dan niet dat het actief blijft.\n\n"
             f"Doel:\n{goal}\n\nSessie:\n{summary}"
@@ -405,6 +438,11 @@ class AgenticProcessor:
         return _with_audit_header(text[:4200], state)
 
     def _dispatch_tool(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        if tool in AGENT_TOOL_DISPATCH_OVERRIDES and tool in AGENT_TOOL_SET:
+            if self.agent_tools is None or not callable(getattr(self.agent_tools, "run_tool", None)):
+                return {"status": "unavailable", "reason": "AgentToolRegistry niet beschikbaar.", "fake_success": False}
+            result = self.agent_tools.run_tool(tool, args)
+            return result if isinstance(result, dict) else {"status": "success", "response": str(result), "fake_success": False}
         if tool in BRIDGE_TOOL_SET:
             result = self.tool_bridge_runner(tool, args)
             return result if isinstance(result, dict) else {"status": "success", "response": str(result), "fake_success": False}
@@ -418,7 +456,7 @@ class AgenticProcessor:
     def _validate_step(self, tool: str, args: dict[str, Any], *, approval: str) -> dict[str, Any]:
         if tool not in AGENT_TOOL_SET and tool not in BRIDGE_TOOL_SET:
             return {"status": "rejected", "reason": f"Tool bestaat niet in Agentic Core: {tool}", "fake_success": False}
-        if tool in APPROVAL_TOOLS and str(approval or args.get("approval") or "").strip() != APPROVAL_PHRASE:
+        if tool in APPROVAL_TOOLS and tool not in DISPATCH_GATED_TOOLS and str(approval or args.get("approval") or "").strip() != APPROVAL_PHRASE:
             return {
                 "status": "blocked",
                 "reason": f"{tool} vereist expliciete approval: Akkoord.",
@@ -607,8 +645,48 @@ class AgenticProcessor:
         if not guarded:
             guarded = [{"tool": "prompt_understanding", "args": {"prompt": goal}}]
         needs_transit = _needs_transit_web_context(goal.lower())
+        transit_tool = _transit_tool_for_goal(goal)
         explicit_web = _explicit_web_requested(goal)
         needs_agentic_ecosystem = _needs_agentic_ecosystem_context(goal)
+        connector_step = _connector_step_for_goal(goal)
+
+        if connector_step:
+            guarded = _without_prompt_understanding_only(guarded)
+            guarded = [
+                step
+                for step in guarded
+                if str(step.get("tool") or "")
+                not in {
+                    "brave_search",
+                    "browser_research",
+                    "mail_read_recent",
+                    "mail_send",
+                    "gmail_search",
+                    "gmail_status",
+                    "gmail_manage",
+                    "google_drive_status",
+                    "google_drive_list",
+                    "connector_intent_preview",
+                    "vps_status",
+                    "vps_login_check",
+                    "vps_sync_preview",
+                    "vps_sync_execute",
+                    "drive_upload_file",
+                    "drive_upload_text",
+                    "github_status",
+                    "github_repo",
+                    "github_search_repositories",
+                    "run_command",
+                    "safe_shell",
+                    "browser_open_url",
+                    "host_open_url",
+                }
+            ]
+            connector_tool = str(connector_step.get("tool") or "")
+            if not _has_tool(guarded, connector_tool):
+                guarded.insert(0, connector_step)
+                applied.append(f"inserted_{connector_tool}")
+            return guarded[: self.max_steps], applied
 
         if not _needs_voice_status(goal):
             before = len(guarded)
@@ -661,17 +739,21 @@ class AgenticProcessor:
                     guarded.insert(0, guarded.pop(memory_index))
                     applied.append("moved_memory_search_first")
 
-            if needs_transit and not _has_tool(guarded, "ns_travel_advice"):
+            if needs_transit and not _has_tool(guarded, transit_tool):
                 insert_at = 1 if guarded and str(guarded[0].get("tool") or "") == "memory_search" else 0
+                before = len(guarded)
+                guarded = [step for step in guarded if str(step.get("tool") or "") not in {"ns_travel_advice", "ov9292_travel_advice"}]
+                if len(guarded) != before:
+                    applied.append("removed_conflicting_transit_tool")
                 guarded.insert(
                     insert_at,
                     {
-                        "tool": "ns_travel_advice",
+                        "tool": transit_tool,
                         "args": _transit_args_for_goal(goal),
                         "reason": "guardrail: OV-tijden moeten via NS/reisplannerdata worden gegrond.",
                     },
                 )
-                applied.append("inserted_ns_travel_advice")
+                applied.append(f"inserted_{transit_tool}")
 
             if needs_transit and not explicit_web:
                 before = len(guarded)
@@ -767,16 +849,21 @@ class AgenticProcessor:
         lowered = goal.lower()
         steps: list[dict[str, Any]] = [{"tool": "memory_search", "args": {"query": goal, "limit": 5}}]
         browser_url = _browser_url_for_goal(goal)
+        connector_step = _connector_step_for_goal(goal)
+        if connector_step:
+            return [connector_step][: self.max_steps]
         if browser_url:
             steps.append({"tool": "browser_open_url", "args": {"url": browser_url, "prefer_bridge": True}})
         if _needs_transit_web_context(lowered) and not browser_url:
-            steps.append({"tool": "ns_travel_advice", "args": _transit_args_for_goal(goal)})
+            steps.append({"tool": _transit_tool_for_goal(goal), "args": _transit_args_for_goal(goal)})
             if _explicit_web_requested(goal):
                 steps.append({"tool": "brave_search", "args": {"query": _web_query_for_goal(goal), "limit": 3, "llm_context": True}})
         elif _needs_current_web_context(goal):
             steps.append({"tool": "brave_search", "args": {"query": _web_query_for_goal(goal), "limit": 5, "llm_context": True}})
         if _needs_agentic_ecosystem_context(goal):
             steps.append({"tool": "agentic_ecosystem_context", "args": {"goal": goal, "prefer_bridge": True}})
+        if _needs_vps_preview(goal):
+            steps.append({"tool": "vps_sync_preview", "args": _vps_args_for_goal(goal)})
         if "lees" in lowered or "read" in lowered:
             path = _extract_filename(goal)
             if path:
@@ -818,30 +905,38 @@ class AgenticProcessor:
         approval: str,
         tool_catalog: Mapping[str, Any],
         pocket_context: Mapping[str, Any],
+        ziel_policy: Mapping[str, Any] | None = None,
     ) -> str:
         schemas = tool_catalog.get("schemas") or []
         schema_text = json.dumps(schemas[:40], ensure_ascii=False, indent=2)[:18000]
+        ziel_block = ziel_policy_context_block(ziel_policy)
         return (
             "Maak een veilig JSON-plan voor Agentic Core. Geef uitsluitend JSON terug: "
             '[{"tool":"tool_name","args":{...},"reason":"kort"}]. '
             "Gebruik memory_search eerst wanneer nuttig. Gebruik brave_search voor actuele internetvragen. "
-            "Gebruik ns_travel_advice voor trein/OV/reisplanner-vragen; Brave-snippets zijn niet betrouwbaar genoeg voor exacte OV-tijden. "
+            "Gebruik ns_travel_advice voor NS/trein-vragen en ov9292_travel_advice voor 9292/bus/tram/metro/reisplanner fallback; Brave-snippets zijn niet betrouwbaar genoeg voor exacte OV-tijden. "
+            "Gebruik gmail_status/gmail_search voor Gmail status/read-only search, google_drive_status/google_drive_list voor Drive status/read-only listing, github_status/github_repo/github_search_repositories voor publieke GitHub reads, en vps_status/vps_login_check/vps_sync_preview/vps_sync_execute voor VPS deploys. VPS sync/deploy gewone chat moet altijd eerst vps_sync_preview gebruiken; vps_sync_execute mag alleen na exacte Akkoord en nooit als success worden gefaket. Gmail search en Drive list vereisen exact Akkoord; GitHub writes/issues/pushes ontbreken. Gebruik connector_intent_preview alleen voor muterende connectoracties die geen first-class tool hebben. "
             "Gebruik agentic_ecosystem_context voor agentische workflowvragen, sub-agents, multi-agent werk, DeepSeek of Atlas context; dit is lokale read-only verrijking zonder approval. "
             "Gebruik read_file/list_files/search_files/write_file/apply_patch/run_command/safe_shell/run_tests/browser_open_url alleen via de ToolBridge-namen. "
             "Als een gevraagde capability niet in de catalogus staat, gebruik resolve_or_build_function; die mag pas bouwen/testen na exact Akkoord. "
             "Brave Search is read-only internetcontext en mag zonder approval. "
             "Voor muterende acties, shell, browser/app-besturing, mail/social posting of duurzame training moet args.approval exact 'Akkoord' zijn wanneer approval aanwezig is; "
             "anders mag je de stap wel plannen en pauzeert de executor veilig.\n\n"
+            f"Ziel runtime policy/context:\n{ziel_block}\n"
+            "Planregel uit Ziel: micro-retries/laterale creativiteit/zelf-synthese zijn alleen bounded strategievarianten binnen bestaande tools; maximaal drie vergelijkbare mislukte pogingen, daarna stoppen of gericht escaleren. "
+            "Ziel mag nooit approval, ToolBridge, no-secrets, no-infinite-loop, lokale OODA/DreamCycle/Hippocampus, of connector/VPS gates omzeilen.\n\n"
             f"Approval aanwezig: {approval == APPROVAL_PHRASE}\n"
             f"11D pocket context:\n{json.dumps(pocket_context, ensure_ascii=False, default=str)[:2500]}\n\n"
             f"Beschikbare tools:\n{schema_text}\n\n"
             f"Doel:\n{goal}"
         )
 
-    def _planning_system_prompt(self, system_prompt: str | None) -> str:
+    def _planning_system_prompt(self, system_prompt: str | None, *, ziel_policy: Mapping[str, Any] | None = None) -> str:
+        policy = compact_ziel_policy(ziel_policy or load_ziel_policy())
         base = (
             "Je bent de planner rond een 11D Ouroboros pocket. "
-            "Je plant alleen bestaande tools, blijft auditbaar, en claimt geen ongebruikte capability."
+            "Je plant alleen bestaande tools, blijft auditbaar, en claimt geen ongebruikte capability. "
+            f"Ziel policy hash={policy.get('short_hash') or 'missing'} is context, geen bypass: bounded retries max {policy.get('bounded_retry_limit', 3)}, ToolBridge/Akkoord/no-secrets/connector-VPS/OODA-local guardrails blijven leidend."
         )
         return f"{system_prompt}\n\n{base}" if system_prompt else base
 
@@ -1022,6 +1117,16 @@ def _tool_alias(tool: str) -> str:
         "travel_advice": "ns_travel_advice",
         "train_schedule": "ns_travel_advice",
         "reisplanner": "ns_travel_advice",
+        "9292": "ov9292_travel_advice",
+        "ov9292": "ov9292_travel_advice",
+        "connector_preview": "connector_intent_preview",
+        "gmail": "gmail_search",
+        "gmail_status_check": "gmail_status",
+        "drive_list": "google_drive_list",
+        "google_drive": "google_drive_list",
+        "github": "github_search_repositories",
+        "github_search": "github_search_repositories",
+        "github_repository": "github_repo",
     }
     return aliases.get(str(tool or "").strip(), str(tool or "").strip())
 
@@ -1207,10 +1312,25 @@ def _needs_transit_web_context(lowered_goal: str) -> bool:
     return route_or_time_hit
 
 
+def _transit_tool_for_goal(goal: str) -> str:
+    try:
+        intent = classify_agentic_intent(goal)
+        if getattr(intent, "target_tool", "") == "ov9292_travel_advice":
+            return "ov9292_travel_advice"
+    except Exception:
+        pass
+    lowered = str(goal or "").lower()
+    if "9292" in lowered or any(marker in lowered for marker in ("bus", "tram", "metro", "openbaar vervoer")):
+        return "ov9292_travel_advice"
+    if "reisplanner" in lowered and not any(marker in lowered for marker in ("ns", "trein", "station")):
+        return "ov9292_travel_advice"
+    return "ns_travel_advice"
+
+
 def _transit_args_for_goal(goal: str) -> dict[str, Any]:
     clean = " ".join(str(goal or "").split())
     lowered = clean.lower()
-    return {
+    args = {
         "query": clean[:1000],
         "from_station": _extract_transit_station(clean, role="from"),
         "to_station": _extract_transit_station(clean, role="to"),
@@ -1218,12 +1338,170 @@ def _transit_args_for_goal(goal: str) -> dict[str, Any]:
         "date": _extract_transit_date(clean),
         "search_for_arrival": any(marker in lowered for marker in ("afspraak", "aankom", "aankomst", "arrive", "arrival")),
     }
+    if _transit_tool_for_goal(goal) == "ov9292_travel_advice":
+        args["from_place"] = args.get("from_station", "")
+        args["to_place"] = args.get("to_station", "")
+    return args
+
+
+def _connector_step_for_goal(goal: str) -> dict[str, Any] | None:
+    try:
+        intent = classify_agentic_intent(goal)
+    except Exception:
+        return None
+    target_tool = str(getattr(intent, "target_tool", "") or "")
+    connector_tools = {
+        "connector_intent_preview",
+        "gmail_status",
+        "gmail_search",
+        "google_drive_status",
+        "google_drive_list",
+        "github_status",
+        "github_repo",
+        "github_search_repositories",
+        "vps_status",
+        "vps_login_check",
+        "vps_sync_preview",
+        "vps_sync_execute",
+    }
+    if target_tool not in connector_tools:
+        return None
+    if target_tool == "gmail_status":
+        return {"tool": "gmail_status", "args": {}, "reason": "guardrail: veilige Gmail connectorstatus zonder mailboxinhoud."}
+    if target_tool == "gmail_search":
+        return {
+            "tool": "gmail_search",
+            "args": {"query": _gmail_query_for_goal(goal), "max_results": 5},
+            "reason": "guardrail: Gmail private read-only search via approval-gated adapter; geen mailmutatie.",
+        }
+    if target_tool == "google_drive_status":
+        return {"tool": "google_drive_status", "args": {}, "reason": "guardrail: veilige Google Drive connectorstatus zonder Drive-inhoud."}
+    if target_tool == "google_drive_list":
+        return {
+            "tool": "google_drive_list",
+            "args": {"path": _drive_path_for_goal(goal), "max_items": 25, "adapter": "auto"},
+            "reason": "guardrail: Google Drive private read-only listing via approval-gated adapter; geen upload/delete/sync.",
+        }
+    if target_tool == "github_status":
+        return {"tool": "github_status", "args": {}, "reason": "guardrail: veilige GitHub connectorstatus zonder tokenmateriaal."}
+    if target_tool == "github_repo":
+        return {
+            "tool": "github_repo",
+            "args": {"repo": _github_repo_for_goal(goal)},
+            "reason": "guardrail: publieke GitHub repository metadata via read-only adapter.",
+        }
+    if target_tool == "github_search_repositories":
+        return {
+            "tool": "github_search_repositories",
+            "args": {"query": _github_query_for_goal(goal), "limit": 5},
+            "reason": "guardrail: publieke GitHub repository search via read-only adapter.",
+        }
+    if target_tool == "vps_status":
+        return {"tool": "vps_status", "args": {}, "reason": "guardrail: veilige VPS status zonder credentials."}
+    if target_tool == "vps_login_check":
+        return {"tool": "vps_login_check", "args": {"timeout_seconds": 30}, "reason": "guardrail: VPS login check is read-only en gebruikt host SSH agent/config."}
+    if target_tool == "vps_sync_preview":
+        return {
+            "tool": "vps_sync_preview",
+            "args": _vps_args_for_goal(goal),
+            "reason": "guardrail: VPS sync/deploy moet eerst een rsync dry-run preview uitvoeren; geen mutatie.",
+        }
+    if target_tool == "vps_sync_execute":
+        return {
+            "tool": "vps_sync_preview",
+            "args": _vps_args_for_goal(goal),
+            "reason": "guardrail: zelfs execute/deploy intent routeert eerst naar vps_sync_preview; echte sync vereist aparte Akkoord-stap.",
+        }
+    return {
+        "tool": "connector_intent_preview",
+        "args": {
+            "prompt": str(goal or "")[:1000],
+            "services": list(getattr(intent, "services", ()) or []),
+            "categories": list(getattr(intent, "categories", ()) or []),
+            "action_type": str(getattr(intent, "action_type", "") or ""),
+        },
+        "reason": "guardrail: muterende connector- of VPS-intent wordt alleen als gated preview verwerkt; geen mutatie/VPS uitvoering.",
+    }
+
+
+def _gmail_query_for_goal(goal: str) -> str:
+    text = " ".join(str(goal or "").split())
+    quoted = re.search(r"[`'\"]([^`'\"]{1,160})[`'\"]", text)
+    if quoted:
+        return quoted.group(1).strip()
+    lowered = text.lower()
+    if "unread" in lowered or "ongelezen" in lowered:
+        return "in:inbox is:unread"
+    if "sent" in lowered or "verzonden" in lowered:
+        return "in:sent"
+    if "inbox" in lowered or "mail" in lowered or "gmail" in lowered:
+        return "in:inbox"
+    return text[:180] or "in:inbox"
+
+
+def _drive_path_for_goal(goal: str) -> str:
+    text = str(goal or "")
+    quoted = re.search(r"[`'\"]([^`'\"]{1,180})[`'\"]", text)
+    if quoted:
+        return quoted.group(1).strip().strip("/")
+    match = re.search(r"\b(?:folder|map|pad|path)\s+([A-Za-z0-9_.\-/ ]{1,160})", text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip(" .,;:!?/")
+    return ""
+
+
+def _vps_args_for_goal(goal: str) -> dict[str, Any]:
+    text = str(goal or "")
+    args: dict[str, Any] = {"remote_path": "", "source_path": "", "timeout_seconds": 120}
+    quoted = re.search(r"[`'\"](/var/www/philip-wintrip\.nl/html/Ouroboros/[A-Za-z0-9_./-]*|[A-Za-z0-9_./-]{1,180})[`'\"]", text)
+    if quoted:
+        value = quoted.group(1).strip()
+        if value.startswith("/var/www/philip-wintrip.nl/html/Ouroboros/"):
+            args["remote_path"] = value
+        elif any(marker in value for marker in ("/", ".")):
+            args["source_path"] = value.strip("/")
+    remote_match = re.search(r"\b(?:remote|target|doelpad|vps path|remote_path)\s+([A-Za-z0-9_./-]{1,180})", text, re.IGNORECASE)
+    if remote_match:
+        args["remote_path"] = remote_match.group(1).strip(" .,;:!?")
+    source_match = re.search(r"\b(?:source|bron|source_path|workspace path)\s+([A-Za-z0-9_./-]{1,180})", text, re.IGNORECASE)
+    if source_match:
+        args["source_path"] = source_match.group(1).strip(" .,;:!?")
+    return args
+
+
+def _needs_vps_preview(goal: str) -> bool:
+    lowered = str(goal or "").lower()
+    return any(marker in lowered for marker in ("vps", "rsync", "scp", "server deploy", "remote server")) and any(
+        marker in lowered for marker in ("deploy", "sync", "synchroniseer", "preview", "dry-run", "dry run")
+    )
+
+
+def _github_repo_for_goal(goal: str) -> str:
+    text = str(goal or "")
+    url_match = re.search(r"github\.com[:/]+([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", text, re.IGNORECASE)
+    if url_match:
+        return f"{url_match.group(1)}/{_clean_github_repo_segment(url_match.group(2))}"
+    match = re.search(r"\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)\b", text)
+    if match:
+        return f"{match.group(1)}/{_clean_github_repo_segment(match.group(2))}"
+    return ""
+
+
+def _clean_github_repo_segment(value: str) -> str:
+    return str(value or "").removesuffix(".git").strip(".,;:!?)]}'\"")
+
+
+def _github_query_for_goal(goal: str) -> str:
+    clean = " ".join(str(goal or "").split())
+    clean = re.sub(r"(?i)\b(github|git hub|repository|repositories|repo|repos|zoek|search|find|toon|show|publieke|public)\b", " ", clean)
+    clean = " ".join(clean.split()).strip(" .,;:!?")
+    return clean[:400] or str(goal or "")[:400] or "ouroboros"
 
 
 def _extract_transit_station(text: str, *, role: str) -> str:
     if role == "from":
         patterns = (
-            r"(?:vanaf|vanuit|from)\s+([^,?.]+?)(?:\s+(?:naar|to|richting|om|als|met|$))",
+            r"(?:vanaf|vanuit|van|from)\s+([^,?.]+?)(?:\s+(?:naar|to|richting|om|als|met|$))",
             r"(?:trein|station)\s+(?:in|vanaf|vanuit)?\s*([^,?.]+?)(?:\s+moet|\s+nemen|\s+naar|\s+om|\s+als|$)",
             r"\bin\s+([A-Z][A-Za-zÀ-ÿ' -]+?)(?:\s+moet|\s+nemen|\s+naar|\s+om|\s+als|$)",
         )
@@ -1424,6 +1702,7 @@ def _build_provenance(state: Mapping[str, Any]) -> dict[str, Any]:
         "planner_guardrails_applied": list(planner.get("guardrails_applied") or []),
         "planner_provider": str(state.get("provider") or "unknown"),
         "planner_model": str(state.get("model") or ""),
+        "ziel_policy": dict(state.get("ziel_policy") or {}),
         "synthesizer_provider": str(state.get("provider") or "unknown"),
         "synthesizer_model": str(state.get("model") or ""),
         "planned_tools": planned_tools,

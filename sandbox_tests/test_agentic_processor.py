@@ -60,6 +60,87 @@ class FakeAgentTools:
                 "stored_to_memory": False,
                 "next_action": "continue",
             }
+        if tool_name == "ov9292_travel_advice":
+            return {
+                "status": "preview",
+                "tool_name": tool_name,
+                "stdout": "9292 official planner link fallback. Exacte tijden vereisen autoritatieve bron.",
+                "stderr": "",
+                "result": {"planner_url": "https://9292.nl/", "authoritative": False, "scraped": False},
+                "metadata_11d": {"dimension_count": 11, "source_type": "ov9292_travel_advice"},
+                "approval_status": "not_required_readonly",
+                "stored_to_memory": False,
+                "next_action": "open official planner",
+            }
+        if tool_name == "connector_intent_preview":
+            return {
+                "status": "blocked",
+                "tool_name": tool_name,
+                "stdout": "connector intent gated preview",
+                "stderr": "blocked",
+                "result": {"executed": False, "preview_only": True, "blocked_tools": ["gmail_connector"]},
+                "metadata_11d": {"dimension_count": 11, "source_type": "connector_intent_preview"},
+                "approval_status": "pending_philip_akkoord",
+                "stored_to_memory": False,
+                "next_action": "separate adapter subtask",
+            }
+        if tool_name == "gmail_search":
+            return {
+                "status": "blocked",
+                "tool_name": tool_name,
+                "stdout": "gmail private read gated",
+                "stderr": "blocked",
+                "result": {"approval_required": True, "executed": False, "read_only": True},
+                "metadata_11d": {"dimension_count": 11, "source_type": "gmail_private_read_gate"},
+                "approval_status": "pending_philip_akkoord",
+                "stored_to_memory": False,
+                "next_action": "ask for Akkoord",
+            }
+        if tool_name == "google_drive_list":
+            return {
+                "status": "blocked",
+                "tool_name": tool_name,
+                "stdout": "drive private read gated",
+                "stderr": "blocked",
+                "result": {"approval_required": True, "executed": False, "read_only": True},
+                "metadata_11d": {"dimension_count": 11, "source_type": "google_drive_private_read_gate"},
+                "approval_status": "pending_philip_akkoord",
+                "stored_to_memory": False,
+                "next_action": "ask for Akkoord",
+            }
+        if tool_name in {"github_status", "github_repo", "github_search_repositories"}:
+            return {
+                "status": "success",
+                "tool_name": tool_name,
+                "stdout": "GitHub public readonly metadata",
+                "stderr": "",
+                "result": {"read_only": True, "items": [{"full_name": "octocat/Hello-World", "private": False}]},
+                "metadata_11d": {"dimension_count": 11, "source_type": "github_repository_metadata"},
+                "approval_status": "not_required_public_readonly",
+                "stored_to_memory": False,
+                "next_action": "continue",
+            }
+        if tool_name in {"vps_status", "vps_login_check", "vps_sync_preview", "vps_sync_execute"}:
+            status = "preview" if tool_name == "vps_sync_preview" else "success"
+            if tool_name == "vps_sync_execute":
+                status = "blocked"
+            return {
+                "status": status,
+                "tool_name": tool_name,
+                "stdout": "VPS dry-run preview" if status == "preview" else "VPS status",
+                "stderr": "" if status != "blocked" else "approval required",
+                "result": {
+                    "remote_target": "/var/www/philip-wintrip.nl/html/Ouroboros/",
+                    "dry_run": tool_name == "vps_sync_preview",
+                    "executed": False,
+                    "mutated": False,
+                    "excluded_patterns": [".secrets/", ".env*"],
+                },
+                "metadata_11d": {"dimension_count": 11, "source_type": "vps_sync_preview"},
+                "approval_status": "not_required_dry_run" if tool_name == "vps_sync_preview" else "not_required_status",
+                "stored_to_memory": False,
+                "next_action": "review preview",
+            }
         return {"status": "success", "tool_name": tool_name, "stdout": "ok", "stderr": "", "result": {}}
 
 
@@ -69,6 +150,12 @@ class TestAgenticProcessor(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.old_workspace = os.environ.get("WINTRIP_WORKSPACE")
         os.environ["WINTRIP_WORKSPACE"] = self.tmp.name
+        ziel = Path(self.tmp.name) / ".agents" / "agent_types" / "type_2" / "Ziel.md"
+        ziel.parent.mkdir(parents=True)
+        ziel.write_text(
+            "# Zielenboek\n\n1. **Veerkracht bij Weerstand (Micro-Retries):** Probeer bounded opnieuw.\n2. **Zelf-Synthese (Gereedschap Maken):** Bouw alleen via veilige middelen.\n",
+            encoding="utf-8",
+        )
 
     def tearDown(self):
         if self.old_workspace is None:
@@ -91,6 +178,37 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertIn("browser_open_url", names)
         self.assertIn("host_status", names)
         self.assertIn("brave_search", names)
+        self.assertEqual(catalog["ziel_policy"]["status"], "loaded")
+        self.assertEqual(catalog["ziel_policy"]["principle_count"], 2)
+
+    def test_planning_prompt_includes_ziel_guardrails_without_bypass(self):
+        captured = {}
+
+        def planner(prompt, system_prompt=None, model=None, history=None):
+            captured["prompt"] = prompt
+            captured["system_prompt"] = system_prompt
+            return '[{"tool":"prompt_understanding","args":{"prompt":"x"}}]'
+
+        processor = AgenticProcessor(agent_tools=FakeAgentTools(), planner=planner)
+        catalog = processor.discover_tools()
+        plan = processor.plan(
+            "Bedenk een creatieve workaround voor een geblokkeerde VPS deploy",
+            approval="",
+            tool_catalog=catalog,
+            model="gemma4",
+            system_prompt=None,
+            history=[],
+            pocket_context={"status": "success"},
+        )
+
+        self.assertEqual(plan["planner"]["ziel_policy"]["status"], "loaded")
+        self.assertIn("Ziel runtime policy/context", captured["prompt"])
+        self.assertIn("maximaal drie vergelijkbare mislukte pogingen", captured["prompt"])
+        self.assertIn("ToolBridge", captured["prompt"])
+        self.assertIn("Akkoord", captured["prompt"])
+        self.assertIn("connector/VPS gates", captured["prompt"])
+        self.assertIn("Ziel policy hash=", captured["system_prompt"])
+        self.assertIn("geen bypass", captured["system_prompt"])
 
     def test_guardrail_opens_url_from_free_language_without_slash(self):
         plan = '[{"tool":"prompt_understanding","args":{"prompt":"open een site"}}]'
@@ -300,6 +418,105 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertNotIn("SHOULD_NOT_LEAK_IN_SYNTHESIS_PROMPT", fake_tools.calls[1][1]["query"])
         self.assertNotIn("SHOULD_NOT_LEAK_IN_SYNTHESIS_PROMPT", processor.ollama.calls[1]["prompt"])
 
+    def test_guardrail_uses_9292_tool_for_9292_or_bus_tram_metro_request(self):
+        plan = '[{"tool":"brave_search","args":{"query":"9292 bus Ermelo Utrecht","limit":5}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(
+            agent_tools=fake_tools,
+            ollama_client=FakeOllama([plan, "Gebruik de 9292-link en noem geen exacte tijden."]),
+        )
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run(
+                "Gebruik 9292 reisplanner voor bus tram metro van Ermelo naar Utrecht om 13:30",
+                model="gemma4",
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([step["tool"] for step in result["plan"]], ["memory_search", "ov9292_travel_advice"])
+        self.assertEqual([call[0] for call in fake_tools.calls], ["memory_search", "ov9292_travel_advice"])
+        ov_args = fake_tools.calls[1][1]
+        self.assertEqual(ov_args["from_place"], "Ermelo")
+        self.assertEqual(ov_args["to_place"], "Utrecht")
+        self.assertEqual(ov_args["time"], "13:30")
+        self.assertIn("inserted_ov9292_travel_advice", result["planner"]["guardrails_applied"])
+        self.assertIn("removed_transit_brave_search", result["planner"]["guardrails_applied"])
+        self.assertFalse(result["provenance"]["brave_search_used"])
+        self.assertIn("ov9292_travel_advice", result["provenance"]["external_tools_used"])
+
+    def test_connector_intents_are_preview_gated_before_any_private_tool_execution(self):
+        plan = '[{"tool":"mail_read_recent","args":{"limit":5}},{"tool":"brave_search","args":{"query":"gmail"}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(
+            agent_tools=fake_tools,
+            ollama_client=FakeOllama([plan, "unused"]),
+        )
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run("Upload Gmail bijlage naar Google Drive en deploy via VPS", model="gemma4")
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertTrue(result["approval_required"])
+        self.assertEqual([step["tool"] for step in result["plan"]], ["connector_intent_preview"])
+        self.assertEqual([call[0] for call in fake_tools.calls], ["connector_intent_preview"])
+        self.assertEqual(result["steps"][0]["status"], "blocked")
+        self.assertEqual(result["provenance"]["blocked_tools"], ["connector_intent_preview"])
+        self.assertIn("inserted_connector_intent_preview", result["planner"]["guardrails_applied"])
+
+    def test_gmail_and_drive_read_intents_route_to_first_class_gated_tools(self):
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(agent_tools=fake_tools, ollama_client=FakeOllama(['[{"tool":"brave_search","args":{"query":"gmail"}}]', "unused"]))
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            gmail = processor.run("Lees mijn Gmail inbox en vat samen", model="gemma4")
+
+        fake_tools_drive = FakeAgentTools()
+        drive_processor = AgenticProcessor(agent_tools=fake_tools_drive, ollama_client=FakeOllama(['[{"tool":"brave_search","args":{"query":"drive"}}]', "unused"]))
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            drive_processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            drive = drive_processor.run("Lijst mijn Google Drive bestanden", model="gemma4")
+
+        self.assertEqual(gmail["status"], "blocked")
+        self.assertEqual(gmail["plan"][0]["tool"], "gmail_search")
+        self.assertEqual(gmail["steps"][0]["tool"], "gmail_search")
+        self.assertEqual([call[0] for call in fake_tools.calls], ["gmail_search"])
+        self.assertIn("inserted_gmail_search", gmail["planner"]["guardrails_applied"])
+        self.assertEqual(drive["status"], "blocked")
+        self.assertEqual(drive["plan"][0]["tool"], "google_drive_list")
+        self.assertEqual([call[0] for call in fake_tools_drive.calls], ["google_drive_list"])
+        self.assertIn("inserted_google_drive_list", drive["planner"]["guardrails_applied"])
+
+    def test_github_public_intent_routes_to_readonly_github_tool(self):
+        plan = '[{"tool":"connector_intent_preview","args":{"prompt":"github"}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(agent_tools=fake_tools, ollama_client=FakeOllama([plan, "GitHub metadata samengevat."]))
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run("Zoek publieke GitHub repositories over Ouroboros", model="gemma4")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["plan"][0]["tool"], "github_search_repositories")
+        self.assertEqual([call[0] for call in fake_tools.calls], ["github_search_repositories"])
+        self.assertIn("inserted_github_search_repositories", result["planner"]["guardrails_applied"])
+        self.assertIn("github_search_repositories", result["provenance"]["external_tools_used"])
+
+    def test_vps_deploy_intent_routes_to_sync_preview_first_even_with_akkoord(self):
+        plan = '[{"tool":"vps_sync_execute","args":{"approval":"Akkoord"}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(agent_tools=fake_tools, ollama_client=FakeOllama([plan, "VPS preview samengevat."]))
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            result = processor.run("Deploy/sync Ouroboros naar de VPS", approval="Akkoord", model="gemma4")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["plan"][0]["tool"], "vps_sync_preview")
+        self.assertEqual([call[0] for call in fake_tools.calls], ["vps_sync_preview"])
+        self.assertEqual(fake_tools.calls[0][1]["approval"], "Akkoord")
+        self.assertIn("inserted_vps_sync_preview", result["planner"]["guardrails_applied"])
+        self.assertIn("vps_sync_preview", result["provenance"]["external_tools_used"])
+        self.assertNotIn("vps_sync_execute", result["provenance"]["tools_used"])
+        self.assertFalse(result["steps"][0]["result"]["result"]["mutated"])
+
     def test_guardrail_keeps_voice_step_for_real_voice_status_goal(self):
         plan = '[{"tool":"voice_chat_status","args":{}}]'
         fake_tools = FakeAgentTools()
@@ -381,7 +598,7 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertTrue(all(event["learnable"] is False for event in events))
         self.assertTrue(all(event["audit_only"] is True for event in events))
 
-    def test_blocks_agentic_mail_social_and_codex_actions_without_approval(self):
+    def test_gates_agentic_mail_social_and_codex_actions_without_approval(self):
         plan = (
             '[{"tool":"mail_read_recent","args":{"limit":2}},'
             '{"tool":"social_post_publish","args":{"platform":"x","content":"update"}},'
@@ -398,12 +615,13 @@ class TestAgenticProcessor(unittest.TestCase):
 
         self.assertEqual(result["status"], "blocked")
         self.assertTrue(result["approval_required"])
-        self.assertEqual(result["steps"][0]["tool"], "mail_read_recent")
+        self.assertEqual(result["plan"][0]["tool"], "connector_intent_preview")
+        self.assertEqual(result["steps"][0]["tool"], "connector_intent_preview")
         self.assertEqual(result["steps"][0]["status"], "blocked")
-        self.assertEqual(fake_tools.calls, [])
-        self.assertEqual(result["provenance"]["external_tools_used"], ["mail_read_recent"])
+        self.assertEqual([call[0] for call in fake_tools.calls], ["connector_intent_preview"])
+        self.assertEqual(result["provenance"]["external_tools_used"], ["connector_intent_preview"])
         self.assertEqual(result["provenance"]["mutating_tools_attempted"], [])
-        self.assertEqual(result["provenance"]["blocked_tools"], ["mail_read_recent"])
+        self.assertEqual(result["provenance"]["blocked_tools"], ["connector_intent_preview"])
 
     def test_unknown_planner_tool_routes_to_self_programming_guardrail_and_blocks_without_approval(self):
         plan = '[{"tool":"make_hologram","args":{"color":"blue"}}]'

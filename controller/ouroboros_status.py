@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from controller.ziel_policy import ziel_policy_status
+
 
 DEFAULT_MODEL_NAME = "ouroboros"
 DEFAULT_ROLES: tuple[str, ...] = ("Developer", "Researcher", "Critic", "Trainer", "Tester")
@@ -69,6 +71,7 @@ def compose_ouroboros_status(
     )
     self_mod = _self_modification(self_modification_pipeline)
     fine_tune = _fine_tune_status(state)
+    ziel = ziel_policy_status()
 
     payload: dict[str, Any] = {
         "status": "online",
@@ -109,6 +112,7 @@ def compose_ouroboros_status(
         "stderr": str(tool.get("stderr") or tool.get("error") or ""),
         "self_modification_pipeline": self_mod,
         "fine_tune": fine_tune,
+        "ziel_policy": ziel,
         "integrity": {
             "fake_fine_tune_success": False,
             "fake_tool_success": False,
@@ -118,6 +122,7 @@ def compose_ouroboros_status(
                 "Only local Ollama inventory is listed as model availability.",
                 "Tool success mirrors the last real registry result; absent tools are not marked successful.",
                 "Fine-tune status is never upgraded from missing state to success.",
+                "Ziel policy is surfaced as local context/guardrails only and never bypasses ToolBridge, approval, no-secrets, or external-call boundaries.",
             ],
         },
         "learned": "Status gelezen: lokaal model, rolkeuzes, providers, tools en 11D leerstatus zijn gecomposeerd.",

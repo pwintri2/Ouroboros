@@ -47,6 +47,7 @@ from controller.rclone_drive_adapter import RcloneDriveAdapter, get_rclone_drive
 from controller.computer_actions import computer_actions_status, run_computer_action  # noqa: E402
 from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory  # noqa: E402
 from controller.ouroboros_self_context import get_ruflo_status  # noqa: E402
+from controller.vps_deploy_adapter import VPSDeployAdapter  # noqa: E402
 from controller.roo_cli_runtime import roo_auth_login, roo_cli_status, roo_cloud_models, run_roo_cli_task  # noqa: E402
 from controller.slash_agent_router import execute_host_agent_command  # noqa: E402
 from controller.world_agent import ask_grok_via_world_agent, recent_world_actions, search_world_memory, world_agent_status  # noqa: E402
@@ -110,6 +111,12 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
             return
         if path == "/ruflo/status":
             self._json(get_ruflo_status())
+            return
+        if path == "/vps/status":
+            result = VPSDeployAdapter(workspace=WORKSPACE).status(prefer_bridge=False)
+            result["via_bridge"] = False
+            result["host_bridge_runtime"] = {"status": "online", "server": self.server_version, "fake_success": False}
+            self._json(result)
             return
         if path == "/agents/status":
             self._json({"status": "online", "agents": ["codex", "deepseek", "atlas", "ruflo", "claude", "roo"], "fake_success": False})
@@ -280,6 +287,35 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
                 max_windows=int(body.get("max_windows") or 80),
                 max_recent=int(body.get("max_recent") or 60),
             )
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/vps/login-check":
+            result = VPSDeployAdapter(workspace=WORKSPACE).login_check(
+                timeout_seconds=int(body.get("timeout_seconds") or 120),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/vps/sync-preview":
+            result = VPSDeployAdapter(workspace=WORKSPACE).sync_preview(
+                remote_path=str(body.get("remote_path") or body.get("remote_target") or ""),
+                source_path=str(body.get("source_path") or ""),
+                timeout_seconds=int(body.get("timeout_seconds") or 120),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
+            self._json(result, status=403 if result.get("status") == "blocked" else 200)
+            return
+        if self.path == "/vps/sync-execute":
+            result = VPSDeployAdapter(workspace=WORKSPACE).sync_execute(
+                approval=str(body.get("approval") or ""),
+                remote_path=str(body.get("remote_path") or body.get("remote_target") or ""),
+                source_path=str(body.get("source_path") or ""),
+                timeout_seconds=int(body.get("timeout_seconds") or 120),
+                prefer_bridge=False,
+            )
+            result["via_bridge"] = False
             self._json(result, status=403 if result.get("status") == "blocked" else 200)
             return
         if self.path == "/agents/command":
