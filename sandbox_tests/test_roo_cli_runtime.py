@@ -190,13 +190,18 @@ class TestRooCliRuntime(unittest.TestCase):
 
     def test_roo_auth_login_returns_oauth_url_for_frontend(self):
         auth_url = "https://app.roocode.com/cli/sign-in?state=test&callback=http%3A%2F%2F127.0.0.1%3A49152%2Fcallback"
+        auth_flag = self.workspace / "roo-authenticated.flag"
         self.fake_roo.write_text(
             "#!/bin/sh\n"
             "if [ \"$1\" = \"--version\" ]; then echo 'roo 1.0.0'; exit 0; fi\n"
-            "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo 'Authenticated as test@example.com'; exit 0; fi\n"
+            "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n"
+            f"  if [ -f \"{auth_flag}\" ]; then echo 'Authenticated as test@example.com'; else echo 'Not authenticated'; fi\n"
+            "  exit 0\n"
+            "fi\n"
             "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n"
             "  echo 'Opening browser for authentication...'\n"
             f"  echo \"If the browser doesn't open, visit: {auth_url}\"\n"
+            f"  touch \"{auth_flag}\"\n"
             "  exit 0\n"
             "fi\n"
             "exit 1\n",
@@ -213,6 +218,25 @@ class TestRooCliRuntime(unittest.TestCase):
         self.assertEqual(result["frontend_action"]["url"], auth_url)
         self.assertIn("[AUTH_URL]", result["stdout_summary"])
         self.assertNotIn(auth_url, result["stdout_summary"])
+
+    def test_roo_auth_login_skips_browserflow_when_already_authenticated(self):
+        self.fake_roo.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then echo 'roo 1.0.0'; exit 0; fi\n"
+            "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo 'Authenticated as test@example.com'; exit 0; fi\n"
+            "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo 'unexpected login' >&2; exit 99; fi\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        self.fake_roo.chmod(0o755)
+
+        result = roo_cli_runtime.roo_auth_login(approval="Akkoord", timeout_seconds=2)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["logged_in"])
+        self.assertEqual(result["auth_url"], "")
+        self.assertIsNone(result["frontend_action"])
+        self.assertIn("al ingelogd", result["reason"])
 
     def test_run_blocks_without_exact_approval_before_binary_execution(self):
         result = roo_cli_runtime.run_roo_cli_task(

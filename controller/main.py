@@ -1335,6 +1335,13 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
     roo_cloud_model_ids = [str(item) for item in (roo_cloud.get("models") or []) if str(item or "").strip()]
     roo_models = _roo_model_choices(models, roo_cloud_model_ids)
     roo_auth_probe = roo_status.get("auth_probe") if isinstance(roo_status.get("auth_probe"), dict) else {}
+    roo_runtime_available = bool(roo_status.get("available"))
+    roo_catalog_available = bool(
+        roo_cloud_model_ids
+        or roo_cloud.get("available")
+        or str(roo_cloud.get("status") or "").lower() == "online"
+    )
+    roo_login_ready = bool(roo_auth_probe.get("logged_in_hint") or roo_catalog_available)
     roo_cloud_models_by_provider = {"roo": roo_cloud_model_ids}
     roo_cloud_models_by_provider.update(
         {provider: MULTI_API_PROVIDER_MODELS.get(provider, []) for provider in ROO_CLOUD_COCKPIT_PROVIDERS}
@@ -1372,8 +1379,8 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
         "roo": {
             "provider": "roo",
             "label": "Roo Code Agent",
-            "available": bool(roo_status.get("available")),
-            "enabled": bool(roo_status.get("available") and roo_models),
+            "available": roo_runtime_available,
+            "enabled": bool(roo_runtime_available and roo_models),
             "local_only": False,
             "agent_runtime": True,
             "models": roo_models,
@@ -1381,13 +1388,13 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             "cloud_models": roo_cloud_models_by_provider,
             "roo_cloud_models": roo_cloud_model_ids,
             "supported_cockpit_providers": ["ollama", "roo", *ROO_CLOUD_COCKPIT_PROVIDERS],
-            "default_model": _active_base(models) or (roo_models[0] if roo_models else ""),
+            "default_model": (roo_cloud_model_ids[0] if roo_cloud_model_ids else (_active_base(models) or (roo_models[0] if roo_models else ""))),
             "status": roo_status.get("status") or "unknown",
             "reason": (
                 "Roo Code draait als agent-runtime job en gebruikt het geselecteerde Cockpit-model. "
                 "Roo Cloud-modellen gebruiken de ingelogde Roo-account; lokale modellen gaan via Ollama; "
                 "ChatGPT/Claude/Gemini korte modelnamen gaan via de in Cockpit opgeslagen API key."
-                if roo_status.get("available")
+                if roo_runtime_available
                 else str(roo_status.get("reason") or "Roo CLI is nog niet bereikbaar via host bridge of PATH.")
             ),
             "llm_provider_used": True,
@@ -1395,8 +1402,9 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             "model_catalog_status": roo_cloud,
             "subscription_login": {
                 "provider": "roo",
-                "status": roo_auth_probe.get("status") or "unknown",
-                "logged_in": bool(roo_auth_probe.get("logged_in_hint")),
+                "status": "online" if roo_login_ready else (roo_auth_probe.get("status") or "unknown"),
+                "logged_in": roo_login_ready,
+                "via_bridge": bool(roo_status.get("via_bridge") or roo_cloud.get("via_bridge")),
                 "source": "roo auth login",
                 "secrets_returned": False,
             },

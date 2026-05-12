@@ -102,6 +102,7 @@ type ProviderDetails = {
     provider?: string;
     status?: string;
     logged_in?: boolean;
+    via_bridge?: boolean;
     source?: string;
     secrets_returned?: boolean;
   };
@@ -1585,6 +1586,8 @@ export default function App() {
   const rooLogin = rooDetails.subscription_login;
   const rooCloudModels = rooDetails.roo_cloud_models ?? [];
   const rooCatalog = rooDetails.model_catalog_status;
+  const rooCatalogOnline = (rooCatalog?.status === "online" || !!rooCatalog?.available) && ((rooCatalog?.model_count ?? rooCloudModels.length) > 0);
+  const rooLoggedIn = Boolean(rooLogin?.logged_in || rooCatalogOnline);
   const chroma = config.chroma ?? {};
   const chromaCollections = chroma.collections ?? {};
   const localModels = config.available_models?.ollama ?? status.model?.available_bases ?? [];
@@ -1596,7 +1599,7 @@ export default function App() {
   const navItems: Array<{ id: ActiveTab; label: string; icon: ReactNode; hint: string }> = [
     { id: "chat", label: "Chat", icon: <MessageSquare size={16} />, hint: `${selfContext?.conversation_count ?? 0} chats` },
     { id: "tools", label: "Tools", icon: <Wrench size={16} />, hint: "shell + tests" },
-    { id: "models", label: "Models", icon: <KeyRound size={16} />, hint: `${localModels.length} local / ${configuredKeyCount} keys / ${rooLogin?.logged_in ? "Roo login" : "Roo off"}` },
+    { id: "models", label: "Models", icon: <KeyRound size={16} />, hint: `${localModels.length} local / ${configuredKeyCount} keys / ${rooLoggedIn ? "Roo login" : "Roo off"}` },
     { id: "agents", label: "Agents", icon: <Bot size={16} />, hint: `${agentJobs.length} jobs` },
     { id: "memory", label: "Memory", icon: <History size={16} />, hint: `${records.total_count ?? 0} records` },
     { id: "trainer", label: "Trainer", icon: <Layers size={16} />, hint: trainerStatus?.status ?? "learning" },
@@ -1977,15 +1980,15 @@ export default function App() {
 	            <section className="panel primary-panel">
 	              <PanelHeader title="Roo Cloud Account" />
 	              <div className="fact-list">
-	                <Fact label="Login" value={rooLogin?.logged_in ? "logged in" : "missing"} state={rooLogin?.logged_in ? "online" : "offline"} />
+	                <Fact label="Login" value={rooLoggedIn ? "logged in" : "missing"} state={rooLoggedIn ? "online" : "offline"} />
 	                <Fact label="Catalog" value={`${rooCatalog?.model_count ?? rooCloudModels.length}`} state={rooCatalog?.status ?? "unknown"} />
-	                <Fact label="Bridge" value={rooCatalog?.via_bridge ? "host" : "local"} state={rooDetails.status ?? "unknown"} />
+	                <Fact label="Bridge" value={(rooCatalog?.via_bridge || rooLogin?.via_bridge) ? "host" : "local"} state={rooDetails.status ?? "unknown"} />
 	              </div>
 	              <div className="key-row">
 	                <div>
 	                  <strong>Roo Code Cloud</strong>
 	                  <span>
-	                    {rooLogin?.logged_in
+	                    {rooLoggedIn
 	                      ? "Gebruikt de ingelogde Roo-account voor modellen zoals openai/gpt-5 en anthropic/claude-opus-4.7."
 	                      : "Start de Roo Cloud login op de host. Dit is de enige web-loginroute die Roo zelf kan gebruiken."}
 	                  </span>
@@ -2236,7 +2239,16 @@ function buildProviderChoices(config: CockpitConfig, status: OuroborosStatus): P
     const details = options[id] ?? { provider: id };
     const isLocalRuntime = id === "ollama" || id === "ouroboros" || id === "roo";
     const models = id === "ollama" ? localModels : details.models ?? config.available_models?.multi_api?.[id] ?? [];
-    const enabled = id === "ollama" ? Boolean(details.enabled ?? true) && models.length > 0 : !!details.enabled;
+    const catalog = details.model_catalog_status;
+    const rooCatalogReady =
+      id === "roo" &&
+      Boolean((catalog?.status === "online" || catalog?.available) && ((catalog?.model_count ?? details.roo_cloud_models?.length ?? 0) > 0));
+    const enabled =
+      id === "ollama"
+        ? Boolean(details.enabled ?? true) && models.length > 0
+        : id === "roo"
+          ? Boolean((details.enabled || details.available || rooCatalogReady) && models.length > 0)
+          : !!details.enabled;
     return {
       id,
       label: PROVIDER_LABELS[id] ?? details.label ?? id,
@@ -2244,7 +2256,7 @@ function buildProviderChoices(config: CockpitConfig, status: OuroborosStatus): P
       enabled,
       status: details.status ?? (enabled ? "online" : "disabled"),
       models,
-      defaultModel: (id === "ollama" || id === "roo" ? status.model?.active_base ?? details.default_model : details.default_model) ?? details.model ?? models[0] ?? "",
+      defaultModel: (id === "ollama" ? status.model?.active_base ?? details.default_model : details.default_model) ?? details.model ?? models[0] ?? "",
       reason: details.reason ?? details.message ?? (enabled ? "Beschikbaar" : "Niet geconfigureerd."),
       keySource: details.key_source,
       maskedKey: details.masked_key,

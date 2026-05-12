@@ -706,7 +706,9 @@ def _public_auth_probe(probe: dict[str, Any]) -> dict[str, Any]:
     stdout = str(probe.get("stdout") or "")
     stderr = str(probe.get("stderr") or "")
     text = f"{stdout}\n{stderr}".lower()
-    logged_in = "authenticated" in text or "logged in" in text or "valid" in text
+    negative = re.search(r"\b(not\s+authenticated|unauthenticated|not\s+logged\s+in|logged\s+out|invalid|expired|missing)\b", text)
+    positive = re.search(r"\b(authenticated|logged\s+in|valid)\b", text)
+    logged_in = bool(positive and not negative)
     return {
         "status": probe.get("status"),
         "exit_code": probe.get("exit_code"),
