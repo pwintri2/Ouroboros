@@ -99,7 +99,7 @@ MUTATING_TOOLS = {
     "chroma_sync_execute",
 }
 COMPLETION_STATUSES = {"success", "stored", "completed", "opened", "login_required", "rate_limited", "skipped", "preview"}
-BLOCKING_STATUSES = {"blocked", "rejected", "approval_required"}
+BLOCKING_STATUSES = {"blocked", "rejected", "approval_required", "configuration_required"}
 CURRENT_INFO_MARKERS = (
     "laatste",
     "nieuws",
@@ -1136,6 +1136,10 @@ def _tool_alias(tool: str) -> str:
         "ov9292": "ov9292_travel_advice",
         "connector_preview": "connector_intent_preview",
         "gmail": "gmail_search",
+        "mail": "mail_send",
+        "email": "mail_send",
+        "send_mail": "mail_send",
+        "gmail_send": "mail_send",
         "gmail_status_check": "gmail_status",
         "drive_list": "google_drive_list",
         "google_drive": "google_drive_list",
@@ -1369,6 +1373,7 @@ def _connector_step_for_goal(goal: str) -> dict[str, Any] | None:
         "connector_intent_preview",
         "gmail_status",
         "gmail_search",
+        "mail_send",
         "google_drive_status",
         "google_drive_list",
         "github_status",
@@ -1393,6 +1398,12 @@ def _connector_step_for_goal(goal: str) -> dict[str, Any] | None:
             "tool": "gmail_search",
             "args": {"query": _gmail_query_for_goal(goal), "max_results": 5},
             "reason": "guardrail: Gmail private read-only search via approval-gated adapter; geen mailmutatie.",
+        }
+    if target_tool == "mail_send":
+        return {
+            "tool": "mail_send",
+            "args": _mail_send_args_for_goal(goal),
+            "reason": "guardrail: expliciete mailverzending via Gmail send-adapter; vereist Akkoord en claimt geen verzending zonder bewijs.",
         }
     if target_tool == "google_drive_status":
         return {"tool": "google_drive_status", "args": {}, "reason": "guardrail: veilige Google Drive connectorstatus zonder Drive-inhoud."}
@@ -1475,6 +1486,45 @@ def _gmail_query_for_goal(goal: str) -> str:
     if "inbox" in lowered or "mail" in lowered or "gmail" in lowered:
         return "in:inbox"
     return text[:180] or "in:inbox"
+
+
+def _mail_send_args_for_goal(goal: str) -> dict[str, Any]:
+    text = " ".join(str(goal or "").split())
+    to = ""
+    email_match = re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, re.IGNORECASE)
+    if email_match:
+        to = email_match.group(0)
+    quoted_values = [match.group(1).strip() for match in re.finditer(r"[`'\"]([^`'\"]{1,1000})[`'\"]", text) if match.group(1).strip()]
+    subject = _extract_labeled_mail_value(text, ("onderwerp", "subject", "titel", "title"))
+    body = _extract_labeled_mail_value(text, ("tekst", "body", "bericht", "message", "inhoud"))
+    if not subject and quoted_values:
+        subject = quoted_values[0]
+    if not body and len(quoted_values) >= 2:
+        body = quoted_values[1]
+    if not body:
+        body = _extract_mail_body_after_marker(text)
+    return {
+        "to": to,
+        "subject": subject[:300],
+        "body": body[:4000],
+    }
+
+
+def _extract_labeled_mail_value(text: str, labels: tuple[str, ...]) -> str:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    quoted = re.search(rf"(?i)\b(?:{label_pattern})\b\s*(?:=|:|is|met)?\s*[`'\"]([^`'\"]{{1,1000}})[`'\"]", text)
+    if quoted:
+        return quoted.group(1).strip()
+    plain = re.search(
+        rf"(?i)\b(?:{label_pattern})\b\s*(?:=|:|is|met)?\s+(.+?)(?=\s+\b(?:en|naar|aan|to|onderwerp|subject|tekst|body|bericht|message)\b|$)",
+        text,
+    )
+    return plain.group(1).strip(" .,;:!?")[:1000] if plain else ""
+
+
+def _extract_mail_body_after_marker(text: str) -> str:
+    match = re.search(r"(?i)\b(?:met tekst|met bericht|body|message|tekst|bericht)\b\s+(.+)$", text)
+    return match.group(1).strip(" .,;:!?")[:4000] if match else ""
 
 
 def _drive_path_for_goal(goal: str) -> str:

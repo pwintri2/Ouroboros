@@ -229,7 +229,9 @@ class GoogleWorkspaceAdapter:
             plan=plan,
         )
 
-    def send_gmail(self, to: str, subject: str, body: str, approval: str = "") -> dict[str, Any]:
+    def send_gmail(self, to: str, subject: str, body: str, approval: str = "", from_addr: str = "") -> dict[str, Any]:
+        import base64
+        import email.mime.text
         plan = {
             "operation": "send_gmail",
             "to": to,
@@ -242,7 +244,57 @@ class GoogleWorkspaceAdapter:
             return {"status": "blocked", "reason": "Approval phrase must be 'Akkoord'", "plan": plan, "fake_success": False}
         if not self._live_enabled():
             return {"status": "approval_recorded", "executed": False, "reason": "Live Google API disabled by policy.", "plan": plan, "fake_success": False}
-        return {"status": "disabled", "executed": False, "reason": "Live Gmail send is intentionally not implemented in this foundation pass.", "plan": plan, "fake_success": False}
+        token = self._raw_access_token()
+        if not token:
+            return {"status": "error", "executed": False, "reason": "No local Google access token available.", "plan": plan, "fake_success": False}
+        msg = email.mime.text.MIMEText(str(body or ""), "plain", "utf-8")
+        msg["To"] = str(to or "")
+        msg["Subject"] = str(subject or "")
+        if from_addr:
+            msg["From"] = str(from_addr)
+        raw_bytes = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        payload = {"raw": raw_bytes}
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        try:
+            request = urllib.request.Request(
+                GOOGLE_API_BASE + "/gmail/v1/users/me/messages/send",
+                data=data,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
+                resp_payload = json.loads(response.read().decode("utf-8"))
+            _save_state({"last_operation": "send_gmail", "last_status": "success", "last_source": "live_api", "updated_at": datetime.utcnow().isoformat()})
+            return {
+                "status": "success",
+                "executed": True,
+                "source": "live_api",
+                "operation": "send_gmail",
+                "message_id": resp_payload.get("id", ""),
+                "thread_id": resp_payload.get("threadId", ""),
+                "to": to,
+                "subject": subject,
+                "plan": plan,
+                "fake_success": False,
+            }
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            details = _google_error_details(exc)
+            status = "configuration_required" if details.get("configuration_required") else "error"
+            return {
+                "status": status,
+                "executed": False,
+                "reason": details.get("message") or details.get("reason") or "Google API request failed.",
+                "google_error": details,
+                "activation_url": details.get("activation_url", ""),
+                "next_action": details.get("next_action", "Controleer Google API/OAuth configuratie."),
+                "plan": plan,
+                "fake_success": False,
+            }
 
     def manage_gmail(
         self,
@@ -630,13 +682,69 @@ def _compact_gmail_message(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _safe_google_error(exc: BaseException) -> str:
+    return str(_google_error_details(exc).get("reason") or "")
+
+
+def _google_error_details(exc: BaseException) -> dict[str, Any]:
+    status_code = 0
+    raw = ""
     if isinstance(exc, urllib.error.HTTPError):
+        status_code = int(getattr(exc, "code", 0) or 0)
         try:
             raw = exc.read().decode("utf-8", errors="replace")
         except Exception:
             raw = str(exc)
-        return redact_sensitive_text(raw or str(exc), max_chars=2000)
-    return redact_sensitive_text(str(exc), max_chars=2000)
+    else:
+        raw = str(exc)
+
+    clean_raw = redact_sensitive_text(raw or str(exc), max_chars=2000)
+    parsed: dict[str, Any] = {}
+    try:
+        parsed_payload = json.loads(raw) if raw.strip() else {}
+        parsed = parsed_payload if isinstance(parsed_payload, dict) else {}
+    except Exception:
+        parsed = {}
+
+    error = parsed.get("error") if isinstance(parsed.get("error"), dict) else {}
+    message = redact_sensitive_text(str(error.get("message") or clean_raw), max_chars=1200)
+    google_status = str(error.get("status") or "")
+    google_reason = ""
+    activation_url = ""
+    service_title = ""
+    details = error.get("details") if isinstance(error.get("details"), list) else []
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        google_reason = google_reason or str(item.get("reason") or metadata.get("reason") or "")
+        activation_url = activation_url or str(metadata.get("activationUrl") or "")
+        service_title = service_title or str(metadata.get("serviceTitle") or "")
+    errors = error.get("errors") if isinstance(error.get("errors"), list) else []
+    for item in errors:
+        if isinstance(item, dict):
+            google_reason = google_reason or str(item.get("reason") or "")
+    configuration_required = bool(
+        google_reason in {"accessNotConfigured", "SERVICE_DISABLED", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}
+        or "has not been used in project" in message
+        or "it is disabled" in message
+    )
+    next_action = ""
+    if activation_url:
+        next_action = f"Enable {service_title or 'the required Google API'} in Google Cloud, then retry after propagation."
+    elif configuration_required:
+        next_action = "Enable the required Google API or OAuth scope in Google Cloud, then retry."
+    return {
+        "status_code": status_code,
+        "status": google_status,
+        "google_reason": google_reason,
+        "message": message,
+        "reason": clean_raw,
+        "activation_url": activation_url,
+        "service_title": service_title,
+        "configuration_required": configuration_required,
+        "next_action": next_action,
+        "secrets_returned": False,
+    }
 
 
 def _safe_workspace_file(local_path: str) -> dict[str, Any]:

@@ -278,6 +278,24 @@ except Exception:
         app.state.agent_runtime_routes_unavailable = True
 
 try:
+    from controller.api.ouroboros_agent_architecture_routes import init_agent_architecture_routes
+except Exception:
+    def init_agent_architecture_routes(app: Any) -> None:
+        app.state.agent_architecture_routes_unavailable = True
+
+try:
+    from controller.api.connector_routes import init_connector_routes
+except Exception:
+    def init_connector_routes(app: Any) -> None:
+        app.state.connector_routes_unavailable = True
+
+try:
+    from controller.api.google_oauth_routes import init_google_oauth_routes
+except Exception:
+    def init_google_oauth_routes(app: Any) -> None:
+        app.state.google_oauth_routes_unavailable = True
+
+try:
     from controller.api.codex_routes import init_codex_routes
 except Exception:
     def init_codex_routes(app: Any) -> None:
@@ -421,6 +439,9 @@ init_training(app, storage=stream_storage)
 init_browser_research(app)
 init_trainer_pipeline(app)
 init_agent_runtime(app)
+init_agent_architecture_routes(app)
+init_connector_routes(app)
+init_google_oauth_routes(app)
 init_codex_routes(app)
 init_agents_routes(app)
 init_openhands_routes(app)
@@ -1210,6 +1231,14 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
         "chroma_status": {"method": "GET", "path": "/api/ouroboros/chroma/status"},
         "trigger_actions_status": {"method": "GET", "path": "/api/ouroboros/trigger-actions/status"},
         "runtime_doctor": {"method": "GET", "path": "/api/ouroboros/runtime/doctor"},
+        "agent_architecture": {"method": "GET", "path": "/api/ouroboros/agents/architecture"},
+        "agent_architecture_review": {"method": "POST", "path": "/api/ouroboros/agents/architecture/review"},
+        "connector_catalog": {"method": "GET", "path": "/api/cockpit/connectors"},
+        "connector_toggle": {"method": "POST", "path": "/api/cockpit/connectors/{connector_id}"},
+        "connector_tool_toggle": {"method": "POST", "path": "/api/cockpit/connectors/tools/{tool_name}"},
+        "google_oauth_status": {"method": "GET", "path": "/api/cockpit/connectors/google/oauth/status"},
+        "google_oauth_start": {"method": "POST", "path": "/api/cockpit/connectors/google/oauth/start"},
+        "google_oauth_exchange": {"method": "POST", "path": "/api/cockpit/connectors/google/oauth/exchange"},
         "esoteric_status": {"method": "GET", "path": "/api/ouroboros/esoteric/status"},
         "akashic_recent": {"method": "GET", "path": "/api/ouroboros/esoteric/akashic/recent"},
         "living_ouroboros_status": {"method": "GET", "path": "/api/ouroboros/esoteric/living/status"},

@@ -697,6 +697,32 @@ class TestAgentTools(unittest.TestCase):
         self.assertEqual(mail["approval_status"], "not_required_preview")
         self.assertEqual(social["approval_status"], "not_required_preview")
 
+    def test_mail_send_uses_gmail_send_adapter_after_approval(self):
+        registry = make_registry()
+        with patch(
+            "controller.google_workspace_adapter.GoogleWorkspaceAdapter.send_gmail",
+            return_value={
+                "status": "success",
+                "executed": True,
+                "source": "live_api",
+                "operation": "send_gmail",
+                "message_id": "msg-1",
+                "thread_id": "thr-1",
+                "fake_success": False,
+            },
+        ):
+            result = registry.run_tool(
+                "mail_send",
+                {"to": "philip@example.com", "subject": "Ouroboros", "body": "Live test", "approval": "Akkoord"},
+            )
+
+        self.assertToolEnvelope(result, "mail_send")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["approval_status"], "approved")
+        self.assertEqual(result["source"], "google_workspace:gmail_send")
+        self.assertTrue(result["result"]["sent"])
+        self.assertNotIn("access_token", result["stdout"])
+
     def test_mail_read_recent_uses_readonly_fetcher_after_approval(self):
         registry = make_registry()
         fake_mail_fetcher = SimpleNamespace(

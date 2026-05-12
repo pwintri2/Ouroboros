@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Paperclip,
   Pause,
+  Plug,
   Play,
   Rocket,
   RefreshCw,
@@ -56,6 +57,12 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   subscriptions: "/api/cockpit/subscriptions",
   rooAuthLogin: "/api/cockpit/roo/auth/login",
   runtimeDoctor: "/api/ouroboros/runtime/doctor",
+  connectors: "/api/cockpit/connectors",
+  googleOAuthStatus: "/api/cockpit/connectors/google/oauth/status",
+  googleOAuthStart: "/api/cockpit/connectors/google/oauth/start",
+  googleOAuthExchange: "/api/cockpit/connectors/google/oauth/exchange",
+  agentArchitecture: "/api/ouroboros/agents/architecture",
+  agentArchitectureReview: "/api/ouroboros/agents/architecture/review",
   worldAgentStatus: "/api/world-agent/status",
   worldAgentGrok: "/api/world-agent/grok/ask",
   worldAgentSearch: "/api/world-agent/memory/search",
@@ -63,7 +70,7 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   approvalPhrase: "Akkoord",
 } as const;
 
-type ActiveTab = "chat" | "tools" | "models" | "agents" | "memory" | "trainer" | "context";
+type ActiveTab = "chat" | "tools" | "models" | "connectors" | "agents" | "memory" | "trainer" | "context";
 
 type BackendConfig = {
   backend_url: string;
@@ -266,6 +273,235 @@ type RuntimeDoctorStatus = {
   defaults?: { backend_url?: string; preview_url?: string; bridge_url?: string; workspace?: string };
   ready_requires?: string[];
   ts?: number;
+  reason?: string;
+};
+
+type AgentArchitectureInterface = {
+  method?: string;
+  path?: string;
+  prefix?: string;
+};
+
+type AgentArchitectureAgent = {
+  id?: string;
+  name?: string;
+  role?: string;
+  mission?: string;
+  readiness?: string;
+  allowed_tools?: string[];
+  available_tools?: string[];
+  missing_tools?: string[];
+  approval_required_for?: string[];
+  phases?: Array<{ index?: number; description?: string }>;
+  blocked_gaps?: string[];
+  interfaces?: AgentArchitectureInterface[];
+  fake_success?: boolean;
+};
+
+type AgentArchitectureStatus = {
+  status?: string;
+  version?: string;
+  agent_count?: number;
+  agents?: AgentArchitectureAgent[];
+  readiness_summary?: Record<string, number>;
+  blocked_gaps?: string[];
+  approval_policy?: {
+    approval_phrase?: string;
+    private_reads_require_approval?: boolean;
+    mutations_require_approval?: boolean;
+    connector_writes_preview_first?: boolean;
+    self_copy_install_v1?: string;
+    fake_success?: boolean;
+  };
+  public_interfaces?: Record<string, AgentArchitectureInterface>;
+  observed_runtime?: { tool_names?: string[]; registered_tool_count?: number; bridge_tool_count?: number };
+  fake_success?: boolean;
+  secrets_returned?: boolean;
+  reason?: string;
+};
+
+type AgentArchitectureReview = {
+  status?: string;
+  decision?: string;
+  review_id?: string;
+  risk_level?: string;
+  risk_categories?: string[];
+  execute_allowed?: boolean;
+  execution_performed?: boolean;
+  approval_required?: boolean;
+  approval_status?: string;
+  self_copy_install?: boolean;
+  private_data?: boolean;
+  mutating?: boolean;
+  public_read?: boolean;
+  critic?: {
+    findings?: string[];
+    blocked_reasons?: string[];
+    secrets_check?: string;
+  };
+  dry_run_manifest?: {
+    status?: string;
+    steps?: string[];
+    target_platforms?: string[];
+    rollback?: string;
+    network?: string;
+    writes?: string;
+  };
+  fake_success?: boolean;
+  secrets_returned?: boolean;
+  reason?: string;
+};
+
+type ConnectorTool = {
+  name?: string;
+  kind?: string;
+  enabled?: boolean;
+  connector_enabled?: boolean;
+  status_tool?: boolean;
+  requires_approval?: boolean;
+  description?: string;
+  approval_phrase?: string;
+  fake_success?: boolean;
+};
+
+type ConnectorItem = {
+  id?: string;
+  name?: string;
+  provider?: string;
+  category?: string;
+  description?: string;
+  enabled?: boolean;
+  readiness?: string;
+  configured?: boolean;
+  available?: boolean;
+  status?: string;
+  status_detail?: Record<string, unknown>;
+  tools?: ConnectorTool[];
+  routes?: Array<{ method?: string; path?: string; tool_name?: string }>;
+  setup?: Record<string, unknown>;
+  approval?: {
+    toggle_requires_approval?: boolean;
+    private_read_requires_approval?: boolean;
+    write_requires_approval?: boolean;
+    approval_phrase?: string;
+  };
+  settings?: {
+    has_override?: boolean;
+    updated_at?: string;
+    updated_by?: string;
+    notes?: string;
+    tool_overrides?: Record<string, boolean>;
+  };
+  fake_success?: boolean;
+  secrets_returned?: boolean;
+};
+
+type ConnectorAgentWorkPackage = {
+  id?: string;
+  agent?: string;
+  role?: string;
+  status?: string;
+  priority?: number;
+  target?: string;
+  command_hint?: string;
+  title?: string;
+  prompt?: string;
+  scope?: string[];
+  acceptance?: string[];
+  approval?: {
+    required_for_execution?: boolean;
+    phrase?: string;
+    note?: string;
+  };
+};
+
+type ConnectorCatalogStatus = {
+  status?: string;
+  version?: string;
+  connector_count?: number;
+  enabled_count?: number;
+  disabled_count?: number;
+  configured_count?: number;
+  connectors?: ConnectorItem[];
+  agent_work_packages?: ConnectorAgentWorkPackage[];
+  tool_index?: Record<string, { enabled?: boolean; connector_id?: string; connector_name?: string; kind?: string; requires_approval?: boolean; status_tool?: boolean }>;
+  disabled_tools?: string[];
+  approval_phrase?: string;
+  policy?: Record<string, unknown>;
+  fake_success?: boolean;
+  secrets_returned?: boolean;
+  reason?: string;
+};
+
+type GoogleOAuthStatus = {
+  status?: string;
+  provider?: string;
+  client?: {
+    configured?: boolean;
+    client_id_configured?: boolean;
+    valid_client_id?: boolean;
+    validation_reason?: string;
+    client_secret_configured?: boolean;
+    project_id_configured?: boolean;
+    client_type?: string;
+    redirect_uri?: string;
+    scopes?: string[];
+    updated_at?: string;
+    path?: string;
+    secrets_returned?: boolean;
+  };
+  token?: {
+    exists?: boolean;
+    path?: string;
+    scopes?: string[];
+    expires_at?: string;
+    token_type?: string;
+    has_refresh_token?: boolean;
+    secrets_returned?: boolean;
+    status?: string;
+    reason?: string;
+  };
+  pending_code?: {
+    available?: boolean;
+    received_at?: string;
+    expires_at?: string;
+    expired?: boolean;
+    secrets_returned?: boolean;
+  };
+  last_exchange?: {
+    status?: string;
+    updated_at?: string;
+    token_saved?: boolean;
+    has_refresh_token?: boolean;
+    using_pending_code?: boolean;
+    reason?: string;
+    secrets_returned?: boolean;
+  };
+  required_scopes?: string[];
+  missing_scopes?: string[];
+  redirect_uri?: string;
+  token_path?: string;
+  setup_ready?: boolean;
+  can_send_gmail?: boolean;
+  approval_required?: boolean;
+  approval_phrase?: string;
+  secrets_returned?: boolean;
+  fake_success?: boolean;
+  reason?: string;
+};
+
+type GoogleOAuthStartResult = {
+  status?: string;
+  authorization_url?: string;
+  redirect_uri?: string;
+  scopes?: string[];
+  client_configured?: boolean;
+  project_id_configured?: boolean;
+  client_type?: string;
+  warnings?: string[];
+  next_step?: string;
+  secrets_returned?: boolean;
+  fake_success?: boolean;
   reason?: string;
 };
 
@@ -768,6 +1004,17 @@ export default function App() {
   const [externalCapabilities, setExternalCapabilities] = useState<ExternalCapabilitiesStatus>({ status: "unknown" });
   const [runtimeTools, setRuntimeTools] = useState<RuntimeToolsStatus>({ status: "unknown" });
   const [runtimeDoctor, setRuntimeDoctor] = useState<RuntimeDoctorStatus>({ status: "unknown" });
+  const [connectors, setConnectors] = useState<ConnectorCatalogStatus>({ status: "unknown", connectors: [] });
+  const [selectedConnectorId, setSelectedConnectorId] = useState("");
+  const [googleOAuthStatus, setGoogleOAuthStatus] = useState<GoogleOAuthStatus>({ status: "unknown" });
+  const [googleOAuthClientId, setGoogleOAuthClientId] = useState("");
+  const [googleOAuthClientSecret, setGoogleOAuthClientSecret] = useState("");
+  const [googleOAuthClientJson, setGoogleOAuthClientJson] = useState("");
+  const [googleOAuthRedirectUri, setGoogleOAuthRedirectUri] = useState("");
+  const [googleOAuthCode, setGoogleOAuthCode] = useState("");
+  const [googleOAuthStartResult, setGoogleOAuthStartResult] = useState<GoogleOAuthStartResult | null>(null);
+  const [agentArchitecture, setAgentArchitecture] = useState<AgentArchitectureStatus>({ status: "unknown" });
+  const [agentArchitectureReview, setAgentArchitectureReview] = useState<AgentArchitectureReview | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexStatus>({ status: "unknown" });
   const [codexCapabilities, setCodexCapabilities] = useState<CodexCapabilityInventory>({ status: "unknown" });
   const [codexRunPrompt, setCodexRunPrompt] = useState("");
@@ -942,6 +1189,50 @@ export default function App() {
     }
   }, [api]);
 
+  const loadConnectorsStatus = useCallback(async () => {
+    try {
+      const data = await api<ConnectorCatalogStatus>(OUROBOROS_BACKEND_CONTRACT.connectors);
+      setConnectors(data);
+      setSelectedConnectorId((current) => {
+        const ids = (data.connectors ?? []).map((connector) => connector.id).filter(Boolean) as string[];
+        return current && ids.includes(current) ? current : ids[0] ?? "";
+      });
+    } catch (error) {
+      setConnectors((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadGoogleOAuthStatus = useCallback(async () => {
+    try {
+      const data = await api<GoogleOAuthStatus>(OUROBOROS_BACKEND_CONTRACT.googleOAuthStatus);
+      setGoogleOAuthStatus(data);
+      setGoogleOAuthRedirectUri((current) => current || data.redirect_uri || "");
+    } catch (error) {
+      setGoogleOAuthStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadAgentArchitecture = useCallback(async () => {
+    try {
+      const data = await api<AgentArchitectureStatus>(OUROBOROS_BACKEND_CONTRACT.agentArchitecture);
+      setAgentArchitecture(data);
+    } catch (error) {
+      setAgentArchitecture((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
   const loadCodexStatus = useCallback(async () => {
     try {
       const data = await api<CodexStatus>("/api/codex/status");
@@ -1021,19 +1312,59 @@ export default function App() {
     }
   }, [api, approval, approvalPhrase, approvalReady, codexRunPrompt, loadCodexStatus, pushEvent]);
 
-  const refresh = useCallback(async () => {
-    const [healthData, configData, statusData] = await Promise.all([
-      api<Health>(OUROBOROS_BACKEND_CONTRACT.health),
-      api<CockpitConfig>("/api/cockpit/config"),
-      api<OuroborosStatus>(OUROBOROS_BACKEND_CONTRACT.modelStatus),
-    ]);
-    setHealth(healthData);
-    setConfig(configData);
-    setStatus(statusData);
-    const phrase = configData.required_approval_phrase ?? configData.approval?.required_phrase;
-    if (phrase) setApprovalPhrase(phrase);
+  const runArchitectureReview = useCallback(async () => {
+    const task = prompt.trim();
+    if (!task) {
+      pushEvent("Criticus review", { status: "blocked", reason: "Geen prompt om te beoordelen." });
+      return;
+    }
     try {
-      setLoop(await api<LoopStatus>(OUROBOROS_BACKEND_CONTRACT.loopStatus));
+      setBusy(true);
+      const result = await api<AgentArchitectureReview>(OUROBOROS_BACKEND_CONTRACT.agentArchitectureReview, {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: task,
+          agent_id: "criticus",
+          action: "cockpit_prompt_review",
+          requested_mode: "preview",
+          approval,
+          data_scope: "current cockpit prompt",
+        }),
+      });
+      setAgentArchitectureReview(result);
+      pushEvent("Criticus review", result);
+    } catch (error) {
+      const result = { status: "error", reason: error instanceof Error ? error.message : String(error) };
+      setAgentArchitectureReview(result);
+      pushEvent("Criticus review error", result);
+    } finally {
+      setBusy(false);
+    }
+  }, [api, approval, prompt, pushEvent]);
+
+  const refresh = useCallback(async () => {
+    const [healthResult, configResult, statusResult] = await Promise.allSettled([
+      api<Health>(OUROBOROS_BACKEND_CONTRACT.health, { timeoutMs: 5_000 }),
+      api<CockpitConfig>("/api/cockpit/config", { timeoutMs: 10_000 }),
+      api<OuroborosStatus>(OUROBOROS_BACKEND_CONTRACT.modelStatus, { timeoutMs: 8_000 }),
+    ]);
+    if (healthResult.status === "fulfilled") {
+      setHealth(healthResult.value);
+    }
+    if (configResult.status === "fulfilled") {
+      setConfig(configResult.value);
+      const phrase = configResult.value.required_approval_phrase ?? configResult.value.approval?.required_phrase;
+      if (phrase) setApprovalPhrase(phrase);
+    } else {
+      setConfig((previous) => ({ ...previous, status: unavailableStatus(previous.status), message: configResult.reason instanceof Error ? configResult.reason.message : String(configResult.reason) }));
+    }
+    if (statusResult.status === "fulfilled") {
+      setStatus(statusResult.value);
+    } else {
+      setStatus((previous) => ({ ...previous, status: unavailableStatus(previous.status), mentor: statusResult.reason instanceof Error ? statusResult.reason.message : String(statusResult.reason) }));
+    }
+    try {
+      setLoop(await api<LoopStatus>(OUROBOROS_BACKEND_CONTRACT.loopStatus, { timeoutMs: 5_000 }));
     } catch {
       setLoop((previous) => ({ ...previous, status: previous.status || "idle" }));
     }
@@ -1068,6 +1399,9 @@ export default function App() {
         await loadExternalCapabilities();
         await loadRuntimeTools();
         await loadRuntimeDoctor();
+        await loadConnectorsStatus();
+        await loadGoogleOAuthStatus();
+        await loadAgentArchitecture();
         await loadCodexStatus();
         await loadAgentsStatus();
         await loadOpenhandsStatus();
@@ -1075,7 +1409,7 @@ export default function App() {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
+  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadConnectorsStatus, loadGoogleOAuthStatus, loadAgentArchitecture, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -1100,6 +1434,9 @@ export default function App() {
     loadExternalCapabilities().catch(() => undefined);
     loadRuntimeTools().catch(() => undefined);
     loadRuntimeDoctor().catch(() => undefined);
+    loadConnectorsStatus().catch(() => undefined);
+    loadGoogleOAuthStatus().catch(() => undefined);
+    loadAgentArchitecture().catch(() => undefined);
     loadCodexStatus().catch(() => undefined);
     loadCodexCapabilities().catch(() => undefined);
     loadAgentsStatus().catch(() => undefined);
@@ -1112,6 +1449,9 @@ export default function App() {
       loadExternalCapabilities().catch(() => undefined);
       loadRuntimeTools().catch(() => undefined);
       loadRuntimeDoctor().catch(() => undefined);
+      loadConnectorsStatus().catch(() => undefined);
+      loadGoogleOAuthStatus().catch(() => undefined);
+      loadAgentArchitecture().catch(() => undefined);
       loadCodexStatus().catch(() => undefined);
       loadAgentsStatus().catch(() => undefined);
       loadOpenhandsStatus().catch(() => undefined);
@@ -1123,7 +1463,7 @@ export default function App() {
       window.clearInterval(id);
       window.clearInterval(capabilitiesId);
     };
-  }, [loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
+  }, [loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadConnectorsStatus, loadGoogleOAuthStatus, loadAgentArchitecture, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -1429,6 +1769,120 @@ export default function App() {
     );
   }
 
+  async function toggleConnector(connectorId: string, enabled: boolean) {
+    const result = await perform(`${enabled ? "Enable" : "Disable"} ${connectorId}`, () =>
+      api<Record<string, unknown>>(`${OUROBOROS_BACKEND_CONTRACT.connectors}/${encodeURIComponent(connectorId)}`, {
+        method: "POST",
+        body: JSON.stringify({ enabled, approval, updated_by: "cockpit" }),
+      }),
+    );
+    if (result) await loadConnectorsStatus();
+  }
+
+  async function toggleConnectorTool(toolName: string, enabled: boolean) {
+    const result = await perform(`${enabled ? "Enable" : "Disable"} ${toolName}`, () =>
+      api<Record<string, unknown>>(`${OUROBOROS_BACKEND_CONTRACT.connectors}/tools/${encodeURIComponent(toolName)}`, {
+        method: "POST",
+        body: JSON.stringify({ enabled, approval, updated_by: "cockpit" }),
+      }),
+    );
+    if (result) await loadConnectorsStatus();
+  }
+
+  async function startGoogleOAuth() {
+    if (!approvalReady) {
+      pushEvent("Google OAuth start", { status: "blocked", reason: `Type ${approvalPhrase} om Google OAuth te configureren.` });
+      return;
+    }
+    let reservedWindow: Window | null = null;
+    if (!isLikelyTauriRuntime()) {
+      try {
+        reservedWindow = window.open("about:blank", "_blank");
+      } catch {
+        reservedWindow = null;
+      }
+    }
+    const redirectUri =
+      googleOAuthRedirectUri.trim() ||
+      `${backend}${OUROBOROS_BACKEND_CONTRACT.googleOAuthStatus.replace("/status", "/callback")}`;
+    const result = await perform("Google OAuth start", () =>
+      api<GoogleOAuthStartResult>(OUROBOROS_BACKEND_CONTRACT.googleOAuthStart, {
+        method: "POST",
+        body: JSON.stringify({
+          client_id: googleOAuthClientId.trim(),
+          client_secret: googleOAuthClientSecret.trim(),
+          client_json: googleOAuthClientJson.trim(),
+          redirect_uri: redirectUri,
+          approval,
+        }),
+      }),
+    );
+    if (result) {
+      setGoogleOAuthStartResult(result);
+      setGoogleOAuthClientSecret("");
+      setGoogleOAuthClientJson("");
+      setGoogleOAuthRedirectUri(redirectUri);
+      if (result.authorization_url) {
+        const openResult = await openExternalUrl(result.authorization_url, "_blank", reservedWindow);
+        reservedWindow = null;
+        pushEvent("Google OAuth page", {
+          status: openResult.opened ? "opened" : "blocked_by_browser",
+          detail: openResult.detail,
+          via: openResult.via,
+        });
+      } else {
+        closeReservedWindow(reservedWindow);
+        reservedWindow = null;
+      }
+      await loadGoogleOAuthStatus();
+      await loadConnectorsStatus();
+    } else {
+      closeReservedWindow(reservedWindow);
+    }
+  }
+
+  async function exchangeGoogleOAuthCode() {
+    if (!approvalReady) {
+      pushEvent("Google OAuth exchange", { status: "blocked", reason: `Type ${approvalPhrase} om de Google-code op te slaan.` });
+      return;
+    }
+    const code = googleOAuthCode.trim();
+    let latestOAuth = googleOAuthStatus;
+    try {
+      latestOAuth = await api<GoogleOAuthStatus>(OUROBOROS_BACKEND_CONTRACT.googleOAuthStatus);
+      setGoogleOAuthStatus(latestOAuth);
+    } catch {
+      // Use the last polled status if the preflight refresh fails.
+    }
+    const usePendingCode = !code && Boolean(latestOAuth.pending_code?.available);
+    if (!code && !usePendingCode) {
+      pushEvent("Google OAuth exchange", { status: "blocked", reason: "Plak eerst de Google authorization code of rond de Google callback af." });
+      return;
+    }
+    const result = await perform("Google OAuth exchange", () =>
+      api<GoogleOAuthStatus>(OUROBOROS_BACKEND_CONTRACT.googleOAuthExchange, {
+        method: "POST",
+        body: JSON.stringify({
+          code,
+          client_id: googleOAuthClientId.trim(),
+          client_secret: googleOAuthClientSecret.trim(),
+          client_json: googleOAuthClientJson.trim(),
+          redirect_uri: googleOAuthRedirectUri.trim(),
+          use_pending_code: usePendingCode,
+          approval,
+        }),
+      }),
+    );
+    if (result) {
+      setGoogleOAuthCode("");
+      setGoogleOAuthClientSecret("");
+      setGoogleOAuthClientJson("");
+      setGoogleOAuthStartResult(null);
+      await loadGoogleOAuthStatus();
+      await loadConnectorsStatus();
+    }
+  }
+
   async function startRooCloudLogin() {
     let reservedWindow: Window | null = null;
     if (!isLikelyTauriRuntime()) {
@@ -1596,11 +2050,18 @@ export default function App() {
     const key = apiKeyStatus[item.id];
     return !!key?.configured || !!item.enabled;
   }).length;
+  const connectorList = connectors.connectors ?? [];
+  const connectorEnabledCount = connectorList.filter((connector) => connector.enabled).length;
+  const connectorTotal = connectorList.length || connectors.connector_count || 0;
+  const architectureAgents = agentArchitecture.agents ?? [];
+  const architectureReady = architectureAgents.filter((agent) => agent.readiness === "klaar").length;
+  const architectureStatus = agentArchitecture.status ?? "unknown";
   const navItems: Array<{ id: ActiveTab; label: string; icon: ReactNode; hint: string }> = [
     { id: "chat", label: "Chat", icon: <MessageSquare size={16} />, hint: `${selfContext?.conversation_count ?? 0} chats` },
     { id: "tools", label: "Tools", icon: <Wrench size={16} />, hint: "shell + tests" },
     { id: "models", label: "Models", icon: <KeyRound size={16} />, hint: `${localModels.length} local / ${configuredKeyCount} keys / ${rooLoggedIn ? "Roo login" : "Roo off"}` },
-    { id: "agents", label: "Agents", icon: <Bot size={16} />, hint: `${agentJobs.length} jobs` },
+    { id: "connectors", label: "Connectors", icon: <Plug size={16} />, hint: `${connectorEnabledCount}/${connectorTotal} on` },
+    { id: "agents", label: "Agents", icon: <Bot size={16} />, hint: `${architectureAgents.length || agentArchitecture.agent_count || 0} roles / ${agentJobs.length} jobs` },
     { id: "memory", label: "Memory", icon: <History size={16} />, hint: `${records.total_count ?? 0} records` },
     { id: "trainer", label: "Trainer", icon: <Layers size={16} />, hint: trainerStatus?.status ?? "learning" },
     { id: "context", label: "Context", icon: <FolderTree size={16} />, hint: "workspace" },
@@ -1736,6 +2197,8 @@ export default function App() {
           <StatusPill icon={<Cpu size={16} />} label="Ollama" value={status.model?.ollama_online ? "online" : "offline"} ok={!!status.model?.ollama_online} />
           <StatusPill icon={<Bot size={16} />} label="Ouroboros" value={status.model?.online ? "created" : "offline"} ok={!!status.model?.online} />
           <StatusPill icon={<Hammer size={16} />} label="Pipeline" value={status.self_modification_pipeline?.status ?? "not configured"} ok={status.self_modification_pipeline?.status === "online"} />
+          <StatusPill icon={<Plug size={16} />} label="Connectors" value={`${connectorEnabledCount}/${connectorTotal || "?"} on`} ok={connectors.status === "online" && connectorEnabledCount > 0} />
+          <StatusPill icon={<ShieldCheck size={16} />} label="Architecture" value={`${architectureReady}/${architectureAgents.length || agentArchitecture.agent_count || 4} klaar`} ok={architectureStatus === "online" && architectureReady >= 1} />
           <StatusPill icon={<Database size={16} />} label="11D" value={`${learning.total_count ?? records.total_count ?? 0}`} ok={!!learning.available} />
           <StatusPill icon={<ShieldCheck size={16} />} label="Approval" value={approvalReady ? "approved" : "locked"} ok={approvalReady} />
           <StatusPill
@@ -2054,8 +2517,73 @@ export default function App() {
           </section>
         )}
 
+        {activeTab === "connectors" && (
+          <section className="cockpit-grid connector-grid">
+            <section className="panel connector-main-panel">
+              <PanelHeader title="Connectors" />
+              <ConnectorCockpitPanel
+                catalog={connectors}
+                selectedConnectorId={selectedConnectorId}
+                onSelectConnector={setSelectedConnectorId}
+                approvalReady={approvalReady}
+                busy={busy}
+                onRefresh={loadConnectorsStatus}
+                onToggleConnector={toggleConnector}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="Connector Tools" />
+              <ConnectorToolsPanel
+                connector={(connectors.connectors ?? []).find((item) => item.id === selectedConnectorId) ?? (connectors.connectors ?? [])[0]}
+                approvalReady={approvalReady}
+                busy={busy}
+                onToggleTool={toggleConnectorTool}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader title="Connector Status" />
+              <ConnectorStatusPanel
+                connector={(connectors.connectors ?? []).find((item) => item.id === selectedConnectorId) ?? (connectors.connectors ?? [])[0]}
+                catalog={connectors}
+                googleOAuth={googleOAuthStatus}
+                googleOAuthStartResult={googleOAuthStartResult}
+                googleOAuthClientId={googleOAuthClientId}
+                googleOAuthClientSecret={googleOAuthClientSecret}
+                googleOAuthClientJson={googleOAuthClientJson}
+                googleOAuthRedirectUri={googleOAuthRedirectUri}
+                googleOAuthCode={googleOAuthCode}
+                approvalReady={approvalReady}
+                busy={busy}
+                onGoogleOAuthClientIdChange={setGoogleOAuthClientId}
+                onGoogleOAuthClientSecretChange={setGoogleOAuthClientSecret}
+                onGoogleOAuthClientJsonChange={setGoogleOAuthClientJson}
+                onGoogleOAuthRedirectUriChange={setGoogleOAuthRedirectUri}
+                onGoogleOAuthCodeChange={setGoogleOAuthCode}
+                onStartGoogleOAuth={startGoogleOAuth}
+                onExchangeGoogleOAuthCode={exchangeGoogleOAuthCode}
+                onUsePrompt={(text) => {
+                  setPrompt(text);
+                  setActiveTab("chat");
+                }}
+              />
+            </section>
+          </section>
+        )}
+
         {activeTab === "agents" && (
           <section className="cockpit-grid focus-grid">
+            <section className="panel">
+              <PanelHeader title="Agent Architecture" />
+              <AgentArchitecturePanel
+                architecture={agentArchitecture}
+                review={agentArchitectureReview}
+                busy={busy}
+                onReview={runArchitectureReview}
+              />
+            </section>
+
             <section className="panel">
               <PanelHeader title="Agent Capabilities" />
               <AgentCapabilitiesPanel
@@ -2536,6 +3064,461 @@ function capabilityStatusLabel(status?: string) {
 
 function PanelHeader({ title, small = false }: { title: string; small?: boolean }) {
   return <h2 className={small ? "small-heading" : ""}>{title}</h2>;
+}
+
+function ConnectorCockpitPanel({
+  catalog,
+  selectedConnectorId,
+  onSelectConnector,
+  approvalReady,
+  busy,
+  onRefresh,
+  onToggleConnector,
+}: {
+  catalog: ConnectorCatalogStatus;
+  selectedConnectorId: string;
+  onSelectConnector: (id: string) => void;
+  approvalReady: boolean;
+  busy: boolean;
+  onRefresh: () => void;
+  onToggleConnector: (id: string, enabled: boolean) => void;
+}) {
+  const connectors = catalog.connectors ?? [];
+  const selected = selectedConnectorId || connectors[0]?.id || "";
+  return (
+    <div className="connector-panel">
+      <div className="nexus-stats">
+        <span>Status <strong>{catalog.status ?? "unknown"}</strong></span>
+        <span>On <strong>{catalog.enabled_count ?? connectors.filter((item) => item.enabled).length}</strong></span>
+        <span>Off <strong>{catalog.disabled_count ?? connectors.filter((item) => !item.enabled).length}</strong></span>
+        <span>Ready <strong>{catalog.configured_count ?? connectors.filter((item) => item.configured).length}</strong></span>
+        <span>Tools off <strong>{catalog.disabled_tools?.length ?? 0}</strong></span>
+        <span>Fake <strong>{String(catalog.fake_success ?? false)}</strong></span>
+      </div>
+
+      <div className="connector-toolbar">
+        <button onClick={onRefresh} disabled={busy} type="button">
+          <RefreshCw size={15} /> Refresh
+        </button>
+        <span>{catalog.approval_phrase ?? "Akkoord"}</span>
+      </div>
+
+      <div className="connector-card-list">
+        {connectors.map((connector) => {
+          const enabled = Boolean(connector.enabled);
+          const isSelected = selected === connector.id;
+          const ready = connector.readiness === "ready" || connector.configured || connector.available;
+          return (
+            <div className={`connector-card ${enabled ? "on" : "off"} ${isSelected ? "selected" : ""}`} key={connector.id ?? connector.name}>
+              <button className="connector-card-body" onClick={() => onSelectConnector(connector.id ?? "")} type="button">
+                <div className="connector-card-head">
+                  <i className={enabled && ready ? "good" : ""} />
+                  <div>
+                    <strong>{connector.name ?? connector.id}</strong>
+                    <span>{connector.provider ?? connector.category ?? "connector"}</span>
+                  </div>
+                  <em>{enabled ? "on" : "off"}</em>
+                </div>
+                <p>{connector.description ?? connector.status ?? ""}</p>
+                <div className="dimension-chip-list connector-chips">
+                  <span>{connector.readiness ?? "unknown"}</span>
+                  <span>{connector.status ?? "status"}</span>
+                  <span>{connector.tools?.length ?? 0} tools</span>
+                </div>
+              </button>
+              <div className="connector-card-actions">
+                <button
+                  onClick={() => onToggleConnector(connector.id ?? "", !enabled)}
+                  disabled={busy || !approvalReady || !connector.id}
+                  type="button"
+                >
+                  {enabled ? <CircleStop size={15} /> : <CheckCircle2 size={15} />}
+                  {enabled ? "Off" : "On"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {!connectors.length && <div className="empty-state">{catalog.reason ?? "Connectorcatalogus nog niet geladen."}</div>}
+      </div>
+    </div>
+  );
+}
+
+function ConnectorToolsPanel({
+  connector,
+  approvalReady,
+  busy,
+  onToggleTool,
+}: {
+  connector?: ConnectorItem;
+  approvalReady: boolean;
+  busy: boolean;
+  onToggleTool: (toolName: string, enabled: boolean) => void;
+}) {
+  if (!connector) {
+    return <div className="empty-state">Geen connector geselecteerd.</div>;
+  }
+  const tools = connector.tools ?? [];
+  return (
+    <div className="connector-panel">
+      <div className="connector-selected-head">
+        <div>
+          <strong>{connector.name ?? connector.id}</strong>
+          <span>{connector.category ?? connector.provider ?? "connector"}</span>
+        </div>
+        <em className={connector.enabled ? "good" : "warn"}>{connector.enabled ? "on" : "off"}</em>
+      </div>
+      <div className="connector-tool-list">
+        {tools.map((tool) => {
+          const enabled = Boolean(tool.enabled);
+          const name = tool.name ?? "";
+          const statusTool = Boolean(tool.status_tool);
+          return (
+            <div className={`connector-tool-row ${enabled ? "on" : "off"}`} key={name}>
+              <span>{tool.kind ?? "tool"}</span>
+              <strong>{name}</strong>
+              <em>{statusTool ? "always on" : tool.requires_approval ? "Akkoord" : "read"}</em>
+              <button
+                onClick={() => onToggleTool(name, !enabled)}
+                disabled={busy || !approvalReady || statusTool || !name}
+                title={statusTool ? "Status tools blijven altijd leesbaar." : undefined}
+                type="button"
+              >
+                {statusTool ? <ShieldCheck size={14} /> : enabled ? <CircleStop size={14} /> : <CheckCircle2 size={14} />}
+                {statusTool ? "Always" : enabled ? "Off" : "On"}
+              </button>
+            </div>
+          );
+        })}
+        {!tools.length && <div className="empty-state">Geen tools voor deze connector.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ConnectorStatusPanel({
+  connector,
+  catalog,
+  googleOAuth,
+  googleOAuthStartResult,
+  googleOAuthClientId,
+  googleOAuthClientSecret,
+  googleOAuthClientJson,
+  googleOAuthRedirectUri,
+  googleOAuthCode,
+  approvalReady,
+  busy,
+  onGoogleOAuthClientIdChange,
+  onGoogleOAuthClientSecretChange,
+  onGoogleOAuthClientJsonChange,
+  onGoogleOAuthRedirectUriChange,
+  onGoogleOAuthCodeChange,
+  onStartGoogleOAuth,
+  onExchangeGoogleOAuthCode,
+  onUsePrompt,
+}: {
+  connector?: ConnectorItem;
+  catalog: ConnectorCatalogStatus;
+  googleOAuth: GoogleOAuthStatus;
+  googleOAuthStartResult: GoogleOAuthStartResult | null;
+  googleOAuthClientId: string;
+  googleOAuthClientSecret: string;
+  googleOAuthClientJson: string;
+  googleOAuthRedirectUri: string;
+  googleOAuthCode: string;
+  approvalReady: boolean;
+  busy: boolean;
+  onGoogleOAuthClientIdChange: (value: string) => void;
+  onGoogleOAuthClientSecretChange: (value: string) => void;
+  onGoogleOAuthClientJsonChange: (value: string) => void;
+  onGoogleOAuthRedirectUriChange: (value: string) => void;
+  onGoogleOAuthCodeChange: (value: string) => void;
+  onStartGoogleOAuth: () => void;
+  onExchangeGoogleOAuthCode: () => void;
+  onUsePrompt: (prompt: string) => void;
+}) {
+  if (!connector) {
+    return <div className="empty-state">{catalog.reason ?? "Geen connectorstatus beschikbaar."}</div>;
+  }
+  const routes = connector.routes ?? [];
+  const setup = connector.setup ?? {};
+  const packages = catalog.agent_work_packages ?? [];
+  return (
+    <div className="connector-panel">
+      <div className="fact-list">
+        <Fact label="Connector" value={connector.name ?? connector.id ?? "--"} state={connector.readiness ?? connector.status} />
+        <Fact label="Provider" value={connector.provider ?? "--"} state={connector.category ?? ""} />
+        <Fact label="Configured" value={String(Boolean(connector.configured))} state={connector.status ?? "unknown"} />
+        <Fact label="Updated" value={connector.settings?.updated_at || "--"} state={connector.settings?.updated_by || "catalog"} />
+        <Fact label="Credential" value={summarizeValue(setup.credential) || "--"} state={summarizeValue(setup.env) || ""} />
+      </div>
+      {["gmail", "google_drive"].includes(connector.id ?? "") && (
+        <GoogleOAuthSetupPanel
+          status={googleOAuth}
+          startResult={googleOAuthStartResult}
+          clientId={googleOAuthClientId}
+          clientSecret={googleOAuthClientSecret}
+          clientJson={googleOAuthClientJson}
+          redirectUri={googleOAuthRedirectUri}
+          code={googleOAuthCode}
+          approvalReady={approvalReady}
+          busy={busy}
+          onClientIdChange={onGoogleOAuthClientIdChange}
+          onClientSecretChange={onGoogleOAuthClientSecretChange}
+          onClientJsonChange={onGoogleOAuthClientJsonChange}
+          onRedirectUriChange={onGoogleOAuthRedirectUriChange}
+          onCodeChange={onGoogleOAuthCodeChange}
+          onStart={onStartGoogleOAuth}
+          onExchange={onExchangeGoogleOAuthCode}
+        />
+      )}
+      {routes.length > 0 && (
+        <>
+          <PanelHeader title="Routes" small />
+          <div className="fact-list">
+            {routes.map((route, index) => (
+              <Fact key={`${route.path}-${index}`} label={route.tool_name ?? route.method ?? "route"} value={route.path ?? "--"} state={route.method ?? ""} />
+            ))}
+          </div>
+        </>
+      )}
+      <PanelHeader title="Status Detail" small />
+      <pre className="connector-status-json">{JSON.stringify(connector.status_detail ?? {}, null, 2)}</pre>
+      <PanelHeader title="Agent Instructions" small />
+      <div className="connector-work-list">
+        {packages.map((item) => (
+          <div className="connector-work-card" key={item.id ?? item.agent}>
+            <div>
+              <strong>{item.agent ?? "Agent"} · {item.title ?? item.target ?? "Werkpakket"}</strong>
+              <span>{item.role ?? item.target ?? ""} · {item.command_hint ?? ""}</span>
+            </div>
+            <p>{item.prompt ?? ""}</p>
+            <div className="dimension-chip-list connector-chips">
+              {(item.acceptance ?? []).slice(0, 3).map((criterion, index) => <span key={`${item.id}-accept-${index}`}>{criterion}</span>)}
+            </div>
+            <button onClick={() => onUsePrompt(`${item.command_hint ?? ""} ${item.prompt ?? ""}`.trim())} type="button">
+              <MessageSquare size={14} /> Naar chat
+            </button>
+          </div>
+        ))}
+        {!packages.length && <div className="empty-state">Nog geen agent-opdrachten geladen.</div>}
+      </div>
+    </div>
+  );
+}
+
+function GoogleOAuthSetupPanel({
+  status,
+  startResult,
+  clientId,
+  clientSecret,
+  clientJson,
+  redirectUri,
+  code,
+  approvalReady,
+  busy,
+  onClientIdChange,
+  onClientSecretChange,
+  onClientJsonChange,
+  onRedirectUriChange,
+  onCodeChange,
+  onStart,
+  onExchange,
+}: {
+  status: GoogleOAuthStatus;
+  startResult: GoogleOAuthStartResult | null;
+  clientId: string;
+  clientSecret: string;
+  clientJson: string;
+  redirectUri: string;
+  code: string;
+  approvalReady: boolean;
+  busy: boolean;
+  onClientIdChange: (value: string) => void;
+  onClientSecretChange: (value: string) => void;
+  onClientJsonChange: (value: string) => void;
+  onRedirectUriChange: (value: string) => void;
+  onCodeChange: (value: string) => void;
+  onStart: () => void;
+  onExchange: () => void;
+}) {
+  const tokenExists = Boolean(status.token?.exists);
+  const hasRefresh = Boolean(status.token?.has_refresh_token);
+  const clientConfigured = Boolean(status.client?.configured);
+  const pendingCode = Boolean(status.pending_code?.available);
+  const hasManualCredentials = Boolean(clientId.trim() && clientSecret.trim());
+  const hasClientJson = Boolean(clientJson.trim());
+  const hasTypedCode = Boolean(code.trim());
+  const missingScopes = status.missing_scopes ?? [];
+  const warnings = startResult?.warnings ?? [];
+  const validationReason = status.client?.validation_reason || "";
+  const exchangeReason = status.last_exchange?.reason || "";
+  const authUrl = startResult?.authorization_url ?? "";
+  return (
+    <div className="google-oauth-panel">
+      <PanelHeader title="Google OAuth" small />
+      <div className="fact-list">
+        <Fact label="Client" value={clientConfigured ? "configured" : "missing"} state={status.client?.updated_at || ""} />
+        <Fact label="Project" value={status.client?.project_id_configured ? "configured" : "missing"} state={status.client?.client_type || startResult?.client_type || "oauth"} />
+        <Fact label="Token" value={tokenExists ? "saved" : "missing"} state={hasRefresh ? "refresh token" : "no refresh"} />
+        <Fact label="Callback" value={pendingCode ? "received" : "waiting"} state={status.pending_code?.expires_at || ""} />
+        <Fact label="Exchange" value={status.last_exchange?.status ?? "never"} state={status.last_exchange?.updated_at || ""} />
+        <Fact label="Gmail send" value={status.can_send_gmail ? "ready" : "blocked"} state={status.status ?? "unknown"} />
+        <Fact label="Scopes missing" value={`${missingScopes.length}`} state={status.setup_ready ? "complete" : "incomplete"} />
+      </div>
+      <div className="oauth-form-grid">
+        <label>
+          <span>Client ID</span>
+          <input value={clientId} onChange={(event) => onClientIdChange(event.target.value)} placeholder={status.client?.client_id_configured ? "configured" : "Google OAuth client ID"} />
+        </label>
+        <label>
+          <span>Client Secret</span>
+          <input type="password" value={clientSecret} onChange={(event) => onClientSecretChange(event.target.value)} placeholder={status.client?.client_secret_configured ? "configured" : "Google OAuth client secret"} />
+        </label>
+        <label className="oauth-wide-field">
+          <span>Redirect URI</span>
+          <input value={redirectUri || status.redirect_uri || ""} onChange={(event) => onRedirectUriChange(event.target.value)} placeholder={status.redirect_uri || "http://127.0.0.1:8010/api/cockpit/connectors/google/oauth/callback"} />
+        </label>
+        <label className="oauth-wide-field">
+          <span>Client JSON</span>
+          <textarea value={clientJson} onChange={(event) => onClientJsonChange(event.target.value)} placeholder="Paste downloaded OAuth client JSON" rows={4} />
+        </label>
+      </div>
+      <div className="connector-toolbar">
+        <button onClick={onStart} disabled={busy || !approvalReady || (!clientConfigured && !hasManualCredentials && !hasClientJson)} type="button">
+          <KeyRound size={15} /> Auth URL
+        </button>
+        {authUrl && (
+          <a className="button-link" href={authUrl} target="_blank" rel="noreferrer">
+            <Globe2 size={15} /> Open Google
+          </a>
+        )}
+      </div>
+      <div className="oauth-form-grid">
+        <label className="oauth-wide-field">
+          <span>Authorization Code</span>
+          <input value={code} onChange={(event) => onCodeChange(event.target.value)} placeholder="code or callback URL" />
+        </label>
+      </div>
+      <div className="connector-toolbar">
+        <button onClick={onExchange} disabled={busy || !approvalReady || (!hasTypedCode && !pendingCode)} type="button">
+          <CheckCircle2 size={15} /> {hasTypedCode ? "Save Token" : "Save Callback Code"}
+        </button>
+        <span>{status.secrets_returned ? "secrets returned" : "secrets hidden"}</span>
+      </div>
+      {missingScopes.length > 0 && (
+        <div className="dimension-chip-list connector-chips">
+          {missingScopes.slice(0, 5).map((scope) => <span key={scope}>{scope.replace("https://www.googleapis.com/auth/", "")}</span>)}
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <div className="dimension-chip-list agentic-guardrail-chips">
+          {warnings.slice(0, 3).map((warning, index) => <span key={`google-oauth-warning-${index}`}>{warning}</span>)}
+        </div>
+      )}
+      {validationReason && (
+        <div className="dimension-chip-list agentic-blocked-chips">
+          <span>{validationReason}</span>
+        </div>
+      )}
+      {exchangeReason && status.last_exchange?.status !== "token_saved" && (
+        <div className="dimension-chip-list agentic-blocked-chips">
+          <span>{exchangeReason}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentArchitecturePanel({
+  architecture,
+  review,
+  busy,
+  onReview,
+}: {
+  architecture: AgentArchitectureStatus;
+  review: AgentArchitectureReview | null;
+  busy: boolean;
+  onReview: () => void;
+}) {
+  const agents = architecture.agents ?? [];
+  const policy = architecture.approval_policy ?? {};
+  const interfaces = Object.entries(architecture.public_interfaces ?? {});
+  const blockedGaps = architecture.blocked_gaps ?? [];
+  const readyCount = agents.filter((agent) => agent.readiness === "klaar").length;
+  return (
+    <div className="world-panel architecture-panel">
+      <div className="nexus-stats">
+        <span>Status <strong>{architecture.status ?? "unknown"}</strong></span>
+        <span>Agents <strong>{agents.length || architecture.agent_count || 0}</strong></span>
+        <span>Klaar <strong>{readyCount}</strong></span>
+        <span>Policy <strong>{policy.self_copy_install_v1 ?? "dry-run"}</strong></span>
+        <span>Tools <strong>{architecture.observed_runtime?.tool_names?.length ?? 0}</strong></span>
+        <span>Fake <strong>{String(architecture.fake_success ?? false)}</strong></span>
+      </div>
+
+      <div className="world-action-list">
+        {agents.map((agent) => (
+          <div className="world-action" key={agent.id ?? agent.name}>
+            <div>
+              <strong>{agent.name ?? agent.id}</strong>
+              <span>{agent.readiness ?? "unknown"}</span>
+            </div>
+            <p>{agent.role ?? ""}: {agent.mission ?? ""}</p>
+            <div className="dimension-chip-list agentic-tool-chips">
+              {(agent.allowed_tools ?? []).slice(0, 8).map((tool) => <span key={`${agent.id}-${tool}`}>{tool}</span>)}
+            </div>
+            {(agent.approval_required_for ?? []).length > 0 && (
+              <div className="dimension-chip-list agentic-guardrail-chips">
+                {(agent.approval_required_for ?? []).slice(0, 6).map((tool) => <span key={`${agent.id}-gate-${tool}`}>{tool}: {policy.approval_phrase ?? "Akkoord"}</span>)}
+              </div>
+            )}
+          </div>
+        ))}
+        {!agents.length && <div className="empty-state">{architecture.reason ?? "Agent-architectuur nog niet geladen."}</div>}
+      </div>
+
+      <PanelHeader title="Criticus Preview" small />
+      <div className="nexus-last">
+        <button onClick={onReview} disabled={busy}>
+          <ShieldCheck size={15} /> Review huidige prompt
+        </button>
+        {review && (
+          <div className="world-action">
+            <div>
+              <strong>{review.status ?? "unknown"} · {review.decision ?? "preview"}</strong>
+              <span>{review.risk_level ?? "risk"}</span>
+            </div>
+            <p>
+              Execute allowed: {String(review.execute_allowed ?? false)} · uitgevoerd: {String(review.execution_performed ?? false)} · approval: {review.approval_status ?? "unknown"}
+            </p>
+            <div className="dimension-chip-list agentic-blocked-chips">
+              {(review.critic?.blocked_reasons ?? []).map((reason, index) => <span key={`blocked-${index}`}>{reason}</span>)}
+            </div>
+            <div className="dimension-chip-list agentic-ecosystem-chips">
+              {(review.risk_categories ?? []).map((category) => <span key={category}>{category}</span>)}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <PanelHeader title="Interfaces" small />
+      <div className="fact-list">
+        {interfaces.slice(0, 8).map(([key, item]) => (
+          <Fact key={key} label={key} value={`${item.method ?? "GET"} ${item.path ?? ""}`} state={item.prefix ? `prefix ${item.prefix}` : "route"} />
+        ))}
+      </div>
+      {blockedGaps.length > 0 && (
+        <>
+          <PanelHeader title="Open Gaps" small />
+          <div className="dimension-chip-list agentic-guardrail-chips">
+            {blockedGaps.slice(0, 8).map((gap, index) => <span key={`gap-${index}`}>{gap}</span>)}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function AgentCapabilitiesPanel({

@@ -122,7 +122,7 @@ CHROMA_SYNC_MARKERS = ("chroma", "chromadb", "vector db", "vector database")
 MUTATING_VERB_RE = re.compile(
     r"(?i)\b("
     r"schrijf|write|save|sla\s+op|maak|create|upload|verwijder|delete|remove|"
-    r"wijzig|edit|patch|update|aanpassen|pas\s+aan|verstuur|send|reply|antwoord|post|publish|plaats|archive|label|"
+    r"wijzig|edit|patch|update|aanpassen|pas\s+aan|stuur|verzend|verstuur|send|reply|antwoord|post|publish|plaats|archive|label|"
     r"deploy|sync|synchroniseer|login|log\s+in|push|merge|commit|run|start|execute|voer\s+uit"
     r")\b"
 )
@@ -219,6 +219,7 @@ def classify_agentic_intent(prompt: object, *, role: object = "", approval: obje
         "connector_intent_preview",
         "gmail_status",
         "gmail_search",
+        "mail_send",
         "google_drive_status",
         "google_drive_list",
         "github_status",
@@ -421,6 +422,9 @@ def _prompt_metadata(prompt: str, *, approval_present: bool = False) -> dict[str
         else:
             target_tool = "vps_sync_preview"
             routing_hint = "vps_sync_preview_first"
+    elif gmail and _wants_mail_send(lowered):
+        target_tool = "mail_send"
+        routing_hint = "gmail_send_approval_required"
     elif (connector_boundary and mutating) or (github and _github_private_context(lowered) and not connector_status):
         target_tool = "connector_intent_preview"
         routing_hint = "connector_preview_required"
@@ -509,6 +513,8 @@ def _plan_hints(
         hint["args_hint"] = {"timeout_seconds": 120, "preview_first": target_tool == "chroma_sync_execute"}
     elif target_tool == "gmail_search":
         hint["args_hint"] = {"query": "in:inbox", "max_results": 5}
+    elif target_tool == "mail_send":
+        hint["args_hint"] = {"to": "", "subject": "", "body": ""}
     elif target_tool == "google_drive_list":
         hint["args_hint"] = {"path": "", "max_items": 25, "adapter": "auto"}
     elif target_tool == "github_repo":
@@ -548,6 +554,12 @@ def _wants_travel(lowered: str) -> bool:
 
 def _wants_gmail(lowered: str) -> bool:
     return any(marker in lowered for marker in GMAIL_MARKERS) or bool(re.search(r"\bmail(?:s|tje|bericht|berichten)?\b", lowered))
+
+
+def _wants_mail_send(lowered: str) -> bool:
+    return bool(re.search(r"\b(stuur|verzend|verstuur|send|reply|antwoord)\b", lowered)) and bool(
+        re.search(r"\b(mail|e-mail|email|bericht)\b", lowered)
+    )
 
 
 def _wants_drive(lowered: str) -> bool:

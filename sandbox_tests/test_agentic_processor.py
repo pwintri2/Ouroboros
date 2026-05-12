@@ -96,6 +96,18 @@ class FakeAgentTools:
                 "stored_to_memory": False,
                 "next_action": "ask for Akkoord",
             }
+        if tool_name == "mail_send":
+            return {
+                "status": "success",
+                "tool_name": tool_name,
+                "stdout": "mail sent",
+                "stderr": "",
+                "result": {"sent": True, "to": args.get("to"), "subject": args.get("subject")},
+                "metadata_11d": {"dimension_count": 11, "source_type": "gmail_send"},
+                "approval_status": "approved",
+                "stored_to_memory": False,
+                "next_action": "done",
+            }
         if tool_name == "google_drive_list":
             return {
                 "status": "blocked",
@@ -485,6 +497,33 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertEqual(drive["plan"][0]["tool"], "google_drive_list")
         self.assertEqual([call[0] for call in fake_tools_drive.calls], ["google_drive_list"])
         self.assertIn("inserted_google_drive_list", drive["planner"]["guardrails_applied"])
+
+    def test_mail_send_intent_routes_to_mail_send_not_gmail_search(self):
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(agent_tools=fake_tools, ollama_client=FakeOllama(['[{"tool":"gmail_search","args":{"query":"hallo"}}]', "unused"]))
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            blocked = processor.run('Stuur een mail met onderwerp "hallo" en tekst "hallo" naar info@wintrip.nl', model="gemma4")
+
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["plan"][0]["tool"], "mail_send")
+        self.assertEqual(blocked["steps"][0]["tool"], "mail_send")
+        self.assertEqual(fake_tools.calls, [])
+        self.assertIn("inserted_mail_send", blocked["planner"]["guardrails_applied"])
+
+        approved_tools = FakeAgentTools()
+        approved_processor = AgenticProcessor(agent_tools=approved_tools, ollama_client=FakeOllama(['[{"tool":"gmail_search","args":{"query":"hallo"}}]', "Mail verstuurd."]))
+        with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+            approved_processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+            approved = approved_processor.run('Stuur een mail met onderwerp "hallo" en tekst "hallo" naar info@wintrip.nl', approval="Akkoord", model="gemma4")
+
+        self.assertEqual(approved["status"], "success")
+        self.assertEqual([call[0] for call in approved_tools.calls], ["mail_send"])
+        args = approved_tools.calls[0][1]
+        self.assertEqual(args["to"], "info@wintrip.nl")
+        self.assertEqual(args["subject"], "hallo")
+        self.assertEqual(args["body"], "hallo")
+        self.assertEqual(args["approval"], "Akkoord")
 
     def test_github_public_intent_routes_to_readonly_github_tool(self):
         plan = '[{"tool":"connector_intent_preview","args":{"prompt":"github"}}]'

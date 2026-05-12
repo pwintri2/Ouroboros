@@ -87,6 +87,15 @@ class TestAgenticIntent(unittest.TestCase):
         self.assertEqual(status.target_tool, "github_status")
         self.assertFalse(status.approval_required)
 
+    def test_mail_send_routes_to_send_tool_not_gmail_search(self):
+        intent = classify_agentic_intent('Stuur een mail met onderwerp "hallo" en tekst "hallo" naar info@wintrip.nl')
+
+        self.assertEqual(intent.route, "agentic_processor")
+        self.assertEqual(intent.target_tool, "mail_send")
+        self.assertEqual(intent.action_type, "private_mutating")
+        self.assertTrue(intent.approval_required)
+        self.assertTrue(intent.mutating)
+
     def test_agent_selection_routes_to_local_agentic_ecosystem_context(self):
         intent = classify_agentic_intent("Welke agent of tool moet dit gewone chatverzoek afhandelen?")
 

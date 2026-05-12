@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse
 
 from controller.safe_shell import run_safe_shell
@@ -374,7 +374,7 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "mail_send": _tool_schema(
         "mail_send",
-        "Verstuurt mail alleen via een expliciet geconfigureerde send-adapter. Vereist Akkoord; claimt geen verzending zonder bewijs.",
+        "Verstuurt mail via de Google Workspace Gmail send-adapter wanneer OAuth is geconfigureerd. Vereist Akkoord; claimt geen verzending zonder bewijs.",
         {
             "to": {"type": "string", "description": "Ontvanger(s)."},
             "subject": {"type": "string", "description": "Onderwerp."},
@@ -634,6 +634,8 @@ class AgentToolRegistry:
                     source="agent_tools.registry",
                     next_action=f"Choose one registered tool: {', '.join(REGISTERED_TOOLS)}",
                 )
+            elif not (connector_gate := _connector_gate_for_tool(tool_name)).get("enabled", True):
+                result = _connector_disabled_result(tool_name, connector_gate)
             elif tool_name == "memory_search":
                 result = self.memory_search(
                     str(args.get("query") or args.get("prompt") or "Ouroboros"),
@@ -1408,7 +1410,7 @@ class AgentToolRegistry:
         try:
             from controller.google_workspace_adapter import GoogleWorkspaceAdapter
 
-            raw = GoogleWorkspaceAdapter().search_gmail(query=clean_query, approval=approval, max_results=limit)
+            raw = GoogleWorkspaceAdapter(live_api_enabled=True).search_gmail(query=clean_query, approval=approval, max_results=limit)
         except Exception as exc:
             return _tool_result(
                 "gmail_search",
@@ -1525,7 +1527,7 @@ class AgentToolRegistry:
             try:
                 from controller.google_workspace_adapter import GoogleWorkspaceAdapter
 
-                raw = GoogleWorkspaceAdapter().list_drive_files(approval=approval, page_size=limit)
+                raw = GoogleWorkspaceAdapter(live_api_enabled=True).list_drive_files(approval=approval, page_size=limit)
                 adapter_used = "google_workspace"
             except Exception as exc:
                 errors.append({"adapter": "google_workspace", "status": "error", "reason": _redact_operational_text(str(exc))})
@@ -2190,15 +2192,42 @@ class AgentToolRegistry:
             preview["tool_name"] = "mail_send"
             preview["approval_status"] = "approved"
             return preview
+        try:
+            from controller.google_workspace_adapter import GoogleWorkspaceAdapter
+
+            raw = GoogleWorkspaceAdapter(live_api_enabled=True).send_gmail(
+                to=to,
+                subject=subject,
+                body=body,
+                approval=approval,
+            )
+        except Exception as exc:
+            return _tool_result(
+                "mail_send",
+                "error",
+                result={**preview["result"], "sent": False, "send_adapter_configured": False},
+                stderr=_redact_operational_text(str(exc)),
+                source="google_workspace:gmail_send",
+                approval_status="approved",
+                next_action="Controleer Google OAuth/scopes zonder tokenmateriaal te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        raw_status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
+        status = "success" if raw_status == "success" else raw_status
+        sent = bool(raw.get("executed")) if isinstance(raw, dict) else False
         return _tool_result(
             "mail_send",
-            "unavailable",
-            result={**preview["result"], "sent": False, "send_adapter_configured": False},
-            stdout="Mail send is approval-approved but no SMTP/Gmail send adapter is configured in Agentic Core.",
-            stderr="No mail send adapter configured; no mail was sent.",
-            source="mail:send",
+            status,
+            result={**payload, "sent": sent, "send_adapter_configured": True},
+            stdout=_stringify({**payload, "sent": sent}),
+            stderr="" if status == "success" else _stringify(payload),
+            source="google_workspace:gmail_send",
             approval_status="approved",
-            next_action="Configure a send connector, or keep this as a draft/preview.",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "gmail_send", "taint": "private_user_mutation", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Controleer het resultaat. Gmail-verzending kan niet automatisch worden teruggedraaid.",
         )
 
     def social_post_preview(self, platform: str, content: str, visibility: str = "") -> dict[str, Any]:
@@ -3059,6 +3088,46 @@ def _frequency_samples(seed: str, target_hz: float | None = None) -> list[dict[s
             hz = max(418.0, min(432.0, hz * (1.0 - pulse) + float(target_hz) * pulse))
         samples.append({"index": index, "hz": round(hz, 3), "phase": round(sample.phase, 4)})
     return samples
+
+
+def _connector_gate_for_tool(tool_name: str) -> dict[str, Any]:
+    try:
+        from controller.connector_catalog import is_tool_enabled
+
+        gate = is_tool_enabled(tool_name)
+        return gate if isinstance(gate, dict) else {"enabled": True, "tool_name": tool_name, "fake_success": False}
+    except Exception:
+        return {
+            "enabled": True,
+            "tool_name": tool_name,
+            "reason": "Connector catalog unavailable; keeping existing tool behavior.",
+            "fake_success": False,
+        }
+
+
+def _connector_disabled_result(tool_name: str, gate: Mapping[str, Any]) -> dict[str, Any]:
+    payload = {
+        "tool_name": tool_name,
+        "connector_id": gate.get("connector_id", ""),
+        "connector_name": gate.get("connector_name", ""),
+        "enabled": False,
+        "reason": gate.get("reason") or "Connector disabled in cockpit.",
+        "executed": False,
+        "secrets_returned": False,
+        "fake_success": False,
+    }
+    return _tool_result(
+        tool_name,
+        "blocked",
+        result=payload,
+        stdout=json.dumps(payload, ensure_ascii=False, indent=2),
+        stderr=str(payload["reason"]),
+        source="connector_catalog",
+        approval_status="connector_disabled",
+        stored_to_memory=False,
+        metadata_11d={"dimension_count": 11, "source_type": "connector_catalog_gate", "taint": "connector_disabled"},
+        next_action=f"Zet connector {payload['connector_name'] or payload['connector_id']} aan in de Cockpit Connectors-tab met exact Akkoord.",
+    )
 
 
 def _tool_result(

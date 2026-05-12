@@ -47,6 +47,26 @@ button:disabled {
   opacity: 0.5;
 }
 
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #2b3545;
+  border-radius: 7px;
+  background: #152033;
+  color: #e5edf4;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.button-link:hover {
+  border-color: #40c4aa;
+  background: #19283b;
+}
+
 input,
 select,
 textarea {
@@ -421,6 +441,10 @@ label {
 
 .focus-grid {
   grid-template-columns: minmax(340px, 1fr) minmax(300px, 0.9fr) minmax(300px, 0.9fr);
+}
+
+.connector-grid {
+  grid-template-columns: minmax(400px, 1.1fr) minmax(360px, 0.9fr) minmax(320px, 0.85fr);
 }
 
 .single-lane {
@@ -811,6 +835,252 @@ label {
   font-size: 12px;
   line-height: 1.45;
   word-break: break-word;
+}
+
+.world-action .dimension-chip-list {
+  justify-content: flex-start;
+}
+
+.connector-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.connector-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.connector-toolbar span {
+  color: #91a3b8;
+  font-size: 12px;
+}
+
+.connector-card-list,
+.connector-tool-list,
+.connector-work-list {
+  display: grid;
+  gap: 8px;
+}
+
+.connector-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+  border: 1px solid #263449;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.connector-card.selected {
+  border-color: #40c4aa;
+}
+
+.connector-card.off {
+  border-color: #3a2f24;
+}
+
+.connector-card-body {
+  display: grid;
+  gap: 7px;
+  justify-content: stretch;
+  width: 100%;
+  min-height: 0;
+  padding: 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+
+.connector-card-body:hover {
+  background: #101b2a;
+}
+
+.connector-card-head,
+.connector-selected-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.connector-card-head i {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 999px;
+  background: #c9a227;
+}
+
+.connector-card-head i.good {
+  background: #34d399;
+}
+
+.connector-card-head div,
+.connector-selected-head div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.connector-card-head strong,
+.connector-selected-head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #e5edf4;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.connector-card-head span,
+.connector-selected-head span,
+.connector-card-head em,
+.connector-selected-head em {
+  color: #91a3b8;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.connector-selected-head em.good {
+  color: #40c4aa;
+}
+
+.connector-selected-head em.warn {
+  color: #f2c94c;
+}
+
+.connector-card p {
+  margin: 0;
+  color: #c7d5e8;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.connector-card-actions {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+}
+
+.connector-card-actions button,
+.connector-tool-row button {
+  min-width: 76px;
+}
+
+.connector-chips span {
+  border-color: #293b53;
+}
+
+.connector-tool-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 74px auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 9px;
+  border: 1px solid #1d2634;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.connector-tool-row.off {
+  border-color: #3a2f24;
+  opacity: 0.82;
+}
+
+.connector-tool-row span,
+.connector-tool-row em {
+  color: #91a3b8;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.connector-tool-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #e5edf4;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-status-json {
+  max-height: 420px;
+  padding: 10px;
+  border: 1px solid #1d2634;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.google-oauth-panel {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid #263449;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.oauth-form-grid {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr);
+  gap: 8px;
+}
+
+.oauth-form-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.oauth-form-grid span {
+  color: #91a3b8;
+  font-size: 11px;
+}
+
+.oauth-wide-field {
+  grid-column: 1 / -1;
+}
+
+.connector-work-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #263449;
+  border-radius: 7px;
+  background: #0d1420;
+}
+
+.connector-work-card div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.connector-work-card strong {
+  color: #e5edf4;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.connector-work-card span {
+  color: #91a3b8;
+  font-size: 11px;
+}
+
+.connector-work-card p {
+  margin: 0;
+  color: #c7d5e8;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.connector-work-card button {
+  justify-self: start;
 }
 
 .nexus-head {

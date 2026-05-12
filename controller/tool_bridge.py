@@ -165,6 +165,16 @@ class ToolBridge:
         if tool not in TOOL_BRIDGE_TOOLS:
             return {"status": "rejected", "reason": f"Tool not allowed by bridge: {tool}", "resonant": False}
 
+        connector_gate = _connector_gate_for_tool(tool)
+        if not connector_gate.get("enabled", True):
+            return {
+                "status": "blocked",
+                "reason": str(connector_gate.get("reason") or "Connector disabled in cockpit."),
+                "resonant": True,
+                "connector_disabled": True,
+                "connector": connector_gate,
+            }
+
         frequency = _float(args.get("frequency"), default=528.0)
         check = self.compiler.coherence_check(
             _firewall_payload(tool, args),
@@ -259,6 +269,21 @@ def run_tool_bridge(tool: str, args: dict[str, Any] | None = None) -> dict[str, 
 
 def tool_bridge_status() -> dict[str, Any]:
     return get_tool_bridge().status()
+
+
+def _connector_gate_for_tool(tool: str) -> dict[str, Any]:
+    try:
+        from controller.connector_catalog import is_tool_enabled
+
+        gate = is_tool_enabled(tool)
+        return gate if isinstance(gate, dict) else {"enabled": True, "tool_name": tool, "fake_success": False}
+    except Exception:
+        return {
+            "enabled": True,
+            "tool_name": tool,
+            "reason": "Connector catalog unavailable; keeping existing bridge behavior.",
+            "fake_success": False,
+        }
 
 
 def _firewall_payload(tool: str, args: dict[str, Any]) -> dict[str, Any]:
