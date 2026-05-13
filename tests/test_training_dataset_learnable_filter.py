@@ -30,6 +30,16 @@ class TestTrainingDatasetLearnableFilter(unittest.TestCase):
         self.assertTrue(records[0]["metadata"]["learnable"])
         self.assertFalse(records[0]["metadata"]["audit_only"])
 
+    def test_get_curriculum_records_includes_approved_legacy_non_audit(self):
+        original = builder.get_training_collection
+        builder.get_training_collection = lambda: FakeCollection()
+        try:
+            records = builder.get_curriculum_records(limit=100)
+        finally:
+            builder.get_training_collection = original
+
+        self.assertEqual([record["document"] for record in records], ["good", "legacy-missing-flags"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,12 +3,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from controller.chroma_sync_adapter import (
     ChromaSyncAdapter,
     ChromaSyncConfig,
+    _bridge_local_needs_backend_fallback,
     _diff_payloads,
     _export_from_client,
     _import_into_client,
@@ -134,6 +136,48 @@ class TestChromaSyncAdapter(unittest.TestCase):
 
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(calls, [])
+
+    def test_status_backfills_local_counts_when_host_bridge_lacks_chromadb(self):
+        bridge_payload = {
+            "status": "error",
+            "local": {
+                "status": "error",
+                "available": False,
+                "collections": {},
+                "reason": "chromadb is not available: No module named 'chromadb'",
+            },
+            "remote": {"status": "error", "reason": "remote unavailable"},
+            "reason": "remote unavailable",
+            "fake_success": False,
+        }
+        backend_local = {
+            "status": "online",
+            "available": True,
+            "mode": "http",
+            "collections": {"wintrip_knowledge": {"status": "online", "count": 133}},
+            "fake_success": False,
+        }
+
+        adapter = ChromaSyncAdapter(
+            profile=VPSProfile(ssh_host_alias="vps", user="deploy", port=22),
+            ssh_binary="/usr/bin/ssh",
+            config=ChromaSyncConfig(
+                collections=("wintrip_knowledge",),
+                remote_workspace="/var/www/philip-wintrip.nl/html/Ouroboros",
+                remote_chroma_path="/var/www/philip-wintrip.nl/html/Ouroboros/wintrip_brain",
+            ),
+        )
+
+        with (
+            patch("controller.chroma_sync_adapter._bridge_request", return_value=dict(bridge_payload)),
+            patch("controller.chroma_sync_adapter._local_chroma_status", return_value=backend_local),
+        ):
+            result = adapter.status(prefer_bridge=True)
+
+        self.assertTrue(_bridge_local_needs_backend_fallback(bridge_payload))
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["local"]["collections"]["wintrip_knowledge"]["count"], 133)
+        self.assertEqual(result["backend_local_fallback"]["status"], "used")
 
 
 if __name__ == "__main__":

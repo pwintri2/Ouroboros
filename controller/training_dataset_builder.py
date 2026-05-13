@@ -1,6 +1,7 @@
 """Dataset builder for trainer pipeline from approved 11D ChromaDB records.
 
-Only records with approval_status='approved' are used for training.
+Only records with approval_status='approved', learnable=True and audit_only=False
+are used for training.
 Browser data remains UNTRUSTED until scrubbed and approved.
 Exports to JSONL with prompt/completion/chat format including 11D geometry metadata.
 """
@@ -31,7 +32,7 @@ def get_training_collection() -> Any | None:
         return None
 
 
-def get_approved_records(limit: int = 1000) -> list[dict[str, Any]]:
+def get_approved_records(limit: int = 1000, *, require_learnable: bool = True) -> list[dict[str, Any]]:
     """Fetch approved 11D records from the training collection."""
     collection = get_training_collection()
     if not collection:
@@ -47,15 +48,48 @@ def get_approved_records(limit: int = 1000) -> list[dict[str, Any]]:
         approved = []
         if results and results["documents"]:
             for doc, meta in zip(results["documents"], results["metadatas"]):
-                if meta and meta.get("approval_status") == "approved" and _truthy(meta.get("learnable")) and not _truthy(meta.get("audit_only")):
-                    approved.append({
-                        "document": doc,
-                        "metadata": meta,
-                    })
+                if _is_approved_record(meta, require_learnable=require_learnable):
+                    approved.append(
+                        {
+                            "document": doc,
+                            "metadata": meta,
+                        }
+                    )
         
         return approved
     except Exception:
         return []
+
+
+def get_curriculum_records(limit: int = 5000) -> list[dict[str, Any]]:
+    """Fetch approved records for curriculum coverage, including legacy records.
+
+    Older approved records predate the learnable flag. They should still count
+    toward knowledge coverage, while actual dataset building remains stricter.
+    """
+    return get_approved_records(limit=limit, require_learnable=False)
+
+
+def _is_approved_record(meta: dict[str, Any] | None, *, require_learnable: bool) -> bool:
+    if not meta or meta.get("approval_status") != "approved":
+        return False
+    if _truthy(meta.get("audit_only")):
+        return False
+    if require_learnable and not _truthy(meta.get("learnable")):
+        return False
+    if not require_learnable and _explicitly_false(meta.get("learnable")):
+        return False
+    return True
+
+
+def _explicitly_false(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value is False
+    if isinstance(value, (int, float)):
+        return value == 0
+    return str(value).strip().lower() in {"0", "false", "no", "n", "off", "not_learnable", "unlearnable"}
 
 
 def _truthy(value: Any) -> bool:

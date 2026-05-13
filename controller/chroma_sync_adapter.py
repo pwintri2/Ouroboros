@@ -99,6 +99,8 @@ class ChromaSyncAdapter:
             bridge = _bridge_request("GET", "/chroma-sync/status", {})
             if bridge:
                 bridge["via_bridge"] = True
+                if _bridge_local_needs_backend_fallback(bridge):
+                    bridge = _with_backend_local_status(bridge, self.config.collections)
                 return _sanitize_payload(bridge)
 
         direct = self._direct_readiness()
@@ -431,6 +433,46 @@ def _local_chroma_status(collections: tuple[str, ...]) -> dict[str, Any]:
     status = chroma_runtime_status(list(collections))
     status["config"] = chroma_runtime_config()
     return status
+
+
+def _bridge_local_needs_backend_fallback(payload: dict[str, Any]) -> bool:
+    local = payload.get("local") if isinstance(payload, dict) else {}
+    if not isinstance(local, dict):
+        return False
+    reason = str(local.get("reason") or payload.get("reason") or "")
+    return (
+        local.get("status") == "error"
+        and local.get("available") is False
+        and "No module named 'chromadb'" in reason
+    )
+
+
+def _with_backend_local_status(payload: dict[str, Any], collections: tuple[str, ...]) -> dict[str, Any]:
+    merged = dict(payload or {})
+    try:
+        local = _local_chroma_status(collections)
+    except Exception as exc:
+        merged["backend_local_fallback"] = {
+            "status": "error",
+            "reason": f"backend local Chroma fallback failed: {exc}",
+            "fake_success": False,
+        }
+        return merged
+
+    merged["local"] = _status_without_raw_records(local)
+    merged["backend_local_fallback"] = {
+        "status": "used",
+        "reason": "host bridge Python lacks chromadb; backend Chroma runtime supplied local counts.",
+        "fake_success": False,
+    }
+    remote = merged.get("remote") if isinstance(merged.get("remote"), dict) else {}
+    if local.get("status") == "online" and remote.get("status") == "online":
+        merged["status"] = "ready"
+        merged.pop("reason", None)
+    elif local.get("status") == "online" and str(merged.get("status") or "") == "error":
+        merged["status"] = "degraded"
+        merged.setdefault("reason", remote.get("reason") or "Remote Chroma status failed.")
+    return merged
 
 
 def _status_without_raw_records(payload: dict[str, Any]) -> dict[str, Any]:

@@ -269,9 +269,9 @@ def coverage_from_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 def curriculum_status(records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if records is None:
         try:
-            from controller.training_dataset_builder import get_approved_records
+            from controller.training_dataset_builder import get_curriculum_records
 
-            records = get_approved_records(limit=5000)
+            records = get_curriculum_records(limit=5000)
         except Exception:
             records = []
     coverage = coverage_from_records(records)
