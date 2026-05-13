@@ -1,0 +1,15 @@
+{
+  "scenario_id": "lost_file_sharepoint",
+  "response": "You are not stupid. SharePoint can be hard to navigate. Where did you last see the file: in Teams, a SharePoint site, a folder, or a link someone sent? Start with Recent, then Shared with me, then search for one word from the title. We can check one place at a time.",
+  "action_plan": [
+    "Reassure without blame.",
+    "Ask where the file was last seen.",
+    "Suggest Recent, Shared with me, and search.",
+    "Keep language simple."
+  ],
+  "principles_used": [
+    "No blame.",
+    "Simple steps.",
+    "Ask context before action."
+  ]
+}

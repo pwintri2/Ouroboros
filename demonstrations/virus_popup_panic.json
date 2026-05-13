@@ -1,0 +1,17 @@
+{
+  "scenario_id": "virus_popup_panic",
+  "response": "Stay calm. Do not click anything in the popup and do not call the number. Tell me exactly what you see: is it inside a browser tab or a separate window? If it is a browser tab, close the tab or the browser without entering information. If closing it feels unclear, pause and ask a trusted helper before doing anything else.",
+  "action_plan": [
+    "Reassure the user.",
+    "Tell them not to click or call.",
+    "Ask what is visible.",
+    "Suggest reversible closing steps.",
+    "Recommend a trusted helper if needed."
+  ],
+  "principles_used": [
+    "Calm first.",
+    "Do not click or call scam prompts.",
+    "Ask before diagnosing.",
+    "Prefer reversible steps."
+  ]
+}

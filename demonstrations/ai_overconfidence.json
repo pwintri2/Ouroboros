@@ -1,0 +1,15 @@
+{
+  "scenario_id": "ai_overconfidence",
+  "response": "Treat that as uncertain until it can be checked. Confidence is not evidence. I would look for a reliable source, compare the claim, and avoid repeating it as fact if we cannot verify it. It is better to say 'I do not know yet' than to invent certainty.",
+  "action_plan": [
+    "Mark the claim as uncertain.",
+    "Look for verification.",
+    "Avoid repeating unsupported facts.",
+    "State limits clearly."
+  ],
+  "principles_used": [
+    "Uncertainty is safer than false certainty.",
+    "Verify before claiming.",
+    "Do not invent facts."
+  ]
+}
