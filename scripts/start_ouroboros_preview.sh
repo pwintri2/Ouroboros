@@ -72,6 +72,7 @@ docker_available() {
 
 compose_up() {
   export WINTRIP_RCLONE_BRIDGE_URL="$DOCKER_BRIDGE_URL"
+  # docker compose up -d --build chroma ouroboros-backend
   if discover_docker_bin && "$DOCKER_BIN" compose version >/dev/null 2>&1; then
     if (cd "$ROOT" && "$DOCKER_BIN" compose up -d --build chroma ouroboros-backend); then
       return 0
@@ -200,6 +201,18 @@ except Exception as exc:
     print(exc)
     raise SystemExit(1)
 if chroma_sync.get("reason") == "not_found":
+    raise SystemExit(1)
+request = urllib.request.Request(base + "/vps/status", headers={"X-Ouroboros-Bridge-Token": token})
+try:
+    with urllib.request.urlopen(request, timeout=4) as response:
+        vps = json.loads(response.read().decode("utf-8") or "{}")
+except Exception as exc:
+    print(exc)
+    raise SystemExit(1)
+excludes = set(vps.get("default_excludes") or [])
+required_excludes = {"out/", "out/**", ".roo/", ".roo/**", "logs/", "logs/**", "*.log", "**/*.log"}
+if not required_excludes.issubset(excludes):
+    print("stale vps bridge excludes")
     raise SystemExit(1)
 raise SystemExit(0)
 PY

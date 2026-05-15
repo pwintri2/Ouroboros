@@ -123,6 +123,13 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("gmail_search", names)
         self.assertIn("google_drive_status", names)
         self.assertIn("google_drive_list", names)
+        self.assertIn("microsoft_graph_status", names)
+        self.assertIn("teams_list", names)
+        self.assertIn("onedrive_list", names)
+        self.assertIn("outlook_read", names)
+        self.assertIn("sharepoint_status", names)
+        self.assertIn("sharepoint_sites", names)
+        self.assertIn("sharepoint_libraries", names)
         self.assertIn("github_status", names)
         self.assertIn("github_repo", names)
         self.assertIn("github_search_repositories", names)
@@ -158,6 +165,16 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("approval", gmail_search["function"]["parameters"]["required"])
         drive_list = next(schema for schema in schemas if schema["function"]["name"] == "google_drive_list")
         self.assertIn("approval", drive_list["function"]["parameters"]["required"])
+        teams_list = next(schema for schema in schemas if schema["function"]["name"] == "teams_list")
+        self.assertIn("approval", teams_list["function"]["parameters"]["required"])
+        onedrive_list = next(schema for schema in schemas if schema["function"]["name"] == "onedrive_list")
+        self.assertIn("approval", onedrive_list["function"]["parameters"]["required"])
+        outlook_read = next(schema for schema in schemas if schema["function"]["name"] == "outlook_read")
+        self.assertIn("approval", outlook_read["function"]["parameters"]["required"])
+        sharepoint_sites = next(schema for schema in schemas if schema["function"]["name"] == "sharepoint_sites")
+        self.assertIn("approval", sharepoint_sites["function"]["parameters"]["required"])
+        sharepoint_libraries = next(schema for schema in schemas if schema["function"]["name"] == "sharepoint_libraries")
+        self.assertIn("approval", sharepoint_libraries["function"]["parameters"]["required"])
         github_repo = next(schema for schema in schemas if schema["function"]["name"] == "github_repo")
         self.assertIn("repo", github_repo["function"]["parameters"]["required"])
         github_search = next(schema for schema in schemas if schema["function"]["name"] == "github_search_repositories")
@@ -514,6 +531,120 @@ class TestAgentTools(unittest.TestCase):
         self.assertEqual(approved["approval_status"], "approved")
         self.assertNotIn("SECRET", approved["stdout"])
         self.assertEqual(approved["result"]["items"][0]["token"], "[REDACTED]")
+
+    def test_microsoft_graph_tools_are_approval_gated_and_redact_tokens(self):
+        registry = make_registry()
+
+        class FakeMicrosoftGraph:
+            def status(self):
+                return {
+                    "status": "connected",
+                    "token": {"exists": True, "access_token": "ms-secret", "scopes": ["User.Read"]},
+                    "fake_success": False,
+                }
+
+            def list_teams(self, approval=""):
+                return {
+                    "status": "success",
+                    "operation": "list_teams",
+                    "items": [{"id": "team-1", "displayName": "Ouroboros", "token": "TEAMSECRET"}],
+                    "fake_success": False,
+                }
+
+            def list_onedrive_files(self, approval=""):
+                return {
+                    "status": "success",
+                    "operation": "list_onedrive_files",
+                    "items": [{"id": "file-1", "name": "plan.docx", "secret": "FILESECRET"}],
+                    "fake_success": False,
+                }
+
+            def read_outlook_messages(self, approval="", folder="inbox", max_results=10):
+                return {
+                    "status": "success",
+                    "operation": "read_outlook_messages",
+                    "messages": [{"id": "m1", "subject": "Hallo", "bodyPreview": "token=MAILSECRET"}],
+                    "fake_success": False,
+                }
+
+        blocked = registry.run_tool("teams_list", {"max_items": 2})
+        with patch("controller.microsoft_graph_adapter.MicrosoftGraphAdapter", return_value=FakeMicrosoftGraph()):
+            status = registry.run_tool("microsoft_graph_status", {})
+            teams = registry.run_tool("teams_list", {"approval": "Akkoord", "max_items": 2})
+            onedrive = registry.run_tool("onedrive_list", {"approval": "Akkoord", "max_items": 2})
+            outlook = registry.run_tool("outlook_read", {"approval": "Akkoord", "max_results": 2})
+
+        self.assertToolEnvelope(blocked, "teams_list")
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["approval_status"], "pending_philip_akkoord")
+        self.assertFalse(blocked["result"]["executed"])
+        self.assertToolEnvelope(status, "microsoft_graph_status")
+        self.assertEqual(status["status"], "success")
+        self.assertNotIn("ms-secret", status["stdout"])
+        self.assertToolEnvelope(teams, "teams_list")
+        self.assertEqual(teams["status"], "success")
+        self.assertEqual(teams["approval_status"], "approved")
+        self.assertNotIn("TEAMSECRET", teams["stdout"])
+        self.assertEqual(teams["result"]["items"][0]["token"], "[REDACTED]")
+        self.assertToolEnvelope(onedrive, "onedrive_list")
+        self.assertEqual(onedrive["status"], "success")
+        self.assertNotIn("FILESECRET", onedrive["stdout"])
+        self.assertEqual(onedrive["result"]["items"][0]["secret"], "[REDACTED]")
+        self.assertToolEnvelope(outlook, "outlook_read")
+        self.assertEqual(outlook["status"], "success")
+        self.assertNotIn("MAILSECRET", outlook["stdout"])
+
+    def test_sharepoint_tools_are_approval_gated_and_redact_tokens(self):
+        registry = make_registry()
+
+        class FakeSharePoint:
+            def status(self):
+                return {
+                    "status": "ready",
+                    "graph_status": "connected",
+                    "token": {"access_token": "sharepoint-secret"},
+                    "fake_success": False,
+                }
+
+            def list_site_collections(self, approval="", search="*"):
+                return {
+                    "status": "success",
+                    "operation": "site_collections",
+                    "items": [{"id": "site-1", "displayName": "Project X", "webUrl": "https://contoso/sites/x", "token": "SITESECRET"}],
+                    "fake_success": False,
+                }
+
+            def list_libraries(self, site, approval=""):
+                return {
+                    "status": "success",
+                    "operation": "libraries",
+                    "items": [{"id": "lib-1", "name": "Documents", "secret": "LIBSECRET", "site": site}],
+                    "fake_success": False,
+                }
+
+        blocked_sites = registry.run_tool("sharepoint_sites", {"search": "Project"})
+        blocked_libraries = registry.run_tool("sharepoint_libraries", {"site": "site-1"})
+        with patch("controller.sharepoint_pnp_adapter.SharePointPnPAdapter", return_value=FakeSharePoint()):
+            status = registry.run_tool("sharepoint_status", {})
+            sites = registry.run_tool("sharepoint_sites", {"search": "Project", "approval": "Akkoord"})
+            libraries = registry.run_tool("sharepoint_libraries", {"site": "site-1", "approval": "Akkoord"})
+
+        self.assertToolEnvelope(blocked_sites, "sharepoint_sites")
+        self.assertEqual(blocked_sites["status"], "blocked")
+        self.assertEqual(blocked_sites["approval_status"], "pending_philip_akkoord")
+        self.assertToolEnvelope(blocked_libraries, "sharepoint_libraries")
+        self.assertEqual(blocked_libraries["status"], "blocked")
+        self.assertToolEnvelope(status, "sharepoint_status")
+        self.assertEqual(status["status"], "success")
+        self.assertNotIn("sharepoint-secret", status["stdout"])
+        self.assertToolEnvelope(sites, "sharepoint_sites")
+        self.assertEqual(sites["status"], "success")
+        self.assertNotIn("SITESECRET", sites["stdout"])
+        self.assertEqual(sites["result"]["items"][0]["token"], "[REDACTED]")
+        self.assertToolEnvelope(libraries, "sharepoint_libraries")
+        self.assertEqual(libraries["status"], "success")
+        self.assertNotIn("LIBSECRET", libraries["stdout"])
+        self.assertEqual(libraries["result"]["items"][0]["secret"], "[REDACTED]")
 
     def test_github_tools_are_readonly_and_redact_tokens(self):
         registry = make_registry()

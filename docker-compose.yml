@@ -27,6 +27,7 @@ services:
       - /home/pwintri2/Codex:/codex:ro
       - /home/pwintri2/.codex:/codex_home:ro
       - /home/pwintri2/.antigravity/extensions/openai.chatgpt-26.422.71525-linux-x64:/codex_native:ro
+      - /home/pwintri2/.var/app/com.visualstudio.code/data/uv/python/cpython-3.10-linux-x86_64-gnu:/home/pwintri2/.var/app/com.visualstudio.code/data/uv/python/cpython-3.10-linux-x86_64-gnu:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       PYTHONPATH: /workspace
@@ -51,7 +52,7 @@ services:
       WINTRIP_DEEPSEEK_PATH: /deepseek
       WINTRIP_ATLAS_PATH: /atlas
       WINTRIP_OPENHANDS_SERVER_URL: http://host.docker.internal:3000
-      WINTRIP_RCLONE_BRIDGE_URL: ${WINTRIP_RCLONE_BRIDGE_URL:-http://host.docker.internal:8766}
+      WINTRIP_RCLONE_BRIDGE_URL: http://host.docker.internal:8766
       WINTRIP_RCLONE_BRIDGE_TOKEN_PATH: /workspace/.secrets/rclone_bridge_token
       WINTRIP_SLASH_BRIDGE_TIMEOUT_SECONDS: "8"
       WINTRIP_CODEX_PATH: /codex

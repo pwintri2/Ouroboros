@@ -71,6 +71,7 @@ class MicrosoftGraphAdapter:
                 "list_teams",
                 "get_sharepoint_sites",
                 "list_onedrive_files",
+                "read_outlook_messages",
                 "get_calendar",
                 "run_power_automate_flow",
             ],
@@ -102,6 +103,17 @@ class MicrosoftGraphAdapter:
         if fixture is not None:
             return self._fixture_result("onedrive_files", list(fixture))
         return self._live_get(approval=approval, path="/me/drive/root/children", result_key="value", operation="list_onedrive_files")
+
+    def read_outlook_messages(self, approval: str = "", folder: str = "inbox", max_results: int = 10) -> dict[str, Any]:
+        fixture = self.fixtures.get("outlook_messages")
+        limit = max(1, min(int(max_results or 10), 25))
+        if fixture is not None:
+            return self._fixture_result("outlook_messages", list(fixture)[:limit])
+        clean_folder = str(folder or "inbox").strip() or "inbox"
+        encoded_folder = urllib.parse.quote(clean_folder, safe="")
+        select = urllib.parse.quote("id,subject,from,receivedDateTime,bodyPreview,webLink", safe=",")
+        path = f"/me/mailFolders/{encoded_folder}/messages?$top={limit}&$select={select}"
+        return self._live_get(approval=approval, path=path, result_key="value", operation="read_outlook_messages")
 
     def get_calendar(self, approval: str = "") -> dict[str, Any]:
         fixture = self.fixtures.get("calendar_events")

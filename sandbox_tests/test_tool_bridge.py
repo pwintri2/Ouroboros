@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from controller.tool_bridge import ToolBridge
 from ouroboros_esoteric.ouroboros_consciousness_loop import reset_living_ouroboros_loop
@@ -97,6 +98,54 @@ class TestToolBridge(unittest.TestCase):
         self.assertIn("run_tests", status["approval_required_for"])
         self.assertIn("computer_actions", status)
         self.assertFalse(status["secrets_returned"])
+
+    def test_vps_and_chroma_sync_tools_are_bridge_callable(self):
+        status = ToolBridge().status()
+        self.assertIn("vps_status", status["tools"])
+        self.assertIn("vps_sync_preview", status["tools"])
+        self.assertIn("vps_sync_execute", status["approval_required_for"])
+        self.assertIn("vps_ui_sync_execute", status["approval_required_for"])
+        self.assertIn("chroma_sync_execute", status["approval_required_for"])
+        self.assertIn("microsoft_graph_status", status["tools"])
+        self.assertIn("sharepoint_status", status["tools"])
+        self.assertIn("teams_list", status["approval_required_for"])
+        self.assertIn("onedrive_list", status["approval_required_for"])
+        self.assertIn("outlook_read", status["approval_required_for"])
+        self.assertIn("sharepoint_sites", status["approval_required_for"])
+        self.assertIn("sharepoint_libraries", status["approval_required_for"])
+
+        calls = []
+
+        class FakeAgentTools:
+            def run_tool(self, tool, args):
+                calls.append((tool, args))
+                return {
+                    "status": "preview" if tool.endswith("_preview") else "success",
+                    "result": {"tool": tool, "executed": False, "mutated": False},
+                    "stdout": "token=SECRET",
+                    "stderr": "",
+                    "fake_success": False,
+                    "secrets_returned": False,
+                }
+
+        with patch("controller.agent_tools.AgentToolRegistry", return_value=FakeAgentTools()):
+            preview = ToolBridge().run("vps_sync_preview", {"timeout_seconds": 10})
+            blocked = ToolBridge().run("vps_sync_execute", {})
+            executed = ToolBridge().run("vps_sync_execute", {"approval": "Akkoord"})
+            blocked_teams = ToolBridge().run("teams_list", {})
+            teams = ToolBridge().run("teams_list", {"approval": "Akkoord"})
+
+        self.assertEqual(preview["status"], "preview")
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(executed["status"], "success")
+        self.assertEqual(blocked_teams["status"], "blocked")
+        self.assertEqual(teams["status"], "success")
+        self.assertEqual(calls[0][0], "vps_sync_preview")
+        self.assertEqual(calls[1][0], "vps_sync_execute")
+        self.assertEqual(calls[2][0], "teams_list")
+        self.assertNotIn("SECRET", str(preview))
+        self.assertNotIn("SECRET", str(executed))
+        self.assertNotIn("SECRET", str(teams))
 
     @staticmethod
     def _restore(key, value):

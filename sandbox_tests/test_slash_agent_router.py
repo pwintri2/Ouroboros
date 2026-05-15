@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from controller import slash_agent_router
 from controller.slash_agent_router import handle_slash_command, parse_slash_command
@@ -372,7 +373,7 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.assertTrue(result["configuration_required"])
         self.assertIn("API key", result["response"])
 
-    def test_agent_jobs_summary_extracts_roo_json_content(self):
+    def test_roo_jobs_subcommand_hides_completed_preview(self):
         from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
         from controller.agent_runtime.store import JobStore
 
@@ -404,8 +405,72 @@ class TestSlashAgentRouter(unittest.TestCase):
         result = handle_slash_command("/roo jobs")
 
         self.assertEqual(result["status"], "success")
-        self.assertIn("FINAL CLEAN SUMMARY", result["response"])
+        self.assertIn(job_id, result["response"])
+        self.assertNotIn("FINAL CLEAN SUMMARY", result["response"])
         self.assertNotIn('"events"', result["response"])
+
+    def test_roo_jobs_subcommand_shows_short_failed_reason(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="roo-jobs-failed-test-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+
+        def fake_adapter(job, log, on_progress):
+            return {"status": "failed", "exit_code": 1, "response_preview": "429"}
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"roo": fake_adapter})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+
+        started = handle_slash_command("/roo doe iets", approval="Akkoord", provider="ollama", model="llama3.2:latest")
+        job_id = started["job"]["job_id"]
+        for _ in range(50):
+            if (store.get(job_id) or {}).get("status") == "failed":
+                break
+            time.sleep(0.02)
+
+        result = handle_slash_command("/roo jobs")
+
+        self.assertEqual(result["status"], "success")
+        self.assertIn(job_id, result["response"])
+        self.assertIn("provider rate limit (HTTP 429)", result["response"])
+
+    def test_roo_travel_question_uses_readonly_transit_tool_without_approval(self):
+        calls = []
+
+        class FakeRegistry:
+            def run_tool(self, tool_name, args=None):
+                calls.append((tool_name, dict(args or {})))
+                return {
+                    "status": "preview",
+                    "tool_name": tool_name,
+                    "stdout": "NS planner link fallback",
+                    "stderr": "",
+                    "result": {"planner_url": "https://www.ns.nl/reisplanner/#/", "authoritative": False},
+                }
+
+        with patch("controller.agent_tools.AgentToolRegistry", lambda: FakeRegistry()):
+            result = handle_slash_command(
+                "/roo vertrek Ermelo, aankomst Utrecht Centraal, aankomsttijd woensdag 07:40",
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+            )
+
+        self.assertEqual(result["route"], "agentic_processor")
+        self.assertEqual(result["tool"], "ns_travel_advice")
+        self.assertEqual(result["status"], "preview")
+        self.assertNotIn("approval_required", result)
+        self.assertEqual(calls[0][0], "ns_travel_advice")
+        self.assertEqual(calls[0][1]["from_station"], "Ermelo")
+        self.assertEqual(calls[0][1]["to_station"], "Utrecht Centraal")
+        self.assertEqual(calls[0][1]["time"], "07:40")
+        self.assertTrue(calls[0][1]["search_for_arrival"])
+        self.assertIn("NS planner link fallback", result["response"])
 
     def test_ruflo_defaults_to_handoff_instead_of_host_cli(self):
         original_run = slash_agent_router._run_ruflo_swarm

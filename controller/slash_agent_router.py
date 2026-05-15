@@ -246,6 +246,10 @@ def execute_roo_agent_task(
     except Exception as exc:
         return _agent_result("roo", "roo_adapter", "error", started, reason=str(exc))
 
+    readonly_redirect = _roo_readonly_tool_redirect(task, started=started, provider=provider, model=model)
+    if readonly_redirect is not None:
+        return readonly_redirect
+
     effective_approval = _approval_effective(approval)
     if effective_approval != APPROVAL_PHRASE:
         local_llm = _roo_selection_is_local(provider, model)
@@ -279,6 +283,85 @@ def execute_roo_agent_task(
         approval=effective_approval,
         timeout_seconds=timeout_seconds,
         started=started,
+    )
+
+
+def _roo_readonly_tool_redirect(
+    task: str,
+    *,
+    started: float,
+    provider: str = "",
+    model: str = "",
+) -> dict[str, Any] | None:
+    """Keep read-only travel questions out of the Roo coding runtime."""
+
+    try:
+        from controller.agent_tools import AgentToolRegistry
+        from controller.agentic_intent import classify_agentic_intent
+        from controller.agentic_processor import _transit_args_for_goal, _transit_tool_for_goal
+    except Exception:
+        return None
+
+    try:
+        intent = classify_agentic_intent(task)
+    except Exception:
+        intent = None
+    target_tool = str(getattr(intent, "target_tool", "") or "")
+    if target_tool not in {"ns_travel_advice", "ov9292_travel_advice"}:
+        return None
+
+    tool_name = target_tool or _transit_tool_for_goal(task)
+    args = _transit_args_for_goal(task)
+    try:
+        result = AgentToolRegistry().run_tool(tool_name, args)
+    except Exception as exc:
+        return _agent_result(
+            "roo",
+            tool_name,
+            "error",
+            started,
+            route="agentic_processor",
+            provider="agentic_processor",
+            requested_provider=str(provider or ""),
+            model=str(model or ""),
+            reason=str(exc)[:500],
+            response=f"Roo heeft deze reisvraag niet als coding-job gestart; {tool_name} gaf een fout: {exc}",
+        )
+
+    status = str(result.get("status") or "unknown")
+    stdout = str(result.get("stdout") or "").strip()
+    stderr = str(result.get("stderr") or "").strip()
+    planner_url = ""
+    payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+    if isinstance(payload, dict):
+        planner_url = str(payload.get("planner_url") or "")
+    response_lines = [
+        f"Roo heeft deze reisvraag als read-only `{tool_name}` verwerkt in plaats van een coding-agent job te starten.",
+    ]
+    if stdout:
+        response_lines.append(stdout)
+    elif stderr:
+        response_lines.append(stderr)
+    if planner_url and planner_url not in "\n".join(response_lines):
+        response_lines.append(f"Planner: {planner_url}")
+    return _agent_result(
+        "roo",
+        tool_name,
+        status,
+        started,
+        route="agentic_processor",
+        provider="agentic_processor",
+        requested_provider=str(provider or ""),
+        model=str(model or ""),
+        roo_result=result,
+        transit_args=args,
+        response="\n".join(response_lines).strip(),
+        provenance={
+            "planner_source": "slash_roo_readonly_redirect",
+            "tools_used": [tool_name],
+            "planned_tools": [tool_name],
+            "brave_search_used": False,
+        },
     )
 
 
@@ -759,25 +842,82 @@ def _agent_jobs_result(agent: str) -> dict[str, Any]:
         jobs = get_orchestrator().list_jobs(agent=agent, limit=10)
     except Exception as exc:
         return _agent_result(agent, "agent_jobs", "error", started, reason=str(exc), jobs=[])
-    latest = jobs[0] if jobs else None
+    public_jobs = [_agent_job_public_summary(agent, job) for job in jobs]
+    latest = public_jobs[0] if public_jobs else None
     lines = [f"/{agent} jobs:"]
     if not jobs:
         lines.append("Nog geen jobs gevonden.")
     for job in jobs[:5]:
         label = f"- {job.get('job_id')}: {job.get('status')}"
-        preview = _agent_job_clean_preview(job)
-        if preview:
-            label += f"\n{preview[-1200:]}"
+        if agent == "roo":
+            note = _agent_job_status_note(job)
+            if note:
+                label += f"\n{note[-600:]}"
+        else:
+            preview = _agent_job_clean_preview(job)
+            if preview:
+                label += f"\n{preview[-1200:]}"
         lines.append(label)
     return _agent_result(
         agent,
         "agent_jobs",
         "success",
         started,
-        jobs=jobs,
+        jobs=public_jobs,
         latest=latest,
         response="\n".join(lines),
     )
+
+
+def _agent_job_public_summary(agent: str, job: dict[str, Any]) -> dict[str, Any]:
+    summary = {
+        "job_id": job.get("job_id"),
+        "agent": job.get("agent") or agent,
+        "status": job.get("status"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "updated_at": job.get("updated_at"),
+        "exit_code": job.get("exit_code"),
+        "result_summary": job.get("result_summary"),
+    }
+    if agent == "roo":
+        note = _agent_job_status_note(job)
+        if note:
+            summary["status_note"] = note
+        return {key: value for key, value in summary.items() if value not in (None, "", [])}
+    preview = _agent_job_clean_preview(job)
+    if preview:
+        summary["response_preview"] = preview[:1200]
+    return {key: value for key, value in summary.items() if value not in (None, "", [])}
+
+
+def _agent_job_status_note(job: dict[str, Any]) -> str:
+    status = str(job.get("status") or "").lower()
+    if status not in {"failed", "error", "blocked", "rejected"}:
+        return ""
+    candidates = [
+        job.get("reason"),
+        job.get("error"),
+        job.get("stderr"),
+        job.get("response_preview"),
+        job.get("result_summary"),
+    ]
+    for value in candidates:
+        note = _extract_roo_preview_from_text(str(value or "")).strip()
+        if note:
+            if note == "429":
+                return "reden: provider rate limit (HTTP 429)"
+            return f"reden: {note[:600]}"
+    result_file = str(job.get("result_file") or "")
+    if result_file:
+        text = _read_job_artifact_text(result_file, limit=12000)
+        note = _extract_roo_preview_from_text(text).strip()
+        if note:
+            if note == "429":
+                return "reden: provider rate limit (HTTP 429)"
+            return f"reden: {note[:600]}"
+    return ""
 
 
 def _agent_job_clean_preview(job: dict[str, Any]) -> str:

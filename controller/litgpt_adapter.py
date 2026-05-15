@@ -140,6 +140,7 @@ def setup_litgpt_env() -> dict[str, Any]:
     
     workspace = workspace_root()
     
+    repaired_existing = False
     # Check if venv exists
     if LITGPT_VENV_PATH.exists() and _is_runnable(_venv_python()):
         return {
@@ -148,11 +149,16 @@ def setup_litgpt_env() -> dict[str, Any]:
             "message": "LitGPT venv already exists",
         }
     if LITGPT_VENV_PATH.exists():
-        return {
-            "status": "error",
-            "venv_path": str(LITGPT_VENV_PATH),
-            "reason": "LitGPT venv exists but its Python executable is not runnable; rebuild the venv before training.",
-        }
+        try:
+            shutil.rmtree(LITGPT_VENV_PATH)
+            repaired_existing = True
+        except Exception as exc:
+            return {
+                "status": "error",
+                "venv_path": str(LITGPT_VENV_PATH),
+                "reason": f"LitGPT venv exists but its Python executable is not runnable, and repair failed: {exc}",
+                "repairable": True,
+            }
     
     # Create venv and install LitGPT
     try:
@@ -178,7 +184,8 @@ def setup_litgpt_env() -> dict[str, Any]:
         return {
             "status": "success",
             "venv_path": str(LITGPT_VENV_PATH),
-            "message": "LitGPT venv created and installed",
+            "message": "LitGPT venv repaired and installed" if repaired_existing else "LitGPT venv created and installed",
+            "repaired_existing": repaired_existing,
         }
     except subprocess.TimeoutExpired:
         return {

@@ -69,11 +69,11 @@ class SharePointPnPAdapter:
             "fake_success": False,
         }
 
-    def list_site_collections(self, approval: str = "") -> dict[str, Any]:
+    def list_site_collections(self, approval: str = "", search: str = "*") -> dict[str, Any]:
         fixture = self.fixtures.get("sites")
         if fixture is not None:
             return self._fixture_result("site_collections", list(fixture))
-        result = self.graph_adapter.get_sharepoint_sites(approval=approval)
+        result = self.graph_adapter.get_sharepoint_sites(approval=approval, search=search)
         if result.get("status") == "success":
             _save_state({"last_operation": "site_collections", "last_status": "success", "updated_at": datetime.utcnow().isoformat()})
         return result

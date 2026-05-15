@@ -749,6 +749,26 @@ CONNECTOR_SPECS: tuple[dict[str, Any], ...] = (
         "setup": {"credential": "Human browser session outside token storage", "env": "host bridge optional"},
     },
     {
+        "id": "openclaw_voice",
+        "name": "OpenClaw Voice",
+        "provider": "Local OpenClaw",
+        "category": "Voice",
+        "description": "Local speech-to-text and speech response bridge for the Ouroboros cockpit chat.",
+        "default_enabled": True,
+        "private_read_requires_approval": False,
+        "write_requires_approval": False,
+        "status_fn": _safe_import_status("controller.openclaw_voice", "openclaw_voice_status_payload"),
+        "tools": [_tool("voice_chat_status", kind="status")],
+        "routes": [
+            {"method": "GET", "path": "/api/openclaw-voice/status", "tool_name": "voice_chat_status"},
+            {"method": "POST", "path": "/api/openclaw-voice/v1/chat/completions", "tool_name": "voice_chat_status"},
+        ],
+        "setup": {
+            "credential": "No cockpit secret required; optional TTS/STT keys stay in OpenClaw environment.",
+            "env": "OPENCLAW_VOICE_ROOT / OPENCLAW_PORT / OPENCLAW_GATEWAY_URL",
+        },
+    },
+    {
         "id": "vps",
         "name": "VPS Deploy",
         "provider": "SSH/rsync",

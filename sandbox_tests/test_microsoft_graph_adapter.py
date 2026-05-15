@@ -40,17 +40,27 @@ class TestMicrosoftGraphAdapter(unittest.TestCase):
     def test_fixtures_return_11d_records(self):
         from controller.microsoft_graph_adapter import MicrosoftGraphAdapter
 
-        adapter = MicrosoftGraphAdapter(fixtures={"teams": [{"id": "team-1", "displayName": "Ouroboros"}]})
-        result = adapter.list_teams()
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(result["source"], "fixture")
-        self.assertEqual(len(result["records_11d"][0]["11d"]["vector"]), 11)
+        adapter = MicrosoftGraphAdapter(
+            fixtures={
+                "teams": [{"id": "team-1", "displayName": "Ouroboros"}],
+                "outlook_messages": [{"id": "msg-1", "subject": "Hallo", "bodyPreview": "read-only"}],
+            }
+        )
+        teams = adapter.list_teams()
+        outlook = adapter.read_outlook_messages(max_results=1)
+        self.assertEqual(teams["status"], "success")
+        self.assertEqual(teams["source"], "fixture")
+        self.assertEqual(len(teams["records_11d"][0]["11d"]["vector"]), 11)
+        self.assertEqual(outlook["status"], "success")
+        self.assertEqual(outlook["operation"], "outlook_messages")
+        self.assertEqual(outlook["count"], 1)
 
     def test_live_reads_and_power_automate_are_approval_gated(self):
         from controller.microsoft_graph_adapter import MicrosoftGraphAdapter
 
         adapter = MicrosoftGraphAdapter(fixtures={})
         self.assertEqual(adapter.get_me(approval="")["status"], "blocked")
+        self.assertEqual(adapter.read_outlook_messages(approval="")["status"], "blocked")
         blocked = adapter.run_power_automate_flow("flow-1", approval="")
         self.assertEqual(blocked["status"], "blocked")
         approved = adapter.run_power_automate_flow("flow-1", approval="Akkoord")

@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from controller.agent_tools import REGISTERED_TOOLS, agent_tool_schemas
@@ -52,6 +52,15 @@ DISPATCH_GATED_TOOLS = {
 }
 AGENT_TOOL_DISPATCH_OVERRIDES = {
     "gmail_search",
+    "vps_status",
+    "vps_login_check",
+    "vps_sync_preview",
+    "vps_sync_execute",
+    "vps_ui_sync_preview",
+    "vps_ui_sync_execute",
+    "chroma_sync_status",
+    "chroma_sync_preview",
+    "chroma_sync_execute",
 }
 EXTERNAL_TOOLS = {
     "brave_search",
@@ -442,8 +451,13 @@ class AgenticProcessor:
         )
         raw = self._call_llm(prompt, system_prompt=self._synthesis_system_prompt(system_prompt), model=model, history=history)
         text = str(raw or "").strip()
+        travel_appendix = _travel_tool_appendix(state)
+        if travel_appendix and _travel_tool_authoritative(state):
+            return _with_audit_header(travel_appendix, state)
         if not text or text.startswith(("LOKALE OLLAMA ERROR", "CLOUD GROQ ERROR")) or "missing_api_key" in text:
             return _fallback_response(goal, state)
+        if travel_appendix and travel_appendix not in text:
+            text = f"{text}\n\n{travel_appendix}"
         return _with_audit_header(text[:4200], state)
 
     def _dispatch_tool(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1589,14 +1603,16 @@ def _github_query_for_goal(goal: str) -> str:
 def _extract_transit_station(text: str, *, role: str) -> str:
     if role == "from":
         patterns = (
-            r"(?:vanaf|vanuit|van|from)\s+([^,?.]+?)(?:\s+(?:naar|to|richting|om|als|met|$))",
+            r"(?:vertrek|departure)\s+([^,?.]+?)(?:[,?.]|\s+(?:naar|to|richting|aankomst|aankomsttijd|vertrek(?:tijd)?|om|als|met|$)|$)",
+            r"(?:vanaf|vanuit|van|from)\s+([^,?.]+?)(?:[,?.]|\s+(?:naar|to|richting|om|als|met|$)|$)",
             r"(?:trein|station)\s+(?:in|vanaf|vanuit)?\s*([^,?.]+?)(?:\s+moet|\s+nemen|\s+naar|\s+om|\s+als|$)",
             r"\bin\s+([A-Z][A-Za-zÀ-ÿ' -]+?)(?:\s+moet|\s+nemen|\s+naar|\s+om|\s+als|$)",
         )
     else:
         patterns = (
-            r"(?:naar|to|richting)\s+([^,?.]+?)(?:\s+(?:heb|heeft|om|als|aankom|aankomst|$))",
-            r"(?:op|bij)\s+([A-Z][A-Za-zÀ-ÿ' -]+?)(?:\s+(?:heb|heeft|om|als|aankom|aankomst|$))",
+            r"(?:aankomst|arrival|arrive(?: at)?)\s+([^,?.]+?)(?:[,?.]|\s+(?:om|tijd|aankomsttijd|vertrek|vertrektijd|$)|$)",
+            r"(?:naar|to|richting)\s+([^,?.]+?)(?:[,?.]|\s+(?:heb|heeft|om|als|aankom|aankomst|$)|$)",
+            r"(?:op|bij)\s+([A-Z][A-Za-zÀ-ÿ' -]+?)(?:[,?.]|\s+(?:heb|heeft|om|als|aankom|aankomst|$)|$)",
         )
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -1620,7 +1636,33 @@ def _extract_transit_time(text: str) -> str:
 
 def _extract_transit_date(text: str) -> str:
     match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
-    return match.group(1) if match else ""
+    if match:
+        return match.group(1)
+    lowered = str(text or "").lower()
+    weekdays = {
+        "maandag": 0,
+        "dinsdag": 1,
+        "woensdag": 2,
+        "donderdag": 3,
+        "vrijdag": 4,
+        "zaterdag": 5,
+        "zondag": 6,
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    for label, weekday in weekdays.items():
+        if re.search(rf"\b(?:aanstaande|komende|volgende|next)?\s*{label}\b", lowered):
+            today = datetime.now().astimezone().date()
+            delta_days = (weekday - today.weekday()) % 7
+            if delta_days == 0 and re.search(rf"\b(?:volgende|next)\s+{label}\b", lowered):
+                delta_days = 7
+            return (today + timedelta(days=delta_days)).isoformat()
+    return ""
 
 
 def _needs_voice_status(goal: str) -> bool:
@@ -1893,4 +1935,51 @@ def _fallback_response(goal: str, state: Mapping[str, Any]) -> str:
         lines.append(f"Reden: {reason}")
     if state.get("approval_required"):
         lines.append("Vervolg: geef exact `Akkoord` om de geblokkeerde muterende/externe stap uit te voeren.")
+    appendix = _travel_tool_appendix(state)
+    if appendix:
+        lines.extend(["", appendix])
     return "\n".join(lines)[:4000]
+
+
+def _travel_tool_appendix(state: Mapping[str, Any]) -> str:
+    lines: list[str] = []
+    for step in state.get("steps") or []:
+        if not isinstance(step, Mapping):
+            continue
+        tool = str(step.get("tool") or "")
+        if tool not in {"ns_travel_advice", "ov9292_travel_advice"}:
+            continue
+        result = step.get("result") if isinstance(step.get("result"), Mapping) else {}
+        stdout = str(result.get("stdout") or "").strip()
+        payload = result.get("result") if isinstance(result.get("result"), Mapping) else {}
+        links: list[str] = []
+        if isinstance(payload, Mapping):
+            planner_url = str(payload.get("planner_url") or "").strip()
+            if planner_url:
+                links.append(planner_url)
+            for link in payload.get("official_links") or []:
+                link_text = str(link or "").strip()
+                if link_text and link_text not in links:
+                    links.append(link_text)
+        block: list[str] = [f"{tool}: officiële reisplanner-output"]
+        if stdout:
+            block.append(stdout[:1600])
+        if links:
+            block.append("Plannerlink(s):")
+            block.extend(f"- {link}" for link in links[:4])
+        if len(block) > 1:
+            lines.extend(block)
+    return "\n".join(lines).strip()[:2200]
+
+
+def _travel_tool_authoritative(state: Mapping[str, Any]) -> bool:
+    for step in state.get("steps") or []:
+        if not isinstance(step, Mapping):
+            continue
+        if str(step.get("tool") or "") not in {"ns_travel_advice", "ov9292_travel_advice"}:
+            continue
+        result = step.get("result") if isinstance(step.get("result"), Mapping) else {}
+        payload = result.get("result") if isinstance(result.get("result"), Mapping) else {}
+        if isinstance(payload, Mapping) and bool(payload.get("authoritative")):
+            return True
+    return False

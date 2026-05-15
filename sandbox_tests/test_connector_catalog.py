@@ -46,11 +46,26 @@ class TestConnectorCatalog(unittest.TestCase):
         self.assertIn("microsoft_graph", ids)
         self.assertIn("sharepoint", ids)
         self.assertIn("browser_research", ids)
+        self.assertIn("openclaw_voice", ids)
         self.assertIn("local_computer", ids)
         self.assertEqual(data["approval_phrase"], APPROVAL_PHRASE)
         self.assertFalse(data["secrets_returned"])
         self.assertFalse(data["fake_success"])
         self.assertNotIn("access_token", str(data).lower())
+        for tool_name in (
+            "microsoft_graph_status",
+            "teams_list",
+            "onedrive_list",
+            "outlook_read",
+            "sharepoint_status",
+            "sharepoint_sites",
+            "sharepoint_libraries",
+            "voice_chat_status",
+        ):
+            self.assertIn(tool_name, data["tool_index"])
+        self.assertTrue(data["tool_index"]["microsoft_graph_status"]["status_tool"])
+        self.assertTrue(data["tool_index"]["teams_list"]["requires_approval"])
+        self.assertTrue(data["tool_index"]["sharepoint_libraries"]["requires_approval"])
 
     def test_catalog_exposes_concrete_agent_work_packages(self):
         data = get_connector_catalog(include_status=False)

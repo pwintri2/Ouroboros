@@ -30,7 +30,8 @@ RUN apt-get update \
 COPY controller/requirements.txt /tmp/wintrip-controller-requirements.txt
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r /tmp/wintrip-controller-requirements.txt \
-    && python -m pip install requests aiohttp opencv-python pillow
+    && python -m pip install requests aiohttp opencv-python pillow \
+    && python -m playwright install --with-deps chromium
 
 # Docker socket is mounted at runtime and accessed through the Python Docker SDK.
 # See docker-compose.yml: /var/run/docker.sock:/var/run/docker.sock

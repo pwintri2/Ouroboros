@@ -55,6 +55,27 @@ class TestSharePointPnPAdapter(unittest.TestCase):
         self.assertEqual(approved["status"], "approval_recorded")
         self.assertFalse(approved["executed"])
 
+    def test_site_collections_forward_search_to_graph_adapter(self):
+        from controller.sharepoint_pnp_adapter import SharePointPnPAdapter
+
+        calls = []
+
+        class FakeGraph:
+            def status(self):
+                return {"status": "connected", "live_api_enabled": False, "fake_success": False}
+
+            def get_sharepoint_sites(self, approval="", search="*"):
+                calls.append((approval, search))
+                return {"status": "success", "operation": "get_sharepoint_sites", "items": [], "fake_success": False}
+
+        result = SharePointPnPAdapter(graph_adapter=FakeGraph()).list_site_collections(
+            approval="Akkoord",
+            search="Project",
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(calls, [("Akkoord", "Project")])
+
 
 if __name__ == "__main__":
     unittest.main()

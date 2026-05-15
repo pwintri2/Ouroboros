@@ -8,6 +8,7 @@ Supports 4-bit training, GGUF export, and Ollama template mapping.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -218,6 +219,7 @@ def setup_unsloth_env() -> dict[str, Any]:
     
     workspace = workspace_root()
     
+    repaired_existing = False
     # Check if venv exists
     if UNSLOTH_VENV_PATH.exists() and _is_runnable(_venv_python()):
         return {
@@ -226,11 +228,16 @@ def setup_unsloth_env() -> dict[str, Any]:
             "message": "Unsloth venv already exists",
         }
     if UNSLOTH_VENV_PATH.exists():
-        return {
-            "status": "error",
-            "venv_path": str(UNSLOTH_VENV_PATH),
-            "reason": "Unsloth venv exists but its Python executable is not runnable; rebuild the venv before training.",
-        }
+        try:
+            shutil.rmtree(UNSLOTH_VENV_PATH)
+            repaired_existing = True
+        except Exception as exc:
+            return {
+                "status": "error",
+                "venv_path": str(UNSLOTH_VENV_PATH),
+                "reason": f"Unsloth venv exists but its Python executable is not runnable, and repair failed: {exc}",
+                "repairable": True,
+            }
     
     # Create venv and install Unsloth
     try:
@@ -256,7 +263,8 @@ def setup_unsloth_env() -> dict[str, Any]:
         return {
             "status": "success",
             "venv_path": str(UNSLOTH_VENV_PATH),
-            "message": "Unsloth venv created and installed",
+            "message": "Unsloth venv repaired and installed" if repaired_existing else "Unsloth venv created and installed",
+            "repaired_existing": repaired_existing,
         }
     except subprocess.TimeoutExpired:
         return {

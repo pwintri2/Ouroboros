@@ -29,6 +29,7 @@ from controller.stream.metadata_11d import build_11d_metadata, missing_11d_layer
 from controller.stream.normalize import normalize
 from controller.stream.resonance import score as stream_resonance_score
 from controller.stream.storage import _resonance_to_importance
+from controller.openclaw_voice import openclaw_voice_status_payload
 from controller.ziel_policy import ziel_guardrail_note
 
 
@@ -44,6 +45,13 @@ REGISTERED_TOOLS: tuple[str, ...] = (
     "gmail_search",
     "google_drive_status",
     "google_drive_list",
+    "microsoft_graph_status",
+    "teams_list",
+    "onedrive_list",
+    "outlook_read",
+    "sharepoint_status",
+    "sharepoint_sites",
+    "sharepoint_libraries",
     "github_status",
     "github_repo",
     "github_search_repositories",
@@ -225,6 +233,69 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "max_depth": {"type": "integer", "description": "Maximale rclone diepte, maximaal 5."},
             "adapter": {"type": "string", "description": "auto, rclone of google_workspace."},
             "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor private Drive-read."},
+        },
+        ["approval"],
+    ),
+    "microsoft_graph_status": _tool_schema(
+        "microsoft_graph_status",
+        "Toont veilige Microsoft Graph/Microsoft 365 connectorstatus zonder OAuth-token of bearer-materiaal terug te geven. Read-only; geen Akkoord nodig.",
+        {},
+        [],
+    ),
+    "teams_list": _tool_schema(
+        "teams_list",
+        "Lijst joined Microsoft Teams read-only via de bestaande Microsoft Graph adapter. Vereist exact Akkoord omdat Teams-lidmaatschap privé is.",
+        {
+            "max_items": {"type": "integer", "description": "Aantal Teams, maximaal 50."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor private Teams-read."},
+        },
+        ["approval"],
+    ),
+    "onedrive_list": _tool_schema(
+        "onedrive_list",
+        "Lijst OneDrive rootbestanden read-only via de bestaande Microsoft Graph adapter. Vereist exact Akkoord omdat OneDrive-inhoud privé is; upload/delete/sync ontbreken.",
+        {
+            "path": {"type": "string", "description": "Optioneel pad voor toekomstige adapterondersteuning; huidige Graph foundation leest de root."},
+            "max_items": {"type": "integer", "description": "Aantal bestanden, maximaal 100."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor private OneDrive-read."},
+        },
+        ["approval"],
+    ),
+    "outlook_read": _tool_schema(
+        "outlook_read",
+        "Leest Outlook berichten read-only via de bestaande Microsoft Graph adapter. Vereist exact Akkoord omdat mailboxinhoud privé is; verzendt of muteert nooit mail.",
+        {
+            "folder": {"type": "string", "description": "Mailfolder, standaard inbox."},
+            "max_results": {"type": "integer", "description": "Aantal berichten, maximaal 25."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor private Outlook-read."},
+        },
+        ["approval"],
+    ),
+    "sharepoint_status": _tool_schema(
+        "sharepoint_status",
+        "Toont veilige SharePoint adapterstatus zonder OAuth-token of bearer-materiaal terug te geven. Read-only; geen Akkoord nodig.",
+        {},
+        [],
+    ),
+    "sharepoint_sites": _tool_schema(
+        "sharepoint_sites",
+        "Lijst SharePoint sites read-only via de bestaande SharePoint/Microsoft Graph adapters. Vereist exact Akkoord omdat tenant-site-informatie privé is.",
+        {
+            "search": {"type": "string", "description": "Optionele SharePoint site search query; standaard *."},
+            "max_items": {"type": "integer", "description": "Aantal sites, maximaal 100."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor private SharePoint-read."},
+        },
+        ["approval"],
+    ),
+    "sharepoint_libraries": _tool_schema(
+        "sharepoint_libraries",
+        "Lijst SharePoint libraries/lists read-only via de bestaande SharePoint adapter. Vereist exact Akkoord omdat tenant-library-informatie privé is.",
+        {
+            "site": {"type": "string", "description": "Site-id of URL."},
+            "site_id": {"type": "string", "description": "Optionele Graph site-id."},
+            "site_url": {"type": "string", "description": "Optionele SharePoint site URL."},
+            "max_items": {"type": "integer", "description": "Aantal libraries, maximaal 100."},
+            "approval": {"type": "string", "description": "Exact 'Akkoord' vereist voor private SharePoint library-read."},
         },
         ["approval"],
     ),
@@ -706,6 +777,39 @@ class AgentToolRegistry:
                     max_items=_int(args.get("max_items") or args.get("limit"), default=25),
                     max_depth=_int(args.get("max_depth"), default=1),
                     adapter=str(args.get("adapter") or "auto"),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "microsoft_graph_status":
+                result = self.microsoft_graph_status()
+            elif tool_name == "teams_list":
+                result = self.teams_list(
+                    max_items=_int(args.get("max_items") or args.get("limit"), default=25),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "onedrive_list":
+                result = self.onedrive_list(
+                    path=str(args.get("path") or args.get("folder") or ""),
+                    max_items=_int(args.get("max_items") or args.get("limit"), default=25),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "outlook_read":
+                result = self.outlook_read(
+                    folder=str(args.get("folder") or "inbox"),
+                    max_results=_int(args.get("max_results") or args.get("limit"), default=10),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "sharepoint_status":
+                result = self.sharepoint_status()
+            elif tool_name == "sharepoint_sites":
+                result = self.sharepoint_sites(
+                    search=str(args.get("search") or args.get("query") or "*"),
+                    max_items=_int(args.get("max_items") or args.get("limit"), default=25),
+                    approval=str(args.get("approval") or ""),
+                )
+            elif tool_name == "sharepoint_libraries":
+                result = self.sharepoint_libraries(
+                    site=str(args.get("site") or args.get("site_id") or args.get("site_url") or ""),
+                    max_items=_int(args.get("max_items") or args.get("limit"), default=25),
                     approval=str(args.get("approval") or ""),
                 )
             elif tool_name == "github_status":
@@ -1551,6 +1655,236 @@ class AgentToolRegistry:
             next_action="Gebruik de Drive-listing alleen als private read-only context; upload/delete/sync zijn niet beschikbaar in deze tool.",
         )
 
+    def microsoft_graph_status(self) -> dict[str, Any]:
+        try:
+            from controller.microsoft_graph_adapter import MicrosoftGraphAdapter
+
+            raw = MicrosoftGraphAdapter().status()
+        except Exception as exc:
+            return _tool_result(
+                "microsoft_graph_status",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="microsoft_graph:status",
+                next_action="Controleer Microsoft Graph adapterconfiguratie zonder tokens te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        payload["secrets_returned"] = False
+        return _tool_result(
+            "microsoft_graph_status",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="microsoft_graph:status",
+            approval_status="not_required_status",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "microsoft_graph_connector_status", "taint": "connector_status_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik teams_list, onedrive_list of outlook_read met exact Akkoord voor private Microsoft 365 reads.",
+        )
+
+    def teams_list(self, *, max_items: int = 25, approval: str = "") -> dict[str, Any]:
+        limit = max(1, min(int(max_items or 25), 50))
+        if not approval_matches(approval):
+            return _private_connector_read_blocked_result(
+                "teams_list",
+                payload={"max_items": limit},
+                source="microsoft_graph:teams_list",
+                source_type="microsoft_teams_private_read_gate",
+                stderr="Microsoft Teams listing is private Microsoft 365 data and requires exact Akkoord.",
+                next_action="Vraag Philip om exact Akkoord voordat Teams-lidmaatschap wordt gelezen.",
+            )
+        try:
+            from controller.microsoft_graph_adapter import MicrosoftGraphAdapter
+
+            raw = MicrosoftGraphAdapter().list_teams(approval=approval)
+        except Exception as exc:
+            return _tool_result(
+                "teams_list",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="microsoft_graph:teams_list",
+                approval_status="approved",
+                next_action="Controleer Microsoft Graph token/scopes/live-api instelling zonder tokenmateriaal te delen.",
+            )
+        return _private_connector_read_result(
+            "teams_list",
+            raw,
+            source="microsoft_graph:teams_list",
+            source_type="microsoft_teams_private_readonly",
+            limit=limit,
+            next_action="Gebruik Teams-resultaten alleen als private read-only context; Teams-mutaties zijn niet beschikbaar in deze tool.",
+        )
+
+    def onedrive_list(self, *, path: str = "", max_items: int = 25, approval: str = "") -> dict[str, Any]:
+        limit = max(1, min(int(max_items or 25), 100))
+        if not approval_matches(approval):
+            return _private_connector_read_blocked_result(
+                "onedrive_list",
+                payload={"path": path, "max_items": limit},
+                source="microsoft_graph:onedrive_list",
+                source_type="onedrive_private_read_gate",
+                stderr="OneDrive listing is private Microsoft 365 data and requires exact Akkoord.",
+                next_action="Vraag Philip om exact Akkoord voordat OneDrive-bestanden worden gelijst.",
+            )
+        try:
+            from controller.microsoft_graph_adapter import MicrosoftGraphAdapter
+
+            raw = MicrosoftGraphAdapter().list_onedrive_files(approval=approval)
+        except Exception as exc:
+            return _tool_result(
+                "onedrive_list",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="microsoft_graph:onedrive_list",
+                approval_status="approved",
+                next_action="Controleer Microsoft Graph token/scopes/live-api instelling zonder tokenmateriaal te delen.",
+            )
+        return _private_connector_read_result(
+            "onedrive_list",
+            {**raw, "requested_path": path},
+            source="microsoft_graph:onedrive_list",
+            source_type="onedrive_private_readonly",
+            limit=limit,
+            next_action="Gebruik OneDrive-resultaten alleen als private read-only context; upload/delete/sync zijn niet beschikbaar in deze tool.",
+        )
+
+    def outlook_read(self, *, folder: str = "inbox", max_results: int = 10, approval: str = "") -> dict[str, Any]:
+        clean_folder = " ".join(str(folder or "inbox").split()) or "inbox"
+        limit = max(1, min(int(max_results or 10), 25))
+        if not approval_matches(approval):
+            return _private_connector_read_blocked_result(
+                "outlook_read",
+                payload={"folder": clean_folder, "max_results": limit},
+                source="microsoft_graph:outlook_read",
+                source_type="outlook_private_read_gate",
+                stderr="Outlook read is private mailbox data and requires exact Akkoord.",
+                next_action="Vraag Philip om exact Akkoord voordat Outlook-berichten worden gelezen.",
+            )
+        try:
+            from controller.microsoft_graph_adapter import MicrosoftGraphAdapter
+
+            raw = MicrosoftGraphAdapter().read_outlook_messages(
+                approval=approval,
+                folder=clean_folder,
+                max_results=limit,
+            )
+        except Exception as exc:
+            return _tool_result(
+                "outlook_read",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="microsoft_graph:outlook_read",
+                approval_status="approved",
+                next_action="Controleer Microsoft Graph token/scopes/live-api instelling zonder tokenmateriaal te delen.",
+            )
+        return _private_connector_read_result(
+            "outlook_read",
+            raw,
+            source="microsoft_graph:outlook_read",
+            source_type="outlook_private_readonly",
+            limit=limit,
+            next_action="Vat de gevonden Outlook-berichten samen of maak een concept; mail verzenden blijft buiten deze tool.",
+        )
+
+    def sharepoint_status(self) -> dict[str, Any]:
+        try:
+            from controller.sharepoint_pnp_adapter import SharePointPnPAdapter
+
+            raw = SharePointPnPAdapter().status()
+        except Exception as exc:
+            return _tool_result(
+                "sharepoint_status",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="sharepoint:status",
+                next_action="Controleer SharePoint adapterconfiguratie zonder tokens te delen.",
+            )
+        payload = _sanitize_connector_payload(raw)
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+        payload["secrets_returned"] = False
+        return _tool_result(
+            "sharepoint_status",
+            "success",
+            result=payload,
+            stdout=_stringify(payload),
+            source="sharepoint:status",
+            approval_status="not_required_status",
+            stored_to_memory=False,
+            metadata_11d={"dimension_count": 11, "source_type": "sharepoint_connector_status", "taint": "connector_status_only", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+            next_action="Gebruik sharepoint_sites of sharepoint_libraries met exact Akkoord voor private SharePoint reads.",
+        )
+
+    def sharepoint_sites(self, *, search: str = "*", max_items: int = 25, approval: str = "") -> dict[str, Any]:
+        clean_search = " ".join(str(search or "*").split()) or "*"
+        limit = max(1, min(int(max_items or 25), 100))
+        if not approval_matches(approval):
+            return _private_connector_read_blocked_result(
+                "sharepoint_sites",
+                payload={"search": clean_search, "max_items": limit},
+                source="sharepoint:sites",
+                source_type="sharepoint_sites_private_read_gate",
+                stderr="SharePoint site listing is private Microsoft 365 tenant data and requires exact Akkoord.",
+                next_action="Vraag Philip om exact Akkoord voordat SharePoint sites worden gelezen.",
+            )
+        try:
+            from controller.sharepoint_pnp_adapter import SharePointPnPAdapter
+
+            raw = SharePointPnPAdapter().list_site_collections(approval=approval, search=clean_search)
+        except Exception as exc:
+            return _tool_result(
+                "sharepoint_sites",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="sharepoint:sites",
+                approval_status="approved",
+                next_action="Controleer SharePoint/Microsoft Graph token/scopes zonder tokenmateriaal te delen.",
+            )
+        return _private_connector_read_result(
+            "sharepoint_sites",
+            raw,
+            source="sharepoint:sites",
+            source_type="sharepoint_sites_private_readonly",
+            limit=limit,
+            next_action="Gebruik SharePoint sites alleen als private read-only context; permission- of workflow-mutaties blijven buiten deze tool.",
+        )
+
+    def sharepoint_libraries(self, *, site: str = "", max_items: int = 25, approval: str = "") -> dict[str, Any]:
+        clean_site = " ".join(str(site or "").split())
+        limit = max(1, min(int(max_items or 25), 100))
+        if not approval_matches(approval):
+            return _private_connector_read_blocked_result(
+                "sharepoint_libraries",
+                payload={"site": clean_site, "max_items": limit},
+                source="sharepoint:libraries",
+                source_type="sharepoint_libraries_private_read_gate",
+                stderr="SharePoint library listing is private Microsoft 365 tenant data and requires exact Akkoord.",
+                next_action="Vraag Philip om exact Akkoord voordat SharePoint libraries worden gelezen.",
+            )
+        try:
+            from controller.sharepoint_pnp_adapter import SharePointPnPAdapter
+
+            raw = SharePointPnPAdapter().list_libraries(site=clean_site, approval=approval)
+        except Exception as exc:
+            return _tool_result(
+                "sharepoint_libraries",
+                "error",
+                stderr=_redact_operational_text(str(exc)),
+                source="sharepoint:libraries",
+                approval_status="approved",
+                next_action="Controleer SharePoint/Microsoft Graph token/scopes zonder tokenmateriaal te delen.",
+            )
+        return _private_connector_read_result(
+            "sharepoint_libraries",
+            raw,
+            source="sharepoint:libraries",
+            source_type="sharepoint_libraries_private_readonly",
+            limit=limit,
+            next_action="Gebruik SharePoint libraries alleen als private read-only context; library writes blijven buiten deze tool.",
+        )
+
     def github_status(self) -> dict[str, Any]:
         try:
             from controller.github_adapter import GitHubAdapter
@@ -2379,12 +2713,16 @@ class AgentToolRegistry:
         )
 
     def voice_chat_status(self) -> dict[str, Any]:
+        openclaw = openclaw_voice_status_payload()
+        configured = bool(openclaw.get("configured"))
+        available = bool(openclaw.get("available"))
         payload = {
-            "status": "not_configured",
-            "input": {"microphone": False, "speech_to_text": False},
-            "output": {"text_to_speech": False},
+            "status": "online" if available else ("configured" if configured else "not_configured"),
+            "input": {"microphone": configured, "speech_to_text": configured},
+            "output": {"text_to_speech": configured},
+            "openclaw": openclaw,
             "pocket_voice": "available_for_text_chat",
-            "route": "status_only",
+            "route": "openclaw_voice_gateway" if configured else "status_only",
             "fake_success": False,
         }
         return _tool_result(
@@ -2393,7 +2731,7 @@ class AgentToolRegistry:
             result=payload,
             stdout=_stringify(payload),
             source="voice:status",
-            next_action="Add STT/TTS adapters after Agentic Core provenance is stable.",
+            next_action=str(openclaw.get("next_action") or "Start OpenClaw Voice and connect from the cockpit."),
         )
 
     def scrub_browser_content(self, text: str, url: str, approval: str = "", title: str = "Browser scrub") -> dict[str, Any]:
@@ -3128,6 +3466,84 @@ def _connector_disabled_result(tool_name: str, gate: Mapping[str, Any]) -> dict[
         metadata_11d={"dimension_count": 11, "source_type": "connector_catalog_gate", "taint": "connector_disabled"},
         next_action=f"Zet connector {payload['connector_name'] or payload['connector_id']} aan in de Cockpit Connectors-tab met exact Akkoord.",
     )
+
+
+def _private_connector_read_blocked_result(
+    tool_name: str,
+    *,
+    payload: Mapping[str, Any],
+    source: str,
+    source_type: str,
+    stderr: str,
+    next_action: str,
+) -> dict[str, Any]:
+    ziel_policy = ziel_guardrail_note()
+    blocked_payload = _sanitize_connector_payload(
+        {
+            **dict(payload),
+            "approval_required": True,
+            "read_only": True,
+            "executed": False,
+            "secrets_returned": False,
+            "ziel_policy": ziel_policy,
+        }
+    )
+    return _tool_result(
+        tool_name,
+        "blocked",
+        result=blocked_payload,
+        stdout=_stringify(blocked_payload),
+        stderr=stderr,
+        source=source,
+        approval_status="pending_philip_akkoord",
+        metadata_11d={"dimension_count": 11, "source_type": source_type, "taint": "private_user_data", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+        next_action=next_action,
+    )
+
+
+def _private_connector_read_result(
+    tool_name: str,
+    raw: Any,
+    *,
+    source: str,
+    source_type: str,
+    limit: int,
+    next_action: str,
+) -> dict[str, Any]:
+    raw_payload = raw if isinstance(raw, dict) else {"status": "error", "response": raw, "fake_success": False}
+    payload = _sanitize_connector_payload(raw_payload)
+    if isinstance(payload, dict):
+        _limit_connector_payload(payload, max(1, int(limit or 1)))
+        payload["read_only"] = True
+        payload["secrets_returned"] = False
+        ziel_policy = ziel_guardrail_note()
+        payload["ziel_policy"] = ziel_policy
+    else:
+        ziel_policy = ziel_guardrail_note()
+    raw_status = str(raw_payload.get("status") or "error")
+    status = "success" if raw_status == "success" else raw_status
+    stdout = _stringify(payload)
+    return _tool_result(
+        tool_name,
+        status,
+        result=payload,
+        stdout=stdout,
+        stderr="" if status == "success" else stdout,
+        source=source,
+        approval_status="approved",
+        stored_to_memory=False,
+        metadata_11d={"dimension_count": 11, "source_type": source_type, "taint": "private_user_data", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
+        next_action=next_action,
+    )
+
+
+def _limit_connector_payload(payload: dict[str, Any], limit: int) -> None:
+    for key in ("items", "messages", "records_11d", "findings"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            payload[f"{key}_total_count"] = len(value)
+            payload[key] = value[:limit]
+            payload[f"{key}_returned_count"] = len(payload[key])
 
 
 def _tool_result(

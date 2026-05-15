@@ -241,6 +241,68 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertFalse(data["api_keys"]["secrets_returned"])
         self.assertIn("chroma", data)
         self.assertIn(data["chroma"]["mode"], {"persistent", "http"})
+        self.assertIn("openclaw_voice_status", data["capabilities"])
+        self.assertIn("openclaw_voice_gateway", data["capabilities"])
+
+    def test_openclaw_voice_status_exposes_local_gateway_without_secrets(self):
+        response = self.client.get("/api/openclaw-voice/status")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn(data["status"], {"online", "configured", "missing"})
+        self.assertIn("/api/openclaw-voice/v1/chat/completions", data["gateway_chat_completions"])
+        self.assertIn("/ws", data["websocket_url"])
+        self.assertFalse(data["secrets_returned"])
+        self.assertFalse(data["fake_success"])
+        serialized = json.dumps(data).lower()
+        self.assertNotIn("api_key", serialized)
+        self.assertNotIn("bearer", serialized)
+
+    def test_openclaw_voice_gateway_returns_openai_compatible_completion(self):
+        captured = {}
+        original = self.main._cockpit_chat_payload
+
+        async def fake_cockpit(req):
+            captured["provider"] = req.provider
+            captured["model"] = req.model
+            captured["prompt"] = req.prompt
+            captured["history"] = req.history
+            captured["role"] = req.role
+            return {
+                "status": "success",
+                "route": "ouroboros_runtime",
+                "provider": "ouroboros",
+                "model": "living-runtime",
+                "response": "Hoi, ik praat nu terug via Ouroboros.",
+                "local_only": True,
+                "fake_success": False,
+            }
+
+        self.main._cockpit_chat_payload = fake_cockpit
+        try:
+            response = self.client.post(
+                "/api/openclaw-voice/v1/chat/completions",
+                json={
+                    "model": "openclaw:voice",
+                    "messages": [
+                        {"role": "system", "content": "Kort antwoorden."},
+                        {"role": "user", "content": "Kun je me horen?"},
+                    ],
+                },
+            )
+        finally:
+            self.main._cockpit_chat_payload = original
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["object"], "chat.completion")
+        self.assertEqual(data["model"], "openclaw:voice")
+        self.assertEqual(data["choices"][0]["message"]["content"], "Hoi, ik praat nu terug via Ouroboros.")
+        self.assertEqual(data["ouroboros"]["route"], "ouroboros_runtime")
+        self.assertEqual(captured["provider"], "ouroboros")
+        self.assertEqual(captured["model"], "living-runtime")
+        self.assertEqual(captured["prompt"], "Kun je me horen?")
+        self.assertEqual(captured["role"], "voice")
 
     def test_chroma_status_endpoint_exposes_runtime_mode_without_secrets(self):
         response = self.client.get("/api/ouroboros/chroma/status")

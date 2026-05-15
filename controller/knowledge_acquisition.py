@@ -33,6 +33,7 @@ DEFAULT_KNOWLEDGE_LIST_PATH = "/home/pwintri2/Downloads/OUROBOROS_KENNIS_LIJST.m
 DEFAULT_GEMMA_MODEL = os.getenv("WINTRIP_KNOWLEDGE_MODEL") or os.getenv("WINTRIP_GEMMA_GUARD_MODEL") or "gemma4:latest"
 MAX_TOPIC_TEXT = 1200
 MAX_RECORD_CHARS = 16_000
+KNOWLEDGE_LIST_FILENAME = "OUROBOROS_KENNIS_LIJST.md"
 
 SECTION_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 BULLET_RE = re.compile(r"^\s*[-*]\s+(.+?)\s*$")
@@ -40,7 +41,12 @@ BULLET_RE = re.compile(r"^\s*[-*]\s+(.+?)\s*$")
 
 def knowledge_list_path() -> Path:
     configured = os.getenv("WINTRIP_KNOWLEDGE_LIST_PATH")
-    return Path(configured or DEFAULT_KNOWLEDGE_LIST_PATH).expanduser().resolve()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    for candidate in _knowledge_list_candidates():
+        if candidate.exists():
+            return candidate
+    return Path(DEFAULT_KNOWLEDGE_LIST_PATH).expanduser().resolve()
 
 
 def knowledge_state_path() -> Path:
@@ -62,6 +68,8 @@ def get_knowledge_acquisition_status() -> dict[str, Any]:
         brave_status = brave_search_status()
     except Exception as exc:
         brave_status = {"status": "unavailable", "configured": False, "reason": str(exc), "fake_success": False}
+    parsed_ok = parsed.get("status") == "success"
+    last_error = "" if parsed_ok else str(parsed.get("reason") or state.get("last_error") or "")
     return {
         "status": "ready" if parsed.get("status") == "success" else "missing",
         "knowledge_list_path": str(knowledge_list_path()),
@@ -76,7 +84,7 @@ def get_knowledge_acquisition_status() -> dict[str, Any]:
         "total_records": len(records),
         "last_indexed_at": state.get("last_indexed_at"),
         "last_tick_at": state.get("last_tick_at"),
-        "last_error": state.get("last_error", ""),
+        "last_error": last_error,
         "next_gemma_topics": _next_topics(topics, gemma_done, limit=5),
         "next_browser_topics": _next_topics(topics, browser_done, limit=5),
         "next_brave_topics": _next_topics(topics, brave_done, limit=5),
@@ -89,10 +97,14 @@ def get_knowledge_acquisition_status() -> dict[str, Any]:
 def parse_knowledge_list(path: str | Path | None = None) -> dict[str, Any]:
     source = Path(path).expanduser().resolve() if path else knowledge_list_path()
     if not source.exists():
+        searched = [str(path) for path in _knowledge_list_candidates()]
+        if str(source) not in searched:
+            searched.insert(0, str(source))
         return {
             "status": "missing",
             "reason": f"Knowledge list not found: {source}",
             "path": str(source),
+            "searched_paths": searched,
             "sections": [],
             "topics": [],
             "fake_success": False,
@@ -808,3 +820,26 @@ def _slug(text: str) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _knowledge_list_candidates() -> list[Path]:
+    candidates: list[Path] = [Path(DEFAULT_KNOWLEDGE_LIST_PATH).expanduser()]
+    roots = [workspace_root(), Path.cwd()]
+    for root in roots:
+        candidates.extend(
+            [
+                root / "artifacts" / KNOWLEDGE_LIST_FILENAME,
+                root / KNOWLEDGE_LIST_FILENAME,
+            ]
+        )
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(resolved)
+    return unique

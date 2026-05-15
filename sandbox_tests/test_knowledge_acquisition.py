@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -72,6 +73,41 @@ class KnowledgeAcquisitionEnv:
 
 
 class TestKnowledgeAcquisition(unittest.TestCase):
+    def test_parse_uses_workspace_artifact_fallback_when_default_path_is_missing(self):
+        from controller import knowledge_acquisition as ka
+
+        tmp = tempfile.TemporaryDirectory(prefix="knowledge-fallback-")
+        root = Path(tmp.name)
+        workspace = root / "workspace"
+        artifact_dir = workspace / "artifacts"
+        artifact = artifact_dir / "OUROBOROS_KENNIS_LIJST.md"
+        artifact_dir.mkdir(parents=True)
+        artifact.write_text(KNOWLEDGE_MD, encoding="utf-8")
+        previous = {
+            "WINTRIP_WORKSPACE": os.environ.get("WINTRIP_WORKSPACE"),
+            "WINTRIP_KNOWLEDGE_LIST_PATH": os.environ.get("WINTRIP_KNOWLEDGE_LIST_PATH"),
+        }
+        try:
+            os.environ["WINTRIP_WORKSPACE"] = str(workspace)
+            os.environ.pop("WINTRIP_KNOWLEDGE_LIST_PATH", None)
+            with patch.object(ka, "DEFAULT_KNOWLEDGE_LIST_PATH", str(root / "Downloads" / "missing.md")):
+                parsed = ka.parse_knowledge_list()
+                self.assertEqual(parsed["status"], "success")
+                self.assertEqual(parsed["path"], str(artifact.resolve()))
+
+                ka._save_state({"records": [], "last_error": "old missing path", "fake_success": False})
+                status = ka.get_knowledge_acquisition_status()
+                self.assertEqual(status["status"], "ready")
+                self.assertGreater(status["topic_count"], 0)
+                self.assertEqual(status["last_error"], "")
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            tmp.cleanup()
+
     def test_parse_index_and_bounded_tick_store_records(self):
         from controller import knowledge_acquisition as ka
 

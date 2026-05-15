@@ -140,8 +140,34 @@ fn open_external_url(url: String) -> Result<bool, String> {
     Err("No external URL opener was available.".to_owned())
 }
 
+#[cfg(target_os = "linux")]
+fn allow_linux_user_media_permissions(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::Manager;
+    use webkit2gtk::{glib::ObjectExt, PermissionRequestExt, WebViewExt};
+
+    if let Some(window) = app.get_webview_window("main") {
+        window.with_webview(|webview| {
+            webview.inner().connect_permission_request(|_, request| {
+                if request.is::<webkit2gtk::UserMediaPermissionRequest>() {
+                    request.allow();
+                    true
+                } else {
+                    false
+                }
+            });
+        })?;
+    }
+
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(target_os = "linux")]
+            allow_linux_user_media_permissions(app)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![backend_config, open_external_url])
         .run(tauri::generate_context!())
         .expect("error while running Ouroboros Cockpit");

@@ -35,7 +35,7 @@ from controller.ecosystem_status import get_ecosystem_status
 from controller.google_workspace_adapter import GoogleWorkspaceAdapter, get_google_workspace_status
 from controller.host_program_inventory import get_host_program_inventory_status, scan_host_program_inventory
 from controller.host_sensory_adapter import get_host_sensory_status, snapshot_host_sensory
-from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights
+from controller.litgpt_adapter import get_litgpt_status, run_litgpt_lora_finetune, merge_lora_weights, setup_litgpt_env
 from controller.local_machine_profile import get_local_machine_status, snapshot_local_machine
 from controller.microsoft_graph_adapter import MicrosoftGraphAdapter, get_microsoft_graph_status
 from controller.popos_diagnostics_adapter import get_popos_diagnostics_status, run_popos_diagnostics
@@ -110,7 +110,7 @@ from controller.trainer_continuous import (
     start_continuous_training,
     stop_continuous_training,
 )
-from controller.unsloth_adapter import export_to_gguf, generate_modelfile, get_unsloth_status, run_unsloth_sft_training
+from controller.unsloth_adapter import export_to_gguf, generate_modelfile, get_unsloth_status, run_unsloth_sft_training, setup_unsloth_env
 from controller.api.training_routes import (
     BrowserTrainingRequest,
     _preview_payload,
@@ -184,7 +184,7 @@ class CodeNeuronIndexRequest(BaseModel):
 class ContinuousStartRequest(BaseModel):
     approval: str = Field(..., min_length=1)
     methods: list[TrainerMethod] = Field(default_factory=lambda: [TrainerMethod.LITGPT, TrainerMethod.UNSLOOTH])
-    interval_seconds: int = Field(default=300, ge=30, le=86400)
+    interval_seconds: int = Field(default=300, ge=1, le=86400)
     execute_training: bool = Field(default=False)
     litgpt_base_model: str = Field(default="llama3.2:latest", min_length=1, max_length=256)
     unsloth_base_model: str = Field(default="unsloth/tinyllama-bnb-4bit", min_length=1, max_length=256)
@@ -443,6 +443,22 @@ async def setup_blue_brain(request: ApprovalRequest) -> dict[str, Any]:
     if request.approval != "Akkoord":
         raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
     return setup_blue_brain_env()
+
+
+@trainer_pipeline_router.post("/litgpt/setup")
+async def setup_litgpt(request: ApprovalRequest) -> dict[str, Any]:
+    """Set up or repair the dedicated LitGPT trainer venv (requires approval)."""
+    if request.approval != "Akkoord":
+        raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
+    return setup_litgpt_env()
+
+
+@trainer_pipeline_router.post("/unsloth/setup")
+async def setup_unsloth(request: ApprovalRequest) -> dict[str, Any]:
+    """Set up or repair the dedicated Unsloth trainer venv (requires approval)."""
+    if request.approval != "Akkoord":
+        raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
+    return setup_unsloth_env()
 
 
 @trainer_pipeline_router.get("/continuous/status")

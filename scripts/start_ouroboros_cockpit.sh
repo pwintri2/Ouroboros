@@ -8,6 +8,8 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ouroboros-cockpit"
 LOG_DIR="$STATE_DIR/logs"
 LOCK_FILE="$STATE_DIR/launcher.lock"
 BRIDGE_PORT="${WINTRIP_RCLONE_BRIDGE_PORT:-8766}"
+BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
+TOKEN_PATH="${WINTRIP_RCLONE_BRIDGE_TOKEN_PATH_HOST:-$ROOT/.secrets/rclone_bridge_token}"
 
 mkdir -p "$LOG_DIR"
 exec >>"$LOG_DIR/launcher.log" 2>&1
@@ -49,6 +51,34 @@ with socket.socket() as sock:
 PY
 }
 
+bridge_is_current() {
+  python3 - "$BRIDGE_URL" "$TOKEN_PATH" <<'PY'
+import json
+import sys
+import urllib.request
+
+base, token_path = sys.argv[1].rstrip("/"), sys.argv[2]
+try:
+    token = open(token_path, encoding="utf-8").read().strip()
+except Exception:
+    raise SystemExit(1)
+
+request = urllib.request.Request(
+    base + "/vps/status",
+    headers={"X-Ouroboros-Bridge-Token": token},
+)
+try:
+    with urllib.request.urlopen(request, timeout=4.0) as response:
+        data = json.loads(response.read().decode("utf-8") or "{}")
+except Exception:
+    raise SystemExit(1)
+
+excludes = set(data.get("default_excludes") or [])
+required = {"out/", "out/**", ".roo/", ".roo/**", "logs/", "logs/**", "*.log", "**/*.log"}
+raise SystemExit(0 if required.issubset(excludes) else 1)
+PY
+}
+
 wait_for_backend() {
   for _ in $(seq 1 45); do
     url_is_up "$BACKEND_URL" && return 0
@@ -79,8 +109,17 @@ ensure_backend() {
 
 ensure_host_bridge() {
   if port_is_up 127.0.0.1 "$BRIDGE_PORT"; then
-    echo "Host bridge already online on port $BRIDGE_PORT."
-    return 0
+    if bridge_is_current; then
+      echo "Host bridge already online on port $BRIDGE_PORT."
+      return 0
+    fi
+    echo "Host bridge on port $BRIDGE_PORT is stale; restarting it."
+    pkill -f "scripts/rclone_host_bridge.py.*--port $BRIDGE_PORT" >/dev/null 2>&1 || true
+    pkill -f "python3 scripts/rclone_host_bridge.py$" >/dev/null 2>&1 || true
+    for _ in $(seq 1 10); do
+      port_is_up 127.0.0.1 "$BRIDGE_PORT" || break
+      sleep 0.5
+    done
   fi
 
   if [ ! -f "$ROOT/scripts/rclone_host_bridge.py" ]; then
@@ -89,9 +128,9 @@ ensure_host_bridge() {
   fi
 
   echo "Starting Ouroboros host bridge on port $BRIDGE_PORT."
-  (cd "$ROOT" && setsid -f python3 scripts/rclone_host_bridge.py >"$LOG_DIR/host_bridge.log" 2>&1)
+  (cd "$ROOT" && setsid -f python3 scripts/rclone_host_bridge.py --bind 0.0.0.0 --port "$BRIDGE_PORT" >"$LOG_DIR/host_bridge.log" 2>&1)
   for _ in $(seq 1 20); do
-    port_is_up 127.0.0.1 "$BRIDGE_PORT" && {
+    port_is_up 127.0.0.1 "$BRIDGE_PORT" && bridge_is_current && {
       echo "Host bridge online."
       return 0
     }

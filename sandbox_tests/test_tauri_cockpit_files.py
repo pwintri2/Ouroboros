@@ -224,6 +224,33 @@ class TestTauriCockpitFiles(unittest.TestCase):
         ]:
             self.assertIn(expected, react_source)
 
+    def test_cockpit_surfaces_openclaw_voice_chat_controls(self):
+        app_tsx = COCKPIT_DIR / "src" / "App.tsx"
+        styles_css = COCKPIT_DIR / "src" / "styles.css"
+        config_path = COCKPIT_DIR / "src-tauri" / "tauri.conf.json"
+        react_source = app_tsx.read_text(encoding="utf-8")
+        style_source = styles_css.read_text(encoding="utf-8")
+        config_source = config_path.read_text(encoding="utf-8")
+
+        for expected in [
+            "/api/openclaw-voice/status",
+            "openclawVoiceStatus",
+            "startVoiceRecording",
+            "stopVoiceRecording",
+            "microphonePermissionHint",
+            "response_complete",
+            "audio_chunk",
+            "SpeechSynthesisUtterance",
+            "OpenClaw voice response",
+        ]:
+            self.assertIn(expected, react_source)
+
+        for expected in [".voice-strip", ".voice-live", ".voice-dot.recording"]:
+            self.assertIn(expected, style_source)
+
+        for expected in ["ws://127.0.0.1:8765", "http://127.0.0.1:8765", "Permissions-Policy", "microphone=(self)"]:
+            self.assertIn(expected, config_source)
+
     def test_cockpit_uses_ouroboros_logo_assets_for_native_and_in_app_branding(self):
         app_tsx = COCKPIT_DIR / "src" / "App.tsx"
         styles_css = COCKPIT_DIR / "src" / "styles.css"

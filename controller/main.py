@@ -15,10 +15,18 @@ import requests
 import uvicorn
 from types import SimpleNamespace
 from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, List, Dict, Optional
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from controller.openclaw_voice import (
+    cockpit_response_text,
+    extract_openai_chat_request,
+    openai_completion_payload,
+    openai_stream_events,
+    openclaw_voice_status_payload,
+)
 
 # Forceer het juiste pad zonder laptop/container-pad hard te coderen.
 project_root = os.getenv("WINTRIP_PROJECT_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -513,6 +521,14 @@ class CockpitChatRequest(BaseModel):
     include_tool_schemas: Optional[bool] = False
     tools: Optional[Any] = None
     role: Optional[str] = None
+
+class OpenClawVoiceChatCompletionRequest(BaseModel):
+    model: Optional[str] = "openclaw:voice"
+    messages: Optional[List[Dict[str, Any]]] = None
+    stream: Optional[bool] = False
+    prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
 
 class ProviderApiKeyRequest(BaseModel):
     provider: str
@@ -1129,6 +1145,19 @@ async def cockpit_config():
 async def cockpit_chat(req: CockpitChatRequest):
     return await _cockpit_chat_payload(req)
 
+@app.get("/api/openclaw-voice/status")
+async def openclaw_voice_status():
+    return openclaw_voice_status_payload()
+
+@app.get("/api/openclaw-voice")
+async def openclaw_voice_index():
+    return openclaw_voice_status_payload()
+
+@app.post("/api/openclaw-voice/v1/chat/completions")
+@app.post("/api/openclaw-voice/chat/completions")
+async def openclaw_voice_chat_completions(req: OpenClawVoiceChatCompletionRequest):
+    return await _openclaw_voice_chat_completion_payload(req)
+
 @app.post("/api/ouroboros/respond")
 async def ouroboros_runtime_respond(req: CockpitChatRequest):
     runtime_model = req.model if str(req.model or "").strip() in OUROBOROS_RUNTIME_MODELS else "living-runtime"
@@ -1518,6 +1547,8 @@ def _cockpit_config_payload() -> dict[str, Any]:
         "capabilities": {
             "cockpit_chat": {"method": "POST", "path": "/api/cockpit/chat"},
             "ouroboros_runtime_response": {"method": "POST", "path": "/api/ouroboros/respond"},
+            "openclaw_voice_status": {"method": "GET", "path": "/api/openclaw-voice/status"},
+            "openclaw_voice_gateway": {"method": "POST", "path": "/api/openclaw-voice/v1/chat/completions"},
             "loop_start": {"method": "POST", "path": "/api/ouroboros/loop/start"},
             "loop_pause": {"method": "POST", "path": "/api/ouroboros/loop/pause"},
             "loop_abort": {"method": "POST", "path": "/api/ouroboros/loop/abort"},
@@ -2449,6 +2480,15 @@ def _should_route_agentic_chat(req: CockpitChatRequest, provider: str) -> bool:
     return bool(getattr(intent, "is_agentic", False))
 
 
+def _should_route_roo_readonly_agentic(intent: Any) -> bool:
+    if not callable(getattr(orchestrator, "agentic_process", None)):
+        return False
+    if not bool(getattr(intent, "is_agentic", False)):
+        return False
+    target_tool = str(getattr(intent, "target_tool", "") or "")
+    return target_tool in {"brave_search", "ns_travel_advice", "ov9292_travel_advice"}
+
+
 def _fast_agentic_action_payload(
     req: CockpitChatRequest,
     *,
@@ -2794,6 +2834,52 @@ def _cockpit_slash_dispatch_timeout_seconds() -> float:
     return max(3.0, min(configured, _cockpit_chat_timeout_seconds(), 28.0))
 
 
+async def _openclaw_voice_chat_completion_payload(req: OpenClawVoiceChatCompletionRequest):
+    body = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    extracted = extract_openai_chat_request(body)
+    prompt = str(extracted.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="OpenClaw voice request did not include a user message.")
+
+    cockpit_req = CockpitChatRequest(
+        provider="ouroboros",
+        model="living-runtime",
+        prompt=prompt,
+        system_prompt=extracted.get("system_prompt"),
+        conversation_id="voice:openclaw",
+        history=extracted.get("history") or [],
+        include_tools=False,
+        include_tool_schemas=False,
+        role="voice",
+    )
+    cockpit_payload = await _cockpit_chat_payload(cockpit_req)
+    content = cockpit_response_text(cockpit_payload)
+    requested_model = str(extracted.get("requested_model") or req.model or "openclaw:voice")
+    completion_id = f"chatcmpl-ouroboros-voice-{int(time.time() * 1000)}"
+
+    if extracted.get("stream") or req.stream:
+        async def event_stream():
+            for event in openai_stream_events(
+                content=content,
+                requested_model=requested_model,
+                completion_id=completion_id,
+            ):
+                yield event
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return openai_completion_payload(
+        content=content,
+        requested_model=requested_model,
+        cockpit_payload=cockpit_payload,
+        completion_id=completion_id,
+    )
+
+
 def _should_route_living_action(prompt: object) -> bool:
     method = getattr(orchestrator, "levendige_actie", None)
     if not callable(method):
@@ -3127,6 +3213,56 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         slash_result.setdefault("tool_schema_count", 0)
         slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
         return _with_cockpit_self_context(slash_result, chat_context, provider, model, include_living_echo=False)
+
+    if provider == "roo" and _should_route_roo_readonly_agentic(intent):
+        agentic_provider = "ollama"
+        agentic_model = _default_cockpit_model(agentic_provider, None)
+        planner = _agentic_model_planner(agentic_provider, agentic_model, history=chat_context.get("history") or [])
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    orchestrator.agentic_process,
+                    chat_context.get("prompt") or req.prompt,
+                    approval=req.approval or "",
+                    model=agentic_model,
+                    provider=agentic_provider,
+                    system_prompt=chat_context.get("system_prompt"),
+                    history=chat_context.get("history") or [],
+                    max_steps=8,
+                    planner=planner,
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return _with_cockpit_self_context(
+                _chat_timeout_payload(
+                    requested_provider=requested_provider,
+                    provider="agentic_processor",
+                    model=agentic_model,
+                    route="agentic_processor",
+                    timeout_seconds=timeout_seconds,
+                    local_only=True,
+                    tools=tools,
+                    return_tools=_should_return_tool_schemas(req),
+                ),
+                chat_context,
+                provider,
+                model,
+            )
+        if not isinstance(result, dict):
+            result = {"status": "success", "response": str(result)}
+        result.setdefault("status", "success")
+        result["requested_provider"] = requested_provider
+        result["cockpit_provider"] = "roo"
+        result["cockpit_model"] = model
+        result.setdefault("provider", agentic_provider)
+        result.setdefault("model", agentic_model)
+        result.setdefault("route", "agentic_processor")
+        result.setdefault("local_only", True)
+        result.setdefault("tool_schemas", tools if _should_return_tool_schemas(req) else [])
+        result.setdefault("tool_schema_count", len(tools) if _should_return_tool_schemas(req) else 0)
+        result.setdefault("llm_provider_used", False)
+        return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
 
     if provider == "roo":
         result = _roo_runtime_chat_payload(

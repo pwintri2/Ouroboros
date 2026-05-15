@@ -364,6 +364,90 @@ label {
   font-size: 12px;
 }
 
+.voice-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-height: 30px;
+}
+
+.voice-strip button {
+  min-height: 28px;
+  padding: 0 9px;
+  border-color: #28415a;
+  background: #0c1c2a;
+  color: #c7d7e8;
+  font-size: 12px;
+}
+
+.voice-strip button.voice-recording {
+  border-color: #ff6b35;
+  background: #2a1610;
+  color: #ffe5d6;
+}
+
+.voice-strip button.voice-fallback-on {
+  border-color: #2f8d73;
+  background: #0b211c;
+  color: #b9f6df;
+}
+
+.voice-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #45566b;
+  box-shadow: 0 0 0 1px #1d2634;
+}
+
+.voice-dot.connected {
+  background: #40c4aa;
+}
+
+.voice-dot.recording {
+  background: #ff6b35;
+  box-shadow: 0 0 0 4px rgba(255, 107, 53, 0.13);
+}
+
+.voice-state,
+.voice-hint,
+.voice-error {
+  min-width: 0;
+  color: #91a3b8;
+  font-size: 12px;
+}
+
+.voice-error {
+  color: #ffb4a2;
+}
+
+.voice-hint {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-live {
+  display: grid;
+  gap: 5px;
+  max-height: 92px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid #243348;
+  border-radius: 7px;
+  background: #0a1220;
+  color: #c6d5e6;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.voice-live strong {
+  margin-right: 6px;
+  color: #40c4aa;
+}
+
 .file-upload-strip {
   display: flex;
   flex-wrap: wrap;

@@ -37,16 +37,47 @@ LEGACY_TOOL_BRIDGE_TOOLS: tuple[str, ...] = (
     "drive_upload_file",
     "drive_upload_text",
 )
-TOOL_BRIDGE_TOOLS: tuple[str, ...] = tuple(dict.fromkeys((*COMPUTER_ACTION_TOOLS, *LEGACY_TOOL_BRIDGE_TOOLS)))
+AGENT_TOOL_BRIDGE_TOOLS: tuple[str, ...] = (
+    "microsoft_graph_status",
+    "teams_list",
+    "onedrive_list",
+    "outlook_read",
+    "sharepoint_status",
+    "sharepoint_sites",
+    "sharepoint_libraries",
+    "vps_status",
+    "vps_login_check",
+    "vps_sync_preview",
+    "vps_sync_execute",
+    "vps_ui_sync_preview",
+    "vps_ui_sync_execute",
+    "chroma_sync_status",
+    "chroma_sync_preview",
+    "chroma_sync_execute",
+)
+TOOL_BRIDGE_TOOLS: tuple[str, ...] = tuple(dict.fromkeys((*COMPUTER_ACTION_TOOLS, *LEGACY_TOOL_BRIDGE_TOOLS, *AGENT_TOOL_BRIDGE_TOOLS)))
+PRIVATE_READ_TOOLS: frozenset[str] = frozenset(
+    (
+        "gmail_search",
+        "teams_list",
+        "onedrive_list",
+        "outlook_read",
+        "sharepoint_sites",
+        "sharepoint_libraries",
+    )
+)
 WRITE_TOOLS: frozenset[str] = frozenset(
     (
         *COMPUTER_ACTION_SIDE_EFFECT_TOOLS,
         "gmail_manage",
         "drive_upload_file",
         "drive_upload_text",
+        "vps_sync_execute",
+        "vps_ui_sync_execute",
+        "chroma_sync_execute",
     )
 )
-APPROVAL_TOOLS: frozenset[str] = frozenset((*COMPUTER_ACTION_APPROVAL_TOOLS, *WRITE_TOOLS, "gmail_search"))
+APPROVAL_TOOLS: frozenset[str] = frozenset((*COMPUTER_ACTION_APPROVAL_TOOLS, *WRITE_TOOLS, *PRIVATE_READ_TOOLS))
 
 
 class ToolBridge:
@@ -154,6 +185,7 @@ class ToolBridge:
             "approval_required_for": list(APPROVAL_TOOLS),
             "computer_actions": computer_actions_status(),
             "legacy_tools": list(LEGACY_TOOL_BRIDGE_TOOLS),
+            "agent_tools": list(AGENT_TOOL_BRIDGE_TOOLS),
             "firewall_frequency_hz": 528.0,
             "last_result": self.last_result,
             "secret_redaction": "enabled",
@@ -248,6 +280,10 @@ class ToolBridge:
                 drive_folder_id=str(args.get("drive_folder_id") or ""),
                 approval=str(args.get("approval") or ""),
             )
+        if tool in AGENT_TOOL_BRIDGE_TOOLS:
+            from controller.agent_tools import AgentToolRegistry
+
+            return AgentToolRegistry().run_tool(tool, args)
         return {"status": "rejected", "reason": f"Tool not allowed by bridge: {tool}", "fake_success": False}
 
 

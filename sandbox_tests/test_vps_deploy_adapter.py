@@ -81,11 +81,14 @@ class TestVPSDeployAdapter(unittest.TestCase):
         self.assertIn("--exclude", cmd)
         self.assertIn(".secrets/", cmd)
         self.assertIn(".env*", cmd)
+        self.assertIn("out/", cmd)
+        self.assertIn(".roo/", cmd)
+        self.assertIn("**/*.log", cmd)
         self.assertIn("**/*.gguf", cmd)
         self.assertIn("--safe-links", cmd)
         self.assertIn("--protect-args", cmd)
         self.assertNotIn("SECRET", result["stdout"])
-        self.assertEqual(set(DEFAULT_RSYNC_EXCLUDES).issuperset({".git/", ".secrets/", ".env*", "wintrip_brain/", "data/uploads/"}), True)
+        self.assertEqual(set(DEFAULT_RSYNC_EXCLUDES).issuperset({".git/", ".secrets/", ".env*", ".roo/", "out/", "**/*.log", "wintrip_brain/", "data/uploads/"}), True)
 
     def test_sync_execute_blocks_without_exact_akkoord_before_rsync(self):
         calls = []

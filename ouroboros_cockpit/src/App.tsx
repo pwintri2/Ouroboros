@@ -17,6 +17,7 @@ import {
   KeyRound,
   Layers,
   MessageSquare,
+  Mic,
   Paperclip,
   Pause,
   Plug,
@@ -27,6 +28,8 @@ import {
   ShieldCheck,
   TerminalSquare,
   TestTube2,
+  Volume2,
+  VolumeX,
   Wrench,
   X,
   XCircle,
@@ -52,6 +55,7 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   shell: "/sandbox/shell",
   safeShellTool: "safe_shell",
   cockpitChat: "/api/cockpit/chat",
+  openclawVoiceStatus: "/api/openclaw-voice/status",
   agentTool: "/agent/tool",
   apiKeys: "/api/cockpit/api-keys",
   subscriptions: "/api/cockpit/subscriptions",
@@ -799,6 +803,22 @@ type WorldStatus = {
   via_bridge?: boolean;
 };
 
+type OpenClawVoiceStatus = {
+  status?: string;
+  configured?: boolean;
+  available?: boolean;
+  reachable_from_backend?: boolean;
+  root?: string;
+  server_url?: string;
+  websocket_url?: string;
+  gateway_url?: string;
+  gateway_chat_completions?: string;
+  start_script?: string;
+  next_action?: string;
+  reason?: string;
+  fake_success?: boolean;
+};
+
 type ApiKeyStatusPayload = {
   status?: string;
   secrets_returned?: boolean;
@@ -1001,6 +1021,13 @@ export default function App() {
   const [livingStatus, setLivingStatus] = useState<LivingStatus>({ status: "unknown" });
   const [quantumFoamStatus, setQuantumFoamStatus] = useState<QuantumFoamStatus>({ status: "unknown" });
   const [worldStatus, setWorldStatus] = useState<WorldStatus>({ status: "unknown" });
+  const [openclawVoiceStatus, setOpenclawVoiceStatus] = useState<OpenClawVoiceStatus>({ status: "unknown" });
+  const [voiceConnected, setVoiceConnected] = useState(false);
+  const [voiceRecording, setVoiceRecording] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceResponse, setVoiceResponse] = useState("");
+  const [voiceError, setVoiceError] = useState("");
+  const [voiceBrowserFallback, setVoiceBrowserFallback] = useState(true);
   const [externalCapabilities, setExternalCapabilities] = useState<ExternalCapabilitiesStatus>({ status: "unknown" });
   const [runtimeTools, setRuntimeTools] = useState<RuntimeToolsStatus>({ status: "unknown" });
   const [runtimeDoctor, setRuntimeDoctor] = useState<RuntimeDoctorStatus>({ status: "unknown" });
@@ -1027,6 +1054,16 @@ export default function App() {
   const fitRef = useRef<FitAddon | null>(null);
   const providerInitialized = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const voiceWsRef = useRef<WebSocket | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceAudioContextRef = useRef<AudioContext | null>(null);
+  const voiceSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const voiceProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const voiceRecordingRef = useRef(false);
+  const voiceTranscriptRef = useRef("");
+  const voiceAudibleAudioRef = useRef(false);
+  const voiceAudioQueueRef = useRef<Array<{ data: string; sampleRate: number }>>([]);
+  const voiceAudioPlayingRef = useRef(false);
 
   const api = useCallback(
     async <T,>(path: string, init?: ApiRequestInit): Promise<T> => {
@@ -1075,6 +1112,12 @@ export default function App() {
   const canCallSelectedProvider = selectedProvider?.enabled ?? false;
   const slashPrompt = prompt.trim().startsWith("/");
   const agenticPrompt = isLikelyAgenticPrompt(prompt, approvalPhrase);
+  const voiceStatusLabel = voiceRecording
+    ? "listening"
+    : voiceConnected
+      ? "connected"
+      : openclawVoiceStatus.status ?? "unknown";
+  const voiceReady = voiceConnected || openclawVoiceStatus.status === "online";
 
   const writeTerm = useCallback((text: string) => {
     terminalRef.current?.writeln(text.replace(/\n/g, "\r\n"));
@@ -1143,6 +1186,19 @@ export default function App() {
       setWorldStatus(data);
     } catch (error) {
       setWorldStatus((previous) => ({
+        ...previous,
+        status: unavailableStatus(previous.status),
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [api]);
+
+  const loadOpenclawVoiceStatus = useCallback(async () => {
+    try {
+      const data = await api<OpenClawVoiceStatus>(OUROBOROS_BACKEND_CONTRACT.openclawVoiceStatus);
+      setOpenclawVoiceStatus(data);
+    } catch (error) {
+      setOpenclawVoiceStatus((previous) => ({
         ...previous,
         status: unavailableStatus(previous.status),
         reason: error instanceof Error ? error.message : String(error),
@@ -1396,6 +1452,7 @@ export default function App() {
         await loadLivingStatus();
         await loadQuantumFoamStatus();
         await loadWorldStatus();
+        await loadOpenclawVoiceStatus();
         await loadExternalCapabilities();
         await loadRuntimeTools();
         await loadRuntimeDoctor();
@@ -1409,7 +1466,7 @@ export default function App() {
         // Agent runtime not available yet — leave previous list intact.
       }
     }
-  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadConnectorsStatus, loadGoogleOAuthStatus, loadAgentArchitecture, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
+  }, [api, activeTab, loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadOpenclawVoiceStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadConnectorsStatus, loadGoogleOAuthStatus, loadAgentArchitecture, loadCodexStatus, loadAgentsStatus, loadOpenhandsStatus]);
 
   useEffect(() => {
     invoke<BackendConfig>("backend_config")
@@ -1431,6 +1488,7 @@ export default function App() {
     loadLivingStatus().catch(() => undefined);
     loadQuantumFoamStatus().catch(() => undefined);
     loadWorldStatus().catch(() => undefined);
+    loadOpenclawVoiceStatus().catch(() => undefined);
     loadExternalCapabilities().catch(() => undefined);
     loadRuntimeTools().catch(() => undefined);
     loadRuntimeDoctor().catch(() => undefined);
@@ -1446,6 +1504,7 @@ export default function App() {
       loadLivingStatus().catch(() => undefined);
       loadQuantumFoamStatus().catch(() => undefined);
       loadWorldStatus().catch(() => undefined);
+      loadOpenclawVoiceStatus().catch(() => undefined);
       loadExternalCapabilities().catch(() => undefined);
       loadRuntimeTools().catch(() => undefined);
       loadRuntimeDoctor().catch(() => undefined);
@@ -1463,7 +1522,21 @@ export default function App() {
       window.clearInterval(id);
       window.clearInterval(capabilitiesId);
     };
-  }, [loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadConnectorsStatus, loadGoogleOAuthStatus, loadAgentArchitecture, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
+  }, [loadNexusStatus, loadLivingStatus, loadQuantumFoamStatus, loadWorldStatus, loadOpenclawVoiceStatus, loadExternalCapabilities, loadRuntimeTools, loadRuntimeDoctor, loadConnectorsStatus, loadGoogleOAuthStatus, loadAgentArchitecture, loadCodexStatus, loadCodexCapabilities, loadAgentsStatus, loadOpenhandsStatus]);
+
+  useEffect(() => {
+    const pingId = window.setInterval(() => {
+      if (voiceWsRef.current?.readyState === WebSocket.OPEN) {
+        voiceWsRef.current.send(JSON.stringify({ type: "ping" }));
+      }
+    }, 30000);
+    return () => {
+      window.clearInterval(pingId);
+      cleanupVoiceCapture(false);
+      voiceWsRef.current?.close(1000, "cockpit unload");
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
 
   useEffect(() => {
     if (!terminalHost.current || terminalRef.current) return;
@@ -1597,6 +1670,405 @@ export default function App() {
 
   function removeUploadedFile(index: number) {
     setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function openclawVoiceWsUrl() {
+    if (openclawVoiceStatus.websocket_url) return openclawVoiceStatus.websocket_url;
+    const host = window.location.hostname || "127.0.0.1";
+    return `ws://${host}:8765/ws`;
+  }
+
+  function openclawVoiceServerUrl() {
+    if (openclawVoiceStatus.server_url) return openclawVoiceStatus.server_url;
+    const host = window.location.hostname || "127.0.0.1";
+    return `http://${host}:8765`;
+  }
+
+  function openclawVoiceOfflineMessage() {
+    const serverUrl = openclawVoiceServerUrl();
+    const action = openclawVoiceStatus.start_script || "scripts/start_openclaw_ouroboros_voice.sh";
+    return `OpenClaw voice draait nog niet op ${serverUrl}. Start ${action} en probeer daarna opnieuw.`;
+  }
+
+  async function browserCanReachOpenclawVoice() {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 1200);
+    try {
+      await fetch(openclawVoiceServerUrl(), {
+        method: "GET",
+        mode: "no-cors",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function microphonePermissionHint(error?: unknown) {
+    const details: string[] = [];
+    const errorRecord = error instanceof Error ? error : null;
+    if (errorRecord?.name) details.push(errorRecord.name);
+    if (errorRecord?.message) details.push(errorRecord.message);
+
+    try {
+      const permissionsApi = navigator.permissions as Permissions & {
+        query: (descriptor: PermissionDescriptor | { name: "microphone" }) => Promise<PermissionStatus>;
+      };
+      const permission = await permissionsApi?.query?.({ name: "microphone" });
+      if (permission?.state) details.push(`permission=${permission.state}`);
+    } catch {
+      details.push("permission=unknown");
+    }
+
+    const secureEnough = window.isSecureContext || ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+    details.push(`origin=${window.location.origin}`);
+    details.push(`secureContext=${String(window.isSecureContext)}`);
+    if (!secureEnough) details.push("microfoon vereist localhost of https");
+
+    return [
+      "Microfoon wordt door browser/WebView of OS geblokkeerd.",
+      "Akkoord is alleen voor Ouroboros-acties; microfoontoegang moet in de browser/site/OS toestemming krijgen.",
+      details.filter(Boolean).join(" | "),
+      "Reset de microfoonpermission voor deze Cockpit of open http://127.0.0.1:1420 in een normale browser en sta Microphone toe.",
+    ].join(" ");
+  }
+
+  function cleanupVoiceCapture(notifyServer = true) {
+    const wasRecording = voiceRecordingRef.current;
+    voiceRecordingRef.current = false;
+    setVoiceRecording(false);
+    if (voiceProcessorRef.current) {
+      voiceProcessorRef.current.disconnect();
+      voiceProcessorRef.current = null;
+    }
+    if (voiceSourceRef.current) {
+      voiceSourceRef.current.disconnect();
+      voiceSourceRef.current = null;
+    }
+    if (voiceAudioContextRef.current) {
+      voiceAudioContextRef.current.close().catch(() => undefined);
+      voiceAudioContextRef.current = null;
+    }
+    if (voiceStreamRef.current) {
+      voiceStreamRef.current.getTracks().forEach((track) => track.stop());
+      voiceStreamRef.current = null;
+    }
+    const ws = voiceWsRef.current;
+    if (notifyServer && wasRecording && ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "stop_listening" }));
+    }
+  }
+
+  function handleOpenclawMessage(raw: unknown) {
+    const msg = asRecord(raw);
+    const type = summarizeValue(msg.type);
+    if (type === "listening_started") {
+      setVoiceError("");
+      return;
+    }
+    if (type === "listening_stopped") {
+      setVoiceRecording(false);
+      voiceRecordingRef.current = false;
+      return;
+    }
+    if (type === "transcript") {
+      const text = summarizeValue(msg.text);
+      if (text) {
+        voiceTranscriptRef.current = text;
+        setVoiceTranscript(text);
+        setPrompt(text);
+        setVoiceResponse("");
+        voiceAudibleAudioRef.current = false;
+        pushEvent("OpenClaw transcript", { status: "success", transcript: text, fake_success: false });
+      }
+      return;
+    }
+    if (type === "response_chunk") {
+      const text = summarizeValue(msg.text);
+      if (text) setVoiceResponse((previous) => `${previous}${text}`.slice(-4000));
+      return;
+    }
+    if (type === "audio_chunk") {
+      const data = summarizeValue(msg.data);
+      const sampleRate = Number(msg.sample_rate ?? 24000);
+      if (data) queueOpenclawAudio(data, Number.isFinite(sampleRate) ? sampleRate : 24000);
+      return;
+    }
+    if (type === "response_complete") {
+      const text = summarizeValue(msg.text) || voiceResponse;
+      if (text) setVoiceResponse(text);
+      const payload = {
+        status: "success",
+        route: "openclaw_voice",
+        provider: "ouroboros",
+        model: "living-runtime",
+        transcript: voiceTranscriptRef.current,
+        response: text,
+        openclaw_voice: {
+          status: "completed",
+          websocket_url: openclawVoiceWsUrl(),
+          browser_fallback: voiceBrowserFallback,
+          audible_server_audio: voiceAudibleAudioRef.current,
+          fake_success: false,
+        },
+        fake_success: false,
+      };
+      setLastChatResult(payload);
+      setChatOutput(renderResponse(payload));
+      pushEvent("OpenClaw voice response", payload);
+      if (voiceBrowserFallback && text) {
+        window.setTimeout(() => {
+          if (!voiceAudibleAudioRef.current) speakVoiceText(text);
+        }, 900);
+      }
+      return;
+    }
+    if (type === "error") {
+      setVoiceError(summarizeValue(msg.error) || summarizeValue(msg.reason) || "OpenClaw voice error");
+    }
+  }
+
+  async function ensureOpenclawVoiceConnected(): Promise<WebSocket> {
+    const existing = voiceWsRef.current;
+    if (existing?.readyState === WebSocket.OPEN) return existing;
+    if (existing?.readyState === WebSocket.CONNECTING) {
+      return new Promise((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error("OpenClaw voice connection timed out.")), 5000);
+        existing.addEventListener("open", () => {
+          window.clearTimeout(timeout);
+          resolve(existing);
+        }, { once: true });
+        existing.addEventListener("error", () => {
+          window.clearTimeout(timeout);
+          reject(new Error("OpenClaw voice websocket failed while connecting."));
+        }, { once: true });
+      });
+    }
+
+    const url = openclawVoiceWsUrl();
+    const reachable = await browserCanReachOpenclawVoice();
+    if (!reachable) {
+      await loadOpenclawVoiceStatus().catch(() => undefined);
+      throw new Error(openclawVoiceOfflineMessage());
+    }
+    setVoiceError("");
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const ws = new WebSocket(url);
+      voiceWsRef.current = ws;
+      const fail = (message: string) => {
+        if (!settled) {
+          settled = true;
+          reject(new Error(message));
+        }
+      };
+      ws.onopen = () => {
+        settled = true;
+        setVoiceConnected(true);
+        setVoiceError("");
+        pushEvent("OpenClaw voice", { status: "connected", websocket_url: url, fake_success: false });
+        resolve(ws);
+      };
+      ws.onmessage = (event) => {
+        try {
+          handleOpenclawMessage(JSON.parse(event.data));
+        } catch (error) {
+          setVoiceError(error instanceof Error ? error.message : String(error));
+        }
+      };
+      ws.onerror = () => {
+        setVoiceConnected(false);
+        fail(openclawVoiceOfflineMessage());
+      };
+      ws.onclose = (event) => {
+        setVoiceConnected(false);
+        cleanupVoiceCapture(false);
+        if (voiceWsRef.current === ws) voiceWsRef.current = null;
+        if (!settled) fail(event.code === 1006 ? openclawVoiceOfflineMessage() : `OpenClaw voice gesloten (${event.code || "no code"}).`);
+        if (event.code && event.code !== 1000) {
+          setVoiceError(event.code === 1006 ? openclawVoiceOfflineMessage() : `OpenClaw voice gesloten (${event.code}).`);
+        }
+      };
+    });
+  }
+
+  function disconnectOpenclawVoice() {
+    cleanupVoiceCapture(false);
+    voiceWsRef.current?.close(1000, "cockpit disconnect");
+    voiceWsRef.current = null;
+    setVoiceConnected(false);
+  }
+
+  function downsampleFloat32(input: Float32Array, inputRate: number, outputRate: number) {
+    if (!input.length || inputRate === outputRate) return new Float32Array(input);
+    const ratio = inputRate / outputRate;
+    const outputLength = Math.max(1, Math.round(input.length / ratio));
+    const output = new Float32Array(outputLength);
+    for (let i = 0; i < outputLength; i += 1) {
+      const start = Math.floor(i * ratio);
+      const end = Math.min(input.length, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      for (let j = start; j < end; j += 1) sum += input[j];
+      output[i] = sum / Math.max(1, end - start);
+    }
+    return output;
+  }
+
+  function float32ToBase64(input: Float32Array) {
+    const bytes = new Uint8Array(new Float32Array(input).buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+    return window.btoa(binary);
+  }
+
+  function requestVoiceMicStream() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("navigator.mediaDevices.getUserMedia is niet beschikbaar in deze browser/WebView.");
+    }
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+  }
+
+  async function startVoiceRecording() {
+    if (voiceRecordingRef.current) return;
+    let stream: MediaStream | null = null;
+    try {
+      const AudioCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtor) throw new Error("AudioContext is niet beschikbaar in deze runtime.");
+      stream = await requestVoiceMicStream();
+      const ws = await ensureOpenclawVoiceConnected();
+      const audioContext = new AudioCtor({ sampleRate: 16000 });
+      await audioContext.resume().catch(() => undefined);
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      voiceStreamRef.current = stream;
+      stream = null;
+      voiceAudioContextRef.current = audioContext;
+      voiceSourceRef.current = source;
+      voiceProcessorRef.current = processor;
+      voiceRecordingRef.current = true;
+      setVoiceRecording(true);
+      setVoiceTranscript("");
+      setVoiceResponse("");
+      setVoiceError("");
+      voiceAudibleAudioRef.current = false;
+      ws.send(JSON.stringify({ type: "start_listening" }));
+      processor.onaudioprocess = (event) => {
+        const activeWs = voiceWsRef.current;
+        if (!voiceRecordingRef.current || activeWs?.readyState !== WebSocket.OPEN) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const pcm16k = downsampleFloat32(input, audioContext.sampleRate, 16000);
+        activeWs.send(JSON.stringify({ type: "audio", data: float32ToBase64(pcm16k) }));
+      };
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+    } catch (error) {
+      stream?.getTracks().forEach((track) => track.stop());
+      cleanupVoiceCapture(false);
+      const message = error instanceof DOMException && ["NotAllowedError", "SecurityError", "NotFoundError"].includes(error.name)
+        ? await microphonePermissionHint(error)
+        : error instanceof Error && /not allowed|denied|permission|user agent|platform/i.test(error.message)
+          ? await microphonePermissionHint(error)
+          : error instanceof Error ? error.message : String(error);
+      setVoiceError(message);
+      pushEvent("OpenClaw mic blocked", { status: "blocked", error: message, fake_success: false });
+    }
+  }
+
+  function stopVoiceRecording() {
+    cleanupVoiceCapture(true);
+  }
+
+  function queueOpenclawAudio(data: string, sampleRate: number) {
+    voiceAudioQueueRef.current.push({ data, sampleRate });
+    void drainOpenclawAudioQueue();
+  }
+
+  function decodeOpenclawPcm(data: string) {
+    const binary = window.atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    if (bytes.byteLength % 4 === 0) {
+      const floatView = new Float32Array(buffer);
+      let maxFloat = 0;
+      let validFloat = floatView.length > 0;
+      for (let i = 0; i < floatView.length; i += 1) {
+        const value = floatView[i];
+        if (!Number.isFinite(value) || Math.abs(value) > 1.25) validFloat = false;
+        maxFloat = Math.max(maxFloat, Math.abs(value));
+      }
+      if (validFloat && maxFloat > 0.0001) {
+        voiceAudibleAudioRef.current = true;
+        return floatView;
+      }
+    }
+    const int16 = new Int16Array(buffer.slice(0, bytes.byteLength - (bytes.byteLength % 2)));
+    const float32 = new Float32Array(int16.length);
+    let maxInt = 0;
+    for (let i = 0; i < int16.length; i += 1) {
+      maxInt = Math.max(maxInt, Math.abs(int16[i]));
+      float32[i] = int16[i] / 32768;
+    }
+    if (maxInt > 4) voiceAudibleAudioRef.current = true;
+    return float32;
+  }
+
+  async function drainOpenclawAudioQueue() {
+    if (voiceAudioPlayingRef.current) return;
+    voiceAudioPlayingRef.current = true;
+    try {
+      while (voiceAudioQueueRef.current.length) {
+        const chunk = voiceAudioQueueRef.current.shift();
+        if (!chunk) break;
+        const AudioCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!AudioCtor) break;
+        const audio = decodeOpenclawPcm(chunk.data);
+        if (!audio.length) continue;
+        const audioContext = new AudioCtor({ sampleRate: chunk.sampleRate });
+        const buffer = audioContext.createBuffer(1, audio.length, chunk.sampleRate);
+        buffer.copyToChannel(audio, 0);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        await new Promise<void>((resolve) => {
+          source.onended = () => {
+            audioContext.close().catch(() => undefined);
+            resolve();
+          };
+          source.start();
+        });
+      }
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : String(error));
+    } finally {
+      voiceAudioPlayingRef.current = false;
+    }
+  }
+
+  function speakVoiceText(text: string) {
+    if (!("speechSynthesis" in window)) return;
+    const cleaned = text
+      .replace(/```[\s\S]*?```/g, "codeblok")
+      .replace(/[`*_#>-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!cleaned) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(cleaned);
+    utterance.lang = "nl-NL";
+    utterance.rate = 1;
+    window.speechSynthesis.speak(utterance);
   }
 
   async function sendChat() {
@@ -2220,6 +2692,7 @@ export default function App() {
             ok={quantumFoamStatus.status === "online" || quantumFoamStatus.status === "idle"}
           />
           <StatusPill icon={<Globe2 size={16} />} label="World" value={worldStatus.status ?? "unknown"} ok={worldStatus.status === "online"} />
+          <StatusPill icon={<Mic size={16} />} label="Voice" value={voiceStatusLabel} ok={voiceReady} />
           <StatusPill
             icon={<Bot size={16} />}
             label="AgentS"
@@ -2293,6 +2766,47 @@ export default function App() {
                     <button type="button" key={item} onClick={() => insertSlash(item)}>{item}</button>
                   ))}
                 </div>
+                <div className="voice-strip">
+                  <button
+                    type="button"
+                    className={voiceRecording ? "voice-recording" : ""}
+                    onClick={voiceRecording ? stopVoiceRecording : startVoiceRecording}
+                    disabled={busy}
+                    title={voiceRecording ? "Stop opname" : "Start spraakcommando"}
+                  >
+                    {voiceRecording ? <CircleStop size={14} /> : <Mic size={14} />}
+                    {voiceRecording ? "Stop" : "Praat"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={disconnectOpenclawVoice}
+                    disabled={!voiceConnected && !voiceRecording}
+                    title="Verbreek OpenClaw voice"
+                  >
+                    <Plug size={14} /> Los
+                  </button>
+                  <button
+                    type="button"
+                    className={voiceBrowserFallback ? "voice-fallback-on" : ""}
+                    onClick={() => setVoiceBrowserFallback((value) => !value)}
+                    title="Browserstem als OpenClaw geen hoorbare audio teruggeeft"
+                  >
+                    {voiceBrowserFallback ? <Volume2 size={14} /> : <VolumeX size={14} />}
+                    Stem
+                  </button>
+                  <span className={`voice-dot ${voiceRecording ? "recording" : voiceConnected ? "connected" : ""}`} />
+                  <span className="voice-state">{voiceStatusLabel}</span>
+                  {voiceError && <span className="voice-error">{voiceError}</span>}
+                  {!voiceError && openclawVoiceStatus.next_action && !voiceConnected && (
+                    <span className="voice-hint">{openclawVoiceStatus.next_action}</span>
+                  )}
+                </div>
+                {(voiceTranscript || voiceResponse) && (
+                  <div className="voice-live">
+                    {voiceTranscript && <span><strong>Jij</strong> {voiceTranscript}</span>}
+                    {voiceResponse && <span><strong>Ouroboros</strong> {voiceResponse}</span>}
+                  </div>
+                )}
                 <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
                 <div className="file-upload-strip">
                   <input
@@ -4050,7 +4564,7 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   const [machineStatus, setMachineStatus] = useState<any>(null);
   const [independenceStatus, setIndependenceStatus] = useState<any>(null);
   const [knowledgeAcquisition, setKnowledgeAcquisition] = useState<any>(null);
-  const [knowledgeMode, setKnowledgeMode] = useState("both");
+  const [knowledgeMode, setKnowledgeMode] = useState("gemma_brave");
   const [knowledgeMaxTopics, setKnowledgeMaxTopics] = useState(2);
   const [knowledgePasses, setKnowledgePasses] = useState(3);
   const [knowledgeModel, setKnowledgeModel] = useState("gemma4:latest");
@@ -4163,6 +4677,34 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
     }
   }
 
+  async function setupLitgpt() {
+    try {
+      const data = await api("/trainer/litgpt/setup", {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+      });
+      recordTrainerAction("Setup LitGPT", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Setup LitGPT", error);
+      console.error("Failed to setup LitGPT:", error);
+    }
+  }
+
+  async function setupUnsloth() {
+    try {
+      const data = await api("/trainer/unsloth/setup", {
+        method: "POST",
+        body: JSON.stringify({ approval }),
+      });
+      recordTrainerAction("Setup Unsloth", data);
+      await refresh();
+    } catch (error) {
+      recordTrainerError("Setup Unsloth", error);
+      console.error("Failed to setup Unsloth:", error);
+    }
+  }
+
   async function startJob(jobId: string) {
     try {
       const data = await api("/trainer/training/start", {
@@ -4178,13 +4720,17 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
   }
 
   async function startContinuous() {
+    const intervalSeconds = Math.max(30, Math.min(86400, Number(continuousInterval) || 300));
+    if (intervalSeconds !== continuousInterval) {
+      setContinuousInterval(intervalSeconds);
+    }
     try {
       const data = await api("/trainer/continuous/start", {
         method: "POST",
         body: JSON.stringify({
           approval,
           methods: continuousMethods,
-          interval_seconds: continuousInterval,
+          interval_seconds: intervalSeconds,
           execute_training: continuousExecute,
           run_immediately: false,
           litgpt_base_model: baseModel || "llama3.2:latest",
@@ -4606,6 +5152,20 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
             </button>
           </div>
         )}
+        {method === "litgpt" && (
+          <div className="trainer-actions">
+            <button onClick={setupLitgpt} disabled={!approvalReady}>
+              <Activity size={15} /> Setup LitGPT
+            </button>
+          </div>
+        )}
+        {method === "unsloth" && (
+          <div className="trainer-actions">
+            <button onClick={setupUnsloth} disabled={!approvalReady}>
+              <Activity size={15} /> Setup Unsloth
+            </button>
+          </div>
+        )}
         <button onClick={createJob}>
           <BrainCircuit size={15} /> Create Job
         </button>
@@ -4825,14 +5385,18 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
           <Metric label="Knowledge List" value={knowledgeAcquisition?.status ?? trainerStatus?.knowledge_acquisition?.status ?? "--"} tone={(knowledgeAcquisition?.topic_count ?? trainerStatus?.knowledge_acquisition?.topic_count ?? 0) > 0 ? "good" : "warn"} />
           <Metric label="Topics" value={knowledgeAcquisition?.topic_count ?? trainerStatus?.knowledge_acquisition?.topic_count ?? 0} />
           <Metric label="Gemma" value={knowledgeAcquisition?.gemma_completed ?? trainerStatus?.knowledge_acquisition?.gemma_completed ?? 0} />
+          <Metric label="Brave" value={knowledgeAcquisition?.brave_completed ?? trainerStatus?.knowledge_acquisition?.brave_completed ?? 0} />
           <Metric label="Browser" value={knowledgeAcquisition?.browser_completed ?? trainerStatus?.knowledge_acquisition?.browser_completed ?? 0} />
         </div>
         <div className="knowledge-controls">
           <label>
             Mode
             <select value={knowledgeMode} onChange={(e) => setKnowledgeMode(e.target.value)}>
+              <option value="gemma_brave">Gemma + Brave</option>
+              <option value="all">Gemma + Brave + Browser</option>
               <option value="both">Gemma + Browser</option>
               <option value="gemma">Gemma</option>
+              <option value="brave">Brave</option>
               <option value="browser">Browser</option>
             </select>
           </label>
