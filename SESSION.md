@@ -19,7 +19,7 @@ Fase 4.5 blijft actief. Daarnaast is er een **Sponsor Scout** toegevoegd om publ
 5. **Sponsor Scout** (`scripts/sponsor_scout.py`):
    - Doorzoekt publieke GitHub repositories via de GitHub Search API
    - Scoort kandidaten op privacy-first/local AI/macOS/Ollama overlap
-   - Genereert een Markdown/JSON rapport met een redelijke Nederlandstalige sponsorvraag
+   - Genereert een Markdown/JSON rapport met een redelijke Nederlandstalige sponsorvraag uit `templates/sponsor_ask_nl.txt`
    - Verstuurd niets automatisch; menselijke review blijft verplicht
    - GitHub Actions workflow toegevoegd: `.github/workflows/sponsor-scout.yml`
    - Unit tests toegevoegd in `test_sponsor_scout.py`

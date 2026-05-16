@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable
 
 
@@ -49,7 +50,7 @@ NEGATIVE_TERMS = {
     "nft": -10,
 }
 
-SPONSOR_ASK_NL = (
+DEFAULT_SPONSOR_ASK_NL = (
     "Zou {owner} WintripAI / Ouroboros willen steunen als vroege sponsor met "
     "een bescheiden bijdrage van €250 per maand of een eenmalige pilotbijdrage "
     "van €1.000? In ruil krijgt de sponsor zichtbaarheid in de projectupdates, "
@@ -57,6 +58,8 @@ SPONSOR_ASK_NL = (
     "Als dit te vroeg is, is een korte kennismaking of introductie naar een "
     "passende innovation/AI lead ook al waardevol."
 )
+
+DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "sponsor_ask_nl.txt"
 
 
 @dataclass(frozen=True)
@@ -181,10 +184,13 @@ def deduplicate_candidates(candidates: Iterable[Candidate]) -> list[Candidate]:
 
 def search_candidates(queries: list[str], limit: int, token: str | None = None) -> list[Candidate]:
     raw_candidates: list[Candidate] = []
+    # Fetch 2x the requested limit per query to leave room for scoring and deduplication,
+    # while capping at 50 to stay modest with GitHub Search API usage.
     per_query = max(10, min(50, limit * 2))
 
     for index, query in enumerate(queries):
         if index:
+            # Be polite to the GitHub Search API and avoid rapid back-to-back requests.
             time.sleep(1)
         payload = github_get_json(build_search_url(query, per_query), token=token)
         raw_candidates.extend(candidate_from_repo(item) for item in payload.get("items", []))
@@ -192,7 +198,15 @@ def search_candidates(queries: list[str], limit: int, token: str | None = None) 
     return deduplicate_candidates(raw_candidates)[:limit]
 
 
-def render_markdown(candidates: list[Candidate], queries: list[str]) -> str:
+def load_sponsor_ask_template(template_path: str | None = None) -> str:
+    path = Path(template_path) if template_path else DEFAULT_TEMPLATE_PATH
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return DEFAULT_SPONSOR_ASK_NL
+
+
+def render_markdown(candidates: list[Candidate], queries: list[str], sponsor_ask_template: str | None = None) -> str:
+    sponsor_ask = sponsor_ask_template or DEFAULT_SPONSOR_ASK_NL
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         "# Sponsor Scout Rapport",
@@ -206,7 +220,7 @@ def render_markdown(candidates: list[Candidate], queries: list[str]) -> str:
         "",
     ]
     lines.extend(f"- `{query}`" for query in queries)
-    lines.extend(["", "## Redelijke sponsorvraag", "", SPONSOR_ASK_NL.format(owner="de organisatie"), ""])
+    lines.extend(["", "## Redelijke sponsorvraag", "", sponsor_ask.format(owner="de organisatie"), ""])
     lines.extend(["## Kandidaten", ""])
 
     if not candidates:
@@ -216,7 +230,7 @@ def render_markdown(candidates: list[Candidate], queries: list[str]) -> str:
     for idx, candidate in enumerate(candidates, start=1):
         topics = ", ".join(candidate.topics[:8]) if candidate.topics else "geen topics"
         reasons = "; ".join(candidate.reasons[:6])
-        ask = SPONSOR_ASK_NL.format(owner=candidate.owner)
+        ask = sponsor_ask.format(owner=candidate.owner)
         lines.extend(
             [
                 f"### {idx}. {candidate.full_name}",
@@ -239,11 +253,12 @@ def render_markdown(candidates: list[Candidate], queries: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_json(candidates: list[Candidate], queries: list[str]) -> str:
+def render_json(candidates: list[Candidate], queries: list[str], sponsor_ask_template: str | None = None) -> str:
+    sponsor_ask = sponsor_ask_template or DEFAULT_SPONSOR_ASK_NL
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "queries": queries,
-        "sponsor_ask_nl": SPONSOR_ASK_NL.format(owner="{owner}"),
+        "sponsor_ask_nl": sponsor_ask.format(owner="{owner}"),
         "candidates": [
             {
                 "full_name": candidate.full_name,
@@ -256,7 +271,7 @@ def render_json(candidates: list[Candidate], queries: list[str]) -> str:
                 "language": candidate.language,
                 "score": candidate.score,
                 "reasons": list(candidate.reasons),
-                "suggested_ask_nl": SPONSOR_ASK_NL.format(owner=candidate.owner),
+                "suggested_ask_nl": sponsor_ask.format(owner=candidate.owner),
             }
             for candidate in candidates
         ],
@@ -271,6 +286,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown", help="Outputformaat.")
     parser.add_argument("--output", help="Pad voor rapportoutput. Zonder pad wordt stdout gebruikt.")
     parser.add_argument("--token", default=os.getenv("GITHUB_TOKEN"), help="GitHub token; standaard uit GITHUB_TOKEN.")
+    parser.add_argument(
+        "--ask-template",
+        help="Pad naar sponsorvraag-template met optionele {owner} placeholder.",
+    )
     return parser.parse_args(argv)
 
 
@@ -283,7 +302,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FOUT: {exc}", file=sys.stderr)
         print("Tip: zet GITHUB_TOKEN voor hogere rate limits en toegang tot GitHub Actions.", file=sys.stderr)
         return 1
-    content = render_json(candidates, queries) if args.format == "json" else render_markdown(candidates, queries)
+    sponsor_ask = load_sponsor_ask_template(args.ask_template)
+    content = (
+        render_json(candidates, queries, sponsor_ask)
+        if args.format == "json"
+        else render_markdown(candidates, queries, sponsor_ask)
+    )
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as output_file:

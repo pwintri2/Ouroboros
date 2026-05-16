@@ -77,7 +77,7 @@ Maak lokaal of via GitHub Actions een sponsor-shortlist voor WintripAI / Ourobor
 python scripts/sponsor_scout.py --limit 20 --output sponsor-scout-report.md
 ```
 
-De tool gebruikt publieke GitHub repository-search, scoort kandidaten op privacy-first/local AI-overlap en genereert een redelijke Nederlandstalige sponsorvraag. Er worden geen berichten automatisch verstuurd; het rapport is bedoeld voor menselijke review en personalisatie.
+De tool gebruikt publieke GitHub repository-search, scoort kandidaten op privacy-first/local AI-overlap en genereert een redelijke Nederlandstalige sponsorvraag uit `templates/sponsor_ask_nl.txt`. Er worden geen berichten automatisch verstuurd; het rapport is bedoeld voor menselijke review en personalisatie.
 
 ---
 

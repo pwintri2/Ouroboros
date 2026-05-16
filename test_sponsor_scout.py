@@ -1,6 +1,7 @@
 from scripts.sponsor_scout import (
     candidate_from_repo,
     deduplicate_candidates,
+    load_sponsor_ask_template,
     render_markdown,
     score_repository,
 )
@@ -63,3 +64,12 @@ def test_render_markdown_contains_human_review_warning_and_ask():
     assert "verstuurt niets automatisch" in markdown
     assert "€250 per maand" in markdown
     assert "example/local-ai-agent" in markdown
+
+
+def test_load_sponsor_ask_template_from_file(tmp_path):
+    template = tmp_path / "ask.txt"
+    template.write_text("Hallo {owner}, sponsor WintripAI?", encoding="utf-8")
+
+    loaded = load_sponsor_ask_template(str(template))
+
+    assert loaded == "Hallo {owner}, sponsor WintripAI?"
