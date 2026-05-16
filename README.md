@@ -65,6 +65,19 @@ Ouroboros is een product van [Ouroboros AI](https://ouroboros-ai.nl) — een Ned
 | 🤝 **Virtueel Team** | Meerdere AI-persona's die met elkaar vergaderen over een taak. |
 | 🍎 **Native macOS UI** | Minimalistische menubalk-app gebouwd in SwiftUI. |
 | 🔧 **Multi-Model Support** | Wissel naadloos tussen Ollama, Groq (cloud-escalatie), ChatGPT of Gemini. |
+| 🤝 **Sponsor Scout** | GitHub-tooling die publieke sponsor-kandidaten zoekt en alleen een menselijke shortlist maakt. |
+
+---
+
+## 🤝 Sponsor Scout
+
+Maak lokaal of via GitHub Actions een sponsor-shortlist voor WintripAI / Ouroboros:
+
+```bash
+python scripts/sponsor_scout.py --limit 20 --output sponsor-scout-report.md
+```
+
+De tool gebruikt publieke GitHub repository-search, scoort kandidaten op privacy-first/local AI-overlap en genereert een redelijke Nederlandstalige sponsorvraag. Er worden geen berichten automatisch verstuurd; het rapport is bedoeld voor menselijke review en personalisatie.
 
 ---
 
