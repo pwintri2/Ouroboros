@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🦅 WintripAI
+# 🦅 Ouroboros
 
 ### *Jouw privé AI-brein. Volledig lokaal. Volledig van jou.*
 
