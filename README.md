@@ -13,12 +13,12 @@
 
 <br/>
 
-> **WintripAI** is een autonome, privacy-first AI-agent die volledig lokaal op jouw machine draait.  
+> **Ouroboros** is een autonome, privacy-first AI-agent die volledig lokaal op jouw machine draait.  
 > Geen data naar de cloud. Geen afluisteren. Alleen jij en jouw eigen brein.
 
 <br/>
 
-![WintripAI Dashboard](https://img.shields.io/badge/Demo-Dashboard%20beschikbaar-brightgreen?style=for-the-badge)
+![Ouroboros Dashboard](https://img.shields.io/badge/Demo-Dashboard%20beschikbaar-brightgreen?style=for-the-badge)
 
 </div>
 
@@ -26,7 +26,7 @@
 
 ## 📋 Inhoudsopgave
 
-- [Over WintripAI](#-over-wintripai)
+- [Over Ouroboros](#-over-ouroboros)
 - [Kenmerken](#-kenmerken)
 - [Architectuur](#-architectuur)
 - [Componenten](#-componenten)
@@ -39,15 +39,15 @@
 
 ---
 
-## 🧠 Over WintripAI
+## 🧠 Over Ouroboros
 
-**WintripAI** is gebouwd op een simpele maar krachtige overtuiging:
+**Ouroboros** is gebouwd op een simpele maar krachtige overtuiging:
 
 > *AI moet voor jou werken — niet omgekeerd. En zeker niet voor een techbedrijf in Silicon Valley.*
 
-WintripAI is een **lokaal-first, autonoom AI-systeem** dat de OODA-loop (Observe → Orient → Decide → Act) implementeert om taken volledig zelfstandig uit te voeren. Het draait op je eigen Mac, praat met een lokaal taalmodel via [Ollama](https://ollama.com/), slaat herinneringen op in een lokale vectordatabase ([ChromaDB](https://www.trychroma.com/)), en heeft een native macOS-interface gebouwd in SwiftUI.
+Ouroboros is een **lokaal-first, autonoom AI-systeem** dat de OODA-loop (Observe → Orient → Decide → Act) implementeert om taken volledig zelfstandig uit te voeren. Het draait op je eigen Mac, praat met een lokaal taalmodel via [Ollama](https://ollama.com/), slaat herinneringen op in een lokale vectordatabase ([ChromaDB](https://www.trychroma.com/)), en heeft een native macOS-interface gebouwd in SwiftUI.
 
-WintripAI is een product van [Ouroboros AI](https://ouroboros-ai.nl) — een Nederlands AI-bureau dat gelooft in AI die de mens versterkt, niet vervangt.
+Ouroboros is een product van [Ouroboros AI](https://ouroboros-ai.nl) — een Nederlands AI-bureau dat gelooft in AI die de mens versterkt, niet vervangt.
 
 ---
 
@@ -70,11 +70,11 @@ WintripAI is een product van [Ouroboros AI](https://ouroboros-ai.nl) — een Ned
 
 ## 🏗️ Architectuur
 
-WintripAI is gebouwd rondom de **OODA-loop**: een militair besluitvormingsmodel dat perfect past bij autonome AI-agenten.
+Ouroboros is gebouwd rondom de **OODA-loop**: een militair besluitvormingsmodel dat perfect past bij autonome AI-agenten.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        WintripAI Systeem                        │
+│                        Ouroboros Systeem                        │
 │                                                                 │
 │  ┌──────────────┐    HTTP/JSON    ┌───────────────────────────┐ │
 │  │  Regiekamer  │ ◄────────────► │   FastAPI Backend          │ │
@@ -154,7 +154,7 @@ Een webdashboard (`index.html`) dat automatisch opent op `http://localhost:8000`
 
 ## 🛡️ Privacy & Veiligheid
 
-WintripAI is gebouwd met **privacy als basisvereiste**, niet als bijzaak.
+Ouroboros is gebouwd met **privacy als basisvereiste**, niet als bijzaak.
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
@@ -284,7 +284,7 @@ curl -X POST http://localhost:8000/orchestrate \
 
 ## 🔬 Ambient Sentinel PoC Demo
 
-De **Ambient Sentinel** is een van de meest geavanceerde features van WintripAI: een continu-bewakingssysteem dat anomalieën op je OS detecteert en **stil oplost** — zonder de gebruiker te alarmeren.
+De **Ambient Sentinel** is een van de meest geavanceerde features van Ouroboros: een continu-bewakingssysteem dat anomalieën op je OS detecteert en **stil oplost** — zonder de gebruiker te alarmeren.
 
 ### Scenario: Scareware-aanval op een oudere gebruiker
 
