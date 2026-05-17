@@ -409,26 +409,47 @@ class AgentOrchestrator:
                 pass
 
     def _reconcile_stale_jobs(self, agent: str | None = None, limit: int = 50) -> None:
-        """Fail old queued jobs that cannot have an in-process worker anymore."""
+        """Fail old non-terminal jobs that cannot have an in-process worker anymore."""
 
         try:
             stale_after = max(30, int(os.getenv("WINTRIP_AGENT_RUNTIME_STALE_QUEUED_SECONDS", "120")))
         except ValueError:
             stale_after = 120
+        try:
+            stale_running_grace = max(30, int(os.getenv("WINTRIP_AGENT_RUNTIME_STALE_RUNNING_GRACE_SECONDS", "120")))
+        except ValueError:
+            stale_running_grace = 120
         jobs = self.store.list_jobs(agent=agent, limit=max(50, int(limit or 50)))
         now = time.time()
         for job in jobs:
-            if str(job.get("status") or "") != "queued":
-                continue
-            if job.get("started_at"):
-                continue
-            created = _iso_to_timestamp(str(job.get("created_at") or ""))
-            if created is None or now - created < stale_after:
+            status = str(job.get("status") or "")
+            if status not in {"queued", "planning", "running", "testing", "waiting_for_human"}:
                 continue
             job_id = str(job.get("job_id") or "")
             if not job_id:
                 continue
-            reason = "stale_queued_after_runtime_restart"
+            if job_id in self._cancel_flags:
+                continue
+            if status == "queued" and not job.get("started_at"):
+                created = _iso_to_timestamp(str(job.get("created_at") or ""))
+                if created is None or now - created < stale_after:
+                    continue
+                reason = "stale_queued_after_runtime_restart"
+                preview = "Job bleef queued na runtime restart en is fail-closed gemarkeerd."
+            else:
+                started = _iso_to_timestamp(str(job.get("started_at") or ""))
+                updated = _iso_to_timestamp(str(job.get("updated_at") or ""))
+                created = _iso_to_timestamp(str(job.get("created_at") or ""))
+                reference = started or updated or created
+                try:
+                    timeout_seconds = max(1, int(job.get("timeout_seconds") or self.default_timeout_seconds))
+                except (TypeError, ValueError):
+                    timeout_seconds = self.default_timeout_seconds
+                stale_running_after = timeout_seconds + stale_running_grace
+                if reference is None or now - reference < stale_running_after:
+                    continue
+                reason = "stale_running_after_runtime_restart"
+                preview = "Job leek nog running, maar er is geen levende backend-worker meer; fail-closed gemarkeerd."
             updated = self.store.update(
                 job_id,
                 {
@@ -436,12 +457,15 @@ class AgentOrchestrator:
                     "finished_at": utc_now_iso(),
                     "exit_code": None,
                     "result_summary": reason,
-                    "response_preview": "Job bleef queued na runtime restart en is fail-closed gemarkeerd.",
+                    "response_preview": preview,
                 },
             )
             if updated and job.get("events_file"):
                 try:
-                    EventLog(str(job["events_file"])).append("stale_after_restart", {"status": "failed", "reason": reason})
+                    EventLog(str(job["events_file"])).append(
+                        "stale_after_restart",
+                        {"status": "failed", "previous_status": status, "reason": reason},
+                    )
                 except Exception:
                     pass
 

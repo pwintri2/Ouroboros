@@ -498,7 +498,9 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertTrue(result["approval_required"])
         self.assertEqual(result["provider"], "roo")
-        self.assertEqual(result["model"], "gpt-4.1-mini")
+        from controller.roo_cli_runtime import ROO_CHATGPT_MODEL
+
+        self.assertEqual(result["model"], ROO_CHATGPT_MODEL)
         self.assertEqual(calls, [])
         self.assertNotIn("slash_roo_readonly_redirect", str(result))
         self.assertNotIn("ns_travel_advice", str(result))

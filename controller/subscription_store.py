@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from controller.openai_model_catalog import openai_api_model_choices
+
 
 # ---------------------------------------------------------------------------
 # Supported subscription types
@@ -26,18 +28,11 @@ from typing import Any
 SUBSCRIPTION_PROVIDERS: dict[str, dict[str, Any]] = {
     "openai": {
         "id": "openai",
-        "label": "ChatGPT Plus / Pro / Team",
+        "label": "OpenAI API / ChatGPT Plus / Pro / Team",
         "aliases": ("chatgpt", "chatgpt-plus", "chatgpt-pro", "chatgpt-team", "openai-subscription"),
         "api_family": "openai_chat",
         "auth_modes": ("session_token", "oauth_refresh_token", "api_key_from_subscription"),
-        "models": [
-            "gpt-4o",
-            "gpt-4.1",
-            "gpt-4.1-mini",
-            "o4-mini",
-            "o3",
-            "o3-mini",
-        ],
+        "models": openai_api_model_choices(),
         "subscription_url": "https://chatgpt.com/settings/subscription",
         "api_key_url": "https://platform.openai.com/api-keys",
         "docs_url": "https://platform.openai.com/docs/guides/authentication",

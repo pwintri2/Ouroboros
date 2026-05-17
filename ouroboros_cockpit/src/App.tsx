@@ -893,7 +893,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   ouroboros: "Ouroboros Runtime",
   ollama: "Ollama Local",
   roo: "Roo Code Agent",
-  openai: "ChatGPT Pro",
+  openai: "OpenAI API",
   anthropic: "Claude Opus",
   deepseek: "DeepSeek API",
   xai: "Grok",
@@ -3051,8 +3051,8 @@ export default function App() {
 	                  <strong>Roo Code Model</strong>
 	                  <span>
 	                    {rooLoggedIn
-	                      ? `Roo-runs gebruiken ${rooDetails.forced_model ?? "gpt-4.1-mini"} via OpenAI API, of ${rooDetails.oauth_model ?? "anthropic/claude-opus-4.6"} via Roo OAuth; lokale fallback blijft ${rooDetails.fallback_model ?? "deepseek-coder:latest"}.`
-	                      : `Roo gebruikt de Cockpit OpenAI key voor ${rooDetails.forced_model ?? "gpt-4.1-mini"}; Login koppelt optioneel Roo Cloud OAuth.`}
+                      ? `Roo-runs gebruiken ${rooDetails.forced_model ?? "gpt-5.4-mini"} via OpenAI API, of ${rooDetails.oauth_model ?? "anthropic/claude-opus-4.6"} via Roo OAuth; lokale fallback blijft ${rooDetails.fallback_model ?? "deepseek-coder:latest"}.`
+                      : `Roo gebruikt de Cockpit OpenAI key voor ${rooDetails.forced_model ?? "gpt-5.4-mini"}; Login koppelt optioneel Roo Cloud OAuth.`}
 	                  </span>
 	                </div>
 	                <button onClick={startRooCloudLogin} disabled={busy || !approvalReady}>
@@ -3073,7 +3073,7 @@ export default function App() {
 		                <button type="button" onClick={() => { setProvider("roo"); setModel(rooDetails.oauth_model ?? "anthropic/claude-opus-4.6"); }}>
 		                  Roo OAuth
 		                </button>
-		                <button type="button" onClick={() => { setProvider("openai"); setModel(rooDetails.forced_model ?? "gpt-4.1-mini"); }}>
+		                <button type="button" onClick={() => { setProvider("openai"); setModel(rooDetails.forced_model ?? "gpt-5.4-mini"); }}>
 		                  OpenAI API
 		                </button>
 		              </div>
@@ -3639,7 +3639,7 @@ function RooEditorPanel({
   }, [events.length, job?.status]);
 
   const metadata = asRecord(job?.metadata);
-  const model = summarizeValue(metadata.cockpit_model ?? metadata.forced_roo_model ?? metadata.model) || "gpt-4.1-mini";
+  const model = summarizeValue(metadata.cockpit_model ?? metadata.forced_roo_model ?? metadata.model) || "gpt-5.4-mini";
   const provider = summarizeValue(metadata.cockpit_provider ?? metadata.provider) || "openai";
   const status = job?.status ?? summarizeValue(notice?.status) ?? (approvalReady ? "ready" : "approval_required");
   const terminal = ["completed", "failed", "cancelled"].includes(job?.status ?? "");

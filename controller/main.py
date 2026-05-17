@@ -109,13 +109,13 @@ try:
         ROO_OAUTH_PROVIDER,
     )
 except Exception:
-    ROO_FORCED_MODEL = "gpt-4.1-mini"
+    ROO_FORCED_MODEL = "gpt-5.4-mini"
     ROO_FORCED_PROVIDER = "openai"
     ROO_OAUTH_MODEL = "anthropic/claude-opus-4.6"
     ROO_OAUTH_PROVIDER = "roo"
     ROO_FALLBACK_MODEL = "deepseek-coder:latest"
     ROO_FALLBACK_PROVIDER = "ollama"
-    ROO_MODEL_POLICY = "chatgpt_api_mini_first_local_deepseek_fallback"
+    ROO_MODEL_POLICY = "openai_gpt54_mini_first_roo_oauth_and_local_deepseek_fallback"
 
     def roo_cli_login(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"status": "unavailable", "reason": "Roo CLI runtime adapter unavailable", "fake_success": False}
@@ -189,6 +189,12 @@ try:
     from controller.multi_api_router import MultiAPIRouter
 except ImportError:
     MultiAPIRouter = None
+
+try:
+    from controller.openai_model_catalog import openai_api_model_choices
+except Exception:
+    def openai_api_model_choices() -> list[str]:
+        return ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-4.1-mini", "gpt-4.1"]
 
 try:
     from controller.api_key_store import (
@@ -1579,7 +1585,7 @@ def _ouroboros_capabilities() -> dict[str, dict[str, str]]:
 
 APPROVAL_PHRASE = "Akkoord"
 MULTI_API_PROVIDER_MODELS: dict[str, list[str]] = {
-    "openai": ["gpt-4.1", "gpt-4.1-mini"],
+    "openai": openai_api_model_choices(),
     "anthropic": ["claude-opus-4-6", "claude-sonnet-4-6"],
     "deepseek": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
     "google": ["gemini-2.5-flash", "gemini-2.5-pro"],
@@ -1595,7 +1601,7 @@ MULTI_API_KEY_ENV: dict[str, str] = {
     "mistral": "MISTRAL_API_KEY",
 }
 MULTI_API_PROVIDER_LABELS: dict[str, str] = {
-    "openai": "ChatGPT Pro",
+    "openai": "OpenAI API",
     "anthropic": "Claude Opus",
     "deepseek": "DeepSeek API",
     "google": "Gemini",
@@ -1879,7 +1885,7 @@ def _default_cockpit_model(provider: str, requested_model: Optional[str] = None)
     if requested_model:
         return requested_model
     if provider == "roo":
-        return _active_base(_safe_model_names())
+        return ROO_FORCED_MODEL
     if provider == "ollama":
         return _active_base(_safe_model_names())
     options = MULTI_API_PROVIDER_MODELS.get(provider) or []
@@ -2553,7 +2559,13 @@ def _roo_model_choices(local_models: Optional[list[str]] = None, roo_cloud_model
     fallback visible for recovery when external credentials are unavailable.
     """
 
-    choices = [ROO_FORCED_MODEL, "gpt-4.1", ROO_OAUTH_MODEL, ROO_FALLBACK_MODEL]
+    choices = [ROO_FORCED_MODEL]
+    for model_name in MULTI_API_PROVIDER_MODELS.get("openai", []):
+        if model_name not in choices:
+            choices.append(model_name)
+    for model_name in (ROO_OAUTH_MODEL, ROO_FALLBACK_MODEL):
+        if model_name not in choices:
+            choices.append(model_name)
     for model_name in roo_cloud_models or []:
         text = str(model_name or "").strip()
         if text and text not in choices:
@@ -2892,7 +2904,7 @@ def _copy_cockpit_request(req: CockpitChatRequest, update: dict[str, Any]) -> Co
 
 
 def _rebuild_chat_context(req: CockpitChatRequest, provider: str, model: str) -> dict[str, Any]:
-    return build_chat_context(
+    context = build_chat_context(
         prompt=req.prompt,
         provider=provider,
         model=model,
@@ -2900,6 +2912,37 @@ def _rebuild_chat_context(req: CockpitChatRequest, provider: str, model: str) ->
         history=req.history or [],
         conversation_id=req.conversation_id,
     )
+    if provider != "ouroboros":
+        companion = _cockpit_companion_lookup(req.prompt)
+        if companion:
+            context["subliminal_lookup"] = companion.get("public") or {}
+            context["subliminal_foam"] = companion.get("foam") or {}
+            self_context = dict(context.get("self_context") or {})
+            self_context["companion_lookup"] = companion.get("public") or {}
+            context["self_context"] = self_context
+    return context
+
+
+def _cockpit_companion_lookup(prompt: object) -> dict[str, Any]:
+    if str(os.getenv("WINTRIP_COCKPIT_COMPANION_LOOKUP", "1")).strip().lower() in {"0", "false", "no", "off"}:
+        return {}
+    try:
+        return _ouroboros_subliminal_lookup_and_feed(prompt)
+    except Exception as exc:
+        return {
+            "public": {
+                "status": "error",
+                "route": "subliminal_quantum_foam",
+                "source": "none",
+                "reason": str(exc)[:240],
+                "field_injected": False,
+                "standard_llm_context": False,
+                "response_context_injected": False,
+                "fake_success": False,
+            },
+            "foam": {},
+            "fake_success": False,
+        }
 
 
 def _stored_api_keys() -> dict[str, str]:
@@ -4043,6 +4086,10 @@ def _with_cockpit_self_context(
     if chat_context.get("agentic_intent") is not None:
         self_context.setdefault("agentic_intent", chat_context.get("agentic_intent"))
     route = str(result.get("route") or "")
+    if "subliminal_lookup" not in result and isinstance(chat_context.get("subliminal_lookup"), dict):
+        result["subliminal_lookup"] = chat_context.get("subliminal_lookup") or {}
+    if "subliminal_foam" not in result and isinstance(chat_context.get("subliminal_foam"), dict):
+        result["subliminal_foam"] = chat_context.get("subliminal_foam") or {}
     attach_living_echo = route != "slash_agent" if include_living_echo is None else bool(include_living_echo)
     living_echo = _living_chat_echo() if attach_living_echo else {}
     if living_echo:
@@ -4073,6 +4120,27 @@ def _with_cockpit_self_context(
             )
         except Exception as exc:
             self_context["last_store"] = {"status": "error", "reason": str(exc), "fake_success": False}
+    try:
+        from controller.cockpit_learning_memory import store_cockpit_learning_turn
+
+        learning_store = store_cockpit_learning_turn(
+            prompt=str(chat_context.get("prompt") or ""),
+            result=result,
+            provider=provider,
+            model=model,
+            conversation_id=str(chat_context.get("conversation_id") or ""),
+        )
+        self_context["last_learning_store"] = learning_store
+        result["learning_store"] = {
+            "status": learning_store.get("status"),
+            "stored": bool(learning_store.get("stored")),
+            "record_type": learning_store.get("record_type"),
+            "route": learning_store.get("route"),
+            "brave_search_used": bool(learning_store.get("brave_search_used")),
+            "fake_success": False,
+        }
+    except Exception as exc:
+        self_context["last_learning_store"] = {"status": "error", "stored": False, "reason": str(exc), "fake_success": False}
     result["self_context"] = self_context
     return result
 

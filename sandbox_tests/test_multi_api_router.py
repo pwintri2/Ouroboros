@@ -407,6 +407,33 @@ class TestMultiAPIRouter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(post["json"]["model"], "deepseek-reasoner")
         self.assertEqual(post["json"]["tools"][0]["function"]["name"], "memory_search")
 
+    async def test_openai_compatible_rate_limit_retries_once(self):
+        old_retries = os.environ.get("WINTRIP_MULTI_API_RATE_LIMIT_RETRIES")
+        old_sleep = os.environ.get("WINTRIP_MULTI_API_RATE_LIMIT_MAX_SLEEP")
+        os.environ["WINTRIP_MULTI_API_RATE_LIMIT_RETRIES"] = "1"
+        os.environ["WINTRIP_MULTI_API_RATE_LIMIT_MAX_SLEEP"] = "0"
+        self.addCleanup(lambda: self._restore_env("WINTRIP_MULTI_API_RATE_LIMIT_RETRIES", old_retries))
+        self.addCleanup(lambda: self._restore_env("WINTRIP_MULTI_API_RATE_LIMIT_MAX_SLEEP", old_sleep))
+        factory = SequentialFactory(
+            [
+                ErrorResponse({"error": {"message": "Rate limit reached. Please try again in 0s."}}, status_code=429),
+                FakeResponse({"choices": [{"message": {"content": "ok after retry"}}]}),
+            ]
+        )
+        router = MultiAPIRouter(api_keys={"openai": "openai-key"}, client_factory=factory)
+
+        result = await router.route_chat("openai", "gpt-5.4-mini", "Hello")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["response"], "ok after retry")
+        self.assertEqual(factory.calls, 2)
+
+    def _restore_env(self, key: str, value: str | None) -> None:
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
 
 if __name__ == "__main__":
     unittest.main()

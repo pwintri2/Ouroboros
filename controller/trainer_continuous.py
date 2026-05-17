@@ -80,6 +80,7 @@ def _default_state() -> dict[str, Any]:
         "max_records": 1000,
         "last_seen_approved_count": 0,
         "pending_browser_records": 0,
+        "pending_learning_records": 0,
         "last_dataset_path": None,
         "last_tick_at": None,
         "last_error": "",
@@ -181,17 +182,31 @@ def stop_continuous_training(approval: str) -> dict[str, Any]:
 
 def notify_browser_training_record(item_id: str | None = None, source_url: str | None = None) -> dict[str, Any]:
     """Record that a browser call stored approved data for trainer consumption."""
+    return _notify_training_record(
+        kind="browser_record_received",
+        counter_key="pending_browser_records",
+        message=f"Approved browser record queued{f': {item_id}' if item_id else ''}.",
+        data={"item_id": item_id, "source_url": source_url},
+    )
+
+
+def notify_learning_record(item_id: str | None = None, source: str | None = None) -> dict[str, Any]:
+    """Record that a local learnable cockpit/action packet is ready for trainer consumption."""
+    return _notify_training_record(
+        kind="learning_record_received",
+        counter_key="pending_learning_records",
+        message=f"Approved cockpit learning record queued{f': {item_id}' if item_id else ''}.",
+        data={"item_id": item_id, "source": source},
+    )
+
+
+def _notify_training_record(kind: str, counter_key: str, message: str, data: dict[str, Any]) -> dict[str, Any]:
     should_wake = False
     with _STATE_LOCK:
         state = load_continuous_state()
-        state["pending_browser_records"] = int(state.get("pending_browser_records") or 0) + 1
+        state[counter_key] = int(state.get(counter_key) or 0) + 1
         should_wake = bool(state.get("enabled"))
-        _event(
-            state,
-            "browser_record_received",
-            f"Approved browser record queued{f': {item_id}' if item_id else ''}.",
-            {"item_id": item_id, "source_url": source_url},
-        )
+        _event(state, kind, message, data)
         save_continuous_state(state)
     if should_wake:
         _WORKER_WAKE.set()
@@ -225,7 +240,18 @@ def run_continuous_tick(
             save_continuous_state(state)
             return {"status": "blocked", "reason": state["last_error"], "state": state}
 
-        new_count = approved_count - int(state.get("last_seen_approved_count") or 0)
+        last_seen = int(state.get("last_seen_approved_count") or 0)
+        if approved_count < last_seen:
+            _event(
+                state,
+                "approved_count_rebased",
+                f"Approved trainable record count changed from {last_seen} to {approved_count}; rebuilding from current safe set.",
+                {"previous_last_seen": last_seen, "approved_count": approved_count},
+            )
+            state["last_seen_approved_count"] = 0
+            last_seen = 0
+
+        new_count = approved_count - last_seen
         if not force and (not enabled or new_count <= 0):
             state["status"] = "idle" if enabled else "stopped"
             state["last_tick_at"] = datetime.utcnow().isoformat()
@@ -261,6 +287,7 @@ def run_continuous_tick(
         state["status"] = "training" if should_execute else "dataset_ready"
         state["last_seen_approved_count"] = approved_count
         state["pending_browser_records"] = 0
+        state["pending_learning_records"] = 0
         state["last_dataset_path"] = str(dataset_path)
         state["last_tick_at"] = datetime.utcnow().isoformat()
         state["last_error"] = ""

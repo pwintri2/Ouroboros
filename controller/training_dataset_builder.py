@@ -75,11 +75,44 @@ def _is_approved_record(meta: dict[str, Any] | None, *, require_learnable: bool)
         return False
     if _truthy(meta.get("audit_only")):
         return False
-    if require_learnable and not _truthy(meta.get("learnable")):
+    if _explicitly_false(meta.get("learnable")):
+        return False
+    if require_learnable and not _truthy(meta.get("learnable")) and not _is_safe_legacy_learnable(meta):
         return False
     if not require_learnable and _explicitly_false(meta.get("learnable")):
         return False
     return True
+
+
+def _is_safe_legacy_learnable(meta: dict[str, Any]) -> bool:
+    """Allow pre-learnable approved records only from known training paths."""
+    if not _metadata_flag_missing(meta, "learnable"):
+        return False
+
+    record_type = str(meta.get("type") or "").strip()
+    source_type = str(meta.get("source_type") or "").strip()
+    tool_name = str(meta.get("tool_name") or "").strip()
+
+    if record_type == "training_snapshot_approved":
+        return True
+    if record_type == "knowledge_acquisition_record" and source_type in {
+        "gemma_distillation",
+        "brave_llm_context",
+        "browser_research_call",
+    }:
+        return True
+    if record_type in {"agent_learning_action_11d", "agent_tool_action_11d"} and tool_name == "training_ingest":
+        return True
+    return False
+
+
+def _metadata_flag_missing(meta: dict[str, Any], key: str) -> bool:
+    if key not in meta:
+        return True
+    value = meta.get(key)
+    if value is None:
+        return True
+    return isinstance(value, str) and value.strip() == ""
 
 
 def _explicitly_false(value: Any) -> bool:

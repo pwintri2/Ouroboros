@@ -132,6 +132,50 @@ class TestAgentOrchestrator(unittest.TestCase):
 
         self.assertEqual(orchestrator.supported_agents(), ["claude", "codex"])
 
+    def test_list_jobs_fails_stale_running_job_after_restart(self):
+        orchestrator = AgentOrchestrator(store=self.store, adapters={"codex": lambda *a, **k: {}})
+        record = orchestrator.create_job("codex", "stale worker", timeout_seconds=1)
+        old = "2026-01-01T00:00:00Z"
+        self.store.update(
+            record.job_id,
+            {
+                "status": "running",
+                "started_at": old,
+                "updated_at": old,
+                "finished_at": None,
+                "result_summary": "",
+                "response_preview": "",
+            },
+        )
+
+        jobs = orchestrator.list_jobs(agent="codex")
+
+        self.assertEqual(jobs[0]["status"], "failed")
+        self.assertEqual(jobs[0]["result_summary"], "stale_running_after_runtime_restart")
+        self.assertIn("geen levende backend-worker", jobs[0]["response_preview"])
+        events = orchestrator.read_events(record.job_id)
+        self.assertTrue(any(event["type"] == "stale_after_restart" for event in events))
+
+    def test_list_jobs_keeps_live_running_job_with_cancel_flag(self):
+        release = threading.Event()
+
+        def slow_adapter(job, log, on_progress):
+            release.wait(timeout=1)
+            return {"status": "completed", "exit_code": 0}
+
+        orchestrator = AgentOrchestrator(store=self.store, adapters={"codex": slow_adapter})
+        record = orchestrator.submit("codex", "still alive", timeout_seconds=1)
+        self._wait(lambda: (self.store.get(record.job_id) or {}).get("status") == "running")
+        old = "2026-01-01T00:00:00Z"
+        self.store.update(record.job_id, {"started_at": old, "updated_at": old})
+
+        try:
+            jobs = orchestrator.list_jobs(agent="codex")
+            self.assertEqual(jobs[0]["status"], "running")
+        finally:
+            release.set()
+        self._wait(lambda: (self.store.get(record.job_id) or {}).get("status") == "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -694,6 +694,8 @@ def _record_metadata(
         "source": str(source),
         "source_type": source_type,
         "approval_status": "approved",
+        "learnable": True,
+        "audit_only": False,
         "trust_level": _trust_level_for_source(source_type),
         "taint": _taint_for_source(source_type, result),
         "topic_id": str(topic.get("id") or ""),

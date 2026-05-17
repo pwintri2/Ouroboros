@@ -282,7 +282,8 @@ def run_litgpt_lora_finetune(
         "--lora_dropout", str(lora_dropout),
         "--train.max_tokens", "100000",  # Default max tokens
         "--optimizer.lr", str(learning_rate),
-        "--train.batch_size", str(batch_size),
+        "--train.micro_batch_size", str(batch_size),
+        "--train.global_batch_size", str(batch_size),
         "--train.epochs", str(epochs),
     ]
     

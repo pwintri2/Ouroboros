@@ -176,6 +176,68 @@ class TestContinuousTrainerAcceleratorSupport(unittest.TestCase):
             else:
                 os.environ["WINTRIP_WORKSPACE"] = previous_workspace
 
+    def test_continuous_tick_rebases_stale_last_seen_count(self):
+        from controller import trainer_continuous
+
+        previous_workspace = os.environ.get("WINTRIP_WORKSPACE")
+        try:
+            with tempfile.TemporaryDirectory(prefix="continuous-rebase-") as tmp:
+                os.environ["WINTRIP_WORKSPACE"] = tmp
+                state = trainer_continuous._default_state()
+                state["enabled"] = True
+                state["last_seen_approved_count"] = 99
+                trainer_continuous.save_continuous_state(state)
+
+                with (
+                    patch.object(trainer_continuous, "count_approved_records", return_value=3),
+                    patch.object(
+                        trainer_continuous,
+                        "build_dataset",
+                        return_value={"status": "success", "included_count": 3, "output_path": "dataset.jsonl"},
+                    ) as build_dataset,
+                    patch.object(
+                        trainer_continuous,
+                        "_create_or_run_job",
+                        return_value={"job_id": "job-1", "method": "litgpt", "state": "dataset_ready"},
+                    ),
+                ):
+                    result = trainer_continuous.run_continuous_tick(force=False, methods=["litgpt"], execute_training=False)
+
+                self.assertEqual(result["status"], "success")
+                self.assertEqual(result["state"]["last_seen_approved_count"], 3)
+                self.assertTrue(
+                    any(event.get("kind") == "approved_count_rebased" for event in result["state"].get("events", []))
+                )
+                build_dataset.assert_called_once()
+        finally:
+            if previous_workspace is None:
+                os.environ.pop("WINTRIP_WORKSPACE", None)
+            else:
+                os.environ["WINTRIP_WORKSPACE"] = previous_workspace
+
+    def test_notify_learning_record_wakes_enabled_worker_state(self):
+        from controller import trainer_continuous
+
+        previous_workspace = os.environ.get("WINTRIP_WORKSPACE")
+        try:
+            with tempfile.TemporaryDirectory(prefix="continuous-learning-notify-") as tmp:
+                os.environ["WINTRIP_WORKSPACE"] = tmp
+                state = trainer_continuous._default_state()
+                state["enabled"] = True
+                trainer_continuous.save_continuous_state(state)
+
+                with patch.object(trainer_continuous, "_ensure_worker") as ensure_worker:
+                    status = trainer_continuous.notify_learning_record(item_id="learn-1", source="cockpit_learning")
+
+                self.assertEqual(status["pending_learning_records"], 1)
+                self.assertTrue(any(event.get("kind") == "learning_record_received" for event in status.get("events", [])))
+                self.assertGreaterEqual(ensure_worker.call_count, 1)
+        finally:
+            if previous_workspace is None:
+                os.environ.pop("WINTRIP_WORKSPACE", None)
+            else:
+                os.environ["WINTRIP_WORKSPACE"] = previous_workspace
+
 
 if __name__ == "__main__":
     unittest.main()

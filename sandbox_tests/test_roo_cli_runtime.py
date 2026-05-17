@@ -49,7 +49,7 @@ class TestRooCliRuntime(unittest.TestCase):
         ollama_selection = roo_cli_runtime.map_cockpit_provider("ollama", "llama3.2:latest")
         self.assertEqual(ollama_selection["roo_provider"], "openai-native")
         self.assertEqual(ollama_selection["cockpit_provider"], "openai")
-        self.assertEqual(ollama_selection["cockpit_model"], "gpt-4.1-mini")
+        self.assertEqual(ollama_selection["cockpit_model"], roo_cli_runtime.ROO_CHATGPT_MODEL)
         self.assertEqual(roo_cli_runtime.map_cockpit_provider("openai", "gpt-4.1")["roo_provider"], "openai-native")
         self.assertEqual(roo_cli_runtime.map_cockpit_provider("google", "gemini-2.5-flash")["roo_provider"], "openai-native")
         roo_oauth = roo_cli_runtime.map_cockpit_provider("roo", "anthropic/claude-opus-4.7")
@@ -57,8 +57,8 @@ class TestRooCliRuntime(unittest.TestCase):
         self.assertEqual(roo_oauth["cockpit_model"], "anthropic/claude-opus-4.7")
         openrouter = roo_cli_runtime.map_cockpit_provider("openrouter", "openai/gpt-oss-120b")
         self.assertEqual(openrouter["roo_provider"], "openai-native")
-        self.assertEqual(openrouter["model_override"], "gpt-4.1-mini")
-        self.assertEqual(openrouter["forced_model"], "gpt-4.1-mini")
+        self.assertEqual(openrouter["model_override"], roo_cli_runtime.ROO_CHATGPT_MODEL)
+        self.assertEqual(openrouter["forced_model"], roo_cli_runtime.ROO_CHATGPT_MODEL)
         fallback = roo_cli_runtime.map_cockpit_provider("ollama", "deepseek-coder:latest")
         self.assertEqual(fallback["roo_provider"], "ollama")
         self.assertEqual(fallback["model_override"], "deepseek-coder:latest")
@@ -91,12 +91,28 @@ class TestRooCliRuntime(unittest.TestCase):
         self.assertIn("--provider", command)
         self.assertIn("openai-native", command)
         self.assertIn("--model", command)
-        self.assertIn("gpt-4.1-mini", command)
+        self.assertIn(roo_cli_runtime.ROO_CHATGPT_MODEL, command)
         self.assertNotIn("llama3.2:latest", command)
         self.assertNotIn("--api-key", command)
-        self.assertEqual(command[command.index("--reasoning-effort") + 1], "disable")
+        self.assertNotIn("--reasoning-effort", command)
         self.assertEqual(payload["provider_map"]["cockpit_provider"], "openai")
-        self.assertEqual(payload["provider_map"]["forced_model"], "gpt-4.1-mini")
+        self.assertEqual(payload["provider_map"]["forced_model"], roo_cli_runtime.ROO_CHATGPT_MODEL)
+
+    def test_build_command_disables_reasoning_for_non_reasoning_openai_models(self):
+        os.environ["OPENAI_API_KEY"] = "sk-test-roo-openai-key"
+        prompt_file = self.workspace / "prompt.md"
+        prompt_file.write_text("doe iets", encoding="utf-8")
+
+        payload = roo_cli_runtime.build_roo_command(
+            prompt_file=prompt_file,
+            workspace=self.workspace,
+            cockpit_provider="openai",
+            model="gpt-4.1-mini",
+        )
+
+        self.assertEqual(payload["status"], "success")
+        command = payload["command"]
+        self.assertEqual(command[command.index("--reasoning-effort") + 1], "disabled")
 
     def test_build_command_can_use_roo_oauth_provider_without_api_key_arg(self):
         self.fake_roo.write_text(
@@ -141,7 +157,7 @@ class TestRooCliRuntime(unittest.TestCase):
         self.assertIn("--provider", command)
         self.assertIn("openai-native", command)
         self.assertIn("--model", command)
-        self.assertIn("gpt-4.1-mini", command)
+        self.assertIn(roo_cli_runtime.ROO_CHATGPT_MODEL, command)
         self.assertNotIn("openrouter", command)
         self.assertEqual(payload["provider_map"]["replaced_provider"], "openrouter")
         self.assertEqual(payload["provider_map"]["forced_provider"], "openai")
@@ -213,7 +229,7 @@ class TestRooCliRuntime(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["provider_map"]["forced_model"], "gpt-4.1-mini")
+        self.assertEqual(result["provider_map"]["forced_model"], roo_cli_runtime.ROO_CHATGPT_MODEL)
         self.assertIn("gpt-4.1", result["command"])
         self.assertIn("openai-native", result["command"])
         self.assertEqual(result["api_key_source"], "subscription")

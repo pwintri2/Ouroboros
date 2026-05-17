@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from controller.openai_model_catalog import openai_api_model_choices, openai_roo_default_model
+
 try:
     from controller.ouroboros_paths import roo_code_path
 except Exception:
@@ -39,7 +41,8 @@ MAX_PARSE_CHARS = 2_000_000
 ROO_MODELS_CACHE_SECONDS = 60
 OPENROUTER_LOCAL_REPLACEMENT_MODEL = "gpt-oss:120b-cloud"
 ROO_CHATGPT_PROVIDER = "openai"
-ROO_CHATGPT_MODEL = "gpt-4.1-mini"
+ROO_OPENAI_MODELS = tuple(openai_api_model_choices())
+ROO_CHATGPT_MODEL = openai_roo_default_model()
 ROO_OAUTH_PROVIDER = "roo"
 ROO_OAUTH_MODEL = "anthropic/claude-opus-4.6"
 ROO_FALLBACK_PROVIDER = "ollama"
@@ -48,7 +51,7 @@ ROO_FALLBACK_MODEL = "deepseek-coder:latest"
 # but the policy is now ChatGPT/OpenAI-first with Roo OAuth available.
 ROO_FORCED_PROVIDER = ROO_CHATGPT_PROVIDER
 ROO_FORCED_MODEL = ROO_CHATGPT_MODEL
-ROO_MODEL_POLICY = "chatgpt_api_mini_first_local_deepseek_fallback"
+ROO_MODEL_POLICY = "openai_gpt54_mini_first_roo_oauth_and_local_deepseek_fallback"
 
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
@@ -953,6 +956,8 @@ def _classify_result(*, status: str, exit_code: int | None, stderr: str, details
         return "model_encrypted_content_unsupported"
     if "rate limit" in text or "tokens per min" in text or "too many requests" in text or "http 429" in text:
         return "rate_limited"
+    if "invalid reasoning effort" in text:
+        return "cli_argument_error"
     if "invalid provider" in text or "must be one of" in text:
         return "provider_unsupported"
     if "does not support tools" in text:
@@ -975,7 +980,7 @@ def _roo_reasoning_effort(roo_provider: str, model: object) -> str:
     clean_provider = str(roo_provider or "").strip().lower()
     clean_model = str(model or "").strip().lower()
     if clean_provider == "openai-native" and clean_model.startswith(("gpt-4.1", "gpt-4o", "gpt-3.5")):
-        return "disable"
+        return "disabled"
     return ""
 
 
@@ -1204,6 +1209,7 @@ __all__ = [
     "ROO_FORCED_MODEL",
     "ROO_FORCED_PROVIDER",
     "ROO_MODEL_POLICY",
+    "ROO_OPENAI_MODELS",
     "redact",
     "resolve_api_key_for_provider",
     "resolve_roo_binary",

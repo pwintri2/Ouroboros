@@ -917,6 +917,8 @@ class TestAgentTools(unittest.TestCase):
         stored_meta = next(iter(training_collection._store.values()))["metadata"]
         self.assertEqual(stored_meta["dimension_count"], 11)
         self.assertEqual(stored_meta["tool_name"], "training_ingest")
+        self.assertTrue(stored_meta["learnable"])
+        self.assertFalse(stored_meta["audit_only"])
         self.assertTrue(stored_meta["geometry_11d_available"])
         self.assertGreater(stored_meta["geometry_11d_volume"], 0)
         self.assertGreater(stored_meta["geometry_11d_oppervlakte"], 0)

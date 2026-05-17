@@ -258,7 +258,7 @@ def execute_roo_agent_task(
             roo_oauth_ready = _roo_cloud_auth_ready() if provider_map.get("roo_provider") == "roo" else True
             route_label = "Roo OAuth" if provider_map.get("roo_provider") == "roo" else "ChatGPT/OpenAI"
         except Exception:
-            ROO_FORCED_MODEL = "gpt-4.1-mini"
+            ROO_FORCED_MODEL = "gpt-5.4-mini"
             cockpit_provider = "openai"
             provider_map = {}
             effective_roo_model = ROO_FORCED_MODEL
@@ -520,9 +520,13 @@ def _roo_status_subcommand() -> dict[str, Any]:
         f"- binary: {status.get('binary') or 'n/a'}",
         f"- node: {status.get('node') or 'n/a'}",
         f"- runtime reachable: {status.get('runtime_reachable')}",
+        f"- default route: {status.get('forced_provider') or 'n/a'} / {status.get('forced_model') or 'n/a'}",
+        f"- fallback route: {status.get('fallback_provider') or 'n/a'} / {status.get('fallback_model') or 'n/a'}",
         f"- supported providers: {', '.join(list(status.get('supported_cli_providers') or [])[:12]) or '(unknown)'}",
         f"- ollama supported by CLI: {status.get('ollama_cli_supported')}",
     ]
+    if status.get("model_policy"):
+        lines.append(f"- model policy: {status.get('model_policy')}")
     version_probe = status.get("version_probe") if isinstance(status.get("version_probe"), dict) else {}
     if version_probe.get("stdout"):
         lines.append(f"- version: {str(version_probe.get('stdout')).strip()}")

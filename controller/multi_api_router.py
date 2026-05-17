@@ -11,10 +11,14 @@ import inspect
 import json
 import logging
 import os
+import asyncio
+import re
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
+
+from controller.openai_model_catalog import openai_default_model
 
 
 class MissingHTTPXError(RuntimeError):
@@ -59,7 +63,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         key_env=("OPENAI_API_KEY",),
         endpoint="https://api.openai.com/v1/chat/completions",
         api_family="openai_chat",
-        default_model="gpt-4o",
+        default_model=openai_default_model(),
     ),
     "anthropic": ProviderConfig(
         provider="anthropic",
@@ -347,13 +351,22 @@ class MultiAPIRouter:
         alias_source: str = "",
     ) -> JsonDict:
         payload = self._openai_chat_payload(model, prompt, system_prompt, tools, history)
-        async with self._managed_client() as client:
-            response = await client.post(
-                config.endpoint,
-                headers=self._bearer_headers(api_key),
-                json=payload,
-            )
-        response.raise_for_status()
+        retries = _provider_rate_limit_retries()
+        for attempt in range(retries + 1):
+            async with self._managed_client() as client:
+                response = await client.post(
+                    config.endpoint,
+                    headers=self._bearer_headers(api_key),
+                    json=payload,
+                )
+            try:
+                response.raise_for_status()
+                break
+            except HTTPX_HTTP_ERROR as exc:
+                if _http_status_code(exc) == 429 and attempt < retries:
+                    await asyncio.sleep(_provider_retry_delay_seconds(exc))
+                    continue
+                raise
         data = response.json()
         message = self._first_openai_message(data)
         return self._success_payload(
@@ -879,6 +892,43 @@ def _http_status_code(exc: Exception) -> int | None:
         return int(status_code) if status_code is not None else None
     except Exception:
         return None
+
+
+def _provider_rate_limit_retries() -> int:
+    try:
+        value = int(os.getenv("WINTRIP_MULTI_API_RATE_LIMIT_RETRIES", "1"))
+    except Exception:
+        value = 1
+    return max(0, min(value, 3))
+
+
+def _provider_retry_delay_seconds(exc: Exception) -> float:
+    cap = 30.0
+    try:
+        cap = max(0.0, min(float(os.getenv("WINTRIP_MULTI_API_RATE_LIMIT_MAX_SLEEP", "30")), 90.0))
+    except Exception:
+        pass
+    response = getattr(exc, "response", None)
+    retry_after = ""
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        try:
+            retry_after = str(headers.get("retry-after") or headers.get("Retry-After") or "")
+        except Exception:
+            retry_after = ""
+    if retry_after:
+        try:
+            return min(cap, max(0.0, float(retry_after) + 0.5))
+        except Exception:
+            pass
+    body = _provider_error_body(exc)
+    match = re.search(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", body, flags=re.I)
+    if match:
+        try:
+            return min(cap, max(0.0, float(match.group(1)) + 0.5))
+        except Exception:
+            pass
+    return min(cap, 2.0)
 
 
 def _provider_error_body(exc: Exception) -> str:

@@ -126,6 +126,7 @@ class TestKnowledgeAcquisition(unittest.TestCase):
             original_gemma = ka.distill_gemma_topic
             original_browser = ka.browser_research_topic
             original_store = ka.store_knowledge_record
+            seen_metadata = []
             try:
                 ka.distill_gemma_topic = lambda topic, model="gemma4:latest": {
                     "status": "success",
@@ -143,12 +144,17 @@ class TestKnowledgeAcquisition(unittest.TestCase):
                     "taint": "scrubbed_browser",
                     "fake_success": False,
                 }
-                ka.store_knowledge_record = lambda document, metadata: {
-                    "status": "success",
-                    "stored": True,
-                    "item_id": f"test_{metadata['topic_id']}_{metadata['source_type']}",
-                    "fake_success": False,
-                }
+
+                def fake_store(document, metadata):
+                    seen_metadata.append(metadata)
+                    return {
+                        "status": "success",
+                        "stored": True,
+                        "item_id": f"test_{metadata['topic_id']}_{metadata['source_type']}",
+                        "fake_success": False,
+                    }
+
+                ka.store_knowledge_record = fake_store
                 tick = ka.run_knowledge_tick(approval="Akkoord", mode="both", max_topics=2)
             finally:
                 ka.distill_gemma_topic = original_gemma
@@ -157,6 +163,8 @@ class TestKnowledgeAcquisition(unittest.TestCase):
 
             self.assertEqual(tick["status"], "success")
             self.assertEqual(tick["created_count"], 4)
+            self.assertTrue(all(item["learnable"] is True for item in seen_metadata))
+            self.assertTrue(all(item["audit_only"] is False for item in seen_metadata))
             status = ka.get_knowledge_acquisition_status()
             self.assertEqual(status["gemma_completed"], 2)
             self.assertEqual(status["browser_completed"], 2)
@@ -199,6 +207,8 @@ class TestKnowledgeAcquisition(unittest.TestCase):
             self.assertEqual(tick["parallelism"]["brave_llm_context"], 2)
             self.assertTrue(all(item["source_type"] == "brave_llm_context" for item in seen_metadata))
             self.assertTrue(all(item["dimension_count"] == 11 for item in seen_metadata))
+            self.assertTrue(all(item["learnable"] is True for item in seen_metadata))
+            self.assertTrue(all(item["audit_only"] is False for item in seen_metadata))
             status = ka.get_knowledge_acquisition_status()
             self.assertEqual(status["brave_completed"], 2)
 

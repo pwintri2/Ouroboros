@@ -3110,7 +3110,13 @@ class AgentToolRegistry:
         base_metadata = metadata_11d or _action_metadata(tool_name, document, approval_status, source, source_type)
         embedding = _embedding_11d(tool_name, document)
         geometry = _geometry_11d(embedding)
-        result_metadata = {**base_metadata, "geometry_11d": geometry}
+        is_trainable_ingest = approval_status == "approved" and tool_name == "training_ingest"
+        result_metadata = {
+            **base_metadata,
+            "learnable": is_trainable_ingest,
+            "audit_only": not is_trainable_ingest,
+            "geometry_11d": geometry,
+        }
         storage_metadata = _flatten_metadata(
             {
                 **base_metadata,
@@ -3118,6 +3124,8 @@ class AgentToolRegistry:
                 "type": "agent_learning_action_11d",
                 "tool_name": tool_name,
                 "approval_status": approval_status,
+                "learnable": is_trainable_ingest,
+                "audit_only": not is_trainable_ingest,
                 "source": source,
                 "source_type": source_type,
                 "content_hash": hashlib.sha256(document.encode("utf-8", errors="replace")).hexdigest(),

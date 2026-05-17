@@ -240,12 +240,15 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("roo", data["provider_options"])
         self.assertFalse(data["provider_options"]["roo"]["local_only"])
         self.assertTrue(data["provider_options"]["roo"]["agent_runtime"])
+        from controller.roo_cli_runtime import ROO_CHATGPT_MODEL
+
+        self.assertIn("gpt-5.4-mini", data["provider_options"]["roo"]["models"])
         self.assertIn("gpt-4.1", data["provider_options"]["roo"]["models"])
         self.assertIn("anthropic/claude-opus-4.6", data["provider_options"]["roo"]["models"])
         self.assertIn("gpt-4.1-mini", data["provider_options"]["roo"]["models"])
         self.assertIn("deepseek-coder:latest", data["provider_options"]["roo"]["models"])
-        self.assertEqual(data["provider_options"]["roo"]["default_model"], "gpt-4.1-mini")
-        self.assertEqual(data["provider_options"]["roo"]["forced_model"], "gpt-4.1-mini")
+        self.assertEqual(data["provider_options"]["roo"]["default_model"], ROO_CHATGPT_MODEL)
+        self.assertEqual(data["provider_options"]["roo"]["forced_model"], ROO_CHATGPT_MODEL)
         self.assertEqual(data["provider_options"]["roo"]["oauth_model"], "anthropic/claude-opus-4.6")
         self.assertEqual(data["provider_options"]["roo"]["fallback_model"], "deepseek-coder:latest")
         self.assertIn("roo/code-supernova", data["provider_options"]["roo"]["roo_cloud_models"])
