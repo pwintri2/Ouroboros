@@ -15,6 +15,7 @@ from controller.ollama_router import (
 
 
 EXPECTED_ALLOWLIST = (
+    "gpt-oss:120b-cloud",
     "ouroboros",
     "deepseek-coder:latest",
     "llama2-uncensored:latest",
@@ -45,6 +46,7 @@ class TestOllamaRouter(unittest.TestCase):
     def test_filters_disallowed_models_from_availability(self):
         models = [
             "qwen2.5:latest",
+            "gpt-oss:120b-cloud",
             {"name": "ouroboros:latest"},
             {"name": "mistral:latest"},
             {"model": "phi4:latest"},
@@ -54,7 +56,7 @@ class TestOllamaRouter(unittest.TestCase):
 
         self.assertEqual(
             allowed_available_models(models),
-            ("ouroboros", "mistral:latest", "llama3.2:latest"),
+            ("gpt-oss:120b-cloud", "ouroboros", "mistral:latest", "llama3.2:latest"),
         )
 
     def test_code_role_prefers_deepseek_then_codellama_then_devstral(self):
@@ -81,7 +83,11 @@ class TestOllamaRouter(unittest.TestCase):
             "llama3.2:latest",
         )
 
-    def test_critic_test_research_role_prefers_mistral_then_llama32_then_llama3(self):
+    def test_critic_test_research_role_prefers_gpt_oss_then_mistral_then_llama(self):
+        self.assertEqual(
+            select_ollama_model(role="research", list_models=lambda: ["gpt-oss:120b-cloud", "mistral:latest"]),
+            "gpt-oss:120b-cloud",
+        )
         self.assertEqual(
             select_ollama_model(role="critic", list_models=lambda: ["llama3:latest", "llama3.2:latest"]),
             "llama3.2:latest",
@@ -134,6 +140,10 @@ class TestOllamaRouter(unittest.TestCase):
         self.assertEqual(
             select_ollama_model(requested="phi3", role="default", list_models=lambda: []),
             "phi3:latest",
+        )
+        self.assertEqual(
+            select_ollama_model(role="default", list_models=lambda: []),
+            "gpt-oss:120b-cloud",
         )
 
     def test_route_details_and_status_are_status_endpoint_ready(self):

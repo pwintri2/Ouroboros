@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 
+PREFERRED_LOCAL_REASONING_MODEL = "gpt-oss:120b-cloud"
+
 ALLOWED_OLLAMA_MODELS: tuple[str, ...] = (
+    PREFERRED_LOCAL_REASONING_MODEL,
     "ouroboros",
     "deepseek-coder:latest",
     "llama2-uncensored:latest",
@@ -29,6 +32,11 @@ ALLOWED_OLLAMA_MODELS: tuple[str, ...] = (
 _ALLOWED_MODEL_SET = frozenset(ALLOWED_OLLAMA_MODELS)
 
 MODEL_ALIASES: dict[str, str] = {
+    "gpt-oss": PREFERRED_LOCAL_REASONING_MODEL,
+    "gpt-oss:120b": PREFERRED_LOCAL_REASONING_MODEL,
+    "gpt-oss-120b": PREFERRED_LOCAL_REASONING_MODEL,
+    "openai/gpt-oss-120b": PREFERRED_LOCAL_REASONING_MODEL,
+    "openrouter/gpt-oss-120b": PREFERRED_LOCAL_REASONING_MODEL,
     "ouroboros:latest": "ouroboros",
     "deepseek-coder": "deepseek-coder:latest",
     "llama2-uncensored": "llama2-uncensored:latest",
@@ -56,11 +64,13 @@ QUICK_MODEL_PREFERENCES: tuple[str, ...] = (
     "llama3.2:latest",
 )
 CRITIC_MODEL_PREFERENCES: tuple[str, ...] = (
+    PREFERRED_LOCAL_REASONING_MODEL,
     "mistral:latest",
     "llama3.2:latest",
     "llama3:latest",
 )
 DEFAULT_MODEL_PREFERENCES: tuple[str, ...] = (
+    PREFERRED_LOCAL_REASONING_MODEL,
     "llama3.2:latest",
     "llama3:latest",
     "mistral:latest",
@@ -70,8 +80,8 @@ DEFAULT_MODEL_PREFERENCES: tuple[str, ...] = (
 ROLE_MODEL_PREFERENCES: dict[str, tuple[str, ...]] = {
     "self_modification": CODE_MODEL_PREFERENCES,
     "code": CODE_MODEL_PREFERENCES,
-    "architecture": ("devstral:latest", "gemma4:latest"),
-    "reasoning": ("devstral:latest", "gemma4:latest"),
+    "architecture": (PREFERRED_LOCAL_REASONING_MODEL, "devstral:latest", "gemma4:latest"),
+    "reasoning": (PREFERRED_LOCAL_REASONING_MODEL, "devstral:latest", "gemma4:latest"),
     "quick": QUICK_MODEL_PREFERENCES,
     "routing": ("phi3:latest", "llama3:8b"),
     "internal": QUICK_MODEL_PREFERENCES,

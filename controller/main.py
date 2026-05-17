@@ -5,6 +5,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import os
 import sys
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import math
@@ -98,7 +99,24 @@ try:
     from controller.agent_runtime.adapters.roo_cli import roo_login as roo_cli_login
     from controller.agent_runtime.adapters.roo_cli import roo_models as roo_cli_cloud_models
     from controller.agent_runtime.adapters.roo_cli import roo_status as roo_cli_runtime_status
+    from controller.roo_cli_runtime import (
+        ROO_FALLBACK_MODEL,
+        ROO_FALLBACK_PROVIDER,
+        ROO_FORCED_MODEL,
+        ROO_FORCED_PROVIDER,
+        ROO_MODEL_POLICY,
+        ROO_OAUTH_MODEL,
+        ROO_OAUTH_PROVIDER,
+    )
 except Exception:
+    ROO_FORCED_MODEL = "gpt-4.1-mini"
+    ROO_FORCED_PROVIDER = "openai"
+    ROO_OAUTH_MODEL = "anthropic/claude-opus-4.6"
+    ROO_OAUTH_PROVIDER = "roo"
+    ROO_FALLBACK_MODEL = "deepseek-coder:latest"
+    ROO_FALLBACK_PROVIDER = "ollama"
+    ROO_MODEL_POLICY = "chatgpt_api_mini_first_local_deepseek_fallback"
+
     def roo_cli_login(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"status": "unavailable", "reason": "Roo CLI runtime adapter unavailable", "fake_success": False}
 
@@ -110,14 +128,37 @@ except Exception:
 
 load_dotenv()
 
+STATUS_TIMEOUT_SECONDS = 2.5
+_STATUS_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="wintrip-status")
+
+
+def _status_timeout_seconds(default: float = STATUS_TIMEOUT_SECONDS) -> float:
+    try:
+        value = float(os.getenv("WINTRIP_STATUS_TIMEOUT_SECONDS", str(default)))
+    except Exception:
+        value = default
+    return max(0.25, min(value, 10.0))
+
+
+def _call_with_timeout(fn: Any, default: Any, *, timeout_seconds: float | None = None) -> Any:
+    try:
+        future = _STATUS_EXECUTOR.submit(fn)
+        return future.result(timeout=timeout_seconds if timeout_seconds is not None else _status_timeout_seconds())
+    except concurrent.futures.TimeoutError:
+        return default
+    except Exception:
+        return default
+
 try:
     from controller.provider_router import route_gemini, route_claude, check_providers
 except ImportError:
     from provider_router import route_gemini, route_claude, check_providers
 
 try:
-    from controller.ollama_router import allowed_available_models, ollama_router_status
+    from controller.ollama_router import PREFERRED_LOCAL_REASONING_MODEL, allowed_available_models, ollama_router_status
 except Exception:
+    PREFERRED_LOCAL_REASONING_MODEL = "gpt-oss:120b-cloud"
+
     def allowed_available_models(models=None) -> tuple[str, ...]:
         return tuple(str(model) for model in (models or ()) if model)
 
@@ -126,7 +167,7 @@ except Exception:
             "allowed_models": [],
             "available_models": [],
             "roles": {},
-            "default_model": "llama3.2:latest",
+            "default_model": PREFERRED_LOCAL_REASONING_MODEL,
         }
 
 try:
@@ -275,9 +316,165 @@ except Exception:
 
 try:
     from controller.api.trainer_pipeline_routes import init_trainer_pipeline
-except Exception:
+except Exception as exc:
+    _trainer_pipeline_import_error = exc
+
     def init_trainer_pipeline(app: Any) -> None:
         app.state.trainer_pipeline_routes_unavailable = True
+        app.state.trainer_pipeline_routes_unavailable_reason = str(_trainer_pipeline_import_error)
+
+        from controller.trainer_fallback import (
+            trainer_fallback_codex_agent_memory,
+            trainer_fallback_codex_functions,
+            trainer_fallback_codex_monitor,
+            trainer_fallback_component,
+            trainer_fallback_jobs,
+            trainer_fallback_pocket_map,
+            trainer_fallback_status,
+        )
+
+        reason = str(_trainer_pipeline_import_error)
+
+        @app.get("/trainer/status")
+        async def trainer_pipeline_fallback_status() -> dict[str, Any]:
+            return trainer_fallback_status(reason)
+
+        @app.get("/trainer/jobs")
+        async def trainer_pipeline_fallback_jobs() -> dict[str, Any]:
+            return trainer_fallback_jobs(reason)
+
+        @app.get("/trainer/jobs/{job_id}")
+        async def trainer_pipeline_fallback_job(job_id: str) -> dict[str, Any]:
+            jobs = trainer_fallback_jobs(reason).get("jobs", [])
+            for job in jobs:
+                if isinstance(job, dict) and job.get("job_id") == job_id:
+                    return job
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        @app.get("/trainer/continuous/status")
+        async def trainer_pipeline_fallback_continuous_status() -> dict[str, Any]:
+            return trainer_fallback_component("continuous", reason)
+
+        @app.get("/trainer/rotating-blue/status")
+        async def trainer_pipeline_fallback_rotating_blue_status() -> dict[str, Any]:
+            return trainer_fallback_component("rotating_blue", reason)
+
+        @app.get("/trainer/streaming-consciousness/status")
+        async def trainer_pipeline_fallback_streaming_status() -> dict[str, Any]:
+            return trainer_fallback_component("streaming_consciousness", reason)
+
+        @app.get("/trainer/codeneuron/status")
+        async def trainer_pipeline_fallback_codeneuron_status() -> dict[str, Any]:
+            return trainer_fallback_component("codeneuron", reason)
+
+        @app.get("/trainer/codeneuron/pocket-map")
+        async def trainer_pipeline_fallback_codeneuron_pocket_map() -> dict[str, Any]:
+            return trainer_fallback_pocket_map(reason)
+
+        @app.get("/trainer/codeneuron/search")
+        async def trainer_pipeline_fallback_codeneuron_search(q: str = "", limit: int = 20) -> dict[str, Any]:
+            return {
+                "status": "degraded",
+                "routes_available": False,
+                "reason": reason,
+                "query": q,
+                "limit": limit,
+                "results": [],
+                "fake_success": False,
+            }
+
+        @app.get("/trainer/curriculum/status")
+        async def trainer_pipeline_fallback_curriculum_status() -> dict[str, Any]:
+            return trainer_fallback_component("curriculum", reason)
+
+        @app.get("/trainer/knowledge/status")
+        async def trainer_pipeline_fallback_knowledge_status() -> dict[str, Any]:
+            return trainer_fallback_component("knowledge_acquisition", reason)
+
+        @app.get("/trainer/ecosystem/status")
+        async def trainer_pipeline_fallback_ecosystem_status() -> dict[str, Any]:
+            return trainer_fallback_component("ecosystem", reason)
+
+        @app.get("/trainer/ecosystem/knowledge/status")
+        async def trainer_pipeline_fallback_ecosystem_knowledge_status() -> dict[str, Any]:
+            return trainer_fallback_component("ecosystem_knowledge", reason)
+
+        @app.get("/trainer/popos/status")
+        async def trainer_pipeline_fallback_popos_status() -> dict[str, Any]:
+            return trainer_fallback_component("popos_diagnostics", reason)
+
+        @app.get("/trainer/google/status")
+        async def trainer_pipeline_fallback_google_status() -> dict[str, Any]:
+            return trainer_fallback_component("google_workspace", reason)
+
+        @app.get("/trainer/rclone/status")
+        async def trainer_pipeline_fallback_rclone_status() -> dict[str, Any]:
+            return trainer_fallback_component("rclone_drive", reason)
+
+        @app.get("/trainer/microsoft/status")
+        async def trainer_pipeline_fallback_microsoft_status() -> dict[str, Any]:
+            return trainer_fallback_component("microsoft_graph", reason)
+
+        @app.get("/trainer/sharepoint/status")
+        async def trainer_pipeline_fallback_sharepoint_status() -> dict[str, Any]:
+            return trainer_fallback_component("sharepoint", reason)
+
+        @app.get("/trainer/crawler/status")
+        async def trainer_pipeline_fallback_crawler_status() -> dict[str, Any]:
+            return trainer_fallback_component("agentic_crawler", reason)
+
+        @app.get("/trainer/host-programs/status")
+        async def trainer_pipeline_fallback_host_programs_status() -> dict[str, Any]:
+            return trainer_fallback_component("program_inventory", reason)
+
+        @app.get("/trainer/host-sensory/status")
+        async def trainer_pipeline_fallback_host_sensory_status() -> dict[str, Any]:
+            return trainer_fallback_component("host_sensory", reason)
+
+        @app.get("/trainer/local-machine/status")
+        async def trainer_pipeline_fallback_local_machine_status() -> dict[str, Any]:
+            return trainer_fallback_component("local_machine", reason)
+
+        @app.get("/trainer/independence/status")
+        async def trainer_pipeline_fallback_independence_status() -> dict[str, Any]:
+            return trainer_fallback_component("independence", reason)
+
+        @app.get("/trainer/codex/functions")
+        async def trainer_pipeline_fallback_codex_functions() -> dict[str, Any]:
+            return trainer_fallback_codex_functions(reason)
+
+        @app.get("/trainer/codex/monitor")
+        async def trainer_pipeline_fallback_codex_monitor() -> dict[str, Any]:
+            return trainer_fallback_codex_monitor(reason)
+
+        @app.get("/trainer/codex/agent/status")
+        async def trainer_pipeline_fallback_codex_agent_status() -> dict[str, Any]:
+            return trainer_fallback_component("codex_agent", reason)
+
+        @app.get("/trainer/codex/agent/memory")
+        async def trainer_pipeline_fallback_codex_agent_memory(limit: int = 20) -> dict[str, Any]:
+            return trainer_fallback_codex_agent_memory(reason, limit=limit)
+
+        @app.get("/trainer/artifacts")
+        async def trainer_pipeline_fallback_artifacts() -> dict[str, Any]:
+            summary = trainer_fallback_component("artifacts", reason)
+            return {**summary, "artifacts": []}
+
+        @app.get("/trainer/artifacts/summary")
+        async def trainer_pipeline_fallback_artifacts_summary() -> dict[str, Any]:
+            return trainer_fallback_component("artifacts", reason)
+
+        @app.api_route("/trainer/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        async def trainer_pipeline_fallback_unavailable(path: str) -> dict[str, Any]:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "unavailable",
+                    "path": f"/trainer/{path}",
+                    "reason": reason,
+                    "fake_success": False,
+                },
+            )
 
 try:
     from controller.api.agent_runtime_routes import init_agent_runtime
@@ -427,6 +624,64 @@ class _UnavailableAgentTools:
         return self.last_tool_result
 
 
+class _DegradedCollection:
+    def __init__(self, reason: str = ""):
+        self.reason = reason
+
+    def count(self) -> int:
+        return 0
+
+    def get(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"ids": [], "documents": [], "metadatas": []}
+
+    def query(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    def add(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def upsert(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+class _DegradedKnowledgeBase:
+    def __init__(self, reason: str):
+        self.init_error = reason
+        self.collection = _DegradedCollection(reason)
+
+    def ingest_file(self, *_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    def ingest_reflection(self, *_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    def list_items(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "degraded", "reason": self.init_error, "topics": [], "categories": {}, "total": 0}
+
+    def search(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return []
+
+    def search_reflections(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return []
+
+    def search_detailed(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return []
+
+
+def _build_knowledge_base() -> Any:
+    timeout = max(3.0, _status_timeout_seconds(default=6.0))
+
+    def create() -> Any:
+        return KnowledgeBase()
+
+    instance = _call_with_timeout(create, None, timeout_seconds=timeout)
+    if instance is not None:
+        return instance
+    reason = f"KnowledgeBase startup timeout after {timeout:.1f}s; Chroma memory degraded for this backend process."
+    print(f"⚠️ [Hippocampus]: {reason}")
+    return _DegradedKnowledgeBase(reason)
+
+
 AgentToolRegistryClass = AgentToolRegistry or _UnavailableAgentTools
 app = FastAPI()
 
@@ -439,7 +694,7 @@ app.add_middleware(
 )
 
 ollama = OllamaClient()
-kb = KnowledgeBase()
+kb = _build_knowledge_base()
 router = AIRouter(ollama_client=ollama, kb=kb)
 mail_executor = MailExecutor()
 stream_storage = StreamStorage(collection=kb.collection)
@@ -686,14 +941,38 @@ class CommitSaveRequest(BaseModel):
     filename: str
     content: str
 
+
+def _memory_count_direct() -> int:
+    return int(kb.collection.count())
+
+
+def _safe_memory_count() -> int:
+    value = _call_with_timeout(_memory_count_direct, 0, timeout_seconds=_status_timeout_seconds())
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _safe_chroma_runtime_status() -> dict[str, Any]:
+    degraded = {
+        "status": "degraded",
+        "available": False,
+        "reason": "Chroma status timeout; backend blijft responsief.",
+        "fake_success": False,
+    }
+    value = _call_with_timeout(chroma_runtime_status, degraded, timeout_seconds=_status_timeout_seconds())
+    return value if isinstance(value, dict) else degraded
+
+
+def _health_payload() -> dict[str, Any]:
+    return {"status": "online", "agent": "Wintrip", "memories": _safe_memory_count(), "training": "online"}
+
+
 @app.get("/status")
 @app.get("/health")
 async def health():
-    try:
-        memories = kb.collection.count()
-    except Exception:
-        memories = 0
-    return {"status": "online", "agent": "Wintrip", "memories": memories, "training": "online"}
+    return await asyncio.to_thread(_health_payload)
 
 @app.get("/models")
 async def get_models():
@@ -831,6 +1110,13 @@ async def ouroboros_training_ingest(req: TrainingIngestRequest):
 @app.post("/api/ouroboros/hippocampus/inspect")
 async def ouroboros_inspect_hippocampus(req: InspectHippocampusRequest):
     return _inspect_hippocampus_payload(limit=req.limit or 7)
+
+
+@app.get("/api/knowledge/list")
+@app.get("/knowledge/list")
+async def knowledge_list(source: str = None, limit: int = 500):
+    """Geeft een gegroepeerd overzicht van alle kennis-items in het brein."""
+    return kb.list_items(source_filter=source, limit=limit)
 
 @app.post("/api/ouroboros/chatgpt/browser")
 async def ouroboros_ask_chatgpt_in_browser(req: BrowserChatGPTRequest):
@@ -1189,7 +1475,7 @@ async def ouroboros_peer_exchange(req: PeerExchangeRequest):
 @app.get("/api/ouroboros/chroma/status")
 @app.get("/api/chroma/status")
 async def ouroboros_chroma_status():
-    return chroma_runtime_status()
+    return await asyncio.to_thread(_safe_chroma_runtime_status)
 
 @app.get("/api/ouroboros/trigger-actions/status")
 async def ouroboros_trigger_actions_status():
@@ -1352,6 +1638,7 @@ PROVIDER_ALIASES: dict[str, str] = {
     "google": "google",
     "grok": "xai",
     "xai": "xai",
+    "openrouter": "ollama",
 }
 
 
@@ -1363,14 +1650,10 @@ def _safe_check_providers() -> dict[str, dict[str, Any]]:
 
 
 def _backend_status_payload(models: Optional[list[str]] = None) -> dict[str, Any]:
-    try:
-        memories = kb.collection.count()
-    except Exception:
-        memories = 0
     return {
         "status": "online",
         "agent": "Wintrip",
-        "memories": memories,
+        "memories": _safe_memory_count(),
         "training": "online",
         "models_available": len(models or []),
         "loop": _loop_summary(),
@@ -1399,7 +1682,12 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
         or roo_cloud.get("available")
         or str(roo_cloud.get("status") or "").lower() == "online"
     )
-    roo_login_ready = bool(roo_auth_probe.get("logged_in_hint") or roo_catalog_available)
+    roo_cloud_reason = str(roo_cloud.get("reason") or roo_cloud.get("stderr") or "")
+    roo_cloud_rejected = not roo_catalog_available and str(roo_cloud.get("status") or "").lower() in {"error", "failed"} and any(
+        marker in roo_cloud_reason.lower()
+        for marker in ("token is not valid", "authentication", "http 410", "hasapikey: false", "api key")
+    )
+    roo_login_ready = bool(roo_catalog_available or (roo_auth_probe.get("logged_in_hint") and not roo_cloud_rejected))
     roo_cloud_models_by_provider = {"roo": roo_cloud_model_ids}
     roo_cloud_models_by_provider.update(
         {provider: MULTI_API_PROVIDER_MODELS.get(provider, []) for provider in ROO_CLOUD_COCKPIT_PROVIDERS}
@@ -1445,13 +1733,20 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             "local_models": models,
             "cloud_models": roo_cloud_models_by_provider,
             "roo_cloud_models": roo_cloud_model_ids,
-            "supported_cockpit_providers": ["ollama", "roo", *ROO_CLOUD_COCKPIT_PROVIDERS],
-            "default_model": (roo_cloud_model_ids[0] if roo_cloud_model_ids else (_active_base(models) or (roo_models[0] if roo_models else ""))),
+            "supported_cockpit_providers": ["openai", "chatgpt", ROO_OAUTH_PROVIDER, ROO_FALLBACK_PROVIDER],
+            "default_model": ROO_FORCED_MODEL,
+            "forced_provider": ROO_FORCED_PROVIDER,
+            "forced_model": ROO_FORCED_MODEL,
+            "oauth_provider": ROO_OAUTH_PROVIDER,
+            "oauth_model": ROO_OAUTH_MODEL,
+            "fallback_provider": ROO_FALLBACK_PROVIDER,
+            "fallback_model": ROO_FALLBACK_MODEL,
+            "model_policy": ROO_MODEL_POLICY,
             "status": roo_status.get("status") or "unknown",
             "reason": (
-                "Roo Code draait als agent-runtime job en gebruikt het geselecteerde Cockpit-model. "
-                "Roo Cloud-modellen gebruiken de ingelogde Roo-account; lokale modellen gaan via Ollama; "
-                "ChatGPT/Claude/Gemini korte modelnamen gaan via de in Cockpit opgeslagen API key."
+                f"Roo Code draait als agent-runtime job via ChatGPT/OpenAI-model `{ROO_FORCED_MODEL}` "
+                f"om TPM-rate limits te vermijden; Roo Cloud OAuth kan `{ROO_OAUTH_MODEL}` gebruiken; "
+                f"lokale fallback blijft `{ROO_FALLBACK_MODEL}`."
                 if roo_runtime_available
                 else str(roo_status.get("reason") or "Roo CLI is nog niet bereikbaar via host bridge of PATH.")
             ),
@@ -1460,9 +1755,14 @@ def _provider_options_payload(models: Optional[list[str]] = None) -> dict[str, d
             "model_catalog_status": roo_cloud,
             "subscription_login": {
                 "provider": "roo",
-                "status": "online" if roo_login_ready else (roo_auth_probe.get("status") or "unknown"),
+                "status": "online" if roo_login_ready else ("invalid" if roo_auth_probe.get("logged_in_hint") else (roo_auth_probe.get("status") or "unknown")),
                 "logged_in": roo_login_ready,
                 "via_bridge": bool(roo_status.get("via_bridge") or roo_cloud.get("via_bridge")),
+                "reason": (
+                    "Roo auth heeft lokaal een token, maar Roo Cloud accepteert het niet meer; login opnieuw."
+                    if roo_cloud_rejected
+                    else str(roo_cloud.get("reason") or "")
+                ),
                 "source": "roo auth login",
                 "secrets_returned": False,
             },
@@ -1541,7 +1841,7 @@ def _cockpit_config_payload() -> dict[str, Any]:
         "api_keys": _api_key_status_payload(),
         "subscriptions": _subscription_status_payload(),
         "self_context": _self_context_status_payload(),
-        "chroma": chroma_runtime_status(),
+        "chroma": _safe_chroma_runtime_status(),
         "slash_agents": slash_command_catalog(),
         "tool_schemas_available": callable(getattr(agent_tools, "get_tool_schemas", None)),
         "capabilities": {
@@ -2249,21 +2549,15 @@ def _subliminal_clean_text(value: object, *, limit: int = 1000) -> str:
 def _roo_model_choices(local_models: Optional[list[str]] = None, roo_cloud_models: Optional[list[str]] = None) -> list[str]:
     """Models Roo can launch from Cockpit.
 
-    Roo is a local agent runtime, but its LLM may be local or cloud-backed.
-    Keep xAI/Mistral out until the Roo CLI provider layer supports them.
+    Roo defaults to a lower-TPM OpenAI route, while keeping a real local
+    fallback visible for recovery when external credentials are unavailable.
     """
 
-    choices: list[str] = []
-    for model_name in local_models or []:
-        if model_name and model_name not in choices:
-            choices.append(model_name)
+    choices = [ROO_FORCED_MODEL, "gpt-4.1", ROO_OAUTH_MODEL, ROO_FALLBACK_MODEL]
     for model_name in roo_cloud_models or []:
-        if model_name and model_name not in choices:
-            choices.append(model_name)
-    for provider in ROO_CLOUD_COCKPIT_PROVIDERS:
-        for model_name in MULTI_API_PROVIDER_MODELS.get(provider, []):
-            if model_name and model_name not in choices:
-                choices.append(model_name)
+        text = str(model_name or "").strip()
+        if text and text not in choices:
+            choices.append(text)
     return choices
 
 
@@ -2273,11 +2567,13 @@ def _roo_runtime_preflight(requested_provider: str, model: str) -> dict[str, Any
     selected_model = str(model or "").strip()
     cockpit_provider = cockpit_provider_for_roo_selection(requested_provider, selected_model)
     provider_map = map_cockpit_provider(cockpit_provider, selected_model)
+    effective_model = str(provider_map.get("model_override") or provider_map.get("cockpit_model") or selected_model)
     if provider_map.get("status") != "mapped":
         return {
             "status": "unsupported",
             "cockpit_provider": cockpit_provider,
-            "cockpit_model": selected_model,
+            "cockpit_model": effective_model,
+            "requested_cockpit_model": selected_model,
             "provider_map": provider_map,
             "reason": str(provider_map.get("reason") or f"Roo ondersteunt Cockpit-provider `{cockpit_provider}` nog niet."),
             "fake_success": False,
@@ -2288,7 +2584,8 @@ def _roo_runtime_preflight(requested_provider: str, model: str) -> dict[str, Any
             return {
                 "status": "ready",
                 "cockpit_provider": cockpit_provider,
-                "cockpit_model": selected_model,
+                "cockpit_model": effective_model,
+                "requested_cockpit_model": selected_model,
                 "provider_map": provider_map,
                 "local_llm": False,
                 "auth_source": "roo_cloud_login",
@@ -2297,20 +2594,38 @@ def _roo_runtime_preflight(requested_provider: str, model: str) -> dict[str, Any
         return {
             "status": "missing_roo_login",
             "cockpit_provider": cockpit_provider,
-            "cockpit_model": selected_model,
+            "cockpit_model": effective_model,
+            "requested_cockpit_model": selected_model,
             "provider_map": provider_map,
             "reason": (
                 f"Roo kan `{selected_model}` pas via Roo Cloud starten nadat Roo Cloud in Cockpit is ingelogd. "
-                "Ga naar Models -> Roo Cloud Account -> Login."
+                "Ga naar Models -> Roo ChatGPT Account -> Login."
             ),
             "fake_success": False,
         }
     api_key_env = str(provider_map.get("api_key_env") or "")
     if api_key_env and not api_key_available_for_provider(cockpit_provider, provider_map):
+        fallback_map = map_cockpit_provider(ROO_FALLBACK_PROVIDER, ROO_FALLBACK_MODEL)
+        if fallback_map.get("status") == "mapped":
+            fallback_map["fallback_reason"] = (
+                f"Roo kan `{effective_model}` niet via ChatGPT/OpenAI starten zonder API key; "
+                f"lokale fallback `{ROO_FALLBACK_MODEL}` wordt gebruikt."
+            )
+            return {
+                "status": "ready",
+                "cockpit_provider": ROO_FALLBACK_PROVIDER,
+                "cockpit_model": ROO_FALLBACK_MODEL,
+                "requested_cockpit_model": selected_model,
+                "provider_map": fallback_map,
+                "local_llm": True,
+                "auth_source": "local_fallback",
+                "fake_success": False,
+            }
         return {
             "status": "missing_api_key",
             "cockpit_provider": cockpit_provider,
-            "cockpit_model": selected_model,
+            "cockpit_model": effective_model,
+            "requested_cockpit_model": selected_model,
             "provider_map": provider_map,
             "required_key_env": api_key_env,
             "reason": (
@@ -2322,7 +2637,8 @@ def _roo_runtime_preflight(requested_provider: str, model: str) -> dict[str, Any
     return {
         "status": "ready",
         "cockpit_provider": cockpit_provider,
-        "cockpit_model": selected_model,
+        "cockpit_model": effective_model,
+        "requested_cockpit_model": selected_model,
         "provider_map": provider_map,
         "local_llm": cockpit_provider == "ollama",
         "fake_success": False,
@@ -2478,15 +2794,6 @@ def _should_route_agentic_chat(req: CockpitChatRequest, provider: str) -> bool:
         return False
     intent = classify_agentic_intent(req.prompt, role=req.role or "", approval=req.approval or "")
     return bool(getattr(intent, "is_agentic", False))
-
-
-def _should_route_roo_readonly_agentic(intent: Any) -> bool:
-    if not callable(getattr(orchestrator, "agentic_process", None)):
-        return False
-    if not bool(getattr(intent, "is_agentic", False)):
-        return False
-    target_tool = str(getattr(intent, "target_tool", "") or "")
-    return target_tool in {"brave_search", "ns_travel_advice", "ov9292_travel_advice"}
 
 
 def _fast_agentic_action_payload(
@@ -2976,6 +3283,7 @@ def _roo_runtime_chat_payload(
     approval = str(req.approval or "").strip()
     preflight = _roo_runtime_preflight(requested_provider, model)
     local_llm = bool(preflight.get("local_llm"))
+    effective_roo_model = str(preflight.get("cockpit_model") or ROO_FORCED_MODEL)
     if approval != APPROVAL_PHRASE:
         return {
             "status": "blocked",
@@ -2983,6 +3291,7 @@ def _roo_runtime_chat_payload(
             "requested_provider": requested_provider,
             "model": model,
             "route": "roo_runtime",
+            "tool": "roo_cli",
             "local_only": local_llm,
             "agent_runtime": True,
             "approval_required": True,
@@ -2998,7 +3307,7 @@ def _roo_runtime_chat_payload(
             },
             "response": (
                 f"Roo Code kan bestanden wijzigen en commando's uitvoeren. "
-                f"Vul exact `{APPROVAL_PHRASE}` in om deze Roo job te starten met het geselecteerde model `{model}`."
+                f"Vul exact `{APPROVAL_PHRASE}` in om deze Roo job te starten met vast model `{effective_roo_model}`."
             ),
             "tool_schemas": tools if _should_return_tool_schemas(req) else [],
             "tool_schema_count": len(tools) if _should_return_tool_schemas(req) else 0,
@@ -3012,6 +3321,7 @@ def _roo_runtime_chat_payload(
             "requested_provider": requested_provider,
             "model": model,
             "route": "roo_runtime",
+            "tool": "roo_cli",
             "local_only": False,
             "agent_runtime": True,
             "configuration_required": True,
@@ -3042,7 +3352,8 @@ def _roo_runtime_chat_payload(
                 "selected_cockpit_provider": requested_provider,
                 "selected_cockpit_model": selected_model,
                 "cockpit_provider": cockpit_provider,
-                "cockpit_model": selected_model,
+                "cockpit_model": effective_roo_model,
+                "forced_roo_model": effective_roo_model,
                 "roo_provider_map": provider_map,
                 "route": "roo_runtime",
             },
@@ -3054,6 +3365,7 @@ def _roo_runtime_chat_payload(
             "requested_provider": requested_provider,
             "model": model,
             "route": "roo_runtime",
+            "tool": "roo_cli",
             "response": "",
             "error": str(exc)[:500],
             "fake_success": False,
@@ -3064,13 +3376,17 @@ def _roo_runtime_chat_payload(
         "requested_provider": requested_provider,
         "model": model,
         "route": "roo_runtime",
+        "tool": "roo_cli",
         "local_only": local_llm,
         "agent_runtime": True,
         "cockpit_provider": preflight.get("cockpit_provider"),
         "cockpit_model": preflight.get("cockpit_model"),
         "roo_provider_map": preflight.get("provider_map"),
         "job": record.to_dict(),
-        "response": f"Roo Code job {record.job_id} gestart met Cockpit-model `{model}`.",
+        "response": (
+            f"Roo Code job {record.job_id} gestart met Roo-model `{effective_roo_model}` "
+            f"via `{preflight.get('cockpit_provider')}`."
+        ),
         "provenance": {
             "tools_used": ["roo_cli"],
             "planner_source": "cockpit_roo_runtime",
@@ -3213,56 +3529,6 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
         slash_result.setdefault("tool_schema_count", 0)
         slash_result.setdefault("response", str(slash_result.get("message") or slash_result.get("reason") or ""))
         return _with_cockpit_self_context(slash_result, chat_context, provider, model, include_living_echo=False)
-
-    if provider == "roo" and _should_route_roo_readonly_agentic(intent):
-        agentic_provider = "ollama"
-        agentic_model = _default_cockpit_model(agentic_provider, None)
-        planner = _agentic_model_planner(agentic_provider, agentic_model, history=chat_context.get("history") or [])
-        try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    orchestrator.agentic_process,
-                    chat_context.get("prompt") or req.prompt,
-                    approval=req.approval or "",
-                    model=agentic_model,
-                    provider=agentic_provider,
-                    system_prompt=chat_context.get("system_prompt"),
-                    history=chat_context.get("history") or [],
-                    max_steps=8,
-                    planner=planner,
-                ),
-                timeout=timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            return _with_cockpit_self_context(
-                _chat_timeout_payload(
-                    requested_provider=requested_provider,
-                    provider="agentic_processor",
-                    model=agentic_model,
-                    route="agentic_processor",
-                    timeout_seconds=timeout_seconds,
-                    local_only=True,
-                    tools=tools,
-                    return_tools=_should_return_tool_schemas(req),
-                ),
-                chat_context,
-                provider,
-                model,
-            )
-        if not isinstance(result, dict):
-            result = {"status": "success", "response": str(result)}
-        result.setdefault("status", "success")
-        result["requested_provider"] = requested_provider
-        result["cockpit_provider"] = "roo"
-        result["cockpit_model"] = model
-        result.setdefault("provider", agentic_provider)
-        result.setdefault("model", agentic_model)
-        result.setdefault("route", "agentic_processor")
-        result.setdefault("local_only", True)
-        result.setdefault("tool_schemas", tools if _should_return_tool_schemas(req) else [])
-        result.setdefault("tool_schema_count", len(tools) if _should_return_tool_schemas(req) else 0)
-        result.setdefault("llm_provider_used", False)
-        return _with_cockpit_self_context(result, chat_context, provider, model, include_living_echo=False)
 
     if provider == "roo":
         result = _roo_runtime_chat_payload(
@@ -3882,7 +4148,7 @@ def _active_base(models: Optional[list[str]] = None) -> str:
         current = ""
     if not current and models:
         current = models[0]
-    return current or "llama3.2:latest"
+    return current or PREFERRED_LOCAL_REASONING_MODEL
 
 
 def _ensure_ouroboros_model_state(models: Optional[list[str]] = None) -> dict[str, Any]:
@@ -4429,7 +4695,7 @@ def _ollama_create_payload_from_modelfile(plan: dict[str, Any], modelfile: str) 
 
     payload: dict[str, Any] = {
         "model": OUROBOROS_MODEL_NAME,
-        "from": base_model or "llama3.2:latest",
+        "from": base_model or PREFERRED_LOCAL_REASONING_MODEL,
         "stream": False,
     }
     if system_lines:

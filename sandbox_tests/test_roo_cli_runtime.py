@@ -45,22 +45,37 @@ class TestRooCliRuntime(unittest.TestCase):
         else:
             os.environ[key] = value
 
-    def test_maps_cockpit_provider_to_roo_provider(self):
-        self.assertEqual(roo_cli_runtime.map_cockpit_provider("ollama", "llama3.2:latest")["roo_provider"], "ollama")
+    def test_maps_cockpit_provider_to_chatgpt_provider_with_local_fallback(self):
+        ollama_selection = roo_cli_runtime.map_cockpit_provider("ollama", "llama3.2:latest")
+        self.assertEqual(ollama_selection["roo_provider"], "openai-native")
+        self.assertEqual(ollama_selection["cockpit_provider"], "openai")
+        self.assertEqual(ollama_selection["cockpit_model"], "gpt-4.1-mini")
         self.assertEqual(roo_cli_runtime.map_cockpit_provider("openai", "gpt-4.1")["roo_provider"], "openai-native")
-        self.assertEqual(roo_cli_runtime.map_cockpit_provider("google", "gemini-2.5-flash")["roo_provider"], "gemini")
-        self.assertEqual(roo_cli_runtime.map_cockpit_provider("roo", "anthropic/claude-opus-4.7")["roo_provider"], "roo")
-        self.assertEqual(roo_cli_runtime.map_cockpit_provider("mistral", "mistral-large")["status"], "unsupported")
+        self.assertEqual(roo_cli_runtime.map_cockpit_provider("google", "gemini-2.5-flash")["roo_provider"], "openai-native")
+        roo_oauth = roo_cli_runtime.map_cockpit_provider("roo", "anthropic/claude-opus-4.7")
+        self.assertEqual(roo_oauth["roo_provider"], "roo")
+        self.assertEqual(roo_oauth["cockpit_model"], "anthropic/claude-opus-4.7")
+        openrouter = roo_cli_runtime.map_cockpit_provider("openrouter", "openai/gpt-oss-120b")
+        self.assertEqual(openrouter["roo_provider"], "openai-native")
+        self.assertEqual(openrouter["model_override"], "gpt-4.1-mini")
+        self.assertEqual(openrouter["forced_model"], "gpt-4.1-mini")
+        fallback = roo_cli_runtime.map_cockpit_provider("ollama", "deepseek-coder:latest")
+        self.assertEqual(fallback["roo_provider"], "ollama")
+        self.assertEqual(fallback["model_override"], "deepseek-coder:latest")
+        self.assertEqual(roo_cli_runtime.map_cockpit_provider("mistral", "mistral-large")["status"], "mapped")
 
     def test_infers_roo_provider_from_selected_cockpit_model(self):
-        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "gpt-4.1"), "openai")
-        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "claude-opus-4-6"), "anthropic")
-        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "gemini-2.5-pro"), "google")
+        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "gpt-4.1"), "roo")
+        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "claude-opus-4-6"), "roo")
+        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "gemini-2.5-pro"), "roo")
         self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "anthropic/claude-opus-4.7"), "roo")
-        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "llama3.2:latest"), "ollama")
-        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "grok-3"), "xai")
+        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "llama3.2:latest"), "roo")
+        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "openai/gpt-oss-120b"), "roo")
+        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("roo", "grok-3"), "roo")
+        self.assertEqual(roo_cli_runtime.cockpit_provider_for_roo_selection("ollama", "deepseek-coder:latest"), "ollama")
 
-    def test_build_command_uses_prompt_file_selected_model_and_no_api_key_arg(self):
+    def test_build_command_uses_chatgpt_model_and_no_api_key_arg(self):
+        os.environ["OPENAI_API_KEY"] = "sk-test-roo-openai-key"
         prompt_file = self.workspace / "prompt.md"
         prompt_file.write_text("doe iets", encoding="utf-8")
 
@@ -74,13 +89,64 @@ class TestRooCliRuntime(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         command = payload["command"]
         self.assertIn("--provider", command)
-        self.assertIn("ollama", command)
+        self.assertIn("openai-native", command)
         self.assertIn("--model", command)
-        self.assertIn("llama3.2:latest", command)
+        self.assertIn("gpt-4.1-mini", command)
+        self.assertNotIn("llama3.2:latest", command)
         self.assertNotIn("--api-key", command)
-        self.assertEqual(payload["provider_map"]["cockpit_provider"], "ollama")
+        self.assertEqual(command[command.index("--reasoning-effort") + 1], "disable")
+        self.assertEqual(payload["provider_map"]["cockpit_provider"], "openai")
+        self.assertEqual(payload["provider_map"]["forced_model"], "gpt-4.1-mini")
 
-    def test_openai_gpt_4_1_disables_roo_reasoning_effort(self):
+    def test_build_command_can_use_roo_oauth_provider_without_api_key_arg(self):
+        self.fake_roo.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then echo 'roo 1.0.0'; exit 0; fi\n"
+            "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo 'Authenticated as test@example.com'; exit 0; fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        self.fake_roo.chmod(0o755)
+        prompt_file = self.workspace / "prompt.md"
+        prompt_file.write_text("doe iets", encoding="utf-8")
+
+        payload = roo_cli_runtime.build_roo_command(
+            prompt_file=prompt_file,
+            workspace=self.workspace,
+            cockpit_provider="roo",
+            model="anthropic/claude-opus-4.6",
+        )
+
+        self.assertEqual(payload["status"], "success")
+        command = payload["command"]
+        self.assertIn("roo", command)
+        self.assertIn("anthropic/claude-opus-4.6", command)
+        self.assertNotIn("--api-key", command)
+        self.assertEqual(payload["provider_map"]["roo_provider"], "roo")
+
+    def test_openrouter_command_is_replaced_by_chatgpt_openai(self):
+        os.environ["OPENAI_API_KEY"] = "sk-test-roo-openai-key"
+        prompt_file = self.workspace / "prompt.md"
+        prompt_file.write_text("doe iets", encoding="utf-8")
+
+        payload = roo_cli_runtime.build_roo_command(
+            prompt_file=prompt_file,
+            workspace=self.workspace,
+            cockpit_provider="openrouter",
+            model="openai/gpt-oss-120b",
+        )
+
+        self.assertEqual(payload["status"], "success")
+        command = payload["command"]
+        self.assertIn("--provider", command)
+        self.assertIn("openai-native", command)
+        self.assertIn("--model", command)
+        self.assertIn("gpt-4.1-mini", command)
+        self.assertNotIn("openrouter", command)
+        self.assertEqual(payload["provider_map"]["replaced_provider"], "openrouter")
+        self.assertEqual(payload["provider_map"]["forced_provider"], "openai")
+
+    def test_openai_selection_uses_local_fallback_without_key(self):
         prompt_file = self.workspace / "prompt.md"
         prompt_file.write_text("doe iets", encoding="utf-8")
 
@@ -94,10 +160,11 @@ class TestRooCliRuntime(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         command = payload["command"]
         self.assertIn("--provider", command)
-        self.assertIn("openai-native", command)
-        self.assertIn("--reasoning-effort", command)
-        index = command.index("--reasoning-effort")
-        self.assertEqual(command[index + 1], "disabled")
+        self.assertIn("ollama", command)
+        self.assertIn("deepseek-coder:latest", command)
+        self.assertNotIn("openai-native", command)
+        self.assertIn("fallback_reason", payload["provider_map"])
+        self.assertNotIn("--reasoning-effort", command)
 
     def test_public_command_redacts_api_key_arg(self):
         public = roo_cli_runtime.public_command(["roo", "--api-key", "sk-test-secret-1234567890", "--model", "gpt-4.1"])
@@ -124,14 +191,13 @@ class TestRooCliRuntime(unittest.TestCase):
         self.assertIn("roo/code-supernova", result["models"])
         self.assertFalse(result["secrets_returned"])
 
-    def test_run_resolves_subscription_key_into_roo_env(self):
+    def test_run_uses_subscription_key_for_chatgpt_roo_model(self):
         from controller.subscription_store import save_subscription
 
         secret = "sk-subscription-test-1234567890"
         save_subscription("openai", auth_mode="api_key_from_subscription", api_key=secret)
         self.fake_roo.write_text(
             "#!/bin/sh\n"
-            f"if [ \"$OPENAI_API_KEY\" != \"{secret}\" ]; then echo missing_key >&2; exit 7; fi\n"
             "printf '{\"result\":\"ok\"}\\n'\n"
             "exit 0\n",
             encoding="utf-8",
@@ -147,6 +213,9 @@ class TestRooCliRuntime(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["provider_map"]["forced_model"], "gpt-4.1-mini")
+        self.assertIn("gpt-4.1", result["command"])
+        self.assertIn("openai-native", result["command"])
         self.assertEqual(result["api_key_source"], "subscription")
         self.assertTrue(result["api_key_available"])
         self.assertNotIn(secret, json.dumps(result))
@@ -187,6 +256,46 @@ class TestRooCliRuntime(unittest.TestCase):
         )
 
         self.assertEqual(category, "model_encrypted_content_unsupported")
+
+    def test_run_retries_rate_limited_roo_once(self):
+        old_retries = os.environ.get("WINTRIP_ROO_RATE_LIMIT_RETRIES")
+        old_sleep = os.environ.get("WINTRIP_ROO_RATE_LIMIT_MAX_SLEEP")
+        os.environ["WINTRIP_ROO_RATE_LIMIT_RETRIES"] = "1"
+        os.environ["WINTRIP_ROO_RATE_LIMIT_MAX_SLEEP"] = "0"
+        self.addCleanup(lambda: self._restore("WINTRIP_ROO_RATE_LIMIT_RETRIES", old_retries))
+        self.addCleanup(lambda: self._restore("WINTRIP_ROO_RATE_LIMIT_MAX_SLEEP", old_sleep))
+        count_file = self.workspace / "attempts.txt"
+        self.fake_roo.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then echo 'roo 1.0.0'; exit 0; fi\n"
+            "if [ \"$1\" = \"list\" ]; then printf '{\"models\":{}}\\n'; exit 0; fi\n"
+            "if [ \"$1\" = \"auth\" ]; then echo 'Not authenticated'; exit 0; fi\n"
+            f"COUNT_FILE='{count_file}'\n"
+            "count=0\n"
+            "[ -f \"$COUNT_FILE\" ] && count=$(cat \"$COUNT_FILE\")\n"
+            "count=$((count + 1))\n"
+            "echo \"$count\" > \"$COUNT_FILE\"\n"
+            "if [ \"$count\" -eq 1 ]; then\n"
+            "  echo 'Rate limit reached for gpt-4.1-mini tokens per min. Please try again in 0s.' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "printf '{\"result\":\"ok after retry\"}\\n'\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        self.fake_roo.chmod(0o755)
+
+        result = roo_cli_runtime.run_roo_cli_task(
+            task="test rate limit retry",
+            provider="ollama",
+            model="deepseek-coder:latest",
+            approval="Akkoord",
+            workspace=self.workspace,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual([attempt["category"] for attempt in result["attempts"]], ["rate_limited", "ok"])
+        self.assertEqual(count_file.read_text(encoding="utf-8").strip(), "2")
 
     def test_roo_auth_login_returns_oauth_url_for_frontend(self):
         auth_url = "https://app.roocode.com/cli/sign-in?state=test&callback=http%3A%2F%2F127.0.0.1%3A49152%2Fcallback"

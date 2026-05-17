@@ -16,6 +16,11 @@ from .model_adapters import load_model_adapter
 from .reflector import build_reflection
 from .scenario_loader import load_demonstration, load_scenario
 from .schemas import schema_to_dict
+from .self_improvement_patterns import (
+    PREFERRED_LOCAL_MODEL,
+    pattern_audit_contract,
+    select_self_improvement_patterns,
+)
 
 
 ARTIFACT_DIRS = ("learner", "critics", "reflections", "memory_rules", "logs")
@@ -35,10 +40,17 @@ def run_training_cycle(
     if teacher.scenario_id != scenario.id:
         raise ValueError(f"Demonstration {demo_path} targets {teacher.scenario_id}, not {scenario.id}")
 
+    patterns = select_self_improvement_patterns(scenario)
     adapter = load_model_adapter(adapter_name)
     attempt = adapter.generate_attempt(scenario)
     score = evaluate_attempt(scenario, attempt)
-    reflection = build_reflection(scenario, teacher, attempt, score)
+    reflection = build_reflection(
+        scenario,
+        teacher,
+        attempt,
+        score,
+        self_improvement_patterns=patterns,
+    )
     rules = distill_memory_rules(scenario, reflection, score)
 
     for directory in ARTIFACT_DIRS:
@@ -66,6 +78,15 @@ def run_training_cycle(
         "critic_score": schema_to_dict(score),
         "reflection": schema_to_dict(reflection),
         "memory_rules": [schema_to_dict(rule) for rule in rules],
+        "self_improvement_patterns": pattern_audit_contract(patterns),
+        "model_adapter": {
+            "name": getattr(adapter, "name", adapter_name),
+            "provider": "ollama" if str(getattr(adapter, "name", adapter_name)).startswith("ollama") else "deterministic",
+            "model": getattr(adapter, "model", PREFERRED_LOCAL_MODEL),
+            "preferred_local_model": PREFERRED_LOCAL_MODEL,
+            "local_model_call": getattr(adapter, "last_call", {}),
+            "openrouter_used": False,
+        },
         "artifacts": {key: str(value) for key, value in paths.items()},
         "runtime_actions": [],
         "external_calls": [],

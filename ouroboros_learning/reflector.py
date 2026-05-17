@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .schemas import CriticScore, LearnerAttempt, Reflection, Scenario, TeacherDemonstration
+from .self_improvement_patterns import pattern_rule_candidates
 
 
 def build_reflection(
@@ -10,6 +13,7 @@ def build_reflection(
     teacher: TeacherDemonstration,
     learner: LearnerAttempt,
     score: CriticScore,
+    self_improvement_patterns: list[Any] | None = None,
 ) -> Reflection:
     worked = _worked_items(score)
     failed = list(score.required_fixes)
@@ -18,6 +22,9 @@ def build_reflection(
 
     improved_response = learner.response if score.pass_fail == "pass" else teacher.response
     candidates = _candidate_rules(scenario=scenario, teacher=teacher, score=score)
+    for rule in pattern_rule_candidates(self_improvement_patterns or []):
+        if rule not in candidates:
+            candidates.append(rule)
     return Reflection(
         scenario_id=scenario.id,
         what_worked=worked,

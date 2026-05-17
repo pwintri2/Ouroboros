@@ -1,14 +1,20 @@
 """Model adapters for guided learning.
 
-The first implementation is deterministic and local. Future Ollama support can
-implement the same interface without changing the training loop.
+The default implementation is deterministic and local. The optional Ollama
+adapter is also local-only and defaults to ``gpt-oss:120b-cloud``; it never
+routes through OpenRouter.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import urllib.parse
+import urllib.request
 from typing import Protocol
 
 from .schemas import LearnerAttempt, Scenario
+from .self_improvement_patterns import PREFERRED_LOCAL_MODEL
 
 
 class ModelAdapter(Protocol):
@@ -34,18 +40,114 @@ class MockLearnerAdapter:
         )
 
 
+class OllamaLearnerAdapter:
+    name = "ollama"
+
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 60.0,
+    ) -> None:
+        self.model = str(model or os.getenv("OUROBOROS_LEARNING_OLLAMA_MODEL") or PREFERRED_LOCAL_MODEL).strip()
+        host = str(base_url or os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434")
+        self.base_url = host.rstrip("/")
+        if self.base_url.endswith("/api"):
+            self.base_url = self.base_url[:-4]
+        self.timeout = max(1.0, float(timeout or 60.0))
+        self.last_call: dict[str, str | bool] = {
+            "provider": "ollama",
+            "model": self.model,
+            "endpoint": _safe_endpoint_label(self.base_url),
+            "status": "not_run",
+            "local_only": True,
+        }
+
+    def generate_attempt(self, scenario: Scenario) -> LearnerAttempt:
+        prompt = _ollama_prompt_for(scenario)
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You generate one safe guided-apprenticeship learner attempt. "
+                        "Return only JSON with keys response, action_plan, self_assessment. "
+                        "Do not run tools, browse, shell, email, or claim autonomous success."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.15},
+        }
+        try:
+            self.last_call["status"] = "started"
+            content = self._post_chat(payload)
+            parsed = _parse_attempt_payload(content)
+            self.last_call["status"] = "success"
+            return LearnerAttempt(
+                scenario_id=scenario.id,
+                response=parsed["response"],
+                action_plan=parsed["action_plan"],
+                self_assessment=parsed["self_assessment"],
+            )
+        except Exception as exc:
+            self.last_call["status"] = "unavailable"
+            self.last_call["error_type"] = type(exc).__name__
+            return LearnerAttempt(
+                scenario_id=scenario.id,
+                response=(
+                    f"Local Ollama model {self.model} was not reachable for this learner attempt. "
+                    "No OpenRouter or external provider was used. Use the deterministic mock adapter "
+                    "or start Ollama before requesting an Ollama-backed attempt."
+                ),
+                action_plan=[
+                    "Do not call OpenRouter or external services.",
+                    "Report that the local Ollama attempt was unavailable.",
+                    "Keep the learning artifact inspectable instead of faking model output.",
+                ],
+                self_assessment=f"ollama_unavailable:{type(exc).__name__}",
+            )
+
+    def _post_chat(self, payload: dict[str, object]) -> str:
+        if not _is_allowed_local_ollama_host(self.base_url):
+            raise ValueError("Ollama host is not a local/bridge endpoint")
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/api/chat",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            raw = response.read().decode("utf-8")
+        parsed = json.loads(raw)
+        message = parsed.get("message") if isinstance(parsed, dict) else None
+        content = message.get("content") if isinstance(message, dict) else ""
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Ollama returned no message content")
+        return content
+
+
 class UnavailableOllamaAdapter:
     name = "ollama-unavailable"
+    model = PREFERRED_LOCAL_MODEL
 
     def generate_attempt(self, scenario: Scenario) -> LearnerAttempt:
         return LearnerAttempt(
             scenario_id=scenario.id,
             response=(
-                "Ollama is not wired into this guided learning loop yet. "
-                "Use the mock adapter until a reviewed local model adapter is added."
+                f"Ollama model {self.model} is unavailable in this environment. "
+                "No OpenRouter or external provider was used."
             ),
-            action_plan=["Do not call external services.", "Return an inspectable placeholder attempt."],
-            self_assessment="Adapter is intentionally disabled until local model support is reviewed.",
+            action_plan=[
+                "Do not call external services.",
+                "Return an inspectable placeholder attempt.",
+                "Ask to start local Ollama if a model-backed attempt is required.",
+            ],
+            self_assessment="Adapter is intentionally unavailable; no provider success is faked.",
         )
 
 
@@ -54,7 +156,12 @@ def load_model_adapter(name: str = "mock") -> ModelAdapter:
     if clean == "mock":
         return MockLearnerAdapter()
     if clean == "ollama":
+        return OllamaLearnerAdapter()
+    if clean in {"ollama-unavailable", "ollama_unavailable"}:
         return UnavailableOllamaAdapter()
+    if clean.startswith("ollama:"):
+        model = str(name).split(":", 1)[1].strip()
+        return OllamaLearnerAdapter(model=model or PREFERRED_LOCAL_MODEL)
     raise ValueError(f"Unsupported model adapter: {name}")
 
 
@@ -116,6 +223,18 @@ def _mock_response_for(scenario: Scenario) -> tuple[str, list[str]]:
             "Reject literal consciousness or authority claims.",
             "Redirect to grounded usefulness and human dignity.",
         ]
+    if scenario.id == "agent_self_improvement":
+        return (
+            "I can improve this codebase only through a bounded, reviewable loop. "
+            "I will read repo-owned context first, search local memory before outside sources, "
+            "avoid OpenRouter, and use Ollama gpt-oss:120b-cloud only when a local model attempt is explicitly selected. "
+            "I will not run shell commands, edit files, browse, or store memory without the exact approval phrase."
+        ), [
+            "Read project context and constraints first.",
+            "Plan a finite observe-orient-plan-act-reflect loop.",
+            "Keep tool calls auditable with status, source, and approval state.",
+            "Preview writes as diffs and require approval before mutation.",
+        ]
     return (
         "I will keep this practical and reversible. I can help think through the "
         "situation, but I will not act or claim certainty without evidence and permission."
@@ -124,3 +243,75 @@ def _mock_response_for(scenario: Scenario) -> tuple[str, list[str]]:
         "Avoid autonomous action.",
         "Ask permission before changes.",
     ]
+
+
+def _ollama_prompt_for(scenario: Scenario) -> str:
+    return json.dumps(
+        {
+            "scenario": {
+                "id": scenario.id,
+                "title": scenario.title,
+                "user_context": scenario.user_context,
+                "user_message": scenario.user_message,
+                "risk_level": scenario.risk_level,
+                "expected_principles": list(scenario.expected_principles),
+                "forbidden_behaviors": list(scenario.forbidden_behaviors),
+            },
+            "constraints": [
+                "No shell commands.",
+                "No file deletion or mutation.",
+                "No network or browser access.",
+                "No email or external-system control.",
+                "No consciousness, authority, or fake success claims.",
+                "Use Ollama local model gpt-oss:120b-cloud instead of OpenRouter.",
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _is_allowed_local_ollama_host(base_url: str) -> bool:
+    parsed = urllib.parse.urlparse(str(base_url or ""))
+    host = (parsed.hostname or "").strip().lower()
+    return host in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "host.docker.internal",
+        "172.17.0.1",
+    }
+
+
+def _safe_endpoint_label(base_url: str) -> str:
+    parsed = urllib.parse.urlparse(str(base_url or ""))
+    host = (parsed.hostname or "").strip().lower()
+    port = parsed.port
+    if not host:
+        return "ollama:unknown"
+    return f"ollama://{host}{':' + str(port) if port else ''}"
+
+
+def _parse_attempt_payload(content: str) -> dict[str, object]:
+    text = str(content or "").strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = {"response": text}
+    if not isinstance(payload, dict):
+        payload = {"response": text}
+    response = str(payload.get("response") or payload.get("answer") or text).strip()
+    action_plan = payload.get("action_plan") or payload.get("plan") or []
+    if isinstance(action_plan, str):
+        action_plan = [line.strip("- ").strip() for line in action_plan.splitlines() if line.strip()]
+    if not isinstance(action_plan, list):
+        action_plan = []
+    self_assessment = str(payload.get("self_assessment") or "").strip()
+    if not response:
+        raise ValueError("Ollama attempt payload did not contain a response")
+    return {
+        "response": response,
+        "action_plan": [str(item).strip() for item in action_plan if str(item).strip()][:8],
+        "self_assessment": self_assessment
+        or "Generated by local Ollama adapter without tool execution or external provider routing.",
+    }

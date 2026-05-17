@@ -977,6 +977,18 @@ class AgentToolRegistry:
 
         result["duration_seconds"] = round(time.time() - started, 3)
         result.setdefault("autonomy", self._autonomy_for(result))
+        result.setdefault(
+            "tool_trace",
+            {
+                "tool_name": result.get("tool_name", tool_name),
+                "status": result.get("status", "unknown"),
+                "source": result.get("source", "agent_tools"),
+                "approval_status": result.get("approval_status", "not_required"),
+                "duration_seconds": result["duration_seconds"],
+                "stored_to_memory": bool(result.get("stored_to_memory")),
+                "fake_success": False,
+            },
+        )
         self.last_tool_result = result
         return result
 

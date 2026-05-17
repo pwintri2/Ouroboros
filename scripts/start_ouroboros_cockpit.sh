@@ -163,19 +163,60 @@ ensure_vite_for_debug_binary() {
   wait_for_vite
 }
 
+paths_newer_than() {
+  local binary="$1"
+  shift
+  [ -e "$binary" ] || return 0
+  find "$@" -newer "$binary" -print -quit 2>/dev/null | grep -q .
+}
+
+release_binary_is_fresh() {
+  local binary="$1"
+  [ -x "$binary" ] || return 1
+  ! paths_newer_than \
+    "$binary" \
+    "$COCKPIT_DIR/src" \
+    "$COCKPIT_DIR/dist" \
+    "$COCKPIT_DIR/index.html" \
+    "$COCKPIT_DIR/package.json" \
+    "$COCKPIT_DIR/vite.config.ts" \
+    "$COCKPIT_DIR/src-tauri/src" \
+    "$COCKPIT_DIR/src-tauri/capabilities" \
+    "$COCKPIT_DIR/src-tauri/tauri.conf.json" \
+    "$COCKPIT_DIR/src-tauri/Cargo.toml"
+}
+
+debug_binary_native_is_fresh() {
+  local binary="$1"
+  [ -x "$binary" ] || return 1
+  ! paths_newer_than \
+    "$binary" \
+    "$COCKPIT_DIR/src-tauri/src" \
+    "$COCKPIT_DIR/src-tauri/capabilities" \
+    "$COCKPIT_DIR/src-tauri/tauri.conf.json" \
+    "$COCKPIT_DIR/src-tauri/Cargo.toml"
+}
+
 launch_cockpit() {
   export TAURI_BACKEND_URL="$BACKEND_URL"
   export VITE_BACKEND_URL="$BACKEND_URL"
 
-  if [ -x "$COCKPIT_DIR/src-tauri/target/release/ouroboros-cockpit" ]; then
+  local release_binary="$COCKPIT_DIR/src-tauri/target/release/ouroboros-cockpit"
+  local debug_binary="$COCKPIT_DIR/src-tauri/target/debug/ouroboros-cockpit"
+
+  if release_binary_is_fresh "$release_binary"; then
     echo "Launching release Tauri binary."
-    exec "$COCKPIT_DIR/src-tauri/target/release/ouroboros-cockpit"
+    exec "$release_binary"
+  elif [ -x "$release_binary" ]; then
+    echo "Release Tauri binary is older than cockpit frontend/native sources; using live Tauri dev path."
   fi
 
-  if [ -x "$COCKPIT_DIR/src-tauri/target/debug/ouroboros-cockpit" ]; then
+  if debug_binary_native_is_fresh "$debug_binary"; then
     ensure_vite_for_debug_binary || exit 1
     echo "Launching debug Tauri binary."
-    exec "$COCKPIT_DIR/src-tauri/target/debug/ouroboros-cockpit"
+    exec "$debug_binary"
+  elif [ -x "$debug_binary" ]; then
+    echo "Debug Tauri binary is older than native Tauri sources; rebuilding through npm run tauri -- dev."
   fi
 
   if command -v npm >/dev/null 2>&1; then

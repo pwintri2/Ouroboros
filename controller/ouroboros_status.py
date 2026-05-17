@@ -12,17 +12,34 @@ from typing import Any
 
 from controller.ziel_policy import ziel_policy_status
 
+try:
+    from ouroboros_learning.self_improvement_patterns import pattern_audit_contract, select_self_improvement_patterns
+except Exception:
+    def pattern_audit_contract(_patterns: Any = None) -> dict[str, Any]:
+        return {
+            "source": "unavailable",
+            "preferred_local_model": "gpt-oss:120b-cloud",
+            "openrouter_replaced_by": "ollama:gpt-oss:120b-cloud",
+            "pattern_count": 0,
+            "patterns": [],
+            "fake_success": False,
+        }
+
+    def select_self_improvement_patterns(_scenario: Any = None) -> list[Any]:
+        return []
+
 
 DEFAULT_MODEL_NAME = "ouroboros"
+PREFERRED_LOCAL_REASONING_MODEL = "gpt-oss:120b-cloud"
 DEFAULT_ROLES: tuple[str, ...] = ("Developer", "Researcher", "Critic", "Trainer", "Tester")
 DEFAULT_EXTERNAL_PROVIDERS: tuple[str, ...] = ("chatgpt", "claude", "gemini", "groq")
 PROVIDER_IDS: frozenset[str] = frozenset(("ollama", *DEFAULT_EXTERNAL_PROVIDERS))
 
 ROLE_MODEL_PREFERENCES: dict[str, tuple[str, ...]] = {
     "developer": ("deepseek-coder:latest", "codellama:13b", "devstral:latest", "llama3.2:latest", "llama3:latest"),
-    "researcher": ("mistral:latest", "llama3.2:latest", "llama3:latest"),
-    "critic": ("mistral:latest", "llama3.2:latest", "llama3:latest"),
-    "trainer": ("llama3.2:latest", "mistral:latest", "phi3:latest", "llama3:latest"),
+    "researcher": (PREFERRED_LOCAL_REASONING_MODEL, "mistral:latest", "llama3.2:latest", "llama3:latest"),
+    "critic": (PREFERRED_LOCAL_REASONING_MODEL, "mistral:latest", "llama3.2:latest", "llama3:latest"),
+    "trainer": (PREFERRED_LOCAL_REASONING_MODEL, "llama3.2:latest", "mistral:latest", "phi3:latest", "llama3:latest"),
     "tester": ("mistral:latest", "llama3.2:latest", "llama3:latest"),
 }
 
@@ -111,6 +128,7 @@ def compose_ouroboros_status(
         "stdout": str(tool.get("stdout", "")),
         "stderr": str(tool.get("stderr") or tool.get("error") or ""),
         "self_modification_pipeline": self_mod,
+        "self_improvement_patterns": pattern_audit_contract(select_self_improvement_patterns()),
         "fine_tune": fine_tune,
         "ziel_policy": ziel,
         "integrity": {
@@ -178,12 +196,12 @@ def _active_base(
         model_state.get("active_base"),
         getattr(ollama_client, "model", None),
         models[0] if models else None,
-        "llama3.2:latest",
+        PREFERRED_LOCAL_REASONING_MODEL,
     ):
         value = str(candidate or "").strip()
         if value and value not in PROVIDER_IDS:
             return value
-    return "llama3.2:latest"
+    return PREFERRED_LOCAL_REASONING_MODEL
 
 
 def _role_models(
@@ -228,7 +246,7 @@ def _preferred_model_for_role(role: str, models: Sequence[str], active_base: str
             return candidate
     if active_base:
         return active_base
-    return available[0] if available else "llama3.2:latest"
+    return available[0] if available else PREFERRED_LOCAL_REASONING_MODEL
 
 
 def _external_providers(

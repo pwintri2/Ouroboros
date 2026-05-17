@@ -105,6 +105,13 @@ type ProviderDetails = {
   reason?: string;
   message?: string;
   default_model?: string;
+  forced_model?: string;
+  forced_provider?: string;
+  oauth_model?: string;
+  oauth_provider?: string;
+  fallback_model?: string;
+  fallback_provider?: string;
+  model_policy?: string;
   key_source?: string;
   masked_key?: string;
   subscription_active?: boolean;
@@ -224,7 +231,14 @@ type AgentJob = {
   output_dir?: string;
   events_file?: string;
   cancel_requested?: boolean;
-  metadata?: {
+  changed_files?: string[];
+  dirty_files?: string[];
+  commands_run?: string[];
+  tests_run?: string[];
+  service_actions?: string[];
+  artifacts?: string[];
+  result_summary?: string;
+  metadata?: Record<string, unknown> & {
     ouroboros_esoteric?: {
       pan_dimensional?: {
         metrics?: Record<string, unknown>;
@@ -1017,6 +1031,9 @@ export default function App() {
   const [agentJobs, setAgentJobs] = useState<AgentJob[]>([]);
   const [selectedAgentJobId, setSelectedAgentJobId] = useState<string | null>(null);
   const [agentJobEvents, setAgentJobEvents] = useState<AgentJobEvent[]>([]);
+  const [rooEditorJobId, setRooEditorJobId] = useState<string | null>(null);
+  const [rooEditorEvents, setRooEditorEvents] = useState<AgentJobEvent[]>([]);
+  const [rooEditorNotice, setRooEditorNotice] = useState<Record<string, unknown> | null>(null);
   const [nexusStatus, setNexusStatus] = useState<NexusStatus>({ status: "unknown" });
   const [livingStatus, setLivingStatus] = useState<LivingStatus>({ status: "unknown" });
   const [quantumFoamStatus, setQuantumFoamStatus] = useState<QuantumFoamStatus>({ status: "unknown" });
@@ -1425,15 +1442,17 @@ export default function App() {
       setLoop((previous) => ({ ...previous, status: previous.status || "idle" }));
     }
     if (activeTab === "trainer") {
-      try {
-        const [trainerData, jobsData] = await Promise.all([
-          api<any>("/trainer/status"),
-          api<any>("/trainer/jobs"),
-        ]);
-        setTrainerStatus(trainerData);
-        setTrainerJobs(jobsData.jobs || []);
-      } catch {
-        // Trainer endpoints may not be available yet
+      const [trainerResult, jobsResult] = await Promise.allSettled([
+        api<any>("/trainer/status"),
+        api<any>("/trainer/jobs"),
+      ]);
+      if (trainerResult.status === "fulfilled") {
+        setTrainerStatus(trainerResult.value);
+      } else {
+        setTrainerStatus((previous: any) => trainerStatusUnavailable(trainerResult.reason, previous));
+      }
+      if (jobsResult.status === "fulfilled") {
+        setTrainerJobs(jobsResult.value.jobs || []);
       }
     }
     if (activeTab === "context") {
@@ -1568,7 +1587,7 @@ export default function App() {
     if (activeTab === "trainer") {
       api<any>("/trainer/status")
         .then((trainerData) => setTrainerStatus(trainerData))
-        .catch(() => undefined);
+        .catch((error) => setTrainerStatus((previous: any) => trainerStatusUnavailable(error, previous)));
       api<any>("/trainer/jobs")
         .then((jobsData) => setTrainerJobs(jobsData.jobs || []))
         .catch(() => undefined);
@@ -1602,6 +1621,33 @@ export default function App() {
       window.clearInterval(id);
     };
   }, [selectedAgentJobId, api]);
+
+  useEffect(() => {
+    if (!rooEditorJobId) {
+      setRooEditorEvents([]);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      const [jobResult, eventsResult] = await Promise.allSettled([
+        api<{ job?: AgentJob }>(`/api/agent-runtime/jobs/${rooEditorJobId}`),
+        api<{ events?: AgentJobEvent[] }>(`/api/agent-runtime/jobs/${rooEditorJobId}/events?limit=240`),
+      ]);
+      if (cancelled) return;
+      if (jobResult.status === "fulfilled" && jobResult.value.job) {
+        setAgentJobs((previous) => upsertAgentJob(previous, jobResult.value.job as AgentJob));
+      }
+      if (eventsResult.status === "fulfilled") {
+        setRooEditorEvents(Array.isArray(eventsResult.value.events) ? eventsResult.value.events : []);
+      }
+    };
+    load().catch(() => undefined);
+    const id = window.setInterval(() => load().catch(() => undefined), 1800);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [rooEditorJobId, api]);
 
   useEffect(() => {
     if (providerInitialized.current || providerChoices.length === 0) return;
@@ -2074,6 +2120,7 @@ export default function App() {
   async function sendChat() {
     setChatOutput("");
     const filePaths = uploadedFiles.map((f) => f.path);
+    const sendingRooPrompt = prompt.trim().toLowerCase().startsWith("/roo");
     const reservedWindow = reserveExternalWindow(prompt, approval, approvalPhrase);
     const data = await perform("Agent chat", () =>
       api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.cockpitChat, {
@@ -2093,6 +2140,18 @@ export default function App() {
       // Slash-agent dispatched a background job — pull it into the Agent Jobs panel right away
       // instead of waiting for the next 5s poll.
       const job = (data as { job?: { job_id?: string } }).job;
+      const routedToRoo = data.route === "roo_runtime" || (data.route === "slash_agent" && data.agent === "roo") || sendingRooPrompt;
+      if (routedToRoo) {
+        setRooEditorNotice(data);
+        if (job?.job_id) {
+          const agentJob = job as AgentJob;
+          setRooEditorJobId(job.job_id);
+          setSelectedAgentJobId(job.job_id);
+          setAgentJobs((previous) => upsertAgentJob(previous, agentJob));
+        } else {
+          setRooEditorJobId(null);
+        }
+      }
       if ((data.route === "slash_agent" || data.route === "roo_runtime") && job?.job_id) {
         setSelectedAgentJobId(job.job_id);
         try {
@@ -2539,6 +2598,20 @@ export default function App() {
     { id: "context", label: "Context", icon: <FolderTree size={16} />, hint: "workspace" },
   ];
   const selectedAgentJob = agentJobs.find((job) => job.job_id === selectedAgentJobId) ?? null;
+  const promptIsRoo = prompt.trim().toLowerCase().startsWith("/roo");
+  const rooEditorJob =
+    (rooEditorJobId ? agentJobs.find((job) => job.job_id === rooEditorJobId) : null) ??
+    (selectedAgentJob?.agent === "roo" ? selectedAgentJob : null);
+  const rooEditorVisible = promptIsRoo || Boolean(rooEditorJob || rooEditorNotice);
+  const rooEditorNoticeData =
+    rooEditorNotice ??
+    (promptIsRoo
+      ? {
+          status: approvalReady ? "ready" : "approval_required",
+          route: "roo_runtime",
+          reason: approvalReady ? "Roo Editor is klaar voor /roo." : `Type ${approvalPhrase} in het Akkoord-veld om Roo te starten.`,
+        }
+      : null);
   const agentJobTerminalStatuses = new Set(["completed", "failed", "cancelled"]);
   const deepseekCapability = externalCapabilities.capabilities?.deepseek;
   const atlasCapability = externalCapabilities.capabilities?.atlas;
@@ -2844,6 +2917,18 @@ export default function App() {
               <section className="panel primary-panel">
                 <PanelHeader title="Chat Lane" />
                 <pre className="response-box chat-response">{chatOutput || summarizeResult(loopResult) || "Nog geen response."}</pre>
+                {rooEditorVisible && (
+                  <RooEditorPanel
+                    job={rooEditorJob}
+                    events={rooEditorEvents}
+                    notice={rooEditorNoticeData}
+                    approvalReady={approvalReady}
+                    approvalPhrase={approvalPhrase}
+                    busy={busy}
+                    onCancel={cancelAgentJob}
+                    onRefresh={refresh}
+                  />
+                )}
               </section>
 
               <section className="panel">
@@ -2955,7 +3040,7 @@ export default function App() {
 	            </section>
 
 	            <section className="panel primary-panel">
-	              <PanelHeader title="Roo Cloud Account" />
+	              <PanelHeader title="Roo ChatGPT Account" />
 	              <div className="fact-list">
 	                <Fact label="Login" value={rooLoggedIn ? "logged in" : "missing"} state={rooLoggedIn ? "online" : "offline"} />
 	                <Fact label="Catalog" value={`${rooCatalog?.model_count ?? rooCloudModels.length}`} state={rooCatalog?.status ?? "unknown"} />
@@ -2963,11 +3048,11 @@ export default function App() {
 	              </div>
 	              <div className="key-row">
 	                <div>
-	                  <strong>Roo Code Cloud</strong>
+	                  <strong>Roo Code Model</strong>
 	                  <span>
 	                    {rooLoggedIn
-	                      ? "Gebruikt de ingelogde Roo-account voor modellen zoals openai/gpt-5 en anthropic/claude-opus-4.7."
-	                      : "Start de Roo Cloud login op de host. Dit is de enige web-loginroute die Roo zelf kan gebruiken."}
+	                      ? `Roo-runs gebruiken ${rooDetails.forced_model ?? "gpt-4.1-mini"} via OpenAI API, of ${rooDetails.oauth_model ?? "anthropic/claude-opus-4.6"} via Roo OAuth; lokale fallback blijft ${rooDetails.fallback_model ?? "deepseek-coder:latest"}.`
+	                      : `Roo gebruikt de Cockpit OpenAI key voor ${rooDetails.forced_model ?? "gpt-4.1-mini"}; Login koppelt optioneel Roo Cloud OAuth.`}
 	                  </span>
 	                </div>
 	                <button onClick={startRooCloudLogin} disabled={busy || !approvalReady}>
@@ -2984,6 +3069,14 @@ export default function App() {
 		                  ))}
 		                </div>
 		              )}
+		              <div className="model-chip-list">
+		                <button type="button" onClick={() => { setProvider("roo"); setModel(rooDetails.oauth_model ?? "anthropic/claude-opus-4.6"); }}>
+		                  Roo OAuth
+		                </button>
+		                <button type="button" onClick={() => { setProvider("openai"); setModel(rooDetails.forced_model ?? "gpt-4.1-mini"); }}>
+		                  OpenAI API
+		                </button>
+		              </div>
 	            </section>
 
 	            <section className="panel primary-panel">
@@ -3319,6 +3412,85 @@ function unavailableStatus(previous?: string): string {
   return previous && previous !== "unknown" && previous !== "loading" ? previous : "unavailable";
 }
 
+function trainerStatusUnavailable(error: unknown, previous?: any): any {
+  const reason = error instanceof Error ? error.message : String(error || "Trainer endpoints unavailable");
+  const component = (current?: any) => ({
+    ...(current ?? {}),
+    status: unavailableStatus(current?.status),
+    available: false,
+    fake_success: false,
+  });
+  return {
+    ...(previous ?? {}),
+    status: unavailableStatus(previous?.status),
+    routes_available: false,
+    reason,
+    pipeline: {
+      ...(previous?.pipeline ?? {}),
+      status: unavailableStatus(previous?.pipeline?.status),
+      total_jobs: previous?.pipeline?.total_jobs ?? 0,
+    },
+    litgpt: component(previous?.litgpt),
+    unsloth: component(previous?.unsloth),
+    blue_brain: component(previous?.blue_brain),
+    continuous: {
+      ...(previous?.continuous ?? {}),
+      status: unavailableStatus(previous?.continuous?.status),
+      enabled: false,
+      new_records_available: previous?.continuous?.new_records_available ?? 0,
+    },
+    rotating_blue: {
+      ...(previous?.rotating_blue ?? {}),
+      status: unavailableStatus(previous?.rotating_blue?.status),
+      enabled: false,
+      rotation_count: previous?.rotating_blue?.rotation_count ?? 0,
+    },
+    streaming_consciousness: {
+      ...(previous?.streaming_consciousness ?? {}),
+      status: unavailableStatus(previous?.streaming_consciousness?.status),
+      enabled: false,
+      step_count: previous?.streaming_consciousness?.step_count ?? 0,
+      ecosystem_overlay: previous?.streaming_consciousness?.ecosystem_overlay ?? { status: "unavailable" },
+    },
+    codex_registry: {
+      ...(previous?.codex_registry ?? {}),
+      callable_count: previous?.codex_registry?.callable_count ?? 0,
+      monitor: previous?.codex_registry?.monitor ?? { total_calls: 0, success_calls: 0, error_calls: 0, recent_calls: [] },
+    },
+    codex_agent: component(previous?.codex_agent),
+    codeneuron: {
+      ...(previous?.codeneuron ?? {}),
+      status: unavailableStatus(previous?.codeneuron?.status),
+      indexed: false,
+      file_count: previous?.codeneuron?.file_count ?? 0,
+      total_lines: previous?.codeneuron?.total_lines ?? 0,
+    },
+    knowledge_acquisition: {
+      ...(previous?.knowledge_acquisition ?? {}),
+      status: unavailableStatus(previous?.knowledge_acquisition?.status),
+      total_records: previous?.knowledge_acquisition?.total_records ?? 0,
+      topic_count: previous?.knowledge_acquisition?.topic_count ?? 0,
+    },
+    independence: {
+      ...(previous?.independence ?? {}),
+      independence_score: previous?.independence?.independence_score ?? 0,
+      external_model_needed: previous?.independence?.external_model_needed ?? true,
+    },
+    ecosystem: previous?.ecosystem ?? { status: "unavailable", ecosystem_adapters: {}, crawl_stats: {} },
+    popos_diagnostics: component(previous?.popos_diagnostics),
+    google_workspace: component(previous?.google_workspace),
+    microsoft_graph: component(previous?.microsoft_graph),
+    sharepoint: component(previous?.sharepoint),
+    agentic_crawler: previous?.agentic_crawler ?? { status: "unavailable", indexed_files: 0 },
+    program_inventory: previous?.program_inventory ?? { status: "unavailable", desktop_app_count: 0, package_count: 0 },
+    host_sensory: previous?.host_sensory ?? { status: "unavailable", active_flow_count: 0, process_count: 0 },
+    ecosystem_knowledge: previous?.ecosystem_knowledge ?? { status: "unavailable", topic_count: 0 },
+    artifacts: previous?.artifacts ?? { total_artifacts: 0 },
+    approved_dataset_records: previous?.approved_dataset_records ?? 0,
+    fake_success: false,
+  };
+}
+
 function formatMetric(value: unknown): string {
   if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(value >= 10 ? 1 : 3) : "--";
   if (typeof value === "string" && value.trim()) return value;
@@ -3429,6 +3601,171 @@ function renderResponse(raw: unknown, openResult: ExternalOpenResult | null = nu
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function upsertAgentJob(jobs: AgentJob[], job: AgentJob): AgentJob[] {
+  if (!job?.job_id) return jobs;
+  const index = jobs.findIndex((item) => item.job_id === job.job_id);
+  if (index < 0) return [job, ...jobs].slice(0, 50);
+  const next = jobs.slice();
+  next[index] = { ...next[index], ...job };
+  return next;
+}
+
+function RooEditorPanel({
+  job,
+  events,
+  notice,
+  approvalReady,
+  approvalPhrase,
+  busy,
+  onCancel,
+  onRefresh,
+}: {
+  job: AgentJob | null;
+  events: AgentJobEvent[];
+  notice: Record<string, unknown> | null;
+  approvalReady: boolean;
+  approvalPhrase: string;
+  busy: boolean;
+  onCancel: (jobId: string) => Promise<void>;
+  onRefresh: () => Promise<void>;
+}) {
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = timelineRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+  }, [events.length, job?.status]);
+
+  const metadata = asRecord(job?.metadata);
+  const model = summarizeValue(metadata.cockpit_model ?? metadata.forced_roo_model ?? metadata.model) || "gpt-4.1-mini";
+  const provider = summarizeValue(metadata.cockpit_provider ?? metadata.provider) || "openai";
+  const status = job?.status ?? summarizeValue(notice?.status) ?? (approvalReady ? "ready" : "approval_required");
+  const terminal = ["completed", "failed", "cancelled"].includes(job?.status ?? "");
+  const serviceActions = readStringArray(job?.service_actions).length
+    ? readStringArray(job?.service_actions)
+    : readStringArray(latestEventData(events, "progress").service_actions);
+  const changedFiles = readStringArray(job?.changed_files).length
+    ? readStringArray(job?.changed_files)
+    : readStringArray(latestEventData(events, "roo_workspace_changes").changed_files);
+  const visibleEvents = events.filter((event) => {
+    const type = String(event.type ?? "");
+    return type === "created" || type === "status" || type === "progress" || type === "error" || type.startsWith("roo") || type.includes("workspace");
+  });
+  const noticeText = notice ? summarizeResult(notice) : "";
+
+  return (
+    <div className={`roo-editor roo-editor-${status}`}>
+      <div className="roo-editor-head">
+        <div className="roo-editor-title">
+          <Bot size={16} />
+          <div>
+            <h3>Roo Editor</h3>
+            <p>{job ? `${job.job_id} · ${provider} · ${model}` : `${provider} · ${model}`}</p>
+          </div>
+        </div>
+        <div className="roo-editor-actions">
+          <button type="button" onClick={() => onRefresh()} disabled={busy} title="Refresh Roo job">
+            <RefreshCw size={14} />
+          </button>
+          {job && !terminal && (
+            <button type="button" onClick={() => onCancel(job.job_id)} disabled={busy || !!job.cancel_requested} title="Stop Roo job">
+              <CircleStop size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!approvalReady && (
+        <div className="roo-approval">
+          <ShieldCheck size={15} />
+          <span>Toestemming nodig: typ <strong>{approvalPhrase}</strong> in Akkoord.</span>
+        </div>
+      )}
+
+      <div className="roo-editor-metrics">
+        <span>Status <strong>{status}</strong></span>
+        <span>Agent <strong>{job?.agent ?? "roo"}</strong></span>
+        <span>Acties <strong>{visibleEvents.length}</strong></span>
+        <span>Files <strong>{changedFiles.length}</strong></span>
+      </div>
+
+      {serviceActions.length > 0 && (
+        <div className="roo-agent-strip">
+          {serviceActions.slice(0, 10).map((action) => (
+            <span key={action}>{action}</span>
+          ))}
+        </div>
+      )}
+
+      {!job && noticeText && <pre className="roo-notice">{noticeText}</pre>}
+
+      <div className="roo-timeline" ref={timelineRef}>
+        {visibleEvents.length === 0 ? (
+          <div className="empty-state">Nog geen Roo events.</div>
+        ) : (
+          visibleEvents.map((event) => <RooTimelineEvent event={event} key={`${event.index ?? event.ts ?? ""}-${event.type ?? "event"}`} />)
+        )}
+      </div>
+
+      {changedFiles.length > 0 && (
+        <div className="roo-file-strip">
+          {changedFiles.slice(0, 16).map((file) => (
+            <span key={file}>{file}</span>
+          ))}
+        </div>
+      )}
+
+      {job?.response_preview && (
+        <pre className="roo-response">{job.response_preview}</pre>
+      )}
+    </div>
+  );
+}
+
+function RooTimelineEvent({ event }: { event: AgentJobEvent }) {
+  const data = asRecord(event.data);
+  const isRooAction = event.type === "roo_cli_event";
+  const isPermission = Boolean(data.approval_required);
+  const title = isRooAction
+    ? [summarizeValue(data.roo_type) || "roo_event", summarizeValue(data.tool)].filter(Boolean).join(" · ")
+    : event.type ?? "event";
+  const summary =
+    summarizeValue(data.summary) ||
+    summarizeValue(data.status) ||
+    summarizeValue(data.reason) ||
+    summarizeValue(data.service_actions) ||
+    summarizeValue(data.commands_run) ||
+    summarizeValue(data);
+  return (
+    <article className={`roo-event ${isPermission ? "permission" : ""}`}>
+      <div>
+        <strong>{title}</strong>
+        <span>{formatEventTime(event.ts)}</span>
+      </div>
+      {summary && <p>{summary.slice(0, 900)}</p>}
+    </article>
+  );
+}
+
+function latestEventData(events: AgentJobEvent[], type: string): Record<string, unknown> {
+  for (const event of events.slice().reverse()) {
+    if (event.type === type) return asRecord(event.data);
+  }
+  return {};
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => summarizeValue(item)).filter(Boolean);
+}
+
+function formatEventTime(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function AgenticTraceReadout({ data }: { data: Record<string, unknown> | null }) {
@@ -4709,7 +5046,8 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
     try {
       const data = await api("/trainer/training/start", {
         method: "POST",
-        body: JSON.stringify({ job_id: jobId, approval }),
+        timeoutMs: 10_000,
+        body: JSON.stringify({ job_id: jobId, approval, background: true, build_dataset_if_missing: true }),
       });
       recordTrainerAction("Start Job", data);
       await refresh();
@@ -5172,7 +5510,7 @@ function TrainerPanel({ api, trainerStatus, trainerJobs, approval, approvalReady
       </div>
 
       {trainerActionResult && (
-        <div className={`trainer-action-result ${trainerActionResult.status === "error" ? "warn" : "good"}`}>
+        <div className={`trainer-action-result ${["blocked", "error", "timeout"].includes(trainerActionResult.status) ? "warn" : "good"}`}>
           <div>
             <strong>{trainerActionResult.title}</strong>
             <span>{trainerActionResult.at}</span>

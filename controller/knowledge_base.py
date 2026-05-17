@@ -202,6 +202,90 @@ class KnowledgeBase:
         print(f"✅ [Hippocampus]: Reflectie Opgeslagen! ({len(chunks)} chunks)")
         return True
 
+    def list_items(self, source_filter: str = None, limit: int = 500) -> dict:
+        """Geeft een gegroepeerd overzicht van alle kennis-items in het brein.
+
+        Returns een dict met:
+        - topics: lijst van unieke source/file entries
+        - categories: telling per source_type / type
+        - total: totaal aantal unieke bronnen
+        """
+        try:
+            # Haal alle metadata op (zonder embeddings voor snelheid)
+            all_data = self.collection.get(include=["metadatas"])
+        except Exception as e:
+            return {"status": "error", "reason": str(e), "topics": [], "categories": {}, "total": 0}
+
+        if not all_data or not all_data.get("metadatas") or len(all_data["metadatas"]) == 0:
+            return {"status": "empty", "topics": [], "categories": {}, "total": 0}
+
+        metadatas = all_data["metadatas"]
+
+        # Normaliseer en groepeer op unieke source
+        seen_sources = {}
+        categories = {}
+
+        for meta in metadatas[:limit * 10]:  # haal meer op want chunks
+            # Bepaal de source identifier
+            src = (
+                meta.get("source_path")
+                or meta.get("source_url")
+                or meta.get("source")
+                or meta.get("url")
+                or meta.get("filename")
+                or "unknown"
+            )
+
+            title = meta.get("title") or src
+            dtype = meta.get("type") or meta.get("doc_type") or "unknown"
+            source_type = meta.get("source_type") or "unknown"
+            tags = meta.get("tags") or ""
+            ingested_at = meta.get("ingested_at") or ""
+
+            # Categorie bepalen
+            category = dtype
+            if "brave" in str(src).lower() or "brave" in str(tags).lower():
+                category = "brave"
+            elif "gemma" in str(src).lower() or "gemma" in str(tags).lower() or "gemma" in str(title).lower():
+                category = "gemma"
+            elif "browser" in str(src).lower() or "browser" in str(tags).lower() or source_type == "browser":
+                category = "browser"
+            elif dtype in ("user_memory", "system_docs", "success", "failure", "insight"):
+                category = dtype
+
+            # Tel categorieën (unieke sources, niet chunks)
+            if src not in seen_sources:
+                seen_sources[src] = {
+                    "title": str(title),
+                    "source": str(src),
+                    "category": category,
+                    "source_type": str(source_type),
+                    "ingested_at": str(ingested_at),
+                    "chunk_count": 1,
+                    "tags": str(tags),
+                }
+                categories[category] = categories.get(category, 0) + 1
+            else:
+                seen_sources[src]["chunk_count"] += 1
+
+        # Bouw topics lijst
+        topics = list(seen_sources.values())
+        topics.sort(key=lambda x: x.get("ingested_at", ""), reverse=True)
+
+        if source_filter:
+            topics = [t for t in topics if t.get("category") == source_filter]
+
+        topics = topics[:limit]
+
+        return {
+            "status": "success",
+            "topics": topics,
+            "categories": categories,
+            "total": len(topics),
+            "total_sources": len(seen_sources),
+            "category_names": sorted(categories.keys()),
+        }
+
     def search(self, query: str, n_results: int = 5) -> list[dict]:
         results = []
         # Tier 1: personal memories first (type='user_memory', importance=5)

@@ -21,7 +21,7 @@ class TestOuroborosModel(unittest.TestCase):
     def test_modelfile_contains_identity_and_safety_contract(self):
         content = render_modelfile(base_model=PREFERRED_BASE_MODEL)
 
-        self.assertIn("FROM llama3.2:latest", content)
+        self.assertIn("FROM gpt-oss:120b-cloud", content)
         self.assertIn("Ouroboros leert zichzelf trainen", content)
         self.assertIn("mentoren", content)
         self.assertIn("UNTRUSTED", content)
@@ -41,18 +41,18 @@ class TestOuroborosModel(unittest.TestCase):
         self.assertEqual(len(pocket["vector"]), 11)
         self.assertIn("gemma4_as_distillation_partner", pocket["behavior_contract"])
 
-    def test_select_base_model_prefers_llama32_when_available(self):
-        selected = select_base_model(["phi3:latest", "llama3.2:latest", "llama3:latest"])
-        self.assertEqual(selected, "llama3.2:latest")
+    def test_select_base_model_prefers_gpt_oss_when_available(self):
+        selected = select_base_model(["phi3:latest", "gpt-oss:120b-cloud", "llama3.2:latest"])
+        self.assertEqual(selected, "gpt-oss:120b-cloud")
 
     def test_prepare_writes_modelfile_and_prepares_create_command(self):
         with tempfile.TemporaryDirectory(prefix="ouroboros-model-") as tmpdir:
-            plan = prepare_ouroboros_create(root=tmpdir, available_models=["llama3.2:latest"])
+            plan = prepare_ouroboros_create(root=tmpdir, available_models=["gpt-oss:120b-cloud", "llama3.2:latest"])
 
             self.assertTrue(plan.valid)
             self.assertTrue(plan.wrote_modelfile)
             self.assertEqual(plan.model_name, MODEL_NAME)
-            self.assertEqual(plan.base_model, "llama3.2:latest")
+            self.assertEqual(plan.base_model, "gpt-oss:120b-cloud")
             self.assertEqual(plan.command[:3], ("ollama", "create", "ouroboros"))
             self.assertIn("ollama create ouroboros -f", plan.command_text)
             self.assertTrue(os.path.exists(plan.modelfile_path))

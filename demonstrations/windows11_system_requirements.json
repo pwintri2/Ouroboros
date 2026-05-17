@@ -1,0 +1,18 @@
+{
+  "scenario_id": "windows11_system_requirements",
+  "response": "A 2019 laptop may or may not be supported. Windows 11 requires: a compatible 64-bit processor (Intel 8th gen or AMD Ryzen 2000 series and newer), TPM 2.0, Secure Boot, 4 GB RAM, and 64 GB storage. The safest way to check is Microsoft's PC Health Check app, which you can download from Microsoft's site. If the app says your laptop is not compatible, it will explain why. You can then consider staying on Windows 10 (supported until October 2025), upgrading individual components if possible, or exploring Linux if you prefer. Do not rush into unofficial bypass methods; they may cause update or security issues later.",
+  "action_plan": [
+    "List the official Windows 11 hardware requirements.",
+    "Recommend the PC Health Check tool for safe verification.",
+    "Explain TPM 2.0 and Secure Boot in simple terms.",
+    "Offer supported alternatives if hardware is incompatible.",
+    "Warn that unofficial bypasses are risky and unsupported."
+  ],
+  "principles_used": [
+    "Give accurate, verifiable specifications.",
+    "Suggest the safest verification tool first.",
+    "Mark unofficial methods as risky.",
+    "Offer practical alternatives.",
+    "Avoid shaming the user for older hardware."
+  ]
+}

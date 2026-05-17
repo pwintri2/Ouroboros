@@ -251,6 +251,38 @@ class TestTauriCockpitFiles(unittest.TestCase):
         for expected in ["ws://127.0.0.1:8765", "http://127.0.0.1:8765", "Permissions-Policy", "microphone=(self)"]:
             self.assertIn(expected, config_source)
 
+    def test_standalone_tauri_surfaces_roo_editor_runtime(self):
+        app_tsx = COCKPIT_DIR / "src" / "App.tsx"
+        styles_css = COCKPIT_DIR / "src" / "styles.css"
+        config_path = COCKPIT_DIR / "src-tauri" / "tauri.conf.json"
+        start_script = REPO_ROOT / "scripts" / "start_ouroboros_cockpit.sh"
+        react_source = app_tsx.read_text(encoding="utf-8")
+        style_source = styles_css.read_text(encoding="utf-8")
+        config_source = config_path.read_text(encoding="utf-8")
+        launcher_source = start_script.read_text(encoding="utf-8")
+
+        for expected in [
+            "RooEditorPanel",
+            "rooEditorJobId",
+            "rooEditorEvents",
+            "/api/agent-runtime/jobs/${rooEditorJobId}",
+            "/api/agent-runtime/jobs/${rooEditorJobId}/events?limit=240",
+            "roo_cli_event",
+            "roo_workspace_changes",
+            "approvalPhrase",
+            "deepseek-coder:latest",
+        ]:
+            self.assertIn(expected, react_source)
+
+        for expected in [".roo-editor", ".roo-timeline", ".roo-event.permission", ".roo-approval"]:
+            self.assertIn(expected, style_source)
+
+        for expected in ["frontendDist", "../dist", "http://localhost:8010", "http://127.0.0.1:8010"]:
+            self.assertIn(expected, config_source)
+
+        for expected in ["release_binary_is_fresh", "debug_binary_native_is_fresh", "Release Tauri binary is older"]:
+            self.assertIn(expected, launcher_source)
+
     def test_cockpit_uses_ouroboros_logo_assets_for_native_and_in_app_branding(self):
         app_tsx = COCKPIT_DIR / "src" / "App.tsx"
         styles_css = COCKPIT_DIR / "src" / "styles.css"
@@ -288,6 +320,9 @@ class TestTauriCockpitFiles(unittest.TestCase):
             "docker compose up -d ouroboros-backend",
             "TAURI_BACKEND_URL",
             "VITE_BACKEND_URL",
+            "release_binary_is_fresh",
+            "debug_binary_native_is_fresh",
+            "Release Tauri binary is older",
         ]:
             self.assertIn(expected, start_text)
 

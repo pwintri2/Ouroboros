@@ -1,0 +1,19 @@
+{
+  "scenario_id": "windows11_start_menu_confusion",
+  "response": "That is a completely normal reaction. Windows 11 moved several things around and it takes time to adjust. Here is one discovery tip to start: the Search function is much faster now. Just press the Windows key and start typing the name of any app, setting, or file. It works like a launcher. If you miss the old left-aligned taskbar, you can move it back: right-click the taskbar, choose Taskbar settings, and under Taskbar behaviors set alignment to Left. The Start menu is simpler on purpose; you can pin your most-used apps by right-clicking them and choosing Pin to Start. Right-click the Start button itself for a quick menu with Device Manager, Disk Management, and PowerShell. Would you like me to walk through one more navigation change at a time?",
+  "action_plan": [
+    "Empathize with UI frustration without patronizing.",
+    "Explain the key changes: centered taskbar, simplified Start, Search as launcher.",
+    "Give a concrete first tip: Windows key + type to search.",
+    "Show how to left-align the taskbar.",
+    "Mention pinning apps and right-click Start for quick tools.",
+    "Offer one tip at a time to avoid overload."
+  ],
+  "principles_used": [
+    "Validate the user's experience.",
+    "Give one actionable tip at a time.",
+    "Mark UI changes as preference-based, not failures.",
+    "Avoid third-party tools without compatibility warnings.",
+    "Keep the tone helpful and practical."
+  ]
+}

@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ouroboros_learning.critic import evaluate_attempt
+from ouroboros_learning.model_adapters import load_model_adapter
 from ouroboros_learning.scenario_loader import load_scenario
 from ouroboros_learning.schemas import LearnerAttempt
 from ouroboros_learning.training_loop import run_training_cycle
@@ -66,6 +67,38 @@ class TestOuroborosLearning(unittest.TestCase):
             audit = json.loads(audit_lines[0])
             self.assertEqual(audit["scenario"]["id"], "virus_popup_panic")
             self.assertFalse(audit["fake_success"])
+            self.assertFalse(audit["model_adapter"]["openrouter_used"])
+            self.assertEqual(audit["model_adapter"]["preferred_local_model"], "gpt-oss:120b-cloud")
+            self.assertIn("self_improvement_patterns", audit)
+
+    def test_agent_self_improvement_cycle_audits_peer_patterns_without_openrouter(self):
+        with tempfile.TemporaryDirectory(prefix="guided-apprenticeship-") as tmp:
+            result = run_training_cycle(
+                ROOT / "scenarios" / "agent_self_improvement.yaml",
+                output_root=tmp,
+                demonstration_path=ROOT / "demonstrations" / "agent_self_improvement.json",
+            )
+
+            self.assertEqual(result["status"], "pass")
+            contract = result["self_improvement_patterns"]
+            self.assertEqual(contract["preferred_local_model"], "gpt-oss:120b-cloud")
+            self.assertEqual(contract["openrouter_replaced_by"], "ollama:gpt-oss:120b-cloud")
+            self.assertFalse(result["model_adapter"]["openrouter_used"])
+            self.assertEqual(result["external_calls"], [])
+            serialized = json.dumps(result).casefold()
+            self.assertIn("bounded_self_improvement_loop", serialized)
+            self.assertIn("tool_call_telemetry", serialized)
+            self.assertIn("local_ollama_gpt_oss", serialized)
+            self.assertNotIn("openrouter_used\": true", serialized)
+
+    def test_ollama_adapter_defaults_to_gpt_oss_without_openrouter(self):
+        adapter = load_model_adapter("ollama-unavailable")
+
+        attempt = adapter.generate_attempt(load_scenario(ROOT / "scenarios" / "agent_self_improvement.yaml"))
+
+        self.assertEqual(adapter.model, "gpt-oss:120b-cloud")
+        self.assertIn("No OpenRouter", attempt.response)
+        self.assertIn("external services", " ".join(attempt.action_plan))
 
 
 if __name__ == "__main__":

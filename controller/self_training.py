@@ -5,6 +5,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from ouroboros_learning.self_improvement_patterns import (
+    pattern_audit_contract,
+    select_self_improvement_patterns,
+)
+
 
 SELF_TRAINING_PHASES: tuple[str, ...] = (
     "observe_prompt",
@@ -29,6 +34,7 @@ def build_self_training_plan(
     candidate_actions = list(understanding.get("candidate_actions") or [])
     if not candidate_actions and needs_browser:
         candidate_actions.append({"tool": "browser_research", "approval_required": True})
+    self_improvement_contract = pattern_audit_contract(select_self_improvement_patterns())
 
     steps = [
         {
@@ -81,6 +87,9 @@ def build_self_training_plan(
         "steps": steps,
         "missing_knowledge": missing,
         "candidate_actions": candidate_actions,
+        "self_improvement_contract": self_improvement_contract,
+        "openrouter_used": False,
+        "preferred_local_model": self_improvement_contract["preferred_local_model"],
         "approval_required": any(bool(step.get("approval_required")) for step in steps),
         "next_action": (
             "Ask Philip for Akkoord before browser/action/storage."

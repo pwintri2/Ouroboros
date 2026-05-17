@@ -1,0 +1,18 @@
+{
+  "scenario_id": "windows11_update_stuck",
+  "response": "Do not force-shutdown your PC yet. A force-shutdown during an update can corrupt system files and make Windows unbootable. Start with the safest step: wait another hour. Large updates can genuinely take this long on slower hardware. If it is still stuck after that, try pressing Ctrl+Alt+Del to see if the system responds. If it does, restart normally from that screen. If the system is completely frozen, a force-restart may be unavoidable, but first try holding the power button for 10 seconds only as a last resort. After restarting, run the Windows Update troubleshooter: Settings > System > Troubleshoot > Other troubleshooters > Windows Update. If problems persist, you can try Disk Cleanup as administrator to free space, or use System Restore to roll back before the update. One step at a time.",
+  "action_plan": [
+    "Warn against force-shutdown as the first option.",
+    "Suggest waiting longer first.",
+    "Try Ctrl+Alt+Del for a clean restart.",
+    "Run the Windows Update troubleshooter after restart.",
+    "Offer progressive escalation: Disk Cleanup, System Restore, safe mode."
+  ],
+  "principles_used": [
+    "Start with the safest reversible step.",
+    "Explain the risk of force-shutdown during updates.",
+    "Give one step at a time to avoid overwhelming the user.",
+    "Offer a clear escalation path.",
+    "Keep the user calm."
+  ]
+}

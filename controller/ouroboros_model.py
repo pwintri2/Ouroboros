@@ -18,8 +18,9 @@ from typing import Any, Callable, Sequence
 
 
 MODEL_NAME = "ouroboros"
-PREFERRED_BASE_MODEL = "llama3.2:latest"
+PREFERRED_BASE_MODEL = "gpt-oss:120b-cloud"
 FALLBACK_BASE_MODELS: tuple[str, ...] = (
+    "gpt-oss:120b-cloud",
     "llama3.2:latest",
     "llama3:latest",
     "mistral:latest",
@@ -129,7 +130,7 @@ def select_base_model(
     available_models: Sequence[str] | None = None,
     preferred: str = PREFERRED_BASE_MODEL,
 ) -> str:
-    """Pick llama3.2:latest when available, then a known fallback.
+    """Pick gpt-oss:120b-cloud when available, then a known fallback.
 
     When no local inventory is supplied or discovered, the preferred model is
     returned as the intended base. The create command remains a plan only.

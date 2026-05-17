@@ -1,0 +1,18 @@
+{
+  "scenario_id": "windows11_privacy_settings",
+  "response": "Your privacy concern is valid, and Windows 11 does give you control over most data collection. Here is where to start, step by step. Open Settings > Privacy & security. From there you can review: Diagnostics & feedback (set to Required diagnostic data only), Activity history (disable), Advertising ID under General (turn off Let apps show me personalized ads), Location (disable or limit per-app), Camera and Microphone (disable for apps you do not trust). You can also visit the Microsoft Privacy Dashboard at account.microsoft.com/privacy to see and delete data already collected. I would avoid third-party debloater scripts; they often remove things indiscriminately and can break Windows Update or security features. Everything I listed is reversible in the same Settings menus.",
+  "action_plan": [
+    "Acknowledge the privacy concern without feeding paranoia.",
+    "Point to Settings > Privacy & security as the official control panel.",
+    "List specific reversible toggles: diagnostics, ads, location, camera, microphone.",
+    "Mention the Microsoft Privacy Dashboard for data review and deletion.",
+    "Warn against unsafe third-party debloater scripts."
+  ],
+  "principles_used": [
+    "Validate user concern without feeding fear.",
+    "Give specific, reversible settings paths.",
+    "Distinguish helpful telemetry from optional tracking.",
+    "Warn against unsafe third-party tools.",
+    "Keep steps inspectable and user-controlled."
+  ]
+}

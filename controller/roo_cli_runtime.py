@@ -37,6 +37,18 @@ DEFAULT_NODE_BIN = "/home/pwintri2/.nvm/versions/node/v22.22.2/bin"
 MAX_CAPTURE_CHARS = 12000
 MAX_PARSE_CHARS = 2_000_000
 ROO_MODELS_CACHE_SECONDS = 60
+OPENROUTER_LOCAL_REPLACEMENT_MODEL = "gpt-oss:120b-cloud"
+ROO_CHATGPT_PROVIDER = "openai"
+ROO_CHATGPT_MODEL = "gpt-4.1-mini"
+ROO_OAUTH_PROVIDER = "roo"
+ROO_OAUTH_MODEL = "anthropic/claude-opus-4.6"
+ROO_FALLBACK_PROVIDER = "ollama"
+ROO_FALLBACK_MODEL = "deepseek-coder:latest"
+# Backwards-compatible names: older cockpit code/tests look for these fields,
+# but the policy is now ChatGPT/OpenAI-first with Roo OAuth available.
+ROO_FORCED_PROVIDER = ROO_CHATGPT_PROVIDER
+ROO_FORCED_MODEL = ROO_CHATGPT_MODEL
+ROO_MODEL_POLICY = "chatgpt_api_mini_first_local_deepseek_fallback"
 
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
@@ -55,7 +67,7 @@ COCKPIT_TO_ROO_PROVIDER: dict[str, str] = {
     "openai": "openai-native",
     "openai-native": "openai-native",
     "chatgpt": "openai-native",
-    "openrouter": "openrouter",
+    "openrouter": "ollama",
     "roo": "roo",
     "vercel-ai-gateway": "vercel-ai-gateway",
 }
@@ -68,7 +80,6 @@ ROO_SUPPORTED_COCKPIT_PROVIDERS: tuple[str, ...] = (
     "claude",
     "google",
     "gemini",
-    "openrouter",
     "roo",
 )
 
@@ -76,7 +87,6 @@ ROO_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GOOGLE_API_KEY",
     "openai-native": "OPENAI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
     "roo": "ROO_API_KEY",
     "vercel-ai-gateway": "VERCEL_AI_GATEWAY_API_KEY",
 }
@@ -128,12 +138,14 @@ def resolve_roo_binary(env: dict[str, str] | None = None) -> Path | None:
 
 
 def map_cockpit_provider(provider: object, model: object = "") -> dict[str, Any]:
-    clean_provider = str(provider or "").strip().lower() or "ollama"
-    clean_model = str(model or "").strip()
-    if clean_provider == "roo-agent":
-        clean_provider = "roo"
-    if clean_provider == "roo" and clean_model:
-        clean_provider = "roo" if _looks_like_roo_cloud_model_id(clean_model) else infer_provider_from_model(clean_model)
+    requested_provider = str(provider or "").strip().lower() or ROO_CHATGPT_PROVIDER
+    requested_model = str(model or "").strip()
+    if requested_provider == "roo-agent":
+        requested_provider = "roo"
+    clean_provider = cockpit_provider_for_roo_selection(requested_provider, requested_model)
+    clean_model = _roo_effective_model(clean_provider, requested_model)
+    replaced_provider = requested_provider if requested_provider != clean_provider else ""
+    replaced_model = requested_model if requested_model and requested_model != clean_model else ""
     roo_provider = COCKPIT_TO_ROO_PROVIDER.get(clean_provider)
     if not roo_provider:
         return {
@@ -147,8 +159,24 @@ def map_cockpit_provider(provider: object, model: object = "") -> dict[str, Any]
         "status": "mapped",
         "cockpit_provider": clean_provider,
         "cockpit_model": clean_model,
+        "requested_cockpit_provider": requested_provider,
+        "requested_cockpit_model": requested_model,
         "roo_provider": roo_provider,
         "api_key_env": ROO_API_KEY_ENV.get(roo_provider, ""),
+        "model_override": clean_model,
+        "forced_provider": ROO_CHATGPT_PROVIDER,
+        "forced_model": ROO_CHATGPT_MODEL,
+        "fallback_provider": ROO_FALLBACK_PROVIDER,
+        "fallback_model": ROO_FALLBACK_MODEL,
+        "model_policy": ROO_MODEL_POLICY,
+        "replaced_provider": replaced_provider,
+        "replaced_model": replaced_model,
+        "replacement_reason": (
+            f"Roo Code gebruikt standaard ChatGPT/OpenAI via {ROO_CHATGPT_PROVIDER}/{ROO_CHATGPT_MODEL}; "
+            "Cockpit-provider/modelselecties worden voor Roo-runs genormaliseerd om rate limits te vermijden."
+            if replaced_provider or replaced_model
+            else ""
+        ),
         "fake_success": False,
     }
 
@@ -167,6 +195,8 @@ def infer_provider_from_model(model: object) -> str:
         return "xai"
     if text.startswith("mistral"):
         return "mistral"
+    if "openrouter" in text or "gpt-oss" in text:
+        return "ollama"
     if "/" in text and ":" not in text:
         return "openrouter"
     return "ollama"
@@ -174,11 +204,35 @@ def infer_provider_from_model(model: object) -> str:
 
 def cockpit_provider_for_roo_selection(provider: object, model: object = "") -> str:
     clean_provider = str(provider or "").strip().lower()
-    if clean_provider in {"", "roo", "roo-agent", "roo_agent", "roo-code"}:
-        if _looks_like_roo_cloud_model_id(model):
-            return "roo"
-        return infer_provider_from_model(model)
-    return clean_provider
+    clean_model = str(model or "").strip()
+    if clean_provider in {"roo", "roo-cloud", "roo-oauth"}:
+        return ROO_OAUTH_PROVIDER
+    if clean_provider in {"ollama", "local"} and clean_model == ROO_FALLBACK_MODEL:
+        return ROO_FALLBACK_PROVIDER
+    return ROO_CHATGPT_PROVIDER
+
+
+def _roo_effective_model(cockpit_provider: str, requested_model: str = "") -> str:
+    provider = str(cockpit_provider or "").strip().lower()
+    model = str(requested_model or "").strip()
+    if provider in {"openai", "chatgpt", "openai-native"}:
+        return model if model.startswith(("gpt-", "o1", "o3", "o4")) else ROO_CHATGPT_MODEL
+    if provider == "anthropic":
+        return model if "claude" in model.lower() else "claude-sonnet-4-6"
+    if provider == "google":
+        return model if "gemini" in model.lower() else "gemini-2.5-flash"
+    if provider == "ollama":
+        return model or ROO_FALLBACK_MODEL
+    if provider == "roo":
+        return model if _looks_like_roo_cloud_model_id(model) else ROO_OAUTH_MODEL
+    return model or ROO_CHATGPT_MODEL
+
+
+def _fallback_roo_provider_map(reason: str = "") -> dict[str, Any]:
+    provider_map = map_cockpit_provider(ROO_FALLBACK_PROVIDER, ROO_FALLBACK_MODEL)
+    provider_map["fallback_reason"] = reason or "ChatGPT/OpenAI API key is niet beschikbaar; Roo gebruikt de lokale fallback."
+    provider_map["replacement_reason"] = provider_map["fallback_reason"]
+    return provider_map
 
 
 def roo_api_key_env_for_cockpit_provider(provider: object, model: object = "") -> str:
@@ -232,6 +286,13 @@ def roo_cli_status() -> dict[str, Any]:
         "status": status,
         "available": runtime_reachable,
         "runtime_reachable": runtime_reachable,
+        "forced_provider": ROO_FORCED_PROVIDER,
+        "forced_model": ROO_FORCED_MODEL,
+        "oauth_provider": ROO_OAUTH_PROVIDER,
+        "oauth_model": ROO_OAUTH_MODEL,
+        "fallback_provider": ROO_FALLBACK_PROVIDER,
+        "fallback_model": ROO_FALLBACK_MODEL,
+        "model_policy": ROO_MODEL_POLICY,
         "root": str(root),
         "root_exists": root.exists(),
         "binary": str(binary) if binary else "",
@@ -326,9 +387,8 @@ def roo_cloud_models(*, timeout_seconds: int = 12, max_models: int = 120) -> dic
         "secrets_returned": False,
         "fake_success": False,
     }
-    if status == "online":
-        _ROO_MODELS_CACHE["ts"] = time.time()
-        _ROO_MODELS_CACHE["payload"] = dict(payload)
+    _ROO_MODELS_CACHE["ts"] = time.time()
+    _ROO_MODELS_CACHE["payload"] = dict(payload)
     return payload
 
 
@@ -340,6 +400,7 @@ def build_roo_command(
     model: str,
     mode: str = "code",
     output_format: str = "json",
+    api_key: str = "",
 ) -> dict[str, Any]:
     env = runtime_env()
     binary = resolve_roo_binary(env)
@@ -348,7 +409,17 @@ def build_roo_command(
         return {"status": "error", "reason": "Roo CLI binary niet gevonden.", "category": "binary_missing", "fake_success": False}
     if provider_map.get("status") != "mapped":
         return {**provider_map, "status": "error", "category": "provider_unsupported"}
+    if provider_map.get("api_key_env") and not resolve_api_key_for_provider(
+        str(provider_map.get("cockpit_provider") or cockpit_provider),
+        provider_map,
+        explicit_key=api_key,
+    ).get("usable"):
+        provider_map = _fallback_roo_provider_map(
+            f"Roo kan `{provider_map.get('cockpit_model')}` niet via ChatGPT/OpenAI starten zonder API key; "
+            f"lokale fallback `{ROO_FALLBACK_MODEL}` wordt gebruikt."
+        )
     roo_provider = str(provider_map["roo_provider"])
+    roo_model = str(provider_map.get("model_override") or provider_map.get("cockpit_model") or ROO_CHATGPT_MODEL)
     command = [
         str(binary),
         "--print",
@@ -359,7 +430,7 @@ def build_roo_command(
         "--provider",
         roo_provider,
         "--model",
-        str(model or ""),
+        roo_model,
         "--mode",
         str(mode or "code"),
         "--oneshot",
@@ -367,7 +438,7 @@ def build_roo_command(
         output_format,
         "--exit-on-error",
     ]
-    reasoning_effort = _roo_reasoning_effort(roo_provider, model)
+    reasoning_effort = _roo_reasoning_effort(roo_provider, roo_model)
     if reasoning_effort:
         command.extend(["--reasoning-effort", reasoning_effort])
     return {
@@ -418,6 +489,7 @@ def run_roo_cli_task(
         cockpit_provider=provider,
         model=model,
         mode=mode,
+        api_key=api_key,
     )
     if command_payload.get("status") != "success":
         return {
@@ -439,61 +511,82 @@ def run_roo_cli_task(
     env = runtime_env(env_extra)
     command = list(command_payload["command"])
     before = _read_workspace_status(workspace_path)
-    try:
-        with stdout_file.open("w", encoding="utf-8") as stdout_handle, stderr_file.open("w", encoding="utf-8") as stderr_handle:
-            proc = subprocess.Popen(
-                command,
-                cwd=str(workspace_path),
-                stdout=stdout_handle,
-                stderr=stderr_handle,
-                text=True,
-                env=env,
-                start_new_session=True,
-            )
-            timed_out = False
-            try:
-                return_code = proc.wait(timeout=max(1, int(timeout_seconds or 600)))
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _terminate(proc)
-                return_code = proc.poll()
-    except FileNotFoundError as exc:
-        return {
-            "status": "failed",
-            "exit_code": None,
-            "reason": str(exc),
-            "category": "binary_missing",
-            "duration_seconds": round(time.time() - started, 3),
-            "fake_success": False,
-        }
-    except Exception as exc:
-        return {
-            "status": "failed",
-            "exit_code": None,
-            "reason": str(exc),
-            "category": "spawn_failed",
-            "duration_seconds": round(time.time() - started, 3),
-            "fake_success": False,
-        }
+    attempts: list[dict[str, Any]] = []
+    max_retries = _rate_limit_retries()
+    after: list[dict[str, str]] = []
+    changed_files: list[str] = []
+    stdout_for_parse = ""
+    stdout_text = ""
+    stderr_text = ""
+    parsed_output: Any = None
+    response_preview = ""
+    return_code: int | None = None
+    timed_out = False
+    status = "failed"
+    category = "cli_failed"
+    for attempt in range(max_retries + 1):
+        try:
+            with stdout_file.open("w", encoding="utf-8") as stdout_handle, stderr_file.open("w", encoding="utf-8") as stderr_handle:
+                proc = subprocess.Popen(
+                    command,
+                    cwd=str(workspace_path),
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
+                timed_out = False
+                try:
+                    return_code = proc.wait(timeout=max(1, int(timeout_seconds or 600)))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    _terminate(proc)
+                    return_code = proc.poll()
+        except FileNotFoundError as exc:
+            return {
+                "status": "failed",
+                "exit_code": None,
+                "reason": str(exc),
+                "category": "binary_missing",
+                "duration_seconds": round(time.time() - started, 3),
+                "fake_success": False,
+            }
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "exit_code": None,
+                "reason": str(exc),
+                "category": "spawn_failed",
+                "duration_seconds": round(time.time() - started, 3),
+                "fake_success": False,
+            }
 
-    stdout_for_parse = _read_text_for_parse(stdout_file)
-    stdout_text = redact(_read_tail(stdout_file))
-    stderr_text = redact(_read_tail(stderr_file))
-    parsed_output = _parse_json(redact(stdout_for_parse)) or _parse_json(stdout_text)
-    try:
-        output_file.write_text(json.dumps(parsed_output if parsed_output is not None else {"stdout": stdout_text}, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-    after = _read_workspace_status(workspace_path)
-    changed_files = _changed_status_paths(before, after)
-    status = "failed" if timed_out or return_code else "completed"
-    response_preview = _response_preview(parsed_output, stdout_for_parse or stdout_text, stderr_text)
-    category = _classify_result(
-        status=status,
-        exit_code=return_code,
-        stderr=stderr_text,
-        details=f"{stdout_text}\n{response_preview}",
-    )
+        stdout_for_parse = _read_text_for_parse(stdout_file)
+        stdout_text = redact(_read_tail(stdout_file))
+        stderr_text = redact(_read_tail(stderr_file))
+        parsed_output = _parse_json(redact(stdout_for_parse)) or _parse_json(stdout_text)
+        try:
+            output_file.write_text(json.dumps(parsed_output if parsed_output is not None else {"stdout": stdout_text}, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        after = _read_workspace_status(workspace_path)
+        changed_files = _changed_status_paths(before, after)
+        status = "failed" if timed_out or return_code else "completed"
+        response_preview = _response_preview(parsed_output, stdout_for_parse or stdout_text, stderr_text)
+        category = _classify_result(
+            status=status,
+            exit_code=return_code,
+            stderr=stderr_text,
+            details=f"{stdout_text}\n{response_preview}",
+        )
+        attempts.append({"attempt": attempt + 1, "category": category, "exit_code": return_code})
+        if category == "rate_limited" and attempt < max_retries and not timed_out:
+            delay = _rate_limit_retry_delay_seconds(f"{stdout_text}\n{stderr_text}\n{response_preview}")
+            attempts[-1]["retry_delay_seconds"] = delay
+            time.sleep(delay)
+            continue
+        break
     return {
         "status": status,
         "exit_code": return_code,
@@ -509,6 +602,7 @@ def run_roo_cli_task(
         "stderr": stderr_text,
         "parsed_output": parsed_output,
         "response_preview": response_preview,
+        "attempts": attempts,
         "changed_files": changed_files,
         "dirty_files": [item.get("path", "") for item in (after or []) if item.get("path")],
         "artifacts": [str(path) for path in (prompt_file, stdout_file, stderr_file, output_file) if path.exists()],
@@ -857,6 +951,8 @@ def _classify_result(*, status: str, exit_code: int | None, stderr: str, details
         return "timeout_or_cancelled"
     if "encrypted content is not supported" in text:
         return "model_encrypted_content_unsupported"
+    if "rate limit" in text or "tokens per min" in text or "too many requests" in text or "http 429" in text:
+        return "rate_limited"
     if "invalid provider" in text or "must be one of" in text:
         return "provider_unsupported"
     if "does not support tools" in text:
@@ -879,8 +975,31 @@ def _roo_reasoning_effort(roo_provider: str, model: object) -> str:
     clean_provider = str(roo_provider or "").strip().lower()
     clean_model = str(model or "").strip().lower()
     if clean_provider == "openai-native" and clean_model.startswith(("gpt-4.1", "gpt-4o", "gpt-3.5")):
-        return "disabled"
+        return "disable"
     return ""
+
+
+def _rate_limit_retries() -> int:
+    try:
+        value = int(os.getenv("WINTRIP_ROO_RATE_LIMIT_RETRIES", "2"))
+    except Exception:
+        value = 2
+    return max(0, min(value, 3))
+
+
+def _rate_limit_retry_delay_seconds(text: str) -> float:
+    cap = 30.0
+    try:
+        cap = max(0.0, min(float(os.getenv("WINTRIP_ROO_RATE_LIMIT_MAX_SLEEP", "30")), 90.0))
+    except Exception:
+        pass
+    match = re.search(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", str(text or ""), flags=re.I)
+    if match:
+        try:
+            return min(cap, max(2.0, float(match.group(1)) + 1.0))
+        except Exception:
+            pass
+    return min(cap, 5.0)
 
 
 def _looks_like_roo_cloud_model_id(model: object) -> bool:
@@ -903,6 +1022,13 @@ def _looks_like_roo_cloud_model_id(model: object) -> bool:
         "xai",
         "zai",
     }
+
+
+def _looks_like_openrouter_model(model: object) -> bool:
+    text = str(model or "").strip().lower()
+    if not text:
+        return False
+    return "openrouter" in text or ("gpt-oss" in text and "/" in text)
 
 
 def _read_workspace_status(cwd: Path) -> list[dict[str, str]] | None:
@@ -986,16 +1112,18 @@ def resolve_api_key_for_provider(
     - ``source``: where the key was found
     - ``usable``: bool indicating whether we have a usable key
     """
-    if explicit_key and len(explicit_key.strip()) >= 8:
-        return {"key": explicit_key.strip(), "source": "explicit", "usable": True}
-
     if provider_map is None:
         provider_map = map_cockpit_provider(cockpit_provider)
     if provider_map.get("status") != "mapped":
         return {"key": "", "source": "unmapped", "usable": False, "reason": provider_map.get("reason", "")}
 
+    effective_cockpit_provider = str(provider_map.get("cockpit_provider") or cockpit_provider or "").strip().lower()
     roo_provider = str(provider_map.get("roo_provider") or "")
     api_key_env = str(provider_map.get("api_key_env") or "")
+    if roo_provider == ROO_FALLBACK_PROVIDER:
+        return {"key": "", "source": "not_required_ollama", "usable": True}
+    if explicit_key and len(explicit_key.strip()) >= 8:
+        return {"key": explicit_key.strip(), "source": "explicit", "usable": True}
     if roo_provider == "roo":
         if api_key_env:
             env_value = os.getenv(api_key_env, "")
@@ -1029,7 +1157,7 @@ def resolve_api_key_for_provider(
             "google": "google",
         }
         keys = load_provider_api_keys()
-        store_provider = aliases.get(str(cockpit_provider or "").strip().lower(), str(cockpit_provider or "").strip().lower())
+        store_provider = aliases.get(effective_cockpit_provider, effective_cockpit_provider)
         store_key = keys.get(store_provider, "")
         if store_key:
             return {"key": store_key, "source": "api_key_store", "usable": True}
@@ -1040,7 +1168,7 @@ def resolve_api_key_for_provider(
     subscription_provider = _ROO_PROVIDER_TO_SUBSCRIPTION.get(roo_provider, "")
     if not subscription_provider:
         # Try cockpit provider name directly
-        subscription_provider = str(cockpit_provider or "").strip().lower()
+        subscription_provider = effective_cockpit_provider
     try:
         from controller.subscription_store import subscription_api_key_for_provider
 
@@ -1067,6 +1195,15 @@ __all__ = [
     "infer_provider_from_model",
     "installed_supported_providers",
     "map_cockpit_provider",
+    "ROO_CHATGPT_MODEL",
+    "ROO_CHATGPT_PROVIDER",
+    "ROO_OAUTH_MODEL",
+    "ROO_OAUTH_PROVIDER",
+    "ROO_FALLBACK_MODEL",
+    "ROO_FALLBACK_PROVIDER",
+    "ROO_FORCED_MODEL",
+    "ROO_FORCED_PROVIDER",
+    "ROO_MODEL_POLICY",
     "redact",
     "resolve_api_key_for_provider",
     "resolve_roo_binary",

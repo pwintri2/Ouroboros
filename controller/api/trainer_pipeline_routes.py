@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from controller.blue_brain_adapter import get_blue_brain_status, run_blue_brain_training, setup_blue_brain_env
@@ -76,6 +78,7 @@ from controller.roo_tools import (
     write_file,
     write_file_preview,
 )
+from controller.safe_shell import workspace_root
 from controller.rotating_blue_brain import (
     get_rotating_status,
     run_rotation_tick,
@@ -123,6 +126,8 @@ from controller.api.training_routes import (
 trainer_pipeline_router = APIRouter(prefix="/trainer", tags=["trainer-pipeline"])
 roo_tools_router = APIRouter(prefix="/roo", tags=["roo-tools"])
 project_context_router = APIRouter(prefix="/context", tags=["project-context"])
+_TRAINING_JOBS_IN_FLIGHT: set[str] = set()
+_TRAINING_JOBS_LOCK = threading.Lock()
 
 
 # ============================================================================
@@ -163,6 +168,8 @@ class StartTrainingRequest(BaseModel):
     job_id: str = Field(..., min_length=1)
     approval: str = Field(..., min_length=1)
     quantize: str | None = Field(default=None, max_length=32)
+    background: bool = Field(default=True)
+    build_dataset_if_missing: bool = Field(default=True)
 
 
 class BuildDatasetRequest(BaseModel):
@@ -1162,35 +1169,115 @@ async def delete_trainer_job(job_id: str) -> dict[str, Any]:
     return {"status": "deleted", "job_id": job_id}
 
 
-@trainer_pipeline_router.post("/training/start")
-async def start_training(request: StartTrainingRequest) -> dict[str, Any]:
-    """Start training for a job (requires approval)."""
-    if request.approval != "Akkoord":
-        raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
-    
-    job = get_job(request.job_id)
+def _job_state(job: dict[str, Any]) -> JobState:
+    try:
+        return JobState(str(job.get("state") or JobState.DRAFT.value))
+    except ValueError:
+        return JobState.DRAFT
+
+
+def _training_blocked(job: dict[str, Any], reason: str, *, failed: bool = False) -> dict[str, Any]:
+    state = JobState.FAILED if failed else _job_state(job)
+    update_job_state(
+        str(job["job_id"]),
+        state,
+        f"Training blocked: {reason}",
+        error=reason if failed else None,
+    )
+    return {
+        "status": "blocked",
+        "job_id": job["job_id"],
+        "method": job.get("method"),
+        "state": state.value,
+        "reason": reason,
+        "fake_success": False,
+    }
+
+
+def _trainer_dataset_path(job_id: str) -> Path:
+    return (workspace_root() / "out" / "trainer_datasets" / f"{job_id}.jsonl").resolve()
+
+
+def _ensure_job_dataset(job: dict[str, Any], *, build_if_missing: bool) -> dict[str, Any]:
+    method = str(job.get("method") or "")
+    if method not in {TrainerMethod.LITGPT.value, TrainerMethod.UNSLOOTH.value}:
+        return {"status": "ready", "job": job}
+
+    dataset_path = str(job.get("dataset_path") or "").strip()
+    if dataset_path:
+        return {"status": "ready", "job": job}
+
+    if not build_if_missing:
+        return _training_blocked(job, "Dataset path is missing. Build or attach a dataset before training.")
+
+    approved_count = count_approved_records()
+    if approved_count <= 0:
+        return _training_blocked(
+            job,
+            "No approved training records are available. Add approved records before starting LitGPT/Unsloth.",
+        )
+
+    output_path = _trainer_dataset_path(str(job["job_id"]))
+    dataset = build_dataset(
+        output_path=str(output_path),
+        format="chat",
+        max_records=1000,
+        include_system_prompt=True,
+    )
+    if dataset.get("status") != "success":
+        return _training_blocked(
+            job,
+            str(dataset.get("reason") or "Dataset build failed."),
+            failed=True,
+        )
+
+    record_count = int(dataset.get("included_count") or dataset.get("record_count") or 0)
+    if record_count <= 0:
+        return _training_blocked(
+            job,
+            "Dataset build produced zero usable records.",
+            failed=True,
+        )
+
+    set_dataset_info(str(job["job_id"]), str(output_path), record_count)
+    update_job_state(
+        str(job["job_id"]),
+        JobState.DATASET_READY,
+        f"Dataset built for training: {output_path} ({record_count} records)",
+    )
+    refreshed = get_job(str(job["job_id"])) or job
+    return {"status": "ready", "job": refreshed, "dataset": dataset}
+
+
+def _run_training_now(job_id: str, *, quantize: str | None, build_dataset_if_missing: bool) -> dict[str, Any]:
+    job = get_job(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
+        return {"status": "error", "reason": "Job not found", "fake_success": False}
+
+    dataset_ready = _ensure_job_dataset(job, build_if_missing=build_dataset_if_missing)
+    if dataset_ready.get("status") != "ready":
+        return dataset_ready
+    job = dataset_ready.get("job") or job
+
     method = job.get("method")
     if method == TrainerMethod.LITGPT.value:
-        result = run_litgpt_lora_finetune(
-            job_id=request.job_id,
+        return run_litgpt_lora_finetune(
+            job_id=job_id,
             base_model=job["base_model"],
-            dataset_path=job.get("dataset_path", ""),
+            dataset_path=str(job.get("dataset_path") or ""),
             lora_r=job["lora_params"]["r"],
             lora_alpha=job["lora_params"]["alpha"],
             lora_dropout=job["lora_params"]["dropout"],
             learning_rate=job["training_params"]["learning_rate"],
             batch_size=job["training_params"]["batch_size"],
             epochs=job["training_params"]["epochs"],
-            quantize=request.quantize,
+            quantize=quantize,
         )
-    elif method == TrainerMethod.UNSLOOTH.value:
-        result = run_unsloth_sft_training(
-            job_id=request.job_id,
+    if method == TrainerMethod.UNSLOOTH.value:
+        return run_unsloth_sft_training(
+            job_id=job_id,
             base_model=job["base_model"],
-            dataset_path=job.get("dataset_path", ""),
+            dataset_path=str(job.get("dataset_path") or ""),
             lora_r=job["lora_params"]["r"],
             lora_alpha=job["lora_params"]["alpha"],
             lora_dropout=job["lora_params"]["dropout"],
@@ -1198,10 +1285,10 @@ async def start_training(request: StartTrainingRequest) -> dict[str, Any]:
             batch_size=job["training_params"]["batch_size"],
             epochs=job["training_params"]["epochs"],
         )
-    elif method == TrainerMethod.BLUE_BRAIN.value:
+    if method == TrainerMethod.BLUE_BRAIN.value:
         training_params = job.get("training_params", {})
-        result = run_blue_brain_training(
-            job_id=request.job_id,
+        return run_blue_brain_training(
+            job_id=job_id,
             n_samples=int(training_params.get("blue_samples", 10_000)),
             n_features=11,
             n_estimators=int(training_params.get("blue_estimators", 300)),
@@ -1209,10 +1296,111 @@ async def start_training(request: StartTrainingRequest) -> dict[str, Any]:
             random_state=int(training_params.get("blue_random_state", 42)),
             cycles=int(training_params.get("blue_cycles", training_params.get("epochs", 1))),
         )
-    else:
-        raise HTTPException(status_code=400, detail=f"Unsupported training method: {method}")
-    
-    return result
+
+    reason = f"Unsupported training method: {method}"
+    update_job_state(job_id, JobState.FAILED, reason, error=reason)
+    return {"status": "error", "reason": reason, "fake_success": False}
+
+
+def _release_training_job(job_id: str) -> None:
+    with _TRAINING_JOBS_LOCK:
+        _TRAINING_JOBS_IN_FLIGHT.discard(job_id)
+
+
+def _run_training_background(job_id: str, quantize: str | None, build_dataset_if_missing: bool) -> None:
+    try:
+        _run_training_now(
+            job_id,
+            quantize=quantize,
+            build_dataset_if_missing=build_dataset_if_missing,
+        )
+    except Exception as exc:
+        update_job_state(
+            job_id,
+            JobState.FAILED,
+            f"Training worker crashed: {exc}",
+            error=str(exc),
+        )
+    finally:
+        _release_training_job(job_id)
+
+
+def _reserve_training_job(job_id: str) -> bool:
+    with _TRAINING_JOBS_LOCK:
+        if job_id in _TRAINING_JOBS_IN_FLIGHT:
+            return False
+        _TRAINING_JOBS_IN_FLIGHT.add(job_id)
+        return True
+
+
+@trainer_pipeline_router.post("/training/start")
+async def start_training(request: StartTrainingRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    """Start training for a job (requires approval).
+
+    The cockpit starts jobs in background mode so long-running trainer processes
+    do not turn into HTTP timeouts. Pass background=false for a synchronous
+    test/debug run.
+    """
+    if request.approval != "Akkoord":
+        raise HTTPException(status_code=403, detail="Approval phrase must be 'Akkoord'")
+
+    job = get_job(request.job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.get("state") == JobState.TRAINING.value:
+        return {
+            "status": "already_running",
+            "job_id": request.job_id,
+            "state": JobState.TRAINING.value,
+            "fake_success": False,
+        }
+
+    if not request.background:
+        return await asyncio.to_thread(
+            _run_training_now,
+            request.job_id,
+            quantize=request.quantize,
+            build_dataset_if_missing=request.build_dataset_if_missing,
+        )
+
+    method = str(job.get("method") or "")
+    if method in {TrainerMethod.LITGPT.value, TrainerMethod.UNSLOOTH.value} and not str(job.get("dataset_path") or "").strip():
+        if not request.build_dataset_if_missing:
+            return _training_blocked(job, "Dataset path is missing. Build or attach a dataset before training.")
+        if count_approved_records() <= 0:
+            return _training_blocked(
+                job,
+                "No approved training records are available. Add approved records before starting LitGPT/Unsloth.",
+            )
+
+    if not _reserve_training_job(request.job_id):
+        return {
+            "status": "already_running",
+            "job_id": request.job_id,
+            "state": JobState.TRAINING.value,
+            "fake_success": False,
+        }
+
+    update_job_state(
+        request.job_id,
+        JobState.TRAINING,
+        "Training queued in background; poll /trainer/jobs for progress.",
+    )
+    background_tasks.add_task(
+        _run_training_background,
+        request.job_id,
+        request.quantize,
+        request.build_dataset_if_missing,
+    )
+    return {
+        "status": "queued",
+        "job_id": request.job_id,
+        "method": method,
+        "state": JobState.TRAINING.value,
+        "background": True,
+        "fake_success": False,
+    }
 
 
 @trainer_pipeline_router.post("/training/merge")

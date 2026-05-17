@@ -84,7 +84,7 @@ def slash_command_catalog() -> dict[str, Any]:
             "/claude <opdracht>": "Laat Claude Code in WintripAI werken als auth beschikbaar is.",
             "/roo status": "Roo Code CLI/root/runtime status.",
             "/roo jobs": "Recente Roo jobs uit de agent runtime.",
-            "/roo <opdracht>": "Laat Roo Code agentisch werken met het in Cockpit gekozen model.",
+            "/roo <opdracht>": "Laat Roo Code agentisch werken via ChatGPT/OpenAI, met lokale DeepSeek-fallback.",
         },
         "roots": _agent_roots(),
         "approval_phrase": APPROVAL_PHRASE,
@@ -246,13 +246,31 @@ def execute_roo_agent_task(
     except Exception as exc:
         return _agent_result("roo", "roo_adapter", "error", started, reason=str(exc))
 
-    readonly_redirect = _roo_readonly_tool_redirect(task, started=started, provider=provider, model=model)
-    if readonly_redirect is not None:
-        return readonly_redirect
-
     effective_approval = _approval_effective(approval)
     if effective_approval != APPROVAL_PHRASE:
         local_llm = _roo_selection_is_local(provider, model)
+        try:
+            from controller.roo_cli_runtime import ROO_FORCED_MODEL, cockpit_provider_for_roo_selection, map_cockpit_provider
+
+            cockpit_provider = cockpit_provider_for_roo_selection(provider, model)
+            provider_map = map_cockpit_provider(cockpit_provider, model)
+            effective_roo_model = str(provider_map.get("model_override") or provider_map.get("cockpit_model") or ROO_FORCED_MODEL)
+            roo_oauth_ready = _roo_cloud_auth_ready() if provider_map.get("roo_provider") == "roo" else True
+            route_label = "Roo OAuth" if provider_map.get("roo_provider") == "roo" else "ChatGPT/OpenAI"
+        except Exception:
+            ROO_FORCED_MODEL = "gpt-4.1-mini"
+            cockpit_provider = "openai"
+            provider_map = {}
+            effective_roo_model = ROO_FORCED_MODEL
+            roo_oauth_ready = True
+            route_label = "ChatGPT/OpenAI"
+        if provider_map.get("roo_provider") == "roo" and not roo_oauth_ready:
+            route_message = (
+                f"Roo OAuth voor `{effective_roo_model}` moet eerst opnieuw ingelogd worden; "
+                "gebruik Models -> Roo ChatGPT Account -> Login."
+            )
+        else:
+            route_message = f"na approval gebruikt Roo je {route_label} route met `{effective_roo_model}`."
         return _agent_result(
             "roo",
             "roo_cli",
@@ -260,9 +278,13 @@ def execute_roo_agent_task(
             started,
             route="roo_runtime",
             provider="roo",
-            model=str(model or ""),
+            model=effective_roo_model,
             requested_provider=str(provider or ""),
+            requested_model=str(model or ""),
             local_only=local_llm,
+            cockpit_provider=cockpit_provider,
+            cockpit_model=effective_roo_model,
+            roo_provider_map=provider_map,
             approval_required=True,
             approval_phrase=APPROVAL_PHRASE,
             blocked_tools=["roo_cli"],
@@ -273,7 +295,7 @@ def execute_roo_agent_task(
             },
             response=(
                 f"/roo wacht op exact {APPROVAL_PHRASE}. Roo Code kan bestanden wijzigen en commando's uitvoeren; "
-                "de Cockpit-modelkeuze wordt na approval aan de Roo job meegegeven."
+                f"{route_message}"
             ),
         )
     return _submit_roo_agent_runtime(
@@ -283,85 +305,6 @@ def execute_roo_agent_task(
         approval=effective_approval,
         timeout_seconds=timeout_seconds,
         started=started,
-    )
-
-
-def _roo_readonly_tool_redirect(
-    task: str,
-    *,
-    started: float,
-    provider: str = "",
-    model: str = "",
-) -> dict[str, Any] | None:
-    """Keep read-only travel questions out of the Roo coding runtime."""
-
-    try:
-        from controller.agent_tools import AgentToolRegistry
-        from controller.agentic_intent import classify_agentic_intent
-        from controller.agentic_processor import _transit_args_for_goal, _transit_tool_for_goal
-    except Exception:
-        return None
-
-    try:
-        intent = classify_agentic_intent(task)
-    except Exception:
-        intent = None
-    target_tool = str(getattr(intent, "target_tool", "") or "")
-    if target_tool not in {"ns_travel_advice", "ov9292_travel_advice"}:
-        return None
-
-    tool_name = target_tool or _transit_tool_for_goal(task)
-    args = _transit_args_for_goal(task)
-    try:
-        result = AgentToolRegistry().run_tool(tool_name, args)
-    except Exception as exc:
-        return _agent_result(
-            "roo",
-            tool_name,
-            "error",
-            started,
-            route="agentic_processor",
-            provider="agentic_processor",
-            requested_provider=str(provider or ""),
-            model=str(model or ""),
-            reason=str(exc)[:500],
-            response=f"Roo heeft deze reisvraag niet als coding-job gestart; {tool_name} gaf een fout: {exc}",
-        )
-
-    status = str(result.get("status") or "unknown")
-    stdout = str(result.get("stdout") or "").strip()
-    stderr = str(result.get("stderr") or "").strip()
-    planner_url = ""
-    payload = result.get("result") if isinstance(result.get("result"), dict) else {}
-    if isinstance(payload, dict):
-        planner_url = str(payload.get("planner_url") or "")
-    response_lines = [
-        f"Roo heeft deze reisvraag als read-only `{tool_name}` verwerkt in plaats van een coding-agent job te starten.",
-    ]
-    if stdout:
-        response_lines.append(stdout)
-    elif stderr:
-        response_lines.append(stderr)
-    if planner_url and planner_url not in "\n".join(response_lines):
-        response_lines.append(f"Planner: {planner_url}")
-    return _agent_result(
-        "roo",
-        tool_name,
-        status,
-        started,
-        route="agentic_processor",
-        provider="agentic_processor",
-        requested_provider=str(provider or ""),
-        model=str(model or ""),
-        roo_result=result,
-        transit_args=args,
-        response="\n".join(response_lines).strip(),
-        provenance={
-            "planner_source": "slash_roo_readonly_redirect",
-            "tools_used": [tool_name],
-            "planned_tools": [tool_name],
-            "brave_search_used": False,
-        },
     )
 
 
@@ -1250,12 +1193,21 @@ def _submit_roo_agent_runtime(
     try:
         from controller.agent_runtime.adapters.roo_cli import roo_status
         from controller.agent_runtime.orchestrator import get_orchestrator
-        from controller.roo_cli_runtime import cockpit_provider_for_roo_selection, map_cockpit_provider
+        from controller.roo_cli_runtime import (
+            ROO_FALLBACK_MODEL,
+            ROO_FALLBACK_PROVIDER,
+            ROO_FORCED_MODEL,
+            ROO_OAUTH_MODEL,
+            ROO_OAUTH_PROVIDER,
+            cockpit_provider_for_roo_selection,
+            map_cockpit_provider,
+        )
 
         selected_provider = str(provider or "").strip().lower()
         selected_model = str(model or "").strip()
         cockpit_provider = cockpit_provider_for_roo_selection(selected_provider, selected_model)
         provider_map = map_cockpit_provider(cockpit_provider, selected_model)
+        effective_model = str(provider_map.get("model_override") or provider_map.get("cockpit_model") or ROO_FORCED_MODEL)
         if provider_map.get("status") != "mapped":
             return _agent_result(
                 "roo",
@@ -1268,7 +1220,8 @@ def _submit_roo_agent_runtime(
                 model=selected_model,
                 local_only=cockpit_provider == "ollama",
                 cockpit_provider=cockpit_provider,
-                cockpit_model=selected_model,
+                cockpit_model=effective_model,
+                requested_cockpit_model=selected_model,
                 roo_provider_map=provider_map,
                 configuration_required=True,
                 response=str(provider_map.get("reason") or f"Roo ondersteunt Cockpit-provider `{cockpit_provider}` nog niet."),
@@ -1286,34 +1239,46 @@ def _submit_roo_agent_runtime(
                 model=selected_model,
                 local_only=False,
                 cockpit_provider=cockpit_provider,
-                cockpit_model=selected_model,
+                cockpit_model=effective_model,
+                requested_cockpit_model=selected_model,
                 roo_provider_map=provider_map,
                 configuration_required=True,
                 response=(
                     f"Roo kan `{selected_model}` pas via Roo Cloud starten nadat Roo Cloud in Cockpit is ingelogd. "
-                    "Ga naar Models -> Roo Cloud Account -> Login."
+                    "Ga naar Models -> Roo ChatGPT Account -> Login."
                 ),
             )
         if roo_provider != "roo" and not _roo_api_key_ready(cockpit_provider, provider_map):
-            return _agent_result(
-                "roo",
-                "roo_cli",
-                "blocked",
-                started,
-                route="roo_runtime",
-                provider="roo",
-                requested_provider=selected_provider,
-                model=selected_model,
-                local_only=False,
-                cockpit_provider=cockpit_provider,
-                cockpit_model=selected_model,
-                roo_provider_map=provider_map,
-                configuration_required=True,
-                response=(
-                    f"Roo kan `{selected_model}` pas via `{cockpit_provider}` starten als de API key "
-                    "in Cockpit of de host-omgeving beschikbaar is."
-                ),
+            fallback_map = map_cockpit_provider(ROO_FALLBACK_PROVIDER, ROO_FALLBACK_MODEL)
+            if fallback_map.get("status") != "mapped":
+                return _agent_result(
+                    "roo",
+                    "roo_cli",
+                    "blocked",
+                    started,
+                    route="roo_runtime",
+                    provider="roo",
+                    requested_provider=selected_provider,
+                    model=selected_model,
+                    local_only=False,
+                    cockpit_provider=cockpit_provider,
+                    cockpit_model=effective_model,
+                    requested_cockpit_model=selected_model,
+                    roo_provider_map=provider_map,
+                    configuration_required=True,
+                    response=(
+                        f"Roo kan `{selected_model}` pas via `{cockpit_provider}` starten als de API key "
+                        "in Cockpit of de host-omgeving beschikbaar is."
+                    ),
+                )
+            fallback_map["fallback_reason"] = (
+                f"Roo kan `{effective_model}` niet via ChatGPT/OpenAI starten zonder API key; "
+                f"lokale fallback `{ROO_FALLBACK_MODEL}` wordt gebruikt."
             )
+            cockpit_provider = ROO_FALLBACK_PROVIDER
+            provider_map = fallback_map
+            effective_model = ROO_FALLBACK_MODEL
+            roo_provider = str(provider_map.get("roo_provider") or "")
         runtime_status = roo_status(prefer_bridge=True)
         record = get_orchestrator().submit(
             agent="roo",
@@ -1327,7 +1292,8 @@ def _submit_roo_agent_runtime(
                 "selected_cockpit_provider": selected_provider,
                 "selected_cockpit_model": selected_model,
                 "cockpit_provider": cockpit_provider,
-                "cockpit_model": selected_model,
+                "cockpit_model": effective_model,
+                "forced_roo_model": effective_model,
                 "roo_provider_map": provider_map,
                 "runtime_status": {
                     "status": runtime_status.get("status"),
@@ -1347,7 +1313,7 @@ def _submit_roo_agent_runtime(
         route="roo_runtime",
         provider="roo",
         requested_provider=str(provider or "").strip().lower(),
-        model=str(model or "").strip(),
+        model=str(record.metadata.get("cockpit_model") or model or "").strip(),
         local_only=record.metadata.get("cockpit_provider") == "ollama",
         cockpit_provider=record.metadata.get("cockpit_provider"),
         cockpit_model=record.metadata.get("cockpit_model"),
@@ -1358,8 +1324,8 @@ def _submit_roo_agent_runtime(
             "planner_source": "slash_roo_runtime",
         },
         response=(
-            f"Roo Code job {record.job_id} gestart met Cockpit-model `{model or 'model'}` "
-            f"via provider `{provider or 'auto'}`. Volg live in Agent Jobs of vraag `/roo jobs`."
+            f"Roo Code job {record.job_id} gestart met Roo-model `{record.metadata.get('cockpit_model') or ROO_FORCED_MODEL}` "
+            f"via `{record.metadata.get('cockpit_provider')}`. Volg live in Agent Jobs of vraag `/roo jobs`."
         ),
     )
 

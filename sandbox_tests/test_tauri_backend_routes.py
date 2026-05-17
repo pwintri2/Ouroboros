@@ -164,9 +164,23 @@ class TestTauriBackendRoutes(unittest.TestCase):
     def setUp(self):
         self.old_workspace = os.environ.get("WINTRIP_WORKSPACE")
         self.old_bridge = os.environ.get("WINTRIP_RCLONE_BRIDGE_URL")
+        self.old_openai_key = os.environ.get("OPENAI_API_KEY")
         self.workspace_tmp = tempfile.TemporaryDirectory(prefix="tauri-self-context-")
         os.environ["WINTRIP_WORKSPACE"] = self.workspace_tmp.name
         os.environ.pop("WINTRIP_RCLONE_BRIDGE_URL", None)
+        os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            from controller.api_key_store import delete_provider_api_key
+
+            delete_provider_api_key("openai")
+        except Exception:
+            pass
+        try:
+            from controller.subscription_store import delete_subscription
+
+            delete_subscription("openai")
+        except Exception:
+            pass
         self.main.agent_tools = FakeAgentTools()
         self.main.app.state.multi_api_router = FakeMultiAPIRouter()
         self.main.app.state.ouroboros_loop = {
@@ -195,6 +209,10 @@ class TestTauriBackendRoutes(unittest.TestCase):
             os.environ.pop("WINTRIP_RCLONE_BRIDGE_URL", None)
         else:
             os.environ["WINTRIP_RCLONE_BRIDGE_URL"] = self.old_bridge
+        if self.old_openai_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = self.old_openai_key
 
     def _wait_for_loop_status(self, expected_status, timeout=2.0):
         deadline = time.time() + timeout
@@ -222,13 +240,17 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertIn("roo", data["provider_options"])
         self.assertFalse(data["provider_options"]["roo"]["local_only"])
         self.assertTrue(data["provider_options"]["roo"]["agent_runtime"])
-        self.assertIn("llama3.2:latest", data["provider_options"]["roo"]["models"])
-        self.assertIn("anthropic/claude-opus-4.7", data["provider_options"]["roo"]["models"])
+        self.assertIn("gpt-4.1", data["provider_options"]["roo"]["models"])
+        self.assertIn("anthropic/claude-opus-4.6", data["provider_options"]["roo"]["models"])
+        self.assertIn("gpt-4.1-mini", data["provider_options"]["roo"]["models"])
+        self.assertIn("deepseek-coder:latest", data["provider_options"]["roo"]["models"])
+        self.assertEqual(data["provider_options"]["roo"]["default_model"], "gpt-4.1-mini")
+        self.assertEqual(data["provider_options"]["roo"]["forced_model"], "gpt-4.1-mini")
+        self.assertEqual(data["provider_options"]["roo"]["oauth_model"], "anthropic/claude-opus-4.6")
+        self.assertEqual(data["provider_options"]["roo"]["fallback_model"], "deepseek-coder:latest")
         self.assertIn("roo/code-supernova", data["provider_options"]["roo"]["roo_cloud_models"])
         self.assertTrue(data["provider_options"]["roo"]["subscription_login"]["logged_in"])
-        self.assertIn("gpt-4.1", data["provider_options"]["roo"]["models"])
-        self.assertIn("gemini-2.5-pro", data["provider_options"]["roo"]["models"])
-        self.assertIn("openai", data["provider_options"]["roo"]["supported_cockpit_providers"])
+        self.assertEqual(data["provider_options"]["roo"]["supported_cockpit_providers"], ["openai", "chatgpt", "roo", "ollama"])
         self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
         deepseek_models = data["provider_options"]["deepseek"]["models"]
         self.assertIn("deepseek-v4-flash", deepseek_models)
@@ -353,7 +375,7 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertFalse(local["available"])
         self.assertEqual(local["status"], "inventory_unavailable")
         self.assertEqual(data["backend"]["models_available"], 0)
-        self.assertIn("llama3.2:latest", data["available_models"]["ollama"])
+        self.assertIn("gpt-oss:120b-cloud", data["available_models"]["ollama"])
 
     def test_browser_research_route_includes_brave_companion_search(self):
         import controller.browser_research as browser_research
@@ -635,6 +657,30 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertTrue(any(command.startswith("/codex") for command in data["commands"]))
         self.assertEqual(self.main.app.state.multi_api_router.calls, [])
 
+    def test_cockpit_chat_slash_roo_travel_prompt_is_not_transit_redirect(self):
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "ollama",
+                "model": "llama3.2:latest",
+                "conversation_id": "slash-roo-travel-routing-test",
+                "prompt": "/roo vertrek Ermelo, aankomst Utrecht Centraal, aankomsttijd woensdag 07:40",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "blocked")
+        self.assertEqual(data["route"], "roo_runtime")
+        self.assertEqual(data["agent"], "roo")
+        self.assertEqual(data["tool"], "roo_cli")
+        self.assertTrue(data["approval_required"])
+        self.assertNotEqual(data["provider"], "agentic_processor")
+        self.assertNotIn("slash_roo_readonly_redirect", json.dumps(data))
+        self.assertEqual(data["source_trace"]["tools_executed"], [])
+        self.assertEqual(data["source_trace"]["tools_blocked"], ["roo_cli"])
+        self.assertEqual(data["source_trace"]["planner_source"], "slash_roo_runtime")
+
     def test_cockpit_roo_provider_blocks_without_approval(self):
         response = self.client.post(
             "/api/cockpit/chat",
@@ -654,7 +700,32 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertTrue(data["approval_required"])
         self.assertIn("pending_approval", data)
 
-    def test_cockpit_roo_provider_submits_job_with_selected_model_after_approval(self):
+    def test_cockpit_roo_provider_travel_prompt_still_routes_to_roo_runtime(self):
+        response = self.client.post(
+            "/api/cockpit/chat",
+            json={
+                "provider": "roo",
+                "model": "llama3.2:latest",
+                "conversation_id": "roo-travel-routing-test",
+                "prompt": "vertrek Ermelo, aankomst Utrecht Centraal, aankomsttijd woensdag 07:40",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "blocked")
+        self.assertEqual(data["provider"], "roo")
+        self.assertEqual(data["route"], "roo_runtime")
+        self.assertEqual(data["tool"], "roo_cli")
+        self.assertTrue(data["approval_required"])
+        self.assertEqual(data["self_context"]["agentic_intent"]["target_tool"], "ns_travel_advice")
+        self.assertNotEqual(data["route"], "agentic_processor")
+        self.assertEqual(data["source_trace"]["tools_executed"], [])
+        self.assertEqual(data["source_trace"]["tools_blocked"], ["roo_cli"])
+        self.assertEqual(data["source_trace"]["planner_source"], "cockpit_roo_runtime")
+        self.assertNotIn("slash_roo_readonly_redirect", json.dumps(data))
+
+    def test_cockpit_roo_provider_submits_job_with_roo_oauth_after_approval(self):
         from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
         from controller.agent_runtime.store import JobStore
 
@@ -689,10 +760,17 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(data["provider"], "roo")
         self.assertEqual(data["route"], "roo_runtime")
         job = data["job"]
-        self.assertEqual(job["metadata"]["cockpit_provider"], "ollama")
-        self.assertEqual(job["metadata"]["cockpit_model"], "llama3.2:latest")
+        self.assertEqual(job["metadata"]["cockpit_provider"], "roo")
+        self.assertEqual(job["metadata"]["cockpit_model"], "anthropic/claude-opus-4.6")
+        self.assertEqual(job["metadata"]["roo_provider_map"]["roo_provider"], "roo")
+        for _ in range(50):
+            stored = store.get(job["job_id"]) or {}
+            if stored.get("status") == "completed":
+                break
+            time.sleep(0.02)
+        self.assertEqual((store.get(job["job_id"]) or {}).get("status"), "completed")
 
-    def test_cockpit_roo_provider_uses_roo_cloud_login_for_catalog_model(self):
+    def test_cockpit_roo_provider_uses_roo_oauth_for_roo_cloud_catalog_model(self):
         from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
         from controller.agent_runtime.store import JobStore
 
@@ -733,6 +811,13 @@ class TestTauriBackendRoutes(unittest.TestCase):
         self.assertEqual(job["metadata"]["cockpit_provider"], "roo")
         self.assertEqual(job["metadata"]["cockpit_model"], "anthropic/claude-sonnet-4.6")
         self.assertEqual(job["metadata"]["roo_provider_map"]["roo_provider"], "roo")
+        self.assertEqual(job["metadata"]["selected_cockpit_model"], "anthropic/claude-sonnet-4.6")
+        for _ in range(50):
+            stored = store.get(job["job_id"]) or {}
+            if stored.get("status") == "completed":
+                break
+            time.sleep(0.02)
+        self.assertEqual((store.get(job["job_id"]) or {}).get("status"), "completed")
 
     def test_cockpit_chat_can_address_ouroboros_runtime_without_ollama(self):
         response = self.client.post(

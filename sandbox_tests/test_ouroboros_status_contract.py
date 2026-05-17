@@ -127,6 +127,8 @@ class TestOuroborosStatusContract(unittest.TestCase):
         self.assertEqual(data["stdout"], "collected 3 tests")
         self.assertEqual(data["stderr"], "Run Tests wacht op Akkoord.")
         self.assertEqual(data["self_modification_pipeline"]["status"], "approval_required")
+        self.assertEqual(data["self_improvement_patterns"]["preferred_local_model"], "gpt-oss:120b-cloud")
+        self.assertEqual(data["self_improvement_patterns"]["openrouter_replaced_by"], "ollama:gpt-oss:120b-cloud")
         self.assertEqual(data["ziel_policy"]["status"], "loaded")
         self.assertEqual(data["ziel_policy"]["principle_count"], 1)
         self.assertIn("ToolBridge", " ".join(data["ziel_policy"]["guardrails"]))

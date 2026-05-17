@@ -230,7 +230,7 @@ class TestSlashAgentRouter(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
 
-    def test_roo_exec_dispatches_to_agent_runtime_with_selected_cockpit_model(self):
+    def test_roo_exec_dispatches_to_agent_runtime_with_local_fallback_without_chatgpt_key(self):
         from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
         from controller.agent_runtime.store import JobStore
 
@@ -267,14 +267,15 @@ class TestSlashAgentRouter(unittest.TestCase):
                 break
             time.sleep(0.02)
         self.assertEqual(seen[0]["cockpit_provider"], "ollama")
-        self.assertEqual(seen[0]["cockpit_model"], "llama3.2:latest")
+        self.assertEqual(seen[0]["cockpit_model"], "deepseek-coder:latest")
+        self.assertEqual(seen[0]["forced_roo_model"], "deepseek-coder:latest")
         for _ in range(50):
             if (store.get(job_id) or {}).get("status") == "completed":
                 break
             time.sleep(0.02)
         self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
 
-    def test_roo_slash_uses_selected_cloud_cockpit_model_when_key_exists(self):
+    def test_roo_slash_uses_chatgpt_model_when_key_exists(self):
         from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
         from controller.agent_runtime.store import JobStore
 
@@ -312,6 +313,7 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.assertEqual(seen[0]["cockpit_provider"], "openai")
         self.assertEqual(seen[0]["cockpit_model"], "gpt-4.1")
         self.assertEqual(seen[0]["roo_provider_map"]["roo_provider"], "openai-native")
+        self.assertEqual(seen[0]["selected_cockpit_model"], "gpt-4.1")
         job_id = result["job"]["job_id"]
         for _ in range(50):
             if (store.get(job_id) or {}).get("status") == "completed":
@@ -319,7 +321,7 @@ class TestSlashAgentRouter(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
 
-    def test_roo_slash_uses_roo_cloud_login_for_catalog_model_without_api_key(self):
+    def test_roo_slash_uses_roo_oauth_for_roo_cloud_catalog_model(self):
         from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
         from controller.agent_runtime.store import JobStore
 
@@ -359,8 +361,33 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.assertEqual(seen[0]["cockpit_provider"], "roo")
         self.assertEqual(seen[0]["cockpit_model"], "anthropic/claude-sonnet-4.6")
         self.assertEqual(seen[0]["roo_provider_map"]["roo_provider"], "roo")
+        job_id = result["job"]["job_id"]
+        for _ in range(50):
+            if (store.get(job_id) or {}).get("status") == "completed":
+                break
+            time.sleep(0.02)
+        self.assertEqual((store.get(job_id) or {}).get("status"), "completed")
 
-    def test_roo_slash_blocks_cloud_model_without_api_key(self):
+    def test_roo_slash_uses_local_fallback_without_api_key(self):
+        from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
+        from controller.agent_runtime.store import JobStore
+
+        runtime_tmp = tempfile.TemporaryDirectory(prefix="roo-cloud-no-key-runtime-test-")
+        self.addCleanup(runtime_tmp.cleanup)
+        store = JobStore(
+            runtime_root=Path(runtime_tmp.name) / "store",
+            artifact_root=Path(runtime_tmp.name) / "out",
+        )
+        seen: list[dict] = []
+
+        def fake_adapter(job, log, on_progress):
+            seen.append(job.metadata)
+            return {"status": "completed", "exit_code": 0, "response_preview": "roo pinned ok"}
+
+        orchestrator = AgentOrchestrator(store=store, adapters={"roo": fake_adapter})
+        previous = reset_orchestrator(orchestrator)
+        self.addCleanup(lambda: reset_orchestrator(previous))
+
         result = handle_slash_command(
             "/roo maak een cloud plan",
             approval="Akkoord",
@@ -368,10 +395,15 @@ class TestSlashAgentRouter(unittest.TestCase):
             model="gpt-4.1",
         )
 
-        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["status"], "running")
         self.assertEqual(result["route"], "roo_runtime")
-        self.assertTrue(result["configuration_required"])
-        self.assertIn("API key", result["response"])
+        self.assertTrue(result["local_only"])
+        for _ in range(50):
+            if seen:
+                break
+            time.sleep(0.02)
+        self.assertEqual(seen[0]["cockpit_provider"], "ollama")
+        self.assertEqual(seen[0]["cockpit_model"], "deepseek-coder:latest")
 
     def test_roo_jobs_subcommand_hides_completed_preview(self):
         from controller.agent_runtime.orchestrator import AgentOrchestrator, reset_orchestrator
@@ -440,7 +472,7 @@ class TestSlashAgentRouter(unittest.TestCase):
         self.assertIn(job_id, result["response"])
         self.assertIn("provider rate limit (HTTP 429)", result["response"])
 
-    def test_roo_travel_question_uses_readonly_transit_tool_without_approval(self):
+    def test_roo_travel_question_stays_roo_runtime_without_approval(self):
         calls = []
 
         class FakeRegistry:
@@ -461,16 +493,15 @@ class TestSlashAgentRouter(unittest.TestCase):
                 model="claude-sonnet-4-6",
             )
 
-        self.assertEqual(result["route"], "agentic_processor")
-        self.assertEqual(result["tool"], "ns_travel_advice")
-        self.assertEqual(result["status"], "preview")
-        self.assertNotIn("approval_required", result)
-        self.assertEqual(calls[0][0], "ns_travel_advice")
-        self.assertEqual(calls[0][1]["from_station"], "Ermelo")
-        self.assertEqual(calls[0][1]["to_station"], "Utrecht Centraal")
-        self.assertEqual(calls[0][1]["time"], "07:40")
-        self.assertTrue(calls[0][1]["search_for_arrival"])
-        self.assertIn("NS planner link fallback", result["response"])
+        self.assertEqual(result["route"], "roo_runtime")
+        self.assertEqual(result["tool"], "roo_cli")
+        self.assertEqual(result["status"], "blocked")
+        self.assertTrue(result["approval_required"])
+        self.assertEqual(result["provider"], "roo")
+        self.assertEqual(result["model"], "gpt-4.1-mini")
+        self.assertEqual(calls, [])
+        self.assertNotIn("slash_roo_readonly_redirect", str(result))
+        self.assertNotIn("ns_travel_advice", str(result))
 
     def test_ruflo_defaults_to_handoff_instead_of_host_cli(self):
         original_run = slash_agent_router._run_ruflo_swarm

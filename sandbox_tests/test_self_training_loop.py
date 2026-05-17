@@ -87,6 +87,9 @@ class TestSelfTrainingLoop(unittest.TestCase):
         )
         self.assertTrue(plan["approval_required"])
         self.assertEqual(plan["steps"][3]["tool"], "browser_research")
+        self.assertEqual(plan["preferred_local_model"], "gpt-oss:120b-cloud")
+        self.assertEqual(plan["self_improvement_contract"]["openrouter_replaced_by"], "ollama:gpt-oss:120b-cloud")
+        self.assertFalse(plan["openrouter_used"])
 
     def test_self_training_step_searches_memory_then_requests_browser_approval(self):
         registry = make_registry(kb=EmptyKnowledgeBase())

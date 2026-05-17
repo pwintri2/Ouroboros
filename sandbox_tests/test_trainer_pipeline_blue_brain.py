@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -52,7 +53,10 @@ class TestTrainerPipelineBlueBrain(unittest.TestCase):
                 self.assertEqual(created.status_code, 200)
                 job_id = created.json()["job_id"]
 
-                started = client.post("/trainer/training/start", json={"job_id": job_id, "approval": "Akkoord"})
+                started = client.post(
+                    "/trainer/training/start",
+                    json={"job_id": job_id, "approval": "Akkoord", "background": False},
+                )
                 self.assertEqual(started.status_code, 200)
                 data = started.json()
                 self.assertEqual(data["status"], "success")
@@ -61,6 +65,59 @@ class TestTrainerPipelineBlueBrain(unittest.TestCase):
                 fetched = client.get(f"/trainer/jobs/{job_id}")
                 self.assertEqual(fetched.json()["state"], "online")
         finally:
+            if previous_workspace is None:
+                os.environ.pop("WINTRIP_WORKSPACE", None)
+            else:
+                os.environ["WINTRIP_WORKSPACE"] = previous_workspace
+
+
+@unittest.skipIf(FastAPI is None or TestClient is None, MISSING_FASTAPI)
+class TestTrainerPipelineAsyncStart(unittest.TestCase):
+    def test_start_job_returns_queued_before_background_training_finishes(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from controller.api import trainer_pipeline_routes as routes
+
+        previous_workspace = os.environ.get("WINTRIP_WORKSPACE")
+        try:
+            with tempfile.TemporaryDirectory(prefix="trainer-async-start-") as tmp:
+                os.environ["WINTRIP_WORKSPACE"] = tmp
+                routes._TRAINING_JOBS_IN_FLIGHT.clear()
+                app = FastAPI()
+                routes.init_trainer_pipeline(app)
+                client = TestClient(app)
+
+                created = client.post(
+                    "/trainer/jobs",
+                    json={
+                        "base_model": "blue-brain-random-forest",
+                        "method": "blue_brain",
+                        "epochs": 1,
+                        "blue_samples": 500,
+                        "blue_estimators": 25,
+                    },
+                )
+                self.assertEqual(created.status_code, 200)
+                job_id = created.json()["job_id"]
+
+                def release_only(job_id, *_args):
+                    routes._release_training_job(job_id)
+
+                with patch.object(routes, "_run_training_background", side_effect=release_only):
+                    started = client.post(
+                        "/trainer/training/start",
+                        json={"job_id": job_id, "approval": "Akkoord"},
+                    )
+
+                self.assertEqual(started.status_code, 200)
+                data = started.json()
+                self.assertEqual(data["status"], "queued")
+                self.assertEqual(data["state"], "training")
+                fetched = client.get(f"/trainer/jobs/{job_id}")
+                self.assertEqual(fetched.json()["state"], "training")
+        finally:
+            routes._TRAINING_JOBS_IN_FLIGHT.clear()
             if previous_workspace is None:
                 os.environ.pop("WINTRIP_WORKSPACE", None)
             else:
