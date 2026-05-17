@@ -60,6 +60,23 @@ class FakeAgentTools:
                 "stored_to_memory": False,
                 "next_action": "continue",
             }
+        if tool_name == "self_training_plan":
+            return {
+                "status": "success",
+                "tool_name": tool_name,
+                "stdout": "Guided Behavioral Apprenticeship plan: observe, orient, plan, act with approval, reflect.",
+                "stderr": "",
+                "result": {
+                    "approval_required": True,
+                    "openrouter_used": False,
+                    "preferred_local_model": "gpt-oss:120b-cloud",
+                    "phases": ["observe_prompt", "memory_search", "plan", "approval_gated_action", "reflect"],
+                },
+                "metadata_11d": {"source_type": "self_training"},
+                "approval_status": "not_required",
+                "stored_to_memory": False,
+                "next_action": "ask for Akkoord before mutating action",
+            }
         if tool_name == "ov9292_travel_advice":
             return {
                 "status": "preview",
@@ -593,6 +610,55 @@ class TestAgenticProcessor(unittest.TestCase):
         self.assertTrue(result["provenance"]["agentic_ecosystem_used"])
         self.assertEqual(result["provenance"]["agentic_ecosystem_sources"], ["deepseek", "atlas"])
         self.assertIn("DeepSeek/Atlas: deepseek+atlas", result["response"])
+
+    def test_self_improvement_goal_routes_through_guided_plan_and_strength_contract(self):
+        plan = '[{"tool":"prompt_understanding","args":{"prompt":"maak sterker"}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(
+            agent_tools=fake_tools,
+            ollama_client=FakeOllama([plan, "Agentische verbetering is bounded gepland."]),
+        )
+        with patch("controller.agentic_processor.record_ooda_event", return_value={"status": "stored", "stored": True}):
+            with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+                processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+                result = processor.run("Maak je eigen agentische eigenschappen sterker", model="gemma4")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            [step["tool"] for step in result["plan"][:3]],
+            ["memory_search", "agentic_ecosystem_context", "self_training_plan"],
+        )
+        self.assertEqual([call[0] for call in fake_tools.calls[:3]], ["memory_search", "agentic_ecosystem_context", "self_training_plan"])
+        self.assertIn("inserted_self_training_plan", result["planner"]["guardrails_applied"])
+        strength = result["agentic_strength"]
+        self.assertEqual(strength["status"], "strong")
+        self.assertTrue(strength["self_improvement_goal"])
+        self.assertTrue(strength["dimensions"]["self_improvement_loop"]["passed"])
+        self.assertEqual(strength["unsafe_approval_successes"], [])
+        self.assertIn("Agentic Strength: strong", result["response"])
+
+    def test_empty_self_training_plan_args_are_repaired_from_goal(self):
+        plan = '[{"tool":"self_training_plan","args":{}}]'
+        fake_tools = FakeAgentTools()
+        processor = AgenticProcessor(
+            agent_tools=fake_tools,
+            ollama_client=FakeOllama([plan, "Office 365 kennis is opgezocht en leerbaar gepland."]),
+        )
+        with patch("controller.agentic_processor.record_ooda_event", return_value={"status": "stored", "stored": True}):
+            with patch("controller.agentic_processor.save_agentic_session", return_value={"status": "stored", "stored": True}):
+                processor._pocket_context = lambda trigger, payload: {"status": "success", "trigger": trigger, "fake_success": False}
+                result = processor.run(
+                    "Zoek via Brave Search informatie over Office 365 en leer dit voor ChromaDB.",
+                    model="gemma4",
+                )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([call[0] for call in fake_tools.calls[:3]], ["memory_search", "brave_search", "self_training_plan"])
+        self.assertIn("filled_self_training_plan_prompt", result["planner"]["guardrails_applied"])
+        self.assertEqual(
+            fake_tools.calls[2][1]["prompt"],
+            "Zoek via Brave Search informatie over Office 365 en leer dit voor ChromaDB.",
+        )
 
     def test_blocks_mutating_step_without_approval_and_stores_session(self):
         plan = '[{"tool":"write_file","args":{"path":"blocked.txt","content":"x"}}]'

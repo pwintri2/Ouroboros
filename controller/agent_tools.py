@@ -547,7 +547,12 @@ AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "self_training_plan": _tool_schema(
         "self_training_plan",
         "Maakt een veilig leerplan met memory-first en approval-gated stappen.",
-        {"prompt": {"type": "string", "description": "Leerdoel of opdracht."}},
+        {
+            "prompt": {"type": "string", "description": "Leerdoel of opdracht."},
+            "query": {"type": "string", "description": "Alias voor prompt wanneer een planner query gebruikt."},
+            "goal": {"type": "string", "description": "Alias voor prompt wanneer een planner goal gebruikt."},
+            "text": {"type": "string", "description": "Alias voor prompt wanneer een planner text gebruikt."},
+        },
         ["prompt"],
     ),
     "inspect_hippocampus": _tool_schema(
@@ -952,9 +957,9 @@ class AgentToolRegistry:
                     str(args.get("approval") or ""),
                 )
             elif tool_name == "prompt_understanding":
-                result = self.prompt_understanding(str(args.get("prompt") or args.get("text") or ""))
+                result = self.prompt_understanding(_text_arg(args, "prompt", "text", "query", "goal", "input", "task"))
             elif tool_name == "self_training_plan":
-                result = self.self_training_plan(str(args.get("prompt") or args.get("text") or ""))
+                result = self.self_training_plan(_text_arg(args, "prompt", "text", "query", "goal", "input", "task"))
             elif tool_name == "inspect_hippocampus":
                 result = self.inspect_hippocampus(_int(args.get("limit"), default=6))
             elif tool_name == "run_tests":
@@ -4295,6 +4300,17 @@ def _int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _text_arg(args: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = args.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
 
 
 def _bool_arg(value: Any, *, default: bool = False) -> bool:

@@ -971,6 +971,17 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("browser_research", [step["tool"] for step in result["result"]["steps"]])
         self.assertIn("approval_gated_action", result["result"]["phases"])
 
+    def test_self_training_plan_accepts_query_alias_from_llm_planner(self):
+        registry = make_registry()
+        result = registry.run_tool(
+            "self_training_plan",
+            {"query": "Leer Office 365 documentatie via Brave Search voor ChromaDB."},
+        )
+        self.assertToolEnvelope(result, "self_training_plan")
+        self.assertEqual(result["status"], "success")
+        self.assertIn("Office 365", result["stdout"])
+        self.assertEqual(result["stderr"], "")
+
     def test_run_tests_blocks_bad_selector(self):
         registry = make_registry()
         result = registry.run_tool(

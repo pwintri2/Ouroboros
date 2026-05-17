@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import re
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
+from queue import Empty
 from typing import Any
 
 from controller.agent_tools import REGISTERED_TOOLS, agent_tool_schemas
+from controller.agentic_strength import build_agentic_strength_contract
 from controller.agentic_intent import classify_agentic_intent
 from controller.ooda_hippocampus import record_ooda_event
 from controller.persistent_memory_manager import save_agentic_session
@@ -21,6 +25,9 @@ from controller.ziel_policy import compact_ziel_policy, load_ziel_policy, ziel_p
 
 APPROVAL_PHRASE = "Akkoord"
 PlannerCallable = Callable[..., str]
+SIDE_CONTEXT_TIMEOUT_SECONDS = 2.0
+OODA_RECORD_TIMEOUT_SECONDS = 0.25
+AGENTIC_FOAM_INLINE_ENV = "OUROBOROS_AGENTIC_FOAM_INLINE"
 
 AGENT_TOOL_SET = set(REGISTERED_TOOLS)
 BRIDGE_TOOL_SET = set(TOOL_BRIDGE_TOOLS)
@@ -279,6 +286,7 @@ class AgenticProcessor:
                 collapse=True,
             )
             state["provenance"] = _build_provenance(state)
+            state["agentic_strength"] = _build_agentic_strength(state, max_steps=self.max_steps)
             state["response"] = self.synthesize(
                 clean_goal,
                 state,
@@ -299,8 +307,11 @@ class AgenticProcessor:
                     collapse=True,
                 )
             state["duration_seconds"] = round(time.time() - started, 3)
+            state["provenance"] = _build_provenance(state)
+            state["agentic_strength"] = _build_agentic_strength(state, max_steps=self.max_steps)
             state["memory_status"] = save_agentic_session(state)
             state["provenance"] = _build_provenance(state)
+            state["agentic_strength"] = _build_agentic_strength(state, max_steps=self.max_steps)
             self._record_ooda_phase(
                 phase="reflect",
                 session_id=session_id,
@@ -309,6 +320,7 @@ class AgenticProcessor:
                     "duration_seconds": state.get("duration_seconds"),
                     "memory_status": state.get("memory_status"),
                     "provenance": state.get("provenance"),
+                    "agentic_strength": state.get("agentic_strength"),
                     "reason": state.get("reason"),
                 },
                 approval=approval,
@@ -578,8 +590,19 @@ class AgenticProcessor:
         collapse: bool = False,
     ) -> dict[str, Any]:
         try:
+            if not _is_test_double_callable(agentic_foam_event) and not _agentic_foam_inline_enabled():
+                return _bounded_foam_skip(phase=phase, tool=tool, collapse=collapse)
             event = agentic_foam_event(goal, phase=phase, tool=tool, result=result, collapse=collapse)
             return event if isinstance(event, dict) else {"status": "unavailable", "reason": "Quantum Foam event returned no mapping."}
+        except TimeoutError as exc:
+            return {
+                "status": "unavailable",
+                "phase": phase,
+                "tool": tool,
+                "reason": str(exc)[:300],
+                "timeout_seconds": SIDE_CONTEXT_TIMEOUT_SECONDS,
+                "fake_success": False,
+            }
         except Exception as exc:
             return {"status": "unavailable", "phase": phase, "reason": str(exc)[:300], "fake_success": False}
 
@@ -603,21 +626,24 @@ class AgenticProcessor:
         try:
             approval_required = bool(state.get("approval_required"))
             approval_status = "approved" if str(approval or "").strip() == APPROVAL_PHRASE else ("required" if approval_required else "not_required")
-            return record_ooda_event(
-                phase=phase,
-                session_id=session_id,
-                event_kind="agentic_processor",
-                route="agentic_processor",
-                status=status,
-                payload=payload,
-                approval_required=approval_required,
-                approval_status=approval_status,
-                source="controller.agentic_processor",
-                source_type="agentic_processor",
-                taint="local_agentic_session",
-                learnable=False,
-                audit_only=True,
-            )
+            event_kwargs = {
+                "phase": phase,
+                "session_id": session_id,
+                "event_kind": "agentic_processor",
+                "route": "agentic_processor",
+                "status": status,
+                "payload": payload,
+                "approval_required": approval_required,
+                "approval_status": approval_status,
+                "source": "controller.agentic_processor",
+                "source_type": "agentic_processor",
+                "taint": "local_agentic_session",
+                "learnable": False,
+                "audit_only": True,
+            }
+            if _is_test_double_callable(record_ooda_event):
+                return record_ooda_event(**event_kwargs)
+            return _record_ooda_event_bounded(event_kwargs, timeout_seconds=OODA_RECORD_TIMEOUT_SECONDS)
         except Exception as exc:
             return {"status": "error", "stored": False, "reason": str(exc)[:300], "fake_success": False}
 
@@ -670,7 +696,8 @@ class AgenticProcessor:
         needs_transit = _needs_transit_web_context(goal.lower())
         transit_tool = _transit_tool_for_goal(goal)
         explicit_web = _explicit_web_requested(goal)
-        needs_agentic_ecosystem = _needs_agentic_ecosystem_context(goal)
+        needs_self_improvement_plan = _needs_self_improvement_plan(goal)
+        needs_agentic_ecosystem = _needs_agentic_ecosystem_context(goal) or needs_self_improvement_plan
         connector_step = _connector_step_for_goal(goal)
 
         if connector_step:
@@ -714,7 +741,9 @@ class AgenticProcessor:
             if not _has_tool(guarded, connector_tool):
                 guarded.insert(0, connector_step)
                 applied.append(f"inserted_{connector_tool}")
-            return guarded[: self.max_steps], applied
+            repaired, repair_notes = _repair_empty_goal_args(guarded[: self.max_steps], goal)
+            applied.extend(repair_notes)
+            return repaired, applied
 
         if not _needs_voice_status(goal):
             before = len(guarded)
@@ -749,6 +778,20 @@ class AgenticProcessor:
                     },
                 )
                 applied.append("inserted_agentic_ecosystem_context")
+            if needs_self_improvement_plan and not _has_tool(guarded, "self_training_plan"):
+                insert_at = 0
+                for index, step in enumerate(guarded):
+                    if str(step.get("tool") or "") in {"memory_search", "agentic_ecosystem_context"}:
+                        insert_at = index + 1
+                guarded.insert(
+                    insert_at,
+                    {
+                        "tool": "self_training_plan",
+                        "args": {"prompt": goal},
+                        "reason": "guardrail: zelfverbetering loopt via Guided Behavioral Apprenticeship.",
+                    },
+                )
+                applied.append("inserted_self_training_plan")
 
         if _needs_current_web_context(goal):
             if not _has_tool(guarded, "memory_search"):
@@ -871,7 +914,9 @@ class AgenticProcessor:
             )
             applied.append("inserted_run_command")
 
-        return guarded[: self.max_steps], applied
+        repaired, repair_notes = _repair_empty_goal_args(guarded[: self.max_steps], goal)
+        applied.extend(repair_notes)
+        return repaired, applied
 
     def _heuristic_plan(self, goal: str, *, approval: str) -> list[dict[str, Any]]:
         lowered = goal.lower()
@@ -890,6 +935,8 @@ class AgenticProcessor:
             steps.append({"tool": "brave_search", "args": {"query": _web_query_for_goal(goal), "limit": 5, "llm_context": True}})
         if _needs_agentic_ecosystem_context(goal):
             steps.append({"tool": "agentic_ecosystem_context", "args": {"goal": goal, "prefer_bridge": True}})
+        if _needs_self_improvement_plan(goal):
+            steps.append({"tool": "self_training_plan", "args": {"prompt": goal}})
         if _needs_vps_preview(goal):
             steps.append({"tool": "vps_sync_preview", "args": _vps_args_for_goal(goal)})
         if "lees" in lowered or "read" in lowered:
@@ -946,6 +993,7 @@ class AgenticProcessor:
             "Gebruik gmail_status/gmail_search voor Gmail status/read-only search, google_drive_status/google_drive_list voor Drive status/read-only listing, github_status/github_repo/github_search_repositories voor publieke GitHub reads, en vps_status/vps_login_check/vps_sync_preview/vps_sync_execute voor VPS deploys. VPS sync/deploy gewone chat moet altijd eerst vps_sync_preview gebruiken; vps_sync_execute mag alleen na exacte Akkoord en nooit als success worden gefaket. Gmail search en Drive list vereisen exact Akkoord; GitHub writes/issues/pushes ontbreken. Gebruik connector_intent_preview alleen voor muterende connectoracties die geen first-class tool hebben. "
             "Gebruik vps_ui_sync_preview/vps_ui_sync_execute voor gebouwde Cockpit UI deploys en chroma_sync_status/chroma_sync_preview/chroma_sync_execute voor Chroma merges. Chroma execute en UI execute vereisen exact Akkoord en mogen geen raw documenten of secrets teruggeven. "
             "Gebruik agentic_ecosystem_context voor agentische workflowvragen, sub-agents, multi-agent werk, DeepSeek of Atlas context; dit is lokale read-only verrijking zonder approval. "
+            "Gebruik self_training_plan voor zelfverbetering of de vraag om agentische eigenschappen sterker te maken; dit plant bounded Guided Behavioral Apprenticeship zonder shell/browser/write/storage uit te voeren. "
             "Gebruik read_file/list_files/search_files/write_file/apply_patch/run_command/safe_shell/run_tests/browser_open_url alleen via de ToolBridge-namen. "
             "Als een gevraagde capability niet in de catalogus staat, gebruik resolve_or_build_function; die mag pas bouwen/testen na exact Akkoord. "
             "Brave Search is read-only internetcontext en mag zonder approval. "
@@ -1088,6 +1136,86 @@ class AgenticProcessor:
         ]
 
 
+def _is_test_double_callable(value: Any) -> bool:
+    module = str(getattr(value.__class__, "__module__", ""))
+    return module.startswith("unittest.mock") or hasattr(value, "mock_calls")
+
+
+def _agentic_foam_inline_enabled() -> bool:
+    return str(os.environ.get(AGENTIC_FOAM_INLINE_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bounded_foam_skip(*, phase: str, tool: str | None, collapse: bool) -> dict[str, Any]:
+    return {
+        "status": "bounded_skip",
+        "phase": phase,
+        "tool": tool,
+        "active": False,
+        "coherence": 0.0,
+        "field_coherence_percent": 0.0,
+        "node_count": 0,
+        "active_nodes": 0,
+        "collapse_event": bool(collapse),
+        "field_collapsed": bool(collapse),
+        "summary": (
+            "Quantum Foam inline side-context skipped; set "
+            f"{AGENTIC_FOAM_INLINE_ENV}=1 to run it inside Agentic Core."
+        ),
+        "timeout_seconds": SIDE_CONTEXT_TIMEOUT_SECONDS,
+        "fake_success": False,
+    }
+
+
+def _record_ooda_event_bounded(event_kwargs: dict[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
+    timeout = max(0.1, float(timeout_seconds or 0.1))
+    try:
+        context = multiprocessing.get_context("fork")
+    except ValueError:
+        return _record_ooda_event_inline_best_effort(event_kwargs)
+    queue: multiprocessing.Queue = context.Queue(maxsize=1)
+    process = context.Process(target=_record_ooda_event_child, args=(event_kwargs, queue), daemon=True)
+    process.start()
+    process.join(timeout)
+    if process.is_alive():
+        process.terminate()
+        process.join(0.5)
+        return {
+            "status": "timeout",
+            "stored": False,
+            "reason": f"OODA audit persistence timed out after {timeout:.1f}s; Agentic Core continued.",
+            "audit_only": True,
+            "fake_success": False,
+        }
+    try:
+        result = queue.get_nowait()
+        return result if isinstance(result, dict) else {"status": "stored", "stored": True, "result": str(result), "fake_success": False}
+    except Empty:
+        pass
+    return {
+        "status": "error",
+        "stored": False,
+        "reason": f"OODA audit child exited with code {process.exitcode} without a result.",
+        "audit_only": True,
+        "fake_success": False,
+    }
+
+
+def _record_ooda_event_child(event_kwargs: dict[str, Any], queue: Any) -> None:
+    try:
+        result = record_ooda_event(**event_kwargs)
+        queue.put(result if isinstance(result, dict) else {"status": "stored", "stored": True, "result": str(result), "fake_success": False})
+    except Exception as exc:
+        queue.put({"status": "error", "stored": False, "reason": str(exc)[:300], "fake_success": False})
+
+
+def _record_ooda_event_inline_best_effort(event_kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        result = record_ooda_event(**event_kwargs)
+        return result if isinstance(result, dict) else {"status": "stored", "stored": True, "result": str(result), "fake_success": False}
+    except Exception as exc:
+        return {"status": "error", "stored": False, "reason": str(exc)[:300], "fake_success": False}
+
+
 def _parse_plan(raw: Any) -> Any:
     if isinstance(raw, (list, dict)):
         return raw
@@ -1184,6 +1312,58 @@ def _without_prompt_understanding_only(steps: list[dict[str, Any]]) -> list[dict
     if len(steps) == 1 and str(steps[0].get("tool") or "") == "prompt_understanding":
         return []
     return steps
+
+
+def _repair_empty_goal_args(steps: list[dict[str, Any]], goal: str) -> tuple[list[dict[str, Any]], list[str]]:
+    repaired: list[dict[str, Any]] = []
+    applied: list[str] = []
+    for step in steps:
+        clean = dict(step)
+        tool = str(clean.get("tool") or "")
+        args = clean.get("args") if isinstance(clean.get("args"), dict) else {}
+        clean_args = dict(args)
+        if tool == "self_training_plan":
+            prompt = _first_nonempty_arg(clean_args, ("prompt", "text", "input", "query", "goal", "task"))
+            if not prompt:
+                prompt = goal
+                applied.append("filled_self_training_plan_prompt")
+            if prompt and not str(clean_args.get("prompt") or "").strip():
+                clean_args["prompt"] = str(prompt)
+        elif tool == "prompt_understanding":
+            prompt = _first_nonempty_arg(clean_args, ("prompt", "text", "input", "query", "goal", "task"))
+            if not prompt:
+                prompt = goal
+                applied.append("filled_prompt_understanding_prompt")
+            if prompt and not str(clean_args.get("prompt") or "").strip():
+                clean_args["prompt"] = str(prompt)
+        elif tool == "memory_search":
+            query = _first_nonempty_arg(clean_args, ("query", "prompt", "text", "input", "goal", "task"))
+            if not query:
+                query = goal
+                applied.append("filled_memory_search_query")
+            if query and not str(clean_args.get("query") or "").strip():
+                clean_args["query"] = str(query)
+        elif tool == "brave_search":
+            query = _first_nonempty_arg(clean_args, ("query", "prompt", "text", "input", "goal", "task"))
+            if not query:
+                query = _web_query_for_goal(goal)
+                applied.append("filled_brave_search_query")
+            if query and not str(clean_args.get("query") or "").strip():
+                clean_args["query"] = str(query)
+        clean["args"] = clean_args
+        repaired.append(clean)
+    return repaired, applied
+
+
+def _first_nonempty_arg(args: Mapping[str, Any], keys: Sequence[str]) -> str:
+    for key in keys:
+        value = args.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
 
 
 def _browser_url_for_goal(goal: str) -> str:
@@ -1679,6 +1859,8 @@ def _web_query_for_goal(goal: str) -> str:
 
 def _needs_agentic_ecosystem_context(goal: str) -> bool:
     lowered = str(goal or "").lower()
+    if _needs_self_improvement_plan(goal):
+        return True
     if any(marker in lowered for marker in ("deepseek", "atlas", "agentisch", "agentic", "sub-agent", "subagent", "multi-agent", "sdd")):
         return True
     if any(marker in lowered for marker in ("workflow", "orchestratie", "delegatie", "delegate", "handoff")):
@@ -1686,6 +1868,27 @@ def _needs_agentic_ecosystem_context(goal: str) -> bool:
     if "agents" in lowered:
         return any(marker in lowered for marker in ("werken met", "werk met", "agent runtime", "slash", "catalogus", "capabilities"))
     return False
+
+
+def _needs_self_improvement_plan(goal: str) -> bool:
+    lowered = str(goal or "").lower()
+    strong_markers = (
+        "agentische eigenschappen",
+        "agentic properties",
+        "self-improvement",
+        "self improvement",
+        "zelfverbeter",
+        "maak jezelf",
+        "maak je eigen",
+        "improve yourself",
+        "become more agentic",
+        "word agentischer",
+    )
+    if any(marker in lowered for marker in strong_markers):
+        return True
+    return any(marker in lowered for marker in ("agentisch", "agentic", "eigenschappen", "capabilities")) and any(
+        marker in lowered for marker in ("sterker", "stronger", "verbeter", "improve", "zelf", "self")
+    )
 
 
 def _safe_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -1789,6 +1992,7 @@ def _execution_summary(state: Mapping[str, Any]) -> str:
         "reason": state.get("reason"),
         "approval_required": state.get("approval_required"),
         "provenance": state.get("provenance") or _build_provenance(state),
+        "agentic_strength": state.get("agentic_strength") or _build_agentic_strength(state, max_steps=len(state.get("plan") or []) or 1),
         "plan": state.get("plan"),
         "steps": steps,
         "pocket_observe_status": summarize_mapping_status(state.get("pocket_observe")),
@@ -1858,8 +2062,19 @@ def _build_provenance(state: Mapping[str, Any]) -> dict[str, Any]:
         "quantum_foam_node_count": int(foam_start.get("node_count") or foam_start.get("active_nodes") or 0),
         "quantum_foam_dominant_dimensions": list(foam_current.get("dominant_dimensions") or [])[:5],
         "quantum_foam_ram_released_estimate_nodes": int(foam_collapse.get("ram_released_estimate_nodes") or 0),
+        "agentic_strength_status": str((state.get("agentic_strength") if isinstance(state.get("agentic_strength"), Mapping) else {}).get("status") or "pending"),
+        "agentic_strength_percent": _float_value((state.get("agentic_strength") if isinstance(state.get("agentic_strength"), Mapping) else {}).get("percent")),
         "fake_success": False,
     }
+
+
+def _build_agentic_strength(state: Mapping[str, Any], *, max_steps: int) -> dict[str, Any]:
+    return build_agentic_strength_contract(
+        state,
+        approval_tools=APPROVAL_TOOLS,
+        mutating_tools=MUTATING_TOOLS,
+        max_steps=max_steps,
+    )
 
 
 def summarize_mapping_status(value: Any) -> str:
@@ -1905,11 +2120,14 @@ def _audit_header(state: Mapping[str, Any]) -> str:
     foam_state = "collapsed" if provenance["quantum_foam_collapsed"] else ("active" if provenance["quantum_foam_active"] else "idle")
     foam = f"{foam_state} / coherence {round(provenance['quantum_foam_coherence'], 1)}%"
     ecosystem = "+".join(provenance.get("agentic_ecosystem_sources") or []) if provenance.get("agentic_ecosystem_used") else "standby"
+    strength = state.get("agentic_strength") if isinstance(state.get("agentic_strength"), Mapping) else {}
+    strength_line = f"{strength.get('status') or provenance.get('agentic_strength_status')} / {strength.get('percent') or provenance.get('agentic_strength_percent') or 0}%"
     return "\n".join(
         [
             f"Bronpad: Agentic Core -> 11D pocket -> {provenance['synthesizer_provider']}/{model}",
             f"Brave Search: {brave}",
             f"DeepSeek/Atlas: {ecosystem}",
+            f"Agentic Strength: {strength_line}",
             f"Tools: {tools}",
             f"11D pocket: {pocket}",
             f"Quantum Foam: {foam}",

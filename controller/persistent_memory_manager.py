@@ -8,6 +8,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -88,21 +89,31 @@ def save_agentic_session(session: Mapping[str, Any], *, collection: Any | None =
             "fake_success": False,
         }
     except Exception as exc:
-        return {
-            "status": "error",
-            "stored": False,
-            "collection": _agentic_collection_name(),
-            "reason": str(exc),
-            "fake_success": False,
-        }
+        if collection is None:
+            recovered = _store_agentic_session_recovery_chroma(
+                item_id=item_id,
+                document=document,
+                metadata=metadata,
+                digest=digest,
+                primary_error=str(exc),
+            )
+            if recovered.get("stored"):
+                return recovered
+        return _store_agentic_session_fallback(
+            item_id=item_id,
+            document=document,
+            metadata=metadata,
+            digest=digest,
+            primary_error=str(exc),
+        )
 
 
-def _agentic_collection() -> Any:
+def _agentic_collection(persist_dir: str | None = None) -> Any:
     try:
         from controller.chroma_runtime import get_or_create_collection
     except Exception as exc:
         raise RuntimeError(f"chroma runtime is not available: {exc}") from exc
-    return get_or_create_collection(name=_agentic_collection_name(), persist_dir=os.getenv("WINTRIP_DB_PATH", "wintrip_brain"))
+    return get_or_create_collection(name=_agentic_collection_name(), persist_dir=persist_dir or _agentic_primary_persist_dir())
 
 
 def _agentic_collection_name() -> str:
@@ -114,6 +125,107 @@ def _agentic_memory_max() -> int:
         return max(25, min(int(os.getenv("WINTRIP_AGENTIC_MEMORY_MAX", str(DEFAULT_AGENTIC_MEMORY_MAX))), 5000))
     except ValueError:
         return DEFAULT_AGENTIC_MEMORY_MAX
+
+
+def _store_agentic_session_recovery_chroma(
+    *,
+    item_id: str,
+    document: str,
+    metadata: Mapping[str, Any],
+    digest: str,
+    primary_error: str,
+) -> dict[str, Any]:
+    primary = Path(_agentic_primary_persist_dir()).expanduser().resolve()
+    for persist_dir in _agentic_recovery_persist_dirs():
+        recovery = Path(persist_dir).expanduser().resolve()
+        if recovery == primary:
+            continue
+        try:
+            target = _agentic_collection(str(recovery))
+            _enforce_memory_cap(target, max_items=_agentic_memory_max() - 1)
+            target.add(
+                ids=[item_id],
+                documents=[document],
+                metadatas=[dict(metadata)],
+                embeddings=[_embedding_11d(document)],
+            )
+            _enforce_memory_cap(target, max_items=_agentic_memory_max())
+            return {
+                "status": "stored_recovered",
+                "stored": True,
+                "collection": _agentic_collection_name(),
+                "item_id": item_id,
+                "content_hash": digest,
+                "persist_dir": str(recovery),
+                "reason": "Primary ChromaDB session memory failed; stored in recovery ChromaDB.",
+                "primary_error": str(primary_error)[:500],
+                "fake_success": False,
+            }
+        except Exception:
+            continue
+    return {"status": "unavailable", "stored": False, "fake_success": False}
+
+
+def _agentic_primary_persist_dir() -> str:
+    return os.getenv("WINTRIP_DB_PATH", "wintrip_brain")
+
+
+def _agentic_recovery_persist_dirs() -> list[str]:
+    configured = os.getenv("WINTRIP_AGENTIC_SESSION_RECOVERY_DB_PATH")
+    candidates = [configured] if configured else []
+    candidates.extend(["data/chromadb", "wintrip_brain_recovered"])
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _store_agentic_session_fallback(
+    *,
+    item_id: str,
+    document: str,
+    metadata: Mapping[str, Any],
+    digest: str,
+    primary_error: str,
+) -> dict[str, Any]:
+    fallback_path = _agentic_fallback_path()
+    fallback_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "id": item_id,
+        "collection": _agentic_collection_name(),
+        "document": document,
+        "metadata": _redact(dict(metadata)),
+        "content_hash": digest,
+        "primary_error": str(primary_error)[:1000],
+        "stored_at": datetime.now(timezone.utc).isoformat(),
+        "fallback_reason": "primary_chroma_unavailable",
+    }
+    with fallback_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str) + "\n")
+    return {
+        "status": "stored_fallback",
+        "stored": True,
+        "collection": _agentic_collection_name(),
+        "item_id": item_id,
+        "content_hash": digest,
+        "fallback_path": str(fallback_path),
+        "reason": "Primary ChromaDB session memory failed; redacted JSONL fallback stored.",
+        "primary_error": str(primary_error)[:500],
+        "fake_success": False,
+    }
+
+
+def _agentic_fallback_path() -> Path:
+    configured = os.getenv("WINTRIP_AGENTIC_SESSION_FALLBACK_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    workspace = os.getenv("WINTRIP_WORKSPACE") or os.getenv("WORKSPACE_ROOT") or "."
+    return (Path(workspace).expanduser().resolve() / "out" / "agentic_sessions_fallback.jsonl").resolve()
 
 
 def _enforce_memory_cap(collection: Any, *, max_items: int) -> None:
