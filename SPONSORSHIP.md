@@ -19,7 +19,7 @@ Subject: Supporting practical and responsible AI with Ouroboros
 
 Hello [Name],
 
-I am reaching out on behalf of Ouroboros (WintripAI), an open AI initiative focused on practical, transparent, and accessible automation — with special attention to use cases that can support elderly and vulnerable people.
+We are reaching out on behalf of Ouroboros (WintripAI), an open AI initiative focused on practical, transparent, and accessible automation — with special attention to use cases that can support elderly and vulnerable people.
 
 Ouroboros explores how AI agents can combine automation, reasoning, memory, and feedback loops to reduce repetitive work, improve decision support, and collaborate responsibly with people over time. The project is built around transparent development, privacy-aware workflows, and real-world usefulness rather than hype.
 
@@ -31,4 +31,4 @@ You can learn more at https://ouroboros-ai.nl/.
 
 Kind regards,
 
-[Your Name]
+The Ouroboros team
