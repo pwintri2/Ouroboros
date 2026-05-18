@@ -239,7 +239,8 @@
         <div class="grid grid-cols-2 gap-2">
           <label for="profile-name" class="text-xs text-slate-500">
             User name
-             <input id="profile-name" type="text" maxlength="40" placeholder="Oma Els"
+            <!-- Keep the allowed character set in sync with controller/poc_demo.py. -->
+            <input id="profile-name" type="text" maxlength="40" placeholder="Oma Els"
                    pattern="[A-Za-zÀ-ÿ .'-]{0,40}"
                    aria-label="Optional user name for personalised reassurance message"
                    class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-2 text-slate-200

@@ -537,6 +537,7 @@ class EmpathyEngine:
         else:
             profile = user_profile
 
+        # Keep in sync with the optional dashboard input pattern in dashboard/index.html.
         name = re.sub(r"[^A-Za-zÀ-ÿ .'-]", "", str(profile.get("name", ""))).strip()[:40]
         tone = str(profile.get("tone", "")).lower()
 
@@ -599,9 +600,9 @@ class DemoUserProfile(BaseModel):
 class DemoRunRequest(BaseModel):
     inject_attack: bool = Field(True, description="Inject the scareware scenario when true")
     ticks: int = Field(5, ge=2, le=64, description="Number of simulated ingestion ticks")
-    user_profile: Optional[Union[DemoUserProfile, Dict[str, Any], str]] = Field(
+    user_profile: Optional[DemoUserProfile] = Field(
         None,
-        description="Optional profile for personalising the empathy message",
+        description="Optional structured profile for personalising the empathy message",
     )
 
 
@@ -670,11 +671,7 @@ async def run_demo(request: Optional[DemoRunRequest] = None) -> DemoRunResponse:
         resolution = await _resolver.resolve(anomaly, latest)
 
         # --- Phase 4: Empathetic user message ---------------------------------
-        profile = (
-            request.user_profile.dict(exclude_none=True)
-            if isinstance(request.user_profile, DemoUserProfile)
-            else request.user_profile
-        )
+        profile = request.user_profile.dict(exclude_none=True) if request.user_profile else None
         user_msg = _empathy.compose(anomaly, resolution, user_profile=profile)
 
         total_ms = (time.monotonic() - t_start) * 1000
