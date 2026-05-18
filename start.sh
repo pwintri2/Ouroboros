@@ -1,16 +1,25 @@
-#!/bin/bash
-# WintripAI/start.sh - Universeel Start-Script voor de Wintrip AI-agent
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "🚀 Wintrip AI Agent wordt opgestart..."
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_DIR="$ROOT_DIR/.venv"
+
+echo "🚀 Ouroboros AI Agent wordt opgestart..."
+
+if [ ! -d "$VENV_DIR" ]; then
+    echo "📦 Virtuele omgeving ontbreekt; .venv wordt aangemaakt..."
+    python3 -m venv "$VENV_DIR"
+fi
+
+source "$VENV_DIR/bin/activate"
+python -m pip install --upgrade pip >/dev/null
+python -m pip install -r "$ROOT_DIR/controller/requirements.txt"
 
 # 1. Start Python Backend (Controller)
-cd "$(dirname "$0")/controller" || exit
-
-# Activeer de virtuele omgeving
-source ../.venv/bin/activate
+cd "$ROOT_DIR/controller" || exit
 
 # PYTHONPATH instellen
-export PYTHONPATH=$PYTHONPATH:$(pwd)/..
+export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
 
 # Start de FastAPI server
 python3 -m uvicorn main:app --reload &BACKEND_PID=$!
@@ -19,7 +28,7 @@ echo "✅ Python Backend gestart op http://127.0.0.1:8000 (PID: $BACKEND_PID)"
 # 2. Opschonen bij afsluiten (Ctrl+C)
 cleanup() {
     echo ""
-    echo "🛑 Wintrip AI wordt afgesloten..."
+    echo "🛑 Ouroboros AI wordt afgesloten..."
     # Stop de backend uvicorn server
     kill $BACKEND_PID 2>/dev/null
     exit 0

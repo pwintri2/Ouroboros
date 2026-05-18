@@ -27,7 +27,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from fastapi import APIRouter
@@ -258,7 +258,7 @@ class AmbientIngestionEngine:
         )
 
     # ------------------------------------------------------------------
-    async def run(self, ticks: int = 5) -> List[OSStateSnapshot]:
+    async def run(self, ticks: int = 5, inject_attack: bool = True) -> List[OSStateSnapshot]:
         """
         Simulate `ticks` ingestion cycles.  The attack state is injected
         on tick 3 and persists for the remaining ticks — simulating a scareware
@@ -267,7 +267,7 @@ class AmbientIngestionEngine:
         self._running = True
         snapshots: List[OSStateSnapshot] = []
         for tick in range(ticks):
-            if tick >= self._ATTACK_INJECTION_TICK_INDEX:
+            if inject_attack and tick >= self._ATTACK_INJECTION_TICK_INDEX:
                 if not self._anomaly_injected:
                     self._anomaly_injected = True
                 snapshot = self._sample_attack_state()
@@ -488,17 +488,49 @@ class EmpathyEngine:
         self,
         anomaly: AnomalyReport,
         resolution: ResolutionReport,
-        user_profile: str = "elderly",
+        user_profile: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> str:
         if anomaly.severity == AnomalySeverity.NOMINAL:
-            return "Alles ziet er prima uit. Geen actie nodig. 😊"
+            return self._personalise("Alles ziet er prima uit. Geen actie nodig. 😊", user_profile)
 
         is_scareware = any(
             "SCREEN_OVERLAY" in t or "MALICIOUS_PROCESS" in t
             for t in anomaly.triggers
         )
         key = "virus_scareware" if is_scareware else "generic_anomaly"
-        return _EMPATHY_TEMPLATES[key]
+        return self._personalise(_EMPATHY_TEMPLATES[key], user_profile)
+
+    def _personalise(
+        self,
+        message: str,
+        user_profile: Optional[Union[str, Dict[str, Any]]],
+    ) -> str:
+        """Apply safe, deterministic personalisation without calling an external model."""
+        if not user_profile:
+            return message
+
+        profile: Dict[str, Any]
+        if isinstance(user_profile, str):
+            profile = {"name": user_profile}
+        else:
+            profile = user_profile
+
+        name = str(profile.get("name", "")).strip()[:40]
+        language = str(profile.get("language", "nl")).lower()
+        tone = str(profile.get("tone", "")).lower()
+
+        if language.startswith("en"):
+            message = (
+                "No worries — I noticed and fixed a suspicious pop-up automatically. "
+                "You do not need to call anyone or click anything. Your computer is safe. 😊"
+            )
+
+        if "concise" in tone:
+            message = message.split("\n\n", 1)[0]
+
+        if name:
+            return f"{name}, {message[0].lower()}{message[1:]}"
+        return message
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +574,22 @@ class DemoRunResponse(BaseModel):
     total_duration_ms: float
 
 
+class DemoUserProfile(BaseModel):
+    name: Optional[str] = Field(None, description="Optional first name used in the reassurance message")
+    language: Optional[str] = Field("nl", description="Preferred message language, for example 'nl' or 'en'")
+    tone: Optional[str] = Field(None, description="Optional tone hint, for example 'concise'")
+    digital_literacy: Optional[str] = Field(None, description="Optional literacy hint for future empathy tuning")
+
+
+class DemoRunRequest(BaseModel):
+    inject_attack: bool = Field(True, description="Inject the scareware scenario when true")
+    ticks: int = Field(5, ge=2, le=64, description="Number of simulated ingestion ticks")
+    user_profile: Optional[Union[DemoUserProfile, Dict[str, Any], str]] = Field(
+        None,
+        description="Optional profile for personalising the empathy message",
+    )
+
+
 class DemoStateResponse(BaseModel):
     last_run_id: Optional[str]
     kernel_vectors_ingested: int
@@ -570,7 +618,7 @@ _last_run_state: Dict[str, Any] = {}
 
 
 @router_demo.post("/run", response_model=DemoRunResponse, summary="Run the full Ambient Sentinel demo scenario")
-async def run_demo() -> DemoRunResponse:
+async def run_demo(request: Optional[DemoRunRequest] = None) -> DemoRunResponse:
     """
     Executes a complete end-to-end simulation:
 
@@ -581,6 +629,7 @@ async def run_demo() -> DemoRunResponse:
     4. The EmpathyEngine composes a gentle reassurance message for the user.
     """
     global _kernel, _ingestion, _run_lock
+    request = request or DemoRunRequest()
 
     # Lazily initialise the lock inside the running event loop
     if _run_lock is None:
@@ -596,7 +645,7 @@ async def run_demo() -> DemoRunResponse:
         _ingestion = AmbientIngestionEngine(kernel=_kernel, tick_hz=20.0)
 
         # --- Phase 1: Ambient ingestion (5 ticks, attack injected on tick 3) ---
-        snapshots = await _ingestion.run(ticks=5)
+        snapshots = await _ingestion.run(ticks=request.ticks, inject_attack=request.inject_attack)
         latest    = _ingestion.latest_snapshot
 
         # --- Phase 2: Anomaly detection ---------------------------------------
@@ -606,7 +655,8 @@ async def run_demo() -> DemoRunResponse:
         resolution = await _resolver.resolve(anomaly, latest)
 
         # --- Phase 4: Empathetic user message ---------------------------------
-        user_msg = _empathy.compose(anomaly, resolution)
+        profile = request.user_profile.dict(exclude_none=True) if isinstance(request.user_profile, DemoUserProfile) else request.user_profile
+        user_msg = _empathy.compose(anomaly, resolution, user_profile=profile)
 
         total_ms = (time.monotonic() - t_start) * 1000
 

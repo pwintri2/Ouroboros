@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Ouroboros Ambient Sentinel demo preview</title>
+  <desc id="desc">Stylized preview of the Ouroboros dashboard detecting and resolving a scareware incident.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#020617"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="42" y="42" width="1116" height="546" rx="28" fill="#0b1220" stroke="#164e63" stroke-width="2"/>
+  <text x="86" y="112" fill="#22d3ee" font-family="Inter,Arial,sans-serif" font-size="34" font-weight="700">OUROBOROS · AMBIENT SENTINEL</text>
+  <text x="86" y="152" fill="#94a3b8" font-family="Inter,Arial,sans-serif" font-size="20">Local-first private AI agent for macOS</text>
+  <g transform="translate(86 210)">
+    <rect width="640" height="230" rx="18" fill="#020617" stroke="#1e293b"/>
+    <text x="28" y="44" fill="#34d399" font-family="monospace" font-size="18">Non-linear Temporal State-Space Matrix</text>
+    <g transform="translate(28 74)">
+      <script type="application/ecmascript"><![CDATA[]]></script>
+      <g fill="#082f49">
+        <rect x="0" y="0" width="584" height="18" rx="3"/><rect x="0" y="30" width="584" height="18" rx="3"/><rect x="0" y="60" width="584" height="18" rx="3"/><rect x="0" y="90" width="584" height="18" rx="3"/><rect x="0" y="120" width="584" height="18" rx="3"/>
+      </g>
+      <circle cx="410" cy="68" r="42" fill="#ef4444" opacity="0.85" filter="url(#glow)">
+        <animate attributeName="opacity" values="0.35;1;0.35" dur="1.6s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="520" cy="112" r="26" fill="#22d3ee" opacity="0.7" filter="url(#glow)">
+        <animate attributeName="r" values="18;34;18" dur="2.2s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+  </g>
+  <g transform="translate(766 210)">
+    <rect width="330" height="230" rx="18" fill="#020617" stroke="#1e293b"/>
+    <text x="28" y="44" fill="#f87171" font-family="monospace" font-size="18">CRITICAL → RESOLVED</text>
+    <text x="28" y="86" fill="#cbd5e1" font-family="monospace" font-size="17">✓ KILL_PROCESS</text>
+    <text x="28" y="122" fill="#cbd5e1" font-family="monospace" font-size="17">✓ RESTORE_AUDIO</text>
+    <text x="28" y="158" fill="#cbd5e1" font-family="monospace" font-size="17">✓ DISMISS_OVERLAY</text>
+    <rect x="28" y="184" width="236" height="10" rx="5" fill="url(#accent)" filter="url(#glow)"/>
+  </g>
+  <g transform="translate(86 480)">
+    <rect width="1010" height="62" rx="18" fill="#052e2b" stroke="#10b981"/>
+    <text x="28" y="39" fill="#d1fae5" font-family="Inter,Arial,sans-serif" font-size="22">“No worries — I noticed and fixed a suspicious pop-up automatically.”</text>
+  </g>
+</svg>

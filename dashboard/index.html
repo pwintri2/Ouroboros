@@ -236,6 +236,23 @@
           Simulates a malicious scareware popup targeting an 85-year-old user.
           The Ambient Sentinel will detect and resolve the attack autonomously.
         </p>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="text-xs text-slate-500">
+            User name
+            <input id="profile-name" type="text" maxlength="40" placeholder="Oma Els"
+                   class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-2 text-slate-200
+                          placeholder:text-slate-700 focus:border-cyan-400 focus:outline-none" />
+          </label>
+          <label class="text-xs text-slate-500">
+            Message
+            <select id="profile-language"
+                    class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-2 text-slate-200
+                           focus:border-cyan-400 focus:outline-none">
+              <option value="nl">Dutch</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+        </div>
         <button id="trigger-btn"
           class="relative overflow-hidden w-full py-3 px-6 rounded-lg font-bold tracking-widest
                  text-sm uppercase text-slate-900
@@ -377,6 +394,8 @@
     const triggerSpinner  = $('trigger-spinner');
     const triggerBtnText  = $('trigger-btn-text');
     const triggerStatus   = $('trigger-status');
+    const profileName     = $('profile-name');
+    const profileLanguage = $('profile-language');
     const resolutionPanel = $('resolution-panel');
     const resolutionSteps = $('resolution-steps');
     const empathyOverlay  = $('empathy-overlay');
@@ -689,6 +708,15 @@
         const res = await fetch(`${API_BASE}/demo/run`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            inject_attack: true,
+            ticks: 5,
+            user_profile: {
+              name: profileName.value.trim(),
+              language: profileLanguage.value,
+              tone: 'reassuring'
+            }
+          }),
         });
 
         if (!res.ok) {
