@@ -26,8 +26,8 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from enum import Enum
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 from fastapi import APIRouter
@@ -425,7 +425,10 @@ class AutonomousResolutionLoop:
                 action_type="RESTORE_AUDIO",
                 target="system_audio_sink",
                 success=True,
-                detail=f"Volume restored to {AmbientIngestionEngine.nominal_volume_pct():.0f} % — previous user preference.",
+                detail=(
+                    f"Volume restored to {AmbientIngestionEngine.nominal_volume_pct():.0f} % "
+                    "— previous user preference."
+                ),
             ))
 
         # --- Dismiss overlay ----------------------------------------------
@@ -655,7 +658,11 @@ async def run_demo(request: Optional[DemoRunRequest] = None) -> DemoRunResponse:
         resolution = await _resolver.resolve(anomaly, latest)
 
         # --- Phase 4: Empathetic user message ---------------------------------
-        profile = request.user_profile.dict(exclude_none=True) if isinstance(request.user_profile, DemoUserProfile) else request.user_profile
+        profile = (
+            request.user_profile.dict(exclude_none=True)
+            if isinstance(request.user_profile, DemoUserProfile)
+            else request.user_profile
+        )
         user_msg = _empathy.compose(anomaly, resolution, user_profile=profile)
 
         total_ms = (time.monotonic() - t_start) * 1000
