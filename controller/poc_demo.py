@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -518,7 +519,7 @@ class EmpathyEngine:
         else:
             profile = user_profile
 
-        name = str(profile.get("name", "")).strip()[:40]
+        name = re.sub(r"[^\wÀ-ÿ .'-]", "", str(profile.get("name", ""))).strip()[:40]
         language = str(profile.get("language", "nl")).lower()
         tone = str(profile.get("tone", "")).lower()
 
@@ -531,8 +532,10 @@ class EmpathyEngine:
         if "concise" in tone:
             message = message.split("\n\n", 1)[0]
 
-        if name:
+        if name and len(message) > 1:
             return f"{name}, {message[0].lower()}{message[1:]}"
+        if name:
+            return f"{name}, {message}"
         return message
 
 
