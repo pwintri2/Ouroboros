@@ -476,6 +476,17 @@ _EMPATHY_TEMPLATES: Dict[str, str] = {
     ),
 }
 
+_EMPATHY_TEMPLATES_EN: Dict[str, str] = {
+    "virus_scareware": (
+        "No worries — I noticed and fixed a suspicious pop-up automatically. "
+        "You do not need to call anyone or click anything. Your computer is safe. 😊"
+    ),
+    "generic_anomaly": (
+        "No worries — I noticed a small irregularity and fixed it automatically. "
+        "You do not need to do anything. Everything is working normally again. 😊"
+    ),
+}
+
 
 class EmpathyEngine:
     """
@@ -502,7 +513,14 @@ class EmpathyEngine:
             for t in anomaly.triggers
         )
         key = "virus_scareware" if is_scareware else "generic_anomaly"
-        return self._personalise(_EMPATHY_TEMPLATES[key], user_profile)
+        language = self._language(user_profile)
+        templates = _EMPATHY_TEMPLATES_EN if language.startswith("en") else _EMPATHY_TEMPLATES
+        return self._personalise(templates[key], user_profile)
+
+    def _language(self, user_profile: Optional[Union[str, Dict[str, Any]]]) -> str:
+        if isinstance(user_profile, dict):
+            return str(user_profile.get("language", "nl")).lower()
+        return "nl"
 
     def _personalise(
         self,
@@ -519,23 +537,14 @@ class EmpathyEngine:
         else:
             profile = user_profile
 
-        name = re.sub(r"[^\wÀ-ÿ .'-]", "", str(profile.get("name", ""))).strip()[:40]
-        language = str(profile.get("language", "nl")).lower()
+        name = re.sub(r"[^A-Za-zÀ-ÿ .'-]", "", str(profile.get("name", ""))).strip()[:40]
         tone = str(profile.get("tone", "")).lower()
-
-        if language.startswith("en"):
-            message = (
-                "No worries — I noticed and fixed a suspicious pop-up automatically. "
-                "You do not need to call anyone or click anything. Your computer is safe. 😊"
-            )
 
         if "concise" in tone:
             message = message.split("\n\n", 1)[0]
 
-        if name and len(message) > 1:
-            return f"{name}, {message[0].lower()}{message[1:]}"
         if name:
-            return f"{name}, {message}"
+            return f"{name}, {message[:1].lower()}{message[1:]}"
         return message
 
 
