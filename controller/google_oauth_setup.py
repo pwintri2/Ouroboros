@@ -456,6 +456,24 @@ def _resolve_client_config(
 
     if not clean_client_id or not clean_client_secret:
         return {"status": "blocked", "reason": "Google OAuth client_id and client_secret are required.", "fake_success": False, "secrets_returned": False}
+    # Defensive guard: a Google OAuth client_secret is typically >= 24 chars
+    # (GOCSPX-...). Reject suspiciously short secrets to prevent accidental
+    # overwrites of a valid saved secret with garbage or a truncated paste.
+    if len(clean_client_secret) < 8:
+        saved_secret_length = len(str(saved.get("client_secret") or ""))
+        if saved_secret_length >= 8:
+            return {
+                "status": "blocked",
+                "reason": "Refusing to overwrite saved Google client_secret with a value shorter than 8 characters.",
+                "fake_success": False,
+                "secrets_returned": False,
+            }
+        return {
+            "status": "blocked",
+            "reason": "Google OAuth client_secret looks invalid (less than 8 characters).",
+            "fake_success": False,
+            "secrets_returned": False,
+        }
     validation = _validate_google_client_id(clean_client_id)
     if validation:
         return {"status": "blocked", "reason": validation, "fake_success": False, "secrets_returned": False}
