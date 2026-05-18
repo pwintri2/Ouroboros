@@ -1,7 +1,7 @@
-# 🕒 Wintrip Session Status (Update: 13 April 2026 - Fase 4.5 / PoC Demo)
+# 🕒 Wintrip Session Status (Update: 17 mei 2026 - Sponsorship Support)
 
 ## 📌 Huidige Status
-Fase 4.5 is actief. De **Ambient Sentinel PoC Demo** is volledig geïmplementeerd en geïntegreerd in de bestaande FastAPI-backend.
+Fase 4.5 is actief. De **Ambient Sentinel PoC Demo** is volledig geïmplementeerd en geïntegreerd in de bestaande FastAPI-backend. Sponsorship-ondersteuning is toegevoegd om publieke steun voor verdere ontwikkeling zichtbaar te maken.
 
 ## ✅ Voltooide Wijzigingen
 1. **Orchestrator Logica Ontwikkeld** (vorige sessie)
@@ -16,6 +16,10 @@ Fase 4.5 is actief. De **Ambient Sentinel PoC Demo** is volledig geïmplementeer
    - FastAPI router gemount op `/demo` (`POST /demo/run`, `GET /demo/state`)
    - `numpy` toegevoegd aan `controller/requirements.txt`
    - Router geregistreerd in `controller/main.py`
+5. **Sponsorship Support**:
+   - `.github/FUNDING.yml` toegevoegd voor de GitHub Sponsor-knop
+   - `SPONSORSHIP.md` toegevoegd met sponsortiers en outreach-bericht
+   - README uitgebreid met een korte sectie `Support Ouroboros`
 
 ## 💻 Windows Demo (nieuw)
 - `start_demo.bat` — dubbelklik om backend + browser te starten (eenvoudigste methode)

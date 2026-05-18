@@ -36,6 +36,7 @@
 - [Ambient Sentinel PoC](#-ambient-sentinel-poc-demo)
 - [Projectstructuur](#-projectstructuur)
 - [Roadmap](#-roadmap)
+- [Support Ouroboros](#-support-ouroboros)
 
 ---
 
@@ -376,6 +377,16 @@ wintripai/
 - [ ] **Fase 5** — Operationele OODA-loop zonder menselijke goedkeuring
 - [ ] **Fase 6** — Gepersonaliseerde empathische berichten (`user_profile`)
 - [ ] **Fase 7** — Volledige Docker-sandboxing op macOS (TCC/permissies)
+
+---
+
+## 💚 Support Ouroboros
+
+Ouroboros wordt ontwikkeld als een open, praktisch AI-initiatief voor transparante en toegankelijke automatisering — met extra aandacht voor toepassingen die ouderen en kwetsbare mensen kunnen ondersteunen.
+
+Sponsorship helpt om ontwikkeltijd, infrastructuur, testen, documentatie, publieke demo's en verantwoord onderzoek naar agent-based AI mogelijk te maken. Daarmee draag je direct bij aan tooling die repetitief werk vermindert, besluitvorming ondersteunt en AI-agenten op een zorgvuldige manier met mensen laat samenwerken.
+
+Wil je dit werk steunen? Bekijk de sponsoropties in [SPONSORSHIP.md](SPONSORSHIP.md) of bezoek [ouroboros-ai.nl](https://ouroboros-ai.nl/).
 
 ---
 
