@@ -1546,6 +1546,24 @@ class AgentToolRegistry:
         payload["ziel_policy"] = ziel_policy
         raw_status = str(raw.get("status") or "error") if isinstance(raw, dict) else "error"
         status = "success" if raw_status == "success" else raw_status
+        re_login_required = bool(isinstance(raw, dict) and raw.get("re_login_required"))
+        missing_scope = str((raw.get("missing_scope") if isinstance(raw, dict) else "") or "")
+        oauth_start = str((raw.get("oauth_start_endpoint") if isinstance(raw, dict) else "") or "")
+        if re_login_required:
+            payload["re_login_required"] = True
+            payload["missing_scope"] = missing_scope
+            payload["oauth_start_endpoint"] = oauth_start
+            next_action_text = (
+                "Google login mist scopes voor Gmail read — open Cockpit > Connectors > Google en "
+                "klik 'Re-connect Google' om opnieuw consent te geven. "
+                + (f"Scope vereist: {missing_scope}." if missing_scope else "")
+            )
+        else:
+            next_action_text = (
+                "Vat de gevonden mail samen of maak een concept; mail verzenden blijft buiten deze tool."
+                if status == "success"
+                else "Controleer Google OAuth/scopes/live-api instelling zonder tokenmateriaal te delen."
+            )
         return _tool_result(
             "gmail_search",
             status,
@@ -1556,7 +1574,7 @@ class AgentToolRegistry:
             approval_status="approved",
             stored_to_memory=False,
             metadata_11d={"dimension_count": 11, "source_type": "gmail_private_readonly", "taint": "private_user_data", "ziel_policy_hash": ziel_policy.get("short_hash", "")},
-            next_action="Vat de gevonden mail samen of maak een concept; mail verzenden blijft buiten deze tool.",
+            next_action=next_action_text,
         )
 
     def google_drive_status(self) -> dict[str, Any]:

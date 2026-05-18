@@ -2842,6 +2842,7 @@ export default function App() {
             model={model}
             busy={busy}
             defaultPrompt={prompt}
+            onOpenConnectors={() => setActiveTab("connectors")}
             onRequestApproval={() => {
               const el = document.querySelector<HTMLInputElement>("label input[placeholder=\"" + approvalPhrase + "\"]");
               el?.focus();

@@ -45,7 +45,7 @@ GOOGLE_SCOPE_PRESETS = {
         "https://www.googleapis.com/auth/drive.file",
     ],
 }
-DEFAULT_GOOGLE_SCOPES = GOOGLE_SCOPE_PRESETS["gmail_send"]
+DEFAULT_GOOGLE_SCOPES = GOOGLE_SCOPE_PRESETS["google_workspace_full"]
 GOOGLE_WORKSPACE_FULL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",

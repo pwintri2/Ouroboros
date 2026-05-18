@@ -86,6 +86,23 @@ class GoogleWorkspaceAdapter:
 
     def status(self) -> dict[str, Any]:
         token = self._token_metadata()
+        granted_scopes = set(token.get("scopes") or [])
+        required_for_search = "https://www.googleapis.com/auth/gmail.readonly"
+        required_for_send = "https://www.googleapis.com/auth/gmail.send"
+        required_for_manage = "https://www.googleapis.com/auth/gmail.modify"
+        required_for_drive_list = "https://www.googleapis.com/auth/drive.metadata.readonly"
+        capability_scope_map = {
+            "gmail_search": required_for_search,
+            "gmail_manage": required_for_manage,
+            "gmail_send": required_for_send,
+            "drive_list": required_for_drive_list,
+        }
+        capability_ready = {
+            name: bool(scope in granted_scopes) for name, scope in capability_scope_map.items()
+        }
+        missing_capabilities = sorted(
+            scope for name, scope in capability_scope_map.items() if not capability_ready[name]
+        )
         return {
             "status": "connected" if token["exists"] else "token_missing",
             "adapter": "google_workspace",
@@ -106,6 +123,10 @@ class GoogleWorkspaceAdapter:
                 "move_gmail",
                 "gcp_list_projects",
             ],
+            "capability_ready": capability_ready,
+            "missing_capability_scopes": missing_capabilities,
+            "re_login_required": bool(missing_capabilities and token.get("exists")),
+            "oauth_start_endpoint": "/api/cockpit/connectors/google/oauth/start",
             "state_path": str(google_workspace_state_path()),
             "fake_success": False,
         }
@@ -283,7 +304,7 @@ class GoogleWorkspaceAdapter:
                 "fake_success": False,
             }
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            details = _google_error_details(exc)
+            details = _google_error_details(exc, operation="send_gmail")
             status = "configuration_required" if details.get("configuration_required") else "error"
             return {
                 "status": status,
@@ -291,6 +312,9 @@ class GoogleWorkspaceAdapter:
                 "reason": details.get("message") or details.get("reason") or "Google API request failed.",
                 "google_error": details,
                 "activation_url": details.get("activation_url", ""),
+                "re_login_required": bool(details.get("re_login_required")),
+                "missing_scope": details.get("missing_scope", ""),
+                "oauth_start_endpoint": details.get("oauth_start_endpoint", ""),
                 "next_action": details.get("next_action", "Controleer Google API/OAuth configuratie."),
                 "plan": plan,
                 "fake_success": False,
@@ -464,7 +488,24 @@ class GoogleWorkspaceAdapter:
             parsed = json.loads(raw) if raw.strip() else {}
             return {"status": "success", "source": "live_api", "operation": operation, "payload": parsed, "fake_success": False}
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            return {"status": "error", "reason": _safe_google_error(exc), "operation": operation, "fake_success": False}
+            details = _google_error_details(exc, operation=operation)
+            payload: dict[str, Any] = {
+                "status": "error",
+                "reason": details.get("reason") or _safe_google_error(exc),
+                "operation": operation,
+                "google_reason": details.get("google_reason") or "",
+                "google_status": details.get("status") or "",
+                "status_code": details.get("status_code") or 0,
+                "message": details.get("message") or "",
+                "configuration_required": bool(details.get("configuration_required")),
+                "re_login_required": bool(details.get("re_login_required")),
+                "missing_scope": details.get("missing_scope") or "",
+                "next_action": details.get("next_action") or "",
+                "oauth_start_endpoint": details.get("oauth_start_endpoint") or "",
+                "fake_success": False,
+                "secrets_returned": False,
+            }
+            return payload
 
     def _gmail_message_ids(self, *, query: str, approval: str, max_results: int) -> dict[str, Any]:
         encoded = urllib.parse.urlencode({"q": str(query or "in:inbox"), "maxResults": max(1, min(int(max_results or 10), 50))})
@@ -681,11 +722,26 @@ def _compact_gmail_message(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _safe_google_error(exc: BaseException) -> str:
-    return str(_google_error_details(exc).get("reason") or "")
+def _safe_google_error(exc: BaseException, *, operation: str = "") -> str:
+    return str(_google_error_details(exc, operation=operation).get("reason") or "")
 
 
-def _google_error_details(exc: BaseException) -> dict[str, Any]:
+_OPERATION_SCOPE_HINTS = {
+    "search_gmail": "https://www.googleapis.com/auth/gmail.readonly",
+    "get_gmail_message": "https://www.googleapis.com/auth/gmail.readonly",
+    "list_gmail_labels": "https://www.googleapis.com/auth/gmail.readonly",
+    "manage_gmail": "https://www.googleapis.com/auth/gmail.modify",
+    "label_gmail": "https://www.googleapis.com/auth/gmail.modify",
+    "archive_gmail": "https://www.googleapis.com/auth/gmail.modify",
+    "move_gmail": "https://www.googleapis.com/auth/gmail.modify",
+    "send_gmail": "https://www.googleapis.com/auth/gmail.send",
+    "mail_send": "https://www.googleapis.com/auth/gmail.send",
+    "drive_list": "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "drive_upload": "https://www.googleapis.com/auth/drive.file",
+}
+
+
+def _google_error_details(exc: BaseException, *, operation: str = "") -> dict[str, Any]:
     status_code = 0
     raw = ""
     if isinstance(exc, urllib.error.HTTPError):
@@ -728,8 +784,21 @@ def _google_error_details(exc: BaseException) -> dict[str, Any]:
         or "has not been used in project" in message
         or "it is disabled" in message
     )
+    re_login_required = bool(
+        google_reason in {"ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficientPermissions"}
+        or google_status == "PERMISSION_DENIED" and "scope" in message.lower()
+        or "insufficient authentication scopes" in message.lower()
+    )
+    missing_scope = _OPERATION_SCOPE_HINTS.get(str(operation or ""), "") if re_login_required else ""
     next_action = ""
-    if activation_url:
+    if re_login_required:
+        scope_hint = f" Scope vereist: {missing_scope}." if missing_scope else ""
+        next_action = (
+            "Google login mist scopes voor deze tool — open de Google connector in Cockpit en "
+            "kies 'Re-connect Google' om opnieuw consent te geven met bredere scopes."
+            + scope_hint
+        )
+    elif activation_url:
         next_action = f"Enable {service_title or 'the required Google API'} in Google Cloud, then retry after propagation."
     elif configuration_required:
         next_action = "Enable the required Google API or OAuth scope in Google Cloud, then retry."
@@ -742,7 +811,11 @@ def _google_error_details(exc: BaseException) -> dict[str, Any]:
         "activation_url": activation_url,
         "service_title": service_title,
         "configuration_required": configuration_required,
+        "re_login_required": re_login_required,
+        "missing_scope": missing_scope,
+        "operation": str(operation or ""),
         "next_action": next_action,
+        "oauth_start_endpoint": "/api/cockpit/connectors/google/oauth/start" if re_login_required else "",
         "secrets_returned": False,
     }
 

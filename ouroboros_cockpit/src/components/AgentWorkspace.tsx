@@ -40,7 +40,44 @@ type AgentWorkspaceProps = {
     sessionId: string;
   }) => Promise<{ sessionId?: string } | void>;
   onRequestApproval: () => void;
+  onOpenConnectors?: () => void;
 };
+
+type GoogleReloginSignal = {
+  detected: boolean;
+  missingScope: string;
+  oauthStart: string;
+  tool: string;
+  reason: string;
+};
+
+function findGoogleReloginSignal(events: AgenticEvent[]): GoogleReloginSignal {
+  for (const event of [...events].reverse()) {
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    const summary = payload.summary ?? payload;
+    const candidates: Record<string, unknown>[] = [];
+    if (summary && typeof summary === "object") candidates.push(summary as Record<string, unknown>);
+    if (payload && typeof payload === "object") candidates.push(payload);
+    const nestedResult = (payload as { result_status?: unknown; summary?: { result?: unknown } }).summary;
+    if (nestedResult && typeof nestedResult === "object") {
+      const inner = (nestedResult as { result?: unknown }).result;
+      if (inner && typeof inner === "object") candidates.push(inner as Record<string, unknown>);
+    }
+    for (const item of candidates) {
+      const re = Boolean(item.re_login_required);
+      if (re) {
+        return {
+          detected: true,
+          missingScope: String(item.missing_scope ?? ""),
+          oauthStart: String(item.oauth_start_endpoint ?? "/api/cockpit/connectors/google/oauth/start"),
+          tool: String(event.tool ?? ""),
+          reason: String(item.next_action ?? item.reason ?? "Google scopes ontbreken."),
+        };
+      }
+    }
+  }
+  return { detected: false, missingScope: "", oauthStart: "", tool: "", reason: "" };
+}
 
 type EventTypeMeta = {
   label: string;
@@ -133,6 +170,7 @@ export function AgentWorkspace(props: AgentWorkspaceProps) {
     defaultPrompt = "",
     onSubmit,
     onRequestApproval,
+    onOpenConnectors,
   } = props;
 
   const [sessions, setSessions] = useState<AgenticSessionSnapshot[]>([]);
@@ -245,6 +283,7 @@ export function AgentWorkspace(props: AgentWorkspaceProps) {
     () => events.find((event) => event.event_type === "tool_awaiting_approval"),
     [events],
   );
+  const googleReloginSignal = useMemo(() => findGoogleReloginSignal(events), [events]);
 
   const sendPrompt = useCallback(async () => {
     const trimmed = prompt.trim();
@@ -434,6 +473,29 @@ export function AgentWorkspace(props: AgentWorkspaceProps) {
                   Vul Akkoord
                 </button>
               )}
+            </div>
+          )}
+
+          {googleReloginSignal.detected && (
+            <div className="agent-relogin-banner">
+              <AlertTriangle size={16} />
+              <div>
+                <strong>Google scopes ontbreken.</strong>
+                <span>
+                  {googleReloginSignal.tool || "Een Google-tool"} kon niet draaien:{" "}
+                  {googleReloginSignal.missingScope ? (
+                    <>
+                      ontbrekende scope <code>{googleReloginSignal.missingScope}</code>.
+                    </>
+                  ) : (
+                    googleReloginSignal.reason
+                  )}{" "}
+                  Klik 'Re-connect Google' om opnieuw consent te geven met bredere scopes.
+                </span>
+              </div>
+              <button type="button" onClick={() => onOpenConnectors?.()}>
+                Re-connect Google
+              </button>
             </div>
           )}
 

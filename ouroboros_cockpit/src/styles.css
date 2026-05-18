@@ -2364,6 +2364,35 @@ label {
   padding: 1px 5px;
   border-radius: 3px;
 }
+.agent-relogin-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(122, 34, 34, 0.18);
+  border-bottom: 1px solid #7a2222;
+  color: #f5c5c5;
+  font-size: 0.85rem;
+}
+.agent-relogin-banner code {
+  background: #2a1010;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.78rem;
+}
+.agent-relogin-banner button {
+  margin-left: auto;
+  background: #4a1818;
+  border: 1px solid #7a2222;
+  color: #f5c5c5;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.agent-relogin-banner button:hover {
+  background: #5a1f1f;
+}
 .agent-timeline {
   flex: 1;
   overflow-y: auto;
