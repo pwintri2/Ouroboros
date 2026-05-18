@@ -41,6 +41,21 @@ def chroma_runtime_mode() -> str:
     return "http" if chroma_http_url() else "persistent"
 
 
+def _chroma_http_timeout_seconds() -> float:
+    """Bounded read/write timeout for chromadb HTTP client.
+
+    Without this, httpx defaults to no timeout, so any single hung POST in the
+    chromadb client (e.g. inside a quantum_foam Lock) will pin a worker thread
+    forever and cascade-block the FastAPI event loop. Default 8s is generous
+    for local Docker network; override with WINTRIP_CHROMA_HTTP_TIMEOUT.
+    """
+
+    try:
+        return max(0.5, min(float(os.getenv("WINTRIP_CHROMA_HTTP_TIMEOUT", "8")), 60.0))
+    except (TypeError, ValueError):
+        return 8.0
+
+
 def chroma_client(*, persist_dir: str | os.PathLike[str] | None = None) -> Any:
     try:
         import chromadb
@@ -52,11 +67,48 @@ def chroma_client(*, persist_dir: str | os.PathLike[str] | None = None) -> Any:
         parsed = _parse_remote_url(remote_url)
         if not hasattr(chromadb, "HttpClient"):
             raise RuntimeError("chromadb.HttpClient is not available in this ChromaDB install.")
-        return chromadb.HttpClient(host=parsed["host"], port=parsed["port"], ssl=parsed["ssl"])
+        client = chromadb.HttpClient(host=parsed["host"], port=parsed["port"], ssl=parsed["ssl"])
+        _apply_httpx_timeout(client, _chroma_http_timeout_seconds())
+        return client
 
     path = Path(persist_dir).expanduser().resolve() if persist_dir else default_chroma_path()
     path.mkdir(parents=True, exist_ok=True)
     return chromadb.PersistentClient(path=str(path))
+
+
+def _apply_httpx_timeout(client: Any, timeout_seconds: float) -> None:
+    """Best-effort installation of an httpx timeout on chromadb's internal client.
+
+    chromadb does not expose a public knob for httpx timeout, so we reach into
+    `_session` / `_client` if present and replace the timeout. Wrapped in
+    try/except so future chromadb upgrades that move this attribute don't
+    crash callers; the worst-case fallback is the pre-existing infinite wait.
+    """
+
+    try:
+        import httpx
+    except Exception:
+        return
+    timeout = httpx.Timeout(timeout_seconds)
+    for attr in ("_session", "_client", "_api", "_server", "_async_client"):
+        candidate = getattr(client, attr, None)
+        if candidate is None:
+            continue
+        # Direct httpx.Client / AsyncClient attached to the chromadb client.
+        if hasattr(candidate, "timeout"):
+            try:
+                candidate.timeout = timeout
+            except Exception:
+                pass
+        for nested in ("_session", "_client", "_http_client", "session", "client"):
+            inner = getattr(candidate, nested, None)
+            if inner is None:
+                continue
+            if hasattr(inner, "timeout"):
+                try:
+                    inner.timeout = timeout
+                except Exception:
+                    pass
 
 
 def get_or_create_collection(

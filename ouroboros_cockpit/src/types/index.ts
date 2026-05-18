@@ -21,8 +21,84 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   worldAgentStatus: "/api/world-agent/status",
   worldAgentGrok: "/api/world-agent/grok/ask",
   worldAgentSearch: "/api/world-agent/memory/search",
+  agenticSessions: "/api/ouroboros/agentic/sessions",
+  agenticSessionDetail: "/api/ouroboros/agentic/sessions/{session_id}",
+  agenticSessionEvents: "/api/ouroboros/agentic/sessions/{session_id}/events",
+  agenticSessionCancel: "/api/ouroboros/agentic/sessions/{session_id}/cancel",
+  agenticSessionDiff: "/api/ouroboros/agentic/sessions/{session_id}/diff",
+  agenticSessionFiles: "/api/ouroboros/agentic/sessions/{session_id}/files",
+  agenticPolicyCommands: "/api/ouroboros/agentic/policy/commands",
+  agenticPolicyEvaluate: "/api/ouroboros/agentic/policy/commands/evaluate",
   approvalPhrase: "Akkoord",
 } as const;
+
+export type AgenticToolSummary = {
+  planned?: number;
+  running?: number;
+  completed?: number;
+  blocked?: number;
+  failed?: number;
+};
+
+export type AgenticMemoryStatus = {
+  status?: string;
+  stored?: boolean;
+  collection?: string;
+  item_id?: string;
+  fallback_path?: string;
+  persist_dir?: string;
+  reason?: string;
+  primary_error?: string;
+};
+
+export type AgenticSessionSnapshot = {
+  session_id: string;
+  conversation_id?: string;
+  route?: string;
+  goal?: string;
+  plan_mode?: "act" | "plan" | string;
+  provider?: string;
+  model?: string;
+  status?: string;
+  approval_required?: boolean;
+  approval_status?: string;
+  blocked_tools?: string[];
+  tool_summary?: AgenticToolSummary;
+  loop_warning?: boolean;
+  loop_blocked?: boolean;
+  memory_status?: AgenticMemoryStatus;
+  checkpoint?: Record<string, unknown>;
+  files_touched?: string[];
+  duration_seconds?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string | null;
+};
+
+export type AgenticEvent = {
+  event_id?: string;
+  session_id?: string;
+  sequence?: number;
+  event_type?: string;
+  ts?: string;
+  monotonic?: number;
+  payload?: Record<string, unknown>;
+  tool?: string;
+  status?: string;
+  duration_seconds?: number;
+  approval_required?: boolean;
+};
+
+export type AgenticSessionsResponse = {
+  status?: string;
+  sessions?: AgenticSessionSnapshot[];
+};
+
+export type AgenticEventsResponse = {
+  status?: string;
+  session_id?: string;
+  events?: AgenticEvent[];
+};
 
 export type BackendConfig = {
   backend_url: string;

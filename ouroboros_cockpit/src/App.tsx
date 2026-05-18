@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import ouroborosLogoUrl from "./assets/ouroboros-logo.png";
+import { AgentWorkspace } from "./components/AgentWorkspace";
 
 export const BACKEND_BASE_CONFIG_KEYS = ["VITE_BACKEND_URL", "TAURI_BACKEND_URL"] as const;
 
@@ -74,7 +75,7 @@ export const OUROBOROS_BACKEND_CONTRACT = {
   approvalPhrase: "Akkoord",
 } as const;
 
-type ActiveTab = "chat" | "tools" | "models" | "connectors" | "agents" | "memory" | "trainer" | "context";
+type ActiveTab = "agent-workspace" | "chat" | "tools" | "models" | "connectors" | "agents" | "memory" | "trainer" | "context";
 
 type BackendConfig = {
   backend_url: string;
@@ -1024,7 +1025,7 @@ export default function App() {
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [subscriptionInputs, setSubscriptionInputs] = useState<Record<string, { auth_mode: string; api_key: string; plan_label: string }>>({});
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("agent-workspace");
   const [trainerStatus, setTrainerStatus] = useState<any>(null);
   const [trainerJobs, setTrainerJobs] = useState<any[]>([]);
   const [contextData, setContextData] = useState<any>(null);
@@ -2588,6 +2589,7 @@ export default function App() {
   const architectureReady = architectureAgents.filter((agent) => agent.readiness === "klaar").length;
   const architectureStatus = agentArchitecture.status ?? "unknown";
   const navItems: Array<{ id: ActiveTab; label: string; icon: ReactNode; hint: string }> = [
+    { id: "agent-workspace", label: "Agent", icon: <BrainCircuit size={16} />, hint: "live agentic timeline" },
     { id: "chat", label: "Chat", icon: <MessageSquare size={16} />, hint: `${selfContext?.conversation_count ?? 0} chats` },
     { id: "tools", label: "Tools", icon: <Wrench size={16} />, hint: "shell + tests" },
     { id: "models", label: "Models", icon: <KeyRound size={16} />, hint: `${localModels.length} local / ${configuredKeyCount} keys / ${rooLoggedIn ? "Roo login" : "Roo off"}` },
@@ -2829,6 +2831,44 @@ export default function App() {
             <CircleStop size={15} /> Abort
           </button>
         </section>
+
+        {activeTab === "agent-workspace" && (
+          <AgentWorkspace
+            backend={backend}
+            approvalPhrase={approvalPhrase}
+            approvalReady={approvalReady}
+            approvalValue={approval}
+            provider={provider}
+            model={model}
+            busy={busy}
+            defaultPrompt={prompt}
+            onRequestApproval={() => {
+              const el = document.querySelector<HTMLInputElement>("label input[placeholder=\"" + approvalPhrase + "\"]");
+              el?.focus();
+            }}
+            onSubmit={async ({ prompt: agentPrompt, planMode, sessionId }) => {
+              const filePaths = uploadedFiles.map((f) => f.path);
+              const data = await perform("Agent workspace prompt", () =>
+                api<Record<string, unknown>>(OUROBOROS_BACKEND_CONTRACT.cockpitChat, {
+                  method: "POST",
+                  timeoutMs: CHAT_REQUEST_TIMEOUT_MS,
+                  body: JSON.stringify({
+                    provider,
+                    model,
+                    prompt: agentPrompt,
+                    approval,
+                    include_tools: true,
+                    files: filePaths.length ? filePaths : undefined,
+                    session_id: sessionId,
+                    plan_mode: planMode,
+                  }),
+                }),
+              );
+              const returnedId = (data && typeof data === "object" && (data as { session_id?: string }).session_id) || sessionId;
+              return { sessionId: returnedId };
+            }}
+          />
+        )}
 
         {activeTab === "chat" && (
           <>

@@ -329,6 +329,9 @@ class WintripOrchestrator:
         history: list[dict[str, Any]] | None = None,
         max_steps: int = 8,
         planner: Callable[..., str] | None = None,
+        session_id: str | None = None,
+        plan_mode: str | None = None,
+        conversation_id: str = "",
     ) -> dict[str, Any]:
         """Run the 11D-pocket grounded Agentic Core for complex tool goals."""
 
@@ -351,6 +354,9 @@ class WintripOrchestrator:
                 provider=provider,
                 system_prompt=system_prompt,
                 history=history or [],
+                session_id=session_id,
+                plan_mode=plan_mode,
+                conversation_id=conversation_id,
             )
             result.setdefault("provider", provider)
             result.setdefault("model", model or getattr(self, "active_model", ""))

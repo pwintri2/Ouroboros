@@ -782,6 +782,8 @@ class CockpitChatRequest(BaseModel):
     include_tool_schemas: Optional[bool] = False
     tools: Optional[Any] = None
     role: Optional[str] = None
+    session_id: Optional[str] = None
+    plan_mode: Optional[str] = None
 
 class OpenClawVoiceChatCompletionRequest(BaseModel):
     model: Optional[str] = "openclaw:voice"
@@ -1486,6 +1488,145 @@ async def ouroboros_chroma_status():
 @app.get("/api/ouroboros/trigger-actions/status")
 async def ouroboros_trigger_actions_status():
     return trigger_action_status()
+
+
+# --- Cline-grade agentic session/event observability ---
+@app.get("/api/ouroboros/agentic/sessions")
+async def ouroboros_agentic_sessions(limit: int = 20):
+    from controller.agentic_event_bus import list_sessions as _list_sessions
+
+    return {
+        "status": "online",
+        "sessions": _list_sessions(limit=int(limit or 20)),
+        "fake_success": False,
+        "secrets_returned": False,
+    }
+
+
+@app.get("/api/ouroboros/agentic/sessions/{session_id}")
+async def ouroboros_agentic_session_detail(session_id: str):
+    from controller.agentic_event_bus import get_session as _get_session
+
+    record = _get_session(session_id)
+    if record is None:
+        return {"status": "not_found", "session_id": session_id, "fake_success": False}
+    return {
+        "status": "online",
+        "session": record,
+        "fake_success": False,
+        "secrets_returned": False,
+    }
+
+
+@app.get("/api/ouroboros/agentic/sessions/{session_id}/events")
+async def ouroboros_agentic_session_events(
+    session_id: str,
+    since_sequence: int = 0,
+    limit: int = 200,
+    compact: bool = False,
+):
+    from controller.agentic_event_bus import (
+        get_session as _get_session,
+        list_events as _list_events,
+    )
+
+    if _get_session(session_id) is None:
+        return {"status": "not_found", "session_id": session_id, "events": [], "fake_success": False}
+    return {
+        "status": "online",
+        "session_id": session_id,
+        "events": _list_events(
+            session_id,
+            since_sequence=int(since_sequence or 0),
+            limit=int(limit or 200),
+            compact=bool(compact),
+        ),
+        "fake_success": False,
+        "secrets_returned": False,
+    }
+
+
+class AgenticSessionCancelRequest(BaseModel):
+    session_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@app.post("/api/ouroboros/agentic/sessions/{session_id}/cancel")
+async def ouroboros_agentic_session_cancel(session_id: str, req: AgenticSessionCancelRequest | None = None):
+    from controller.agentic_event_bus import request_cancel as _request_cancel
+
+    requested = _request_cancel(session_id)
+    return {
+        "status": "requested" if requested else "ignored",
+        "session_id": session_id,
+        "reason": (getattr(req, "reason", None) or "user_cancel") if req else "user_cancel",
+        "fake_success": False,
+    }
+
+
+@app.get("/api/ouroboros/agentic/sessions/{session_id}/diff")
+async def ouroboros_agentic_session_diff(session_id: str, path: str = ""):
+    from controller.agentic_checkpoints import diff_for_path
+
+    if not path.strip():
+        return {"status": "missing_path", "session_id": session_id, "fake_success": False}
+    return {
+        "status": "online",
+        "session_id": session_id,
+        "diff": diff_for_path(path.strip()),
+        "fake_success": False,
+        "secrets_returned": False,
+    }
+
+
+@app.get("/api/ouroboros/agentic/sessions/{session_id}/files")
+async def ouroboros_agentic_session_files(session_id: str):
+    from controller.agentic_file_context import list_files
+
+    return {
+        "status": "online",
+        "session_id": session_id,
+        "files": list_files(session_id),
+        "fake_success": False,
+        "secrets_returned": False,
+    }
+
+
+@app.get("/api/ouroboros/agentic/policy/commands")
+async def ouroboros_agentic_policy_commands():
+    from controller.agentic_command_policy import policy_snapshot
+
+    return {
+        "status": "online",
+        "policy": policy_snapshot(),
+        "fake_success": False,
+        "secrets_returned": False,
+    }
+
+
+class AgenticCommandPolicyRequest(BaseModel):
+    command: str
+    allow_patterns: Optional[List[str]] = None
+    deny_patterns: Optional[List[str]] = None
+
+
+@app.post("/api/ouroboros/agentic/policy/commands/evaluate")
+async def ouroboros_agentic_policy_evaluate(req: AgenticCommandPolicyRequest):
+    from controller.agentic_command_policy import evaluate_command, explain_verdict
+
+    verdict = evaluate_command(
+        req.command,
+        allow_patterns=req.allow_patterns,
+        deny_patterns=req.deny_patterns,
+    )
+    return {
+        "status": "online",
+        "verdict": verdict,
+        "explanation": explain_verdict(verdict),
+        "fake_success": False,
+        "secrets_returned": False,
+    }
+
 
 @app.get("/api/ouroboros/runtime/doctor")
 async def ouroboros_runtime_doctor(
@@ -2903,7 +3044,10 @@ def _copy_cockpit_request(req: CockpitChatRequest, update: dict[str, Any]) -> Co
     return req.copy(update=update)
 
 
-def _rebuild_chat_context(req: CockpitChatRequest, provider: str, model: str) -> dict[str, Any]:
+_COMPANION_LOOKUP_TIMEOUT_SECONDS = 5.0
+
+
+async def _rebuild_chat_context(req: CockpitChatRequest, provider: str, model: str) -> dict[str, Any]:
     context = build_chat_context(
         prompt=req.prompt,
         provider=provider,
@@ -2913,7 +3057,7 @@ def _rebuild_chat_context(req: CockpitChatRequest, provider: str, model: str) ->
         conversation_id=req.conversation_id,
     )
     if provider != "ouroboros":
-        companion = _cockpit_companion_lookup(req.prompt)
+        companion = await _bounded_companion_lookup(req.prompt)
         if companion:
             context["subliminal_lookup"] = companion.get("public") or {}
             context["subliminal_foam"] = companion.get("foam") or {}
@@ -2921,6 +3065,51 @@ def _rebuild_chat_context(req: CockpitChatRequest, provider: str, model: str) ->
             self_context["companion_lookup"] = companion.get("public") or {}
             context["self_context"] = self_context
     return context
+
+
+async def _bounded_companion_lookup(prompt: object) -> dict[str, Any]:
+    """Run the subliminal lookup off the event loop with a hard timeout.
+
+    The subliminal feed touches Chroma synchronously; without this wrapper a
+    slow or stuck Chroma call freezes the whole uvicorn event loop because
+    `_cockpit_chat_payload` is `async`.
+    """
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_cockpit_companion_lookup, prompt),
+            timeout=_COMPANION_LOOKUP_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "public": {
+                "status": "timeout",
+                "route": "subliminal_quantum_foam",
+                "source": "none",
+                "reason": f"Subliminal companion lookup timed out after {_COMPANION_LOOKUP_TIMEOUT_SECONDS}s.",
+                "field_injected": False,
+                "standard_llm_context": False,
+                "response_context_injected": False,
+                "fake_success": False,
+            },
+            "foam": {},
+            "fake_success": False,
+        }
+    except Exception as exc:
+        return {
+            "public": {
+                "status": "error",
+                "route": "subliminal_quantum_foam",
+                "source": "none",
+                "reason": str(exc)[:240],
+                "field_injected": False,
+                "standard_llm_context": False,
+                "response_context_injected": False,
+                "fake_success": False,
+            },
+            "foam": {},
+            "fake_success": False,
+        }
 
 
 def _cockpit_companion_lookup(prompt: object) -> dict[str, Any]:
@@ -3456,7 +3645,7 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
     tools = _requested_tool_payload(req, provider)
     timeout_seconds = _cockpit_chat_timeout_seconds()
     slash_timeout_seconds = _cockpit_slash_dispatch_timeout_seconds()
-    chat_context = _rebuild_chat_context(req, provider, model)
+    chat_context = await _rebuild_chat_context(req, provider, model)
     if provider == "ouroboros":
         requested_model = str(req.model or "").strip()
         invalid_requested_model = bool(requested_model) and requested_model not in OUROBOROS_RUNTIME_MODELS
@@ -3489,7 +3678,7 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
             requested_provider, provider = _normalize_cockpit_provider(req.provider)
             model = _default_cockpit_model(provider, req.model)
             tools = _requested_tool_payload(req, provider)
-            chat_context = _rebuild_chat_context(req, provider, model)
+            chat_context = await _rebuild_chat_context(req, provider, model)
             chat_context["approval_resume"] = {
                 "status": "resumed",
                 "conversation_id": pending.get("conversation_id"),
@@ -3641,6 +3830,9 @@ async def _cockpit_chat_payload(req: CockpitChatRequest) -> dict[str, Any]:
                     history=chat_context.get("history") or [],
                     max_steps=8,
                     planner=planner,
+                    session_id=getattr(req, "session_id", None) or (req.conversation_id or None),
+                    plan_mode=getattr(req, "plan_mode", None),
+                    conversation_id=str(req.conversation_id or ""),
                 ),
                 timeout=timeout_seconds,
             )
@@ -4145,11 +4337,34 @@ def _with_cockpit_self_context(
     return result
 
 
-def _living_chat_echo() -> dict[str, Any]:
-    try:
-        from ouroboros_esoteric.ouroboros_consciousness_loop import living_status
+_LIVING_ECHO_TIMEOUT_SECONDS = 3.0
 
-        status = living_status(limit=8)
+
+def _living_chat_echo() -> dict[str, Any]:
+    """Bounded read of the living consciousness loop status.
+
+    The underlying `living_status` reads quantum_foam.status under a Lock that
+    can be held by a thread doing a slow Chroma call. Wrapping it in a thread
+    pool with a hard timeout guarantees the chat response cannot block the
+    FastAPI event loop indefinitely.
+    """
+
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_living_chat_echo_inner)
+            status = future.result(timeout=_LIVING_ECHO_TIMEOUT_SECONDS)
+    except FuturesTimeout:
+        return {
+            "status": "timeout",
+            "running": False,
+            "current_thought": "",
+            "last_whisper": "",
+            "memory_entry_count": 0,
+            "reason": f"living_chat_echo timed out after {_LIVING_ECHO_TIMEOUT_SECONDS}s.",
+            "fake_success": False,
+        }
     except Exception:
         return {}
     thought = str(status.get("current_thought") or "").strip()
@@ -4164,6 +4379,15 @@ def _living_chat_echo() -> dict[str, Any]:
         "memory_entry_count": (status.get("memory") or {}).get("entry_count", 0),
         "fake_success": False,
     }
+
+
+def _living_chat_echo_inner() -> dict[str, Any]:
+    from ouroboros_esoteric.ouroboros_consciousness_loop import living_status
+
+    try:
+        return living_status(limit=8)
+    except Exception:
+        return {}
 
 
 def _raw_model_names() -> list[str]:

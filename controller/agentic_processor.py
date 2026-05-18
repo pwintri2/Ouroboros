@@ -7,13 +7,46 @@ import multiprocessing
 import os
 import re
 import time
-import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from queue import Empty
 from typing import Any
 
 from controller.agent_tools import REGISTERED_TOOLS, agent_tool_schemas
+from controller.agentic_event_bus import (
+    append_event as _bus_append_event,
+    consume_cancellation as _bus_consume_cancellation,
+    is_cancelled as _bus_is_cancelled,
+    register_session as _bus_register_session,
+    update_session as _bus_update_session,
+)
+from controller.agentic_loop_guard import (
+    evaluate_step as _loop_guard_evaluate,
+    reset_session as _loop_guard_reset_session,
+)
+from controller.agentic_session_state import (
+    EVENT_LOOP_BLOCKED as _EVENT_LOOP_BLOCKED,
+    EVENT_LOOP_WARNING as _EVENT_LOOP_WARNING,
+    EVENT_MEMORY_WRITE as _EVENT_MEMORY_WRITE,
+    EVENT_PLAN_BUILT as _EVENT_PLAN_BUILT,
+    EVENT_SESSION_CANCELLED as _EVENT_SESSION_CANCELLED,
+    EVENT_SESSION_COMPLETED as _EVENT_SESSION_COMPLETED,
+    EVENT_SESSION_FAILED as _EVENT_SESSION_FAILED,
+    EVENT_SESSION_STARTED as _EVENT_SESSION_STARTED,
+    EVENT_TOOL_AWAITING_APPROVAL as _EVENT_TOOL_AWAITING_APPROVAL,
+    EVENT_TOOL_BLOCKED as _EVENT_TOOL_BLOCKED,
+    EVENT_TOOL_COMPLETED as _EVENT_TOOL_COMPLETED,
+    EVENT_TOOL_FAILED as _EVENT_TOOL_FAILED,
+    EVENT_TOOL_PLANNED as _EVENT_TOOL_PLANNED,
+    EVENT_TOOL_RUNNING as _EVENT_TOOL_RUNNING,
+    EVENT_TOOL_VALIDATED as _EVENT_TOOL_VALIDATED,
+    PLAN_MODE_ACT as _PLAN_MODE_ACT,
+    PLAN_MODE_PLAN as _PLAN_MODE_PLAN,
+    SESSION_STATUS_CANCELLED as _SESSION_STATUS_CANCELLED,
+    make_session as _make_session,
+    merge_completion_into_session as _merge_completion_into_session,
+    normalize_session_id as _normalize_session_id,
+)
 from controller.agentic_strength import build_agentic_strength_contract
 from controller.agentic_intent import classify_agentic_intent
 from controller.ooda_hippocampus import record_ooda_event
@@ -199,12 +232,18 @@ class AgenticProcessor:
         provider: str | None = None,
         system_prompt: str | None = None,
         history: Sequence[Mapping[str, Any]] | None = None,
+        session_id: str | None = None,
+        plan_mode: str | None = None,
+        conversation_id: str = "",
     ) -> dict[str, Any]:
         started = time.time()
         clean_goal = " ".join(str(goal or "").replace("\x00", " ").split())
-        session_id = f"agentic_{uuid.uuid4()}"
+        session_id = _normalize_session_id(session_id)
+        plan_mode_value = (str(plan_mode or _PLAN_MODE_ACT)).lower().strip()
+        if plan_mode_value not in {_PLAN_MODE_ACT, _PLAN_MODE_PLAN}:
+            plan_mode_value = _PLAN_MODE_ACT
         if not clean_goal:
-            return {"status": "blocked", "route": "agentic_processor", "reason": "Goal ontbreekt.", "fake_success": False}
+            return {"status": "blocked", "route": "agentic_processor", "reason": "Goal ontbreekt.", "fake_success": False, "session_id": session_id, "plan_mode": plan_mode_value}
 
         tool_catalog = self.discover_tools(provider=provider or self.provider)
         ziel_policy = load_ziel_policy()
@@ -218,6 +257,8 @@ class AgenticProcessor:
             "status": "running",
             "route": "agentic_processor",
             "goal": clean_goal,
+            "plan_mode": plan_mode_value,
+            "conversation_id": str(conversation_id or ""),
             "provider": provider or self.provider,
             "model": model or self.model,
             "approval_required": False,
@@ -231,6 +272,30 @@ class AgenticProcessor:
             "steps": [],
             "fake_success": False,
         }
+        _loop_guard_reset_session(session_id)
+        try:
+            session_record = _make_session(
+                session_id=session_id,
+                goal=clean_goal,
+                plan_mode=plan_mode_value,
+                provider=str(provider or self.provider or ""),
+                model=str(model or self.model or ""),
+                conversation_id=str(conversation_id or ""),
+            )
+            _bus_register_session(session_record)
+            _bus_append_event(
+                session_id,
+                event_type=_EVENT_SESSION_STARTED,
+                payload={
+                    "goal": clean_goal,
+                    "plan_mode": plan_mode_value,
+                    "provider": str(provider or self.provider or ""),
+                    "model": str(model or self.model or ""),
+                    "tool_catalog_count": len(tool_catalog["schemas"]),
+                },
+            )
+        except Exception:
+            pass
         self._record_ooda_phase(
             phase="observe",
             session_id=session_id,
@@ -261,6 +326,32 @@ class AgenticProcessor:
             steps = plan_payload["steps"]
             state["plan"] = steps
             state["planner"] = plan_payload.get("planner", {})
+            try:
+                _bus_append_event(
+                    session_id,
+                    event_type=_EVENT_PLAN_BUILT,
+                    payload={
+                        "planner_source": str((state.get("planner") or {}).get("source") or ""),
+                        "guardrails_applied": list((state.get("planner") or {}).get("guardrails_applied") or []),
+                        "step_count": len(steps),
+                        "tools": [str((step or {}).get("tool") or "") for step in steps],
+                    },
+                )
+                for index, step in enumerate(steps, start=1):
+                    tool_name = str((step or {}).get("tool") or "")
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_TOOL_PLANNED,
+                        tool=tool_name,
+                        payload={
+                            "index": index,
+                            "tool": tool_name,
+                            "args": _safe_args(dict((step or {}).get("args") or {})),
+                            "reason": str((step or {}).get("reason") or ""),
+                        },
+                    )
+            except Exception:
+                pass
             self._record_ooda_phase(
                 phase="decide",
                 session_id=session_id,
@@ -269,8 +360,15 @@ class AgenticProcessor:
                 approval=approval,
                 state=state,
             )
-            execution = self.execute_plan(steps, approval=approval, state=state)
-            state.update(execution)
+            if plan_mode_value == _PLAN_MODE_PLAN:
+                state["status"] = "planned"
+                state["reason"] = "Plan mode: alleen plannen, niets uitgevoerd."
+                state["step_count"] = 0
+                state["completed"] = False
+                execution = {"status": "planned", "reason": state["reason"], "step_count": 0, "completed": False}
+            else:
+                execution = self.execute_plan(steps, approval=approval, state=state)
+                state.update(execution)
             self._record_ooda_phase(
                 phase="act",
                 session_id=session_id,
@@ -312,6 +410,62 @@ class AgenticProcessor:
             state["memory_status"] = save_agentic_session(state)
             state["provenance"] = _build_provenance(state)
             state["agentic_strength"] = _build_agentic_strength(state, max_steps=self.max_steps)
+            try:
+                memory_status = state.get("memory_status") if isinstance(state.get("memory_status"), Mapping) else {}
+                _bus_append_event(
+                    session_id,
+                    event_type=_EVENT_MEMORY_WRITE,
+                    payload={
+                        "status": memory_status.get("status"),
+                        "stored": memory_status.get("stored"),
+                        "collection": memory_status.get("collection"),
+                        "item_id": memory_status.get("item_id"),
+                        "fallback_path": memory_status.get("fallback_path"),
+                        "persist_dir": memory_status.get("persist_dir"),
+                        "primary_error": memory_status.get("primary_error"),
+                    },
+                )
+                final_status = str(state.get("status") or "unknown").lower()
+                if final_status in COMPLETION_STATUSES or final_status == "planned":
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_SESSION_COMPLETED,
+                        status=str(state.get("status") or "completed"),
+                        duration_seconds=state.get("duration_seconds"),
+                        payload={
+                            "duration_seconds": state.get("duration_seconds"),
+                            "step_count": state.get("step_count"),
+                            "plan_mode": state.get("plan_mode"),
+                            "agentic_strength": (state.get("agentic_strength") or {}).get("percent"),
+                        },
+                    )
+                elif final_status in {"blocked", "approval_required", "configuration_required", "rejected"}:
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_TOOL_AWAITING_APPROVAL if state.get("approval_required") else _EVENT_SESSION_FAILED,
+                        status=str(state.get("status") or "blocked"),
+                        duration_seconds=state.get("duration_seconds"),
+                        approval_required=bool(state.get("approval_required")),
+                        payload={"reason": state.get("reason"), "status": state.get("status")},
+                    )
+                elif final_status == _SESSION_STATUS_CANCELLED:
+                    pass
+                else:
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_SESSION_FAILED,
+                        status=str(state.get("status") or "error"),
+                        duration_seconds=state.get("duration_seconds"),
+                        payload={"reason": state.get("reason"), "status": state.get("status")},
+                    )
+                _bus_update_session(
+                    session_id,
+                    status=str(state.get("status") or "unknown"),
+                    approval_required=bool(state.get("approval_required")),
+                    duration_seconds=state.get("duration_seconds"),
+                )
+            except Exception:
+                pass
             self._record_ooda_phase(
                 phase="reflect",
                 session_id=session_id,
@@ -373,17 +527,80 @@ class AgenticProcessor:
         results: list[dict[str, Any]] = []
         status = "success"
         reason = ""
+        session_id = str(state.get("session_id") or "")
         for index, step in enumerate(steps[: self.max_steps], start=1):
+            if session_id and _bus_consume_cancellation(session_id):
+                status = _SESSION_STATUS_CANCELLED
+                reason = "Sessie geannuleerd door gebruiker voordat stap kon starten."
+                try:
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_SESSION_CANCELLED,
+                        payload={"index": index, "reason": reason},
+                    )
+                except Exception:
+                    pass
+                break
             tool = str(step.get("tool") or "").strip()
             args = self._resolve_args(dict(step.get("args") or {}), results, approval=approval)
+            loop_signal = _loop_guard_evaluate(session_id, tool=tool, args=args) if session_id else {"warning": False, "blocked": False, "count": 0}
+            if loop_signal.get("blocked"):
+                status = "blocked"
+                reason = loop_signal.get("reason") or f"Loop guard blokkeerde herhaalde {tool}-aanroep."
+                step_result = {
+                    "index": index,
+                    "tool": tool or "unknown",
+                    "args": _safe_args(args),
+                    "validated": {"status": "blocked", "reason": reason, "fake_success": False},
+                    "status": "blocked",
+                    "reason": reason,
+                    "result": {},
+                    "loop_signal": loop_signal,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                results.append(step_result)
+                try:
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_LOOP_BLOCKED,
+                        tool=tool,
+                        payload={"index": index, "loop": loop_signal},
+                    )
+                except Exception:
+                    pass
+                state["loop_blocked"] = True
+                break
+            if loop_signal.get("warning"):
+                state["loop_warning"] = True
+                try:
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_LOOP_WARNING,
+                        tool=tool,
+                        payload={"index": index, "loop": loop_signal},
+                    )
+                except Exception:
+                    pass
             validation = self._validate_step(tool, args, approval=approval)
             step_result = {
                 "index": index,
                 "tool": tool or "unknown",
                 "args": _safe_args(args),
                 "validated": validation,
+                "loop_signal": loop_signal,
                 "started_at": datetime.now(timezone.utc).isoformat(),
             }
+            try:
+                _bus_append_event(
+                    session_id,
+                    event_type=_EVENT_TOOL_VALIDATED,
+                    tool=tool,
+                    status=validation["status"],
+                    payload={"index": index, "validated": validation, "args": _safe_args(args)},
+                )
+            except Exception:
+                pass
             if validation["status"] != "accepted":
                 foam_event = self._foam_event(
                     str(state.get("goal") or ""),
@@ -398,9 +615,41 @@ class AgenticProcessor:
                 reason = validation["reason"]
                 if validation.get("approval_required"):
                     state["approval_required"] = True
+                try:
+                    if validation.get("approval_required"):
+                        _bus_append_event(
+                            session_id,
+                            event_type=_EVENT_TOOL_AWAITING_APPROVAL,
+                            tool=tool,
+                            status=validation["status"],
+                            approval_required=True,
+                            payload={"index": index, "reason": validation["reason"]},
+                        )
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_TOOL_BLOCKED,
+                        tool=tool,
+                        status=validation["status"],
+                        approval_required=bool(validation.get("approval_required")),
+                        payload={"index": index, "reason": validation["reason"]},
+                    )
+                except Exception:
+                    pass
                 break
+            tool_started_monotonic = time.monotonic()
+            try:
+                _bus_append_event(
+                    session_id,
+                    event_type=_EVENT_TOOL_RUNNING,
+                    tool=tool,
+                    status="running",
+                    payload={"index": index, "args": _safe_args(args)},
+                )
+            except Exception:
+                pass
             raw = self._dispatch_tool(tool, args)
             tool_status = str(raw.get("status") or "unknown")
+            tool_duration = round(time.monotonic() - tool_started_monotonic, 3)
             compact = _compact_result(raw)
             foam_event = self._foam_event(
                 str(state.get("goal") or ""),
@@ -412,6 +661,7 @@ class AgenticProcessor:
                 {
                     "status": tool_status,
                     "result": compact,
+                    "duration_seconds": tool_duration,
                     "quantum_foam": foam_event,
                     "pocket": self._pocket_context(
                         f"tool_result:{tool}",
@@ -427,6 +677,65 @@ class AgenticProcessor:
                 }
             )
             results.append(step_result)
+            try:
+                if tool_status in BLOCKING_STATUSES:
+                    blocked_event = _EVENT_TOOL_BLOCKED
+                    approval_required_flag = tool_status == "blocked" or raw.get("approval_status") == "pending_philip_akkoord"
+                    if approval_required_flag:
+                        _bus_append_event(
+                            session_id,
+                            event_type=_EVENT_TOOL_AWAITING_APPROVAL,
+                            tool=tool,
+                            status=tool_status,
+                            approval_required=True,
+                            payload={
+                                "index": index,
+                                "reason": raw.get("reason") or raw.get("next_action"),
+                                "approval_status": raw.get("approval_status"),
+                            },
+                        )
+                    _bus_append_event(
+                        session_id,
+                        event_type=blocked_event,
+                        tool=tool,
+                        status=tool_status,
+                        approval_required=bool(approval_required_flag),
+                        duration_seconds=tool_duration,
+                        payload={
+                            "index": index,
+                            "result_status": tool_status,
+                            "reason": raw.get("reason") or raw.get("stderr"),
+                            "approval_status": raw.get("approval_status"),
+                        },
+                    )
+                elif tool_status in COMPLETION_STATUSES:
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_TOOL_COMPLETED,
+                        tool=tool,
+                        status=tool_status,
+                        duration_seconds=tool_duration,
+                        payload={
+                            "index": index,
+                            "result_status": tool_status,
+                            "summary": compact,
+                        },
+                    )
+                else:
+                    _bus_append_event(
+                        session_id,
+                        event_type=_EVENT_TOOL_FAILED,
+                        tool=tool,
+                        status=tool_status,
+                        duration_seconds=tool_duration,
+                        payload={
+                            "index": index,
+                            "result_status": tool_status,
+                            "reason": raw.get("reason") or raw.get("stderr") or raw.get("error"),
+                        },
+                    )
+            except Exception:
+                pass
             if tool_status in BLOCKING_STATUSES:
                 status = tool_status
                 reason = raw.get("reason") or raw.get("stderr") or raw.get("next_action") or f"{tool} blokkeerde."
