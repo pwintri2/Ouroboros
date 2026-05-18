@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🦅 Ouroboros
+# ⭕ Ouroboros
 
 ### *Jouw privé AI-brein. Volledig lokaal. Volledig van jou.*
 
