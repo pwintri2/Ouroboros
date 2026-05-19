@@ -358,6 +358,37 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertIn("cline_execute", blocked["forbidden_tools"])
         self.assertIn("safe_shell", blocked["forbidden_tools"])
 
+    def test_meeting_with_chair_is_chair_led_and_conversational(self):
+        for persona_id, name, role in (
+            ("de-voorzitter", "De voorzitter", "Meeting facilitator"),
+            ("de-ontwerper", "De ontwerper", "Designer"),
+            ("de-criticus", "De criticus", "Risk reviewer"),
+        ):
+            self.service.personas.upsert(
+                self.module.PersonaRequest(
+                    id=persona_id,
+                    name=name,
+                    role=role,
+                    model_settings={"provider": "ollama", "name": "ouroboros:latest"},
+                )
+            )
+
+        recorded = self.service.create_meeting(
+            self.module.MeetingRequest(
+                topic="Maak het meetingdeel leesbaarder",
+                participants=["de-ontwerper", "de-criticus", "de-voorzitter"],
+            )
+        )
+
+        self.assertEqual(recorded["status"], "recorded")
+        self.assertEqual(recorded["participants"][0]["id"], "de-voorzitter")
+        phases = [round_item["phase"] for round_item in recorded["rounds"]]
+        self.assertEqual(phases, ["opening", "input", "input", "chair-bridge", "reply", "reply", "closing"])
+        self.assertEqual(len(self.fake_ollama.calls), 8)
+        self.assertIn("Open als voorzitter", self.fake_ollama.calls[0]["user_input"])
+        self.assertIn("Schrijf alsof je hardop aan tafel spreekt", self.fake_ollama.calls[0]["system_prompt"])
+        self.assertTrue(recorded["rounds"][0]["prompt_context"]["chair_led"])
+
     def test_meeting_snapshot_can_be_saved_and_listed_without_jsonl(self):
         saved = self.service.meetings.save_snapshot(
             "manual-review",

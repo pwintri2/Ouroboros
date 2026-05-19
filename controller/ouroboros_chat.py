@@ -769,82 +769,84 @@ class MeetingRunner:
         model: str,
         meeting_id: str,
     ) -> dict[str, Any]:
+        personas = self._ordered_personas(personas)
         participants = [self._public_persona(persona) for persona in personas]
+        chair = self._chair_persona(personas)
         transcript: list[dict[str, Any]] = []
         events: list[dict[str, Any]] = []
 
-        for round_number, phase, instruction in (
-            (
-                1,
-                "brainstorm",
-                "Geef je eerste analyse van het onderwerp vanuit jouw rol. Noem kansen, risico's en een concrete vervolgstap.",
-            ),
-            (
-                2,
-                "discussion",
-                "Reageer op de eerdere bijdragen. Verdiep, nuanceer of geef een tegenargument vanuit jouw expertise.",
-            ),
-        ):
-            for persona in personas:
-                participant = self._public_persona(persona)
-                model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
-                turn_provider = str(model_settings.get("provider") or provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
-                turn_model = str(model_settings.get("name") or persona.get("model") or model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-                system_prompt = self._social_system_prompt(persona, personas, topic)
-                user_prompt = self._turn_prompt(
+        if chair:
+            agenda = self._chair_led_agenda(chair, personas)
+            for round_number, phase, persona, instruction in agenda:
+                event = self._run_turn(
                     topic=topic,
+                    personas=personas,
+                    participants=participants,
+                    persona=persona,
+                    provider=provider,
+                    model=model,
+                    meeting_id=meeting_id,
                     round_number=round_number,
                     phase=phase,
                     instruction=instruction,
                     transcript=transcript,
+                    max_words=95 if self._is_chair_persona(persona) else 80,
                 )
-                fallback = self._fallback_turn(persona, topic, phase, transcript)
-                response = self._call_model(
-                    prompt=user_prompt,
-                    system_prompt=system_prompt,
-                    provider=turn_provider,
-                    model=turn_model,
-                    fallback=fallback,
-                )
-                event = {
-                    "type": "participant_turn",
-                    "meeting_id": meeting_id,
-                    "timestamp": _now_iso(),
-                    "round": round_number,
-                    "phase": phase,
-                    "participant": participant,
-                    "provider": turn_provider,
-                    "model": turn_model,
-                    "content": _clip_text(response["content"], 4000),
-                    "ok": response["ok"],
-                    "error": response["error"],
-                    "prompt_context": {
-                        "social_awareness": True,
-                        "other_participants": [
-                            {"id": item.get("id"), "name": item.get("name"), "role": item.get("role")}
-                            for item in participants
-                            if item.get("id") != participant.get("id")
-                        ],
-                        "transcript_turns_supplied": len(transcript),
-                    },
-                }
                 events.append(event)
                 transcript.append(
                     {
                         "round": round_number,
                         "phase": phase,
-                        "participant": participant,
+                        "participant": event["participant"],
                         "content": event["content"],
                     }
                 )
+        else:
+            for round_number, phase, instruction in (
+                (
+                    1,
+                    "brainstorm",
+                    "Geef je eerste reactie als spreekbeurt in het gesprek: maximaal 80 woorden, één concreet punt, één risico en één vraag of vervolgstap.",
+                ),
+                (
+                    2,
+                    "discussion",
+                    "Reageer op de vorige spreker alsof je aan tafel zit: maximaal 80 woorden, bouw voort of nuanceer, en eindig met één concrete vervolgstap.",
+                ),
+            ):
+                for persona in personas:
+                    event = self._run_turn(
+                        topic=topic,
+                        personas=personas,
+                        participants=participants,
+                        persona=persona,
+                        provider=provider,
+                        model=model,
+                        meeting_id=meeting_id,
+                        round_number=round_number,
+                        phase=phase,
+                        instruction=instruction,
+                        transcript=transcript,
+                        max_words=80,
+                    )
+                    events.append(event)
+                    transcript.append(
+                        {
+                            "round": round_number,
+                            "phase": phase,
+                            "participant": event["participant"],
+                            "content": event["content"],
+                        }
+                    )
 
         summary = self._summarize(topic=topic, transcript=transcript, model=model, provider=provider)
+        summary_content = self._compact_conversation_text(summary["content"], max_words=180)
         summary_event = {
             "type": "meeting_summary",
             "meeting_id": meeting_id,
             "timestamp": _now_iso(),
-            "content": _clip_text(summary["content"], 5000),
-            "summary": _clip_text(summary["content"], 5000),
+            "content": _clip_text(summary_content, 3000),
+            "summary": _clip_text(summary_content, 3000),
             "provider": provider,
             "model": model,
             "ok": summary["ok"],
@@ -863,6 +865,150 @@ class MeetingRunner:
             "rounds": [event for event in events if event.get("type") == "participant_turn"],
             "summary": summary_event["summary"],
             "events": events,
+        }
+
+    def _ordered_personas(self, personas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [persona for _, persona in sorted(enumerate(personas), key=lambda item: (0 if self._is_chair_persona(item[1]) else 1, item[0]))]
+
+    def _chair_persona(self, personas: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for persona in personas:
+            if self._is_chair_persona(persona):
+                return persona
+        return None
+
+    def _is_chair_persona(self, persona: dict[str, Any]) -> bool:
+        persona_id = str(persona.get("id") or "").strip().lower()
+        name = str(persona.get("name") or "").strip().lower()
+        role = str(persona.get("role") or "").strip().lower()
+        return persona_id == "de-voorzitter" or "voorzitter" in name or "facilitator" in role
+
+    def _chair_led_agenda(
+        self,
+        chair: dict[str, Any],
+        personas: list[dict[str, Any]],
+    ) -> list[tuple[int, str, dict[str, Any], str]]:
+        contributors = [persona for persona in personas if persona is not chair]
+        first_name = contributors[0].get("name") if contributors else "de tafel"
+        agenda: list[tuple[int, str, dict[str, Any], str]] = [
+            (
+                1,
+                "opening",
+                chair,
+                (
+                    "Open als voorzitter. Noem in gewone spreektaal het doel van dit overleg, de volgorde, "
+                    f"en geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+                ),
+            )
+        ]
+        for persona in contributors:
+            agenda.append(
+                (
+                    1,
+                    "input",
+                    persona,
+                    (
+                        "Geef je bijdrage aan de voorzitter en de andere deelnemers. Spreek natuurlijk, maximaal 75 woorden. "
+                        "Noem één voorstel en één aandachtspunt. Geen rapportstijl."
+                    ),
+                )
+            )
+        if contributors:
+            agenda.append(
+                (
+                    1,
+                    "chair-bridge",
+                    chair,
+                    (
+                        "Vat als voorzitter in maximaal 70 woorden samen wat je hoort. Benoem de spanning of keuze die nu op tafel ligt "
+                        "en stel één gerichte vraag voor de tweede ronde."
+                    ),
+                )
+            )
+            for persona in contributors:
+                agenda.append(
+                    (
+                        2,
+                        "reply",
+                        persona,
+                        (
+                            "Reageer kort op de vraag of samenvatting van de voorzitter. Maximaal 70 woorden. "
+                            "Maak je antwoord concreet en eindig met één besluitbaar punt."
+                        ),
+                    )
+                )
+        agenda.append(
+            (
+                2,
+                "closing",
+                chair,
+                (
+                    "Sluit als voorzitter af in maximaal 90 woorden. Geef gewone spreektaal met drie korte regels: "
+                    "Besluit, Open vraag, Volgende stap. Wijs geen acties toe buiten de approval-flow."
+                ),
+            )
+        )
+        return agenda
+
+    def _run_turn(
+        self,
+        *,
+        topic: str,
+        personas: list[dict[str, Any]],
+        participants: list[dict[str, Any]],
+        persona: dict[str, Any],
+        provider: str,
+        model: str,
+        meeting_id: str,
+        round_number: int,
+        phase: str,
+        instruction: str,
+        transcript: list[dict[str, Any]],
+        max_words: int,
+    ) -> dict[str, Any]:
+        participant = self._public_persona(persona)
+        model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
+        turn_provider = str(model_settings.get("provider") or provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+        turn_model = str(model_settings.get("name") or persona.get("model") or model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+        system_prompt = self._social_system_prompt(persona, personas, topic)
+        user_prompt = self._turn_prompt(
+            topic=topic,
+            round_number=round_number,
+            phase=phase,
+            instruction=instruction,
+            transcript=transcript,
+        )
+        fallback = self._fallback_turn(persona, topic, phase, transcript)
+        response = self._call_model(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            provider=turn_provider,
+            model=turn_model,
+            fallback=fallback,
+        )
+        content = self._compact_conversation_text(response["content"], max_words=max_words)
+        return {
+            "type": "participant_turn",
+            "meeting_id": meeting_id,
+            "timestamp": _now_iso(),
+            "round": round_number,
+            "phase": phase,
+            "participant": participant,
+            "provider": turn_provider,
+            "model": turn_model,
+            "content": _clip_text(content, 1800),
+            "ok": response["ok"],
+            "error": response["error"],
+            "prompt_context": {
+                "social_awareness": True,
+                "chair_led": any(self._is_chair_persona(item) for item in personas),
+                "other_participants": [
+                    {"id": item.get("id"), "name": item.get("name"), "role": item.get("role")}
+                    for item in participants
+                    if item.get("id") != participant.get("id")
+                ],
+                "transcript_turns_supplied": len(transcript),
+                "max_words_requested": max_words,
+            },
         }
 
     def _social_system_prompt(self, persona: dict[str, Any], personas: list[dict[str, Any]], topic: str) -> str:
@@ -886,8 +1032,9 @@ class MeetingRunner:
                 f"Jouw Taal: {persona.get('language') or 'nl'}",
                 self._knowledge_context(persona),
                 (
-                    "Instructie: Reageer op het onderwerp en de input van anderen vanuit jouw specifieke expertise. "
-                    "Gebruik korte kopjes, bullets en concrete beslispunten. "
+                    "Instructie: Schrijf alsof je hardop aan tafel spreekt, niet als rapport. "
+                    "Houd het kort: 3 tot 5 zinnen, maximaal één kort lijstje als dat echt helpt. "
+                    "Help lichtere modellen door expliciet te kiezen voor één punt tegelijk. "
                     "Voer geen tools uit en claim geen externe acties."
                 ),
             ]
@@ -912,11 +1059,9 @@ class MeetingRunner:
                 "Volledige transcriptie tot nu toe:",
                 transcript_text or "Nog geen eerdere bijdragen.",
                 (
-                    "Antwoord kort, concreet en inspecteerbaar in deze structuur:\n"
-                    "Kernpunt: ...\n"
-                    "- Kans: ...\n"
-                    "- Risico: ...\n"
-                    "- Vervolgstap: ..."
+                    "Schrijf als een spreekbeurt in een gesprek. Geen lange inleiding, geen markdown-koppen. "
+                    "Gebruik maximaal 80 woorden, tenzij de voorzitter expliciet afsluit. "
+                    "Begin meteen met je punt en verwijs waar nuttig naar de vorige spreker."
                 ),
             ]
         )
@@ -928,8 +1073,8 @@ class MeetingRunner:
                 "Volledige vergaderingstranscriptie:",
                 self._transcript_text(transcript) or "Geen bijdragen.",
                 (
-                    "Maak een 'Consensus & Actiepunten' samenvatting. "
-                    "Gebruik deze koppen: Consensus, Risico's, Actiepunten, Agent follow-up prompt."
+                    "Sluit het overleg af als korte vergadernotulen. Gebruik gewone zinnen, geen lange paragrafen. "
+                    "Noem: wat is besloten, wat blijft open, en wat is de eerstvolgende stap."
                 ),
             ]
         )
@@ -938,12 +1083,31 @@ class MeetingRunner:
             prompt=prompt,
             system_prompt=(
                 "Je bent de neutrale synthese-laag van een Ouroboros Vergadering. "
-                "Vat alleen samen; voer geen tools, shell, browser of agents uit."
+                "Vat alleen kort samen in heldere spreektaal; voer geen tools, shell, browser of agents uit."
             ),
             provider=provider,
             model=model,
             fallback=fallback,
         )
+
+    def _compact_conversation_text(self, text: str, max_words: int = 90) -> str:
+        cleaned_lines = []
+        for raw_line in str(text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                if cleaned_lines and cleaned_lines[-1]:
+                    cleaned_lines.append("")
+                continue
+            line = re.sub(r"^\s{0,3}#{1,6}\s+", "", line)
+            line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+            line = re.sub(r"^\s*[-*]\s+", "- ", line)
+            cleaned_lines.append(line)
+        cleaned = "\n".join(cleaned_lines).strip()
+        words = cleaned.split()
+        if len(words) <= max_words:
+            return cleaned
+        clipped = " ".join(words[:max_words]).rstrip(" ,;:")
+        return clipped + "..."
 
     def _call_model(self, *, prompt: str, system_prompt: str, provider: str, model: str, fallback: str) -> dict[str, Any]:
         if self.llm_call is None:
@@ -984,18 +1148,37 @@ class MeetingRunner:
     ) -> str:
         name = persona.get("name") or persona.get("id") or "participant"
         role = persona.get("role") or "deelnemer"
+        if self._is_chair_persona(persona):
+            if phase == "opening":
+                return (
+                    f"Ik open dit overleg over '{_clip_text(topic, 180)}'. We houden het compact: eerst de kern van de tafel, "
+                    "daarna de belangrijkste spanning, en dan een besluitbare vervolgstap. Ik geef nu het woord aan de eerste deelnemer."
+                )
+            if phase == "chair-bridge":
+                return (
+                    "Ik hoor een gedeelde richting, maar ook nog een keuze die scherper moet. "
+                    "Laten we nu per persoon benoemen wat minimaal nodig is om dit verantwoord af te ronden."
+                )
+            if phase == "closing":
+                return (
+                    "Besluit: we werken verder in kleine, controleerbare stappen. "
+                    "Open vraag: wie is eigenaar van de eerste toets? "
+                    "Volgende stap: formuleer één approval-gated vervolgactie voordat er iets extern wordt uitgevoerd."
+                )
         if phase == "brainstorm":
             return (
-                f"Kernpunt: {name} ({role}) ziet '{_clip_text(topic, 240)}' als overlegcontext.\n"
-                "- Kans: maak de gewenste uitkomst expliciet.\n"
-                "- Risico: onduidelijke scope of te snelle tool-inzet.\n"
-                "- Vervolgstap: benoem risico's en houd vervolgacties approval-gated."
+                f"Vanuit mijn rol als {role} zou ik '{_clip_text(topic, 180)}' eerst kleiner maken. "
+                "De kans zit in een helder doel en een zichtbaar resultaat. Het risico is dat we te snel naar uitvoering springen. "
+                "Mijn vervolgstap: bepaal eerst wat we willen kunnen toetsen."
+            )
+        if phase in {"input", "reply"}:
+            return (
+                f"Ik sluit aan vanuit {role}. Mijn belangrijkste punt is om dit praktisch en toetsbaar te houden. "
+                "Ik zou nu één keuze vastleggen, één risico expliciet maken en pas daarna een vervolgstap formuleren."
             )
         return (
-            f"Kernpunt: {name} ({role}) bouwt voort op {len(transcript)} eerdere bijdrage(n).\n"
-            "- Kans: scherp de gezamenlijke richting verder aan.\n"
-            "- Risico: aannames blijven impliciet.\n"
-            "- Vervolgstap: verklein de scope, toets aannames en formuleer een concrete volgende stap zonder tools uit te voeren."
+            f"Ik bouw voort op {len(transcript)} eerdere bijdrage(n). De richting lijkt bruikbaar, maar de aannames moeten korter en scherper. "
+            "Mijn voorstel is om de scope te verkleinen en één concrete volgende stap zonder tool-uitvoering af te spreken."
         )
 
     def _fallback_summary(self, topic: str, transcript: list[dict[str, Any]]) -> str:
@@ -1006,10 +1189,10 @@ class MeetingRunner:
             if name and name not in names:
                 names.append(str(name))
         return (
-            "Consensus: behandel het onderwerp praktisch, auditable en zonder automatische externe acties.\n"
-            f"Risico's: scope creep, onduidelijke eigenaar, en tool-executie zonder {APPROVAL_PHRASE}.\n"
-            "Actiepunten: destilleer de follow-up, kies een agent expliciet, en gebruik de bestaande approval-flow.\n"
-            f"Agent follow-up prompt: /agents Werk de vervolgstappen uit voor '{_clip_text(topic, 220)}' "
+            "De tafel is het eens dat dit praktisch, controleerbaar en zonder automatische externe acties moet blijven. "
+            f"Het grootste risico is onduidelijke eigenaarschap of tool-uitvoering zonder {APPROVAL_PHRASE}. "
+            "De eerstvolgende stap is een kleine follow-up formuleren, expliciet een agent kiezen en de bestaande approval-flow gebruiken. "
+            f"Voorstel voor vervolgprompt: /agents Werk de vervolgstappen uit voor '{_clip_text(topic, 180)}' "
             f"op basis van de bijdragen van {', '.join(names) if names else 'de persona-deelnemers'}."
         )
 
