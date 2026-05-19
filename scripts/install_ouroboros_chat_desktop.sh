@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT="${WINTRIP_ROOT:-/home/pwintri2/WintripAI}"
+CHAT_DIR="${OUROBOROS_CHAT_DIR:-/home/pwintri2/ouroboros-chat}"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ENTRY="$DESKTOP_DIR/ouroboros-chat.desktop"
-ICON="$ROOT/ouroboros_cockpit/src-tauri/icons/icon.png"
+ICON="$CHAT_DIR/src-tauri/icons/icon.png"
 
 mkdir -p "$DESKTOP_DIR"
 
