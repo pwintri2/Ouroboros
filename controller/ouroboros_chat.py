@@ -887,6 +887,7 @@ class MeetingRunner:
                 self._knowledge_context(persona),
                 (
                     "Instructie: Reageer op het onderwerp en de input van anderen vanuit jouw specifieke expertise. "
+                    "Gebruik korte kopjes, bullets en concrete beslispunten. "
                     "Voer geen tools uit en claim geen externe acties."
                 ),
             ]
@@ -910,7 +911,13 @@ class MeetingRunner:
                 instruction,
                 "Volledige transcriptie tot nu toe:",
                 transcript_text or "Nog geen eerdere bijdragen.",
-                "Antwoord kort, concreet en inspecteerbaar.",
+                (
+                    "Antwoord kort, concreet en inspecteerbaar in deze structuur:\n"
+                    "Kernpunt: ...\n"
+                    "- Kans: ...\n"
+                    "- Risico: ...\n"
+                    "- Vervolgstap: ..."
+                ),
             ]
         )
 
@@ -979,12 +986,16 @@ class MeetingRunner:
         role = persona.get("role") or "deelnemer"
         if phase == "brainstorm":
             return (
-                f"{name} ({role}) ziet '{_clip_text(topic, 240)}' als overlegcontext. "
-                "Eerste stap: maak de gewenste uitkomst expliciet, benoem risico's en houd vervolgacties approval-gated."
+                f"Kernpunt: {name} ({role}) ziet '{_clip_text(topic, 240)}' als overlegcontext.\n"
+                "- Kans: maak de gewenste uitkomst expliciet.\n"
+                "- Risico: onduidelijke scope of te snelle tool-inzet.\n"
+                "- Vervolgstap: benoem risico's en houd vervolgacties approval-gated."
             )
         return (
-            f"{name} ({role}) bouwt voort op {len(transcript)} eerdere bijdrage(n): "
-            "verklein de scope, toets aannames en formuleer een concrete volgende stap zonder tools uit te voeren."
+            f"Kernpunt: {name} ({role}) bouwt voort op {len(transcript)} eerdere bijdrage(n).\n"
+            "- Kans: scherp de gezamenlijke richting verder aan.\n"
+            "- Risico: aannames blijven impliciet.\n"
+            "- Vervolgstap: verklein de scope, toets aannames en formuleer een concrete volgende stap zonder tools uit te voeren."
         )
 
     def _fallback_summary(self, topic: str, transcript: list[dict[str, Any]]) -> str:
