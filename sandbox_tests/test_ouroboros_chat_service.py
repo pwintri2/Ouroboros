@@ -328,6 +328,7 @@ class TestOuroborosChatService(unittest.TestCase):
             self.module.MeetingRequest(topic="Plan backend handoff", participants=["ouroboros", "critic"], approval="Akkoord")
         )
         self.assertEqual(recorded["status"], "recorded")
+        self.assertEqual(recorded["meeting_type"], "team")
         self.assertFalse(recorded["tool_policy"]["cline_execution"])
         self.assertFalse(recorded["tool_policy"]["shell"])
         self.assertFalse(recorded["tool_policy"]["browser"])
@@ -388,12 +389,109 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertIn("Open als voorzitter", self.fake_ollama.calls[0]["user_input"])
         self.assertIn("Schrijf alsof je hardop aan tafel spreekt", self.fake_ollama.calls[0]["system_prompt"])
         self.assertTrue(recorded["rounds"][0]["prompt_context"]["chair_led"])
+        self.assertEqual(recorded["rounds"][0]["prompt_context"]["meeting_type"], "team")
+
+    def test_meeting_chair_intervenes_when_personas_parrot_each_other(self):
+        personas = [
+            {"id": "de-voorzitter", "name": "De voorzitter", "role": "Meeting facilitator"},
+            {"id": "wintrip-engineer", "name": "Wintrip engineer", "role": "Engineer"},
+            {"id": "ouroboros-engineer", "name": "Ouroboros engineer", "role": "Engineer"},
+        ]
+        responses = iter(
+            [
+                "Ik open kort en geef eerst het woord aan Wintrip engineer.",
+                "We moeten de Wintrip en Ouroboros engineer route robuust maken met dezelfde API keys, dezelfde modelkeuze, dezelfde teststap en dezelfde voorzitterlijke controle.",
+                "We moeten de Wintrip en Ouroboros engineer route robuust maken met dezelfde API keys, dezelfde modelkeuze, dezelfde teststap en dezelfde voorzitterlijke controle.",
+                "Ik onderbreek: dit herhaalt elkaar. Geef nu een nieuw onderscheidend punt of een ander risico.",
+                "Ik hoor dezelfde kern en vraag om een nieuw bewijsstuk.",
+                "Mijn nieuwe punt is de acceptatietest.",
+                "Mijn nieuwe punt is de fallback bij modeluitval.",
+                "Besluit: we maken dit kleiner en toetsbaar.",
+                "Samenvatting: de voorzitter heeft herhaling afgekapt en een onderscheidende vervolgstap gevraagd.",
+            ]
+        )
+
+        def fake_llm(**_kwargs):
+            return {"ok": True, "content": next(responses), "error": ""}
+
+        payload = self.module.MeetingRunner(llm_call=fake_llm).run(
+            topic="Voorkom papegaaien",
+            personas=personas,
+            provider="ollama",
+            model="ouroboros:latest",
+            meeting_id="anti-parrot",
+        )
+
+        phases = [round_item["phase"] for round_item in payload["rounds"]]
+        self.assertIn("intervention", phases)
+        intervention = next(round_item for round_item in payload["rounds"] if round_item["phase"] == "intervention")
+        self.assertEqual(intervention["participant"]["id"], "de-voorzitter")
+        self.assertEqual(intervention["prompt_context"]["intervention_reason"], "anti_parroting")
+
+    def test_brainstorm_meeting_uses_deeper_brave_research_context(self):
+        for persona_id, name, role in (
+            ("de-voorzitter", "De voorzitter", "Meeting facilitator"),
+            ("de-ontwerper", "De ontwerper", "Designer"),
+            ("de-criticus", "Criticus", "Risk reviewer"),
+        ):
+            self.service.personas.upsert(
+                self.module.PersonaRequest(
+                    id=persona_id,
+                    name=name,
+                    role=role,
+                    tools={"web_search": True, "file_search": False},
+                    model_settings={"provider": "ollama", "name": "ouroboros:latest"},
+                )
+            )
+
+        brave_queries = []
+
+        def fake_brave(_persona, query):
+            brave_queries.append(query)
+            return [{"label": "Brave Search", "source": query, "snippet": f"Bronlaag voor {query}", "score": 5}]
+
+        with patch.object(self.service, "_brave_knowledge_for_persona", side_effect=fake_brave):
+            recorded = self.service.create_meeting(
+                self.module.MeetingRequest(
+                    topic="Onderzoek meeting UX",
+                    meeting_type="brainstorm",
+                    participants=["de-voorzitter", "de-ontwerper", "de-criticus"],
+                )
+            )
+
+        self.assertEqual(recorded["meeting_type"], "brainstorm")
+        phases = [round_item["phase"] for round_item in recorded["rounds"]]
+        self.assertIn("research", phases)
+        self.assertIn("research-synthesis", phases)
+        self.assertGreaterEqual(len(brave_queries), 9)
+        self.assertIn("technische lagen", " ".join(brave_queries))
+        self.assertIn("Bronlaag voor", self.fake_ollama.calls[0]["system_prompt"])
+
+    def test_development_team_creates_approval_gated_agent_prompt(self):
+        payload = self.service.development_team(
+            self.module.DevelopmentTeamRequest(
+                prompt="Maak de meeting runner robuuster en testbaar.",
+                persona_ids=["de-voorzitter", "de-ontwerper", "de-criticus"],
+                agent_ids=["codex"],
+                provider="google",
+                model="gemini-2.5-pro",
+            )
+        )
+
+        self.assertEqual(payload["status"], "planned")
+        self.assertEqual(payload["execution"], "not_executed_by_ouroboros_chat_router")
+        self.assertTrue(payload["approval_required"])
+        self.assertEqual(payload["agent_command"], "/codex")
+        self.assertIn("/codex", payload["slash_prompt"])
+        self.assertIn("gemini-2.5-pro", payload["rounds"][1]["content"])
+        self.assertFalse(payload["fake_success"])
 
     def test_meeting_snapshot_can_be_saved_and_listed_without_jsonl(self):
         saved = self.service.meetings.save_snapshot(
             "manual-review",
             self.module.MeetingSaveRequest(
                 topic="Manual review",
+                meeting_type="sprint_planning",
                 participants=[{"id": "de-voorzitter", "name": "De voorzitter"}],
                 participant_ids=["de-voorzitter"],
                 rounds=[
@@ -415,6 +513,7 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertEqual(listed[0]["meeting_id"], "manual-review")
         readback = self.service.meetings.read_meeting("manual-review")
         self.assertEqual(readback["summary"], "Consensus: bewaren.")
+        self.assertEqual(readback["meeting_type"], "sprint_planning")
         self.assertEqual(readback["artifact_path"], "")
 
     def test_legacy_meeting_jsonl_metadata_is_recovered_without_snapshot(self):

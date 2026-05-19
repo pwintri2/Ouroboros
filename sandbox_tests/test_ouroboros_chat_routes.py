@@ -102,6 +102,27 @@ class TestOuroborosChatRoutes(unittest.TestCase):
         self.assertIn("brave", payload)
         self.assertFalse(payload["fake_success"])
 
+    def test_development_team_route_is_approval_gated_plan_only(self):
+        response = self.client.post(
+            "/api/ouroboros-chat/development-team",
+            json={
+                "prompt": "Implementeer een kleine fix en draai tests.",
+                "persona_ids": ["de-voorzitter", "de-criticus"],
+                "agent_ids": ["codex"],
+                "provider": "openai",
+                "model": "gpt-5.3-codex",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "planned")
+        self.assertEqual(payload["execution"], "not_executed_by_ouroboros_chat_router")
+        self.assertTrue(payload["approval_required"])
+        self.assertEqual(payload["agent_command"], "/codex")
+        self.assertIn("/codex", payload["slash_prompt"])
+        self.assertFalse(payload["fake_success"])
+
 
 if __name__ == "__main__":
     unittest.main()
