@@ -19,6 +19,9 @@ else:
 
 
 class QuietOllama:
+    def list_models(self):
+        return ["quiet-local:latest", "ouroboros:latest"]
+
     def chat(self, **kwargs):
         return "ok"
 

@@ -69,6 +69,9 @@ class FakeOllama:
     def __init__(self):
         self.calls = []
 
+    def list_models(self):
+        return ["local-test:latest", "ouroboros:latest"]
+
     def chat(self, **kwargs):
         self.calls.append(kwargs)
         return "service antwoord"
@@ -198,10 +201,22 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertIn("de-voorzitter", personas)
         self.assertIn("de-ontwerper", personas)
         self.assertIn("de-criticus", personas)
+        self.assertEqual(personas["de-criticus"]["name"], "Criticus")
         self.assertTrue(personas["de-voorzitter"]["builtin"])
         self.assertTrue(personas["de-voorzitter"]["tools"]["web_search"])
         self.assertEqual(personas["de-voorzitter"]["model_settings"]["provider"], "anthropic")
         self.assertTrue(personas["de-voorzitter"]["knowledge_sources"])
+
+    def test_model_options_include_local_and_cockpit_cloud_providers(self):
+        payload = self.service.model_options()
+        providers = {item["id"]: item for item in payload["providers"]}
+
+        self.assertIn("local-test:latest", providers["ollama"]["models"])
+        for provider in ("openai", "anthropic", "deepseek", "google", "xai", "mistral"):
+            self.assertIn(provider, providers)
+        self.assertIn("claude-sonnet-4-6", providers["anthropic"]["models"])
+        self.assertIn("gemini-2.5-flash", providers["google"]["models"])
+        self.assertIn("brave", payload)
 
     def test_custom_persona_assembles_prompt_memory_knowledge_tools_and_conversation(self):
         knowledge = self.data_dir / "uploads" / "monique-atelier.md"
@@ -370,6 +385,32 @@ class TestOuroborosChatService(unittest.TestCase):
         readback = self.service.meetings.read_meeting("manual-review")
         self.assertEqual(readback["summary"], "Consensus: bewaren.")
         self.assertEqual(readback["artifact_path"], "")
+
+    def test_legacy_meeting_jsonl_metadata_is_recovered_without_snapshot(self):
+        meeting_id = "legacy-jsonl"
+        meetings_dir = self.data_dir / "meetings"
+        meetings_dir.mkdir(parents=True)
+        path = meetings_dir / f"{meeting_id}.jsonl"
+        events = [
+            {"type": "meeting_started", "meeting_id": meeting_id, "topic": "Legacy onderwerp", "timestamp": "2026-05-19T00:00:00+00:00"},
+            {
+                "type": "participant_note",
+                "meeting_id": meeting_id,
+                "participant": {"id": "old", "name": "Oude persona"},
+                "content": "Oude bijdrage.",
+                "timestamp": "2026-05-19T00:00:01+00:00",
+            },
+            {"type": "meeting_summary", "meeting_id": meeting_id, "summary": "Legacy consensus.", "timestamp": "2026-05-19T00:00:02+00:00"},
+        ]
+        path.write_text("\n".join(json.dumps(item) for item in events) + "\n", encoding="utf-8")
+
+        listed = self.service.meetings.list_meetings()
+        self.assertEqual(listed[0]["topic"], "Legacy onderwerp")
+        self.assertEqual(listed[0]["summary"], "Legacy consensus.")
+        self.assertEqual(listed[0]["participants"][0]["name"], "Oude persona")
+        readback = self.service.meetings.read_meeting(meeting_id)
+        self.assertEqual(readback["topic"], "Legacy onderwerp")
+        self.assertEqual(len(readback["rounds"]), 1)
 
 
 if __name__ == "__main__":

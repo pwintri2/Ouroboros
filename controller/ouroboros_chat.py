@@ -108,6 +108,53 @@ OPENAI_MODEL_OPTIONS = (
     "gpt-5.4",
     "gpt-5.3-codex",
 )
+PROVIDER_MODEL_OPTIONS: dict[str, dict[str, Any]] = {
+    "openai": {
+        "label": "OpenAI via Cockpit API key",
+        "models": list(OPENAI_MODEL_OPTIONS),
+        "default_model": "gpt-5.4-mini",
+    },
+    "anthropic": {
+        "label": "Claude via Cockpit API key",
+        "models": list(CLAUDE_MODEL_OPTIONS),
+        "default_model": "claude-sonnet-4-6",
+    },
+    "deepseek": {
+        "label": "DeepSeek via Cockpit API key",
+        "models": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
+        "default_model": "deepseek-chat",
+    },
+    "google": {
+        "label": "Gemini via Cockpit API key",
+        "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
+        "default_model": "gemini-2.5-flash",
+    },
+    "xai": {
+        "label": "Grok/xAI via Cockpit API key",
+        "models": ["grok-3", "grok-3-mini", "grok-3-latest", "grok-2-latest"],
+        "default_model": "grok-3",
+    },
+    "mistral": {
+        "label": "Mistral via Cockpit API key",
+        "models": ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"],
+        "default_model": "mistral-large-latest",
+    },
+}
+LOCAL_OLLAMA_FALLBACK_MODELS = (
+    DEFAULT_MODEL,
+    "gpt-oss:120b-cloud",
+    "deepseek-coder:latest",
+    "llama3.2:latest",
+    "mistral:latest",
+    "qwen2.5:latest",
+    "llama2-uncensored:latest",
+    "devstral:latest",
+    "codellama:13b",
+    "llama3:8b",
+    "llama3:latest",
+    "gemma4:latest",
+    "phi3:latest",
+)
 DEFAULT_MEETING_PERSONAS: tuple[dict[str, Any], ...] = (
     {
         "id": "de-voorzitter",
@@ -173,7 +220,7 @@ DEFAULT_MEETING_PERSONAS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "de-criticus",
-        "name": "De criticus",
+        "name": "Criticus",
         "description": "Zoekt risico's, gaten in aannames, regressies en ontbrekende tests.",
         "role": "Critical reviewer and risk analyst",
         "introduction": "Ik prik vriendelijk maar stevig in aannames, risico's en testgaten.",
@@ -533,6 +580,18 @@ def _slug_list(values: list[str], limit: int = 12) -> list[str]:
     return result
 
 
+def _dedupe_strings(values: list[Any] | tuple[Any, ...], *, fallback: tuple[str, ...] = ()) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in [*values, *fallback]:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        result.append(text)
+        seen.add(text)
+    return result
+
+
 def _safe_attachment_path(value: Any) -> Path | None:
     raw = ""
     if isinstance(value, dict):
@@ -671,6 +730,16 @@ class PersonaStore:
         for persona in _default_meeting_personas():
             if persona["id"] not in by_id:
                 by_id[persona["id"]] = persona
+            elif by_id[persona["id"]].get("builtin"):
+                existing = by_id[persona["id"]]
+                merged = {**persona, **existing}
+                if persona["id"] == "de-criticus" and str(existing.get("name") or "").strip().lower() == "de criticus":
+                    merged["name"] = persona["name"]
+                merged["tools"] = {**persona.get("tools", {}), **existing.get("tools", {})}
+                merged["model_settings"] = {**persona.get("model_settings", {}), **existing.get("model_settings", {})}
+                if not existing.get("knowledge_sources"):
+                    merged["knowledge_sources"] = persona.get("knowledge_sources", [])
+                by_id[persona["id"]] = merged
         return sorted(by_id.values(), key=lambda item: str(item.get("id") or ""))
 
     def _save(self, data: dict[str, Any]) -> None:
@@ -989,22 +1058,21 @@ class MeetingStore:
             sortable.append((max(mtimes) if mtimes else 0, meeting_id))
         for updated_ts, meeting_id in sorted(sortable, reverse=True)[:limit]:
             path = self.directory / f"{meeting_id}.jsonl"
-            try:
-                event_count = sum(1 for _line in path.open("r", encoding="utf-8"))
-            except OSError:
-                event_count = 0
+            events = self._read_events(path) if path.exists() else []
+            event_count = len(events)
             record = self._read_record(meeting_id)
+            fallback = self._metadata_from_events(events)
             records.append(
                 {
                     "meeting_id": meeting_id,
                     "artifact_path": str(path) if path.exists() else "",
                     "record_path": str(self._record_path(meeting_id)),
                     "event_count": event_count,
-                    "topic": record.get("topic", ""),
+                    "topic": record.get("topic") or fallback.get("topic", ""),
                     "status": record.get("status", "recorded"),
-                    "summary": _clip_text(record.get("summary", ""), 900),
-                    "participants": record.get("participants", []),
-                    "agent_ids": record.get("agent_ids", []),
+                    "summary": _clip_text(record.get("summary") or fallback.get("summary", ""), 900),
+                    "participants": record.get("participants") or fallback.get("participants", []),
+                    "agent_ids": record.get("agent_ids") or [],
                     "updated_at": datetime.fromtimestamp(updated_ts, timezone.utc).replace(microsecond=0).isoformat(),
                 }
             )
@@ -1022,9 +1090,8 @@ class MeetingStore:
         if not path.exists() and not record:
             raise FileNotFoundError(clean_id)
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    events.append(json.loads(line))
+            events = self._read_events(path)
+        fallback = self._metadata_from_events(events)
         return {
             "status": record.get("status", "online") if record else "online",
             "meeting_id": clean_id,
@@ -1032,9 +1099,10 @@ class MeetingStore:
             "record_path": str(self._record_path(clean_id)),
             "events": events,
             "record": record,
-            "participants": record.get("participants", []),
-            "rounds": record.get("rounds", [event for event in events if event.get("type") == "participant_turn"]),
-            "summary": record.get("summary", ""),
+            "participants": record.get("participants") or fallback.get("participants", []),
+            "rounds": record.get("rounds") or fallback.get("rounds", []),
+            "summary": record.get("summary") or fallback.get("summary", ""),
+            "topic": record.get("topic") or fallback.get("topic", ""),
             "fake_success": False,
         }
 
@@ -1209,6 +1277,55 @@ class MeetingStore:
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
+
+    def _read_events(self, path: Path) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    events.append(item)
+        except Exception:
+            return events
+        return events
+
+    def _metadata_from_events(self, events: list[dict[str, Any]]) -> dict[str, Any]:
+        participants_by_id: dict[str, dict[str, Any]] = {}
+        rounds: list[dict[str, Any]] = []
+        topic = ""
+        summary = ""
+        for index, event in enumerate(events):
+            event_type = str(event.get("type") or "")
+            if event_type == "meeting_started":
+                topic = topic or str(event.get("topic") or "")
+                continue
+            participant = event.get("participant") if isinstance(event.get("participant"), dict) else {}
+            if participant:
+                participant_id = str(participant.get("id") or participant.get("name") or f"participant-{index}")
+                participants_by_id.setdefault(
+                    participant_id,
+                    {
+                        "id": participant_id,
+                        "name": str(participant.get("name") or participant_id),
+                        "role": str(participant.get("role") or ""),
+                        "tone": str(participant.get("tone") or ""),
+                        "rules": participant.get("rules", []) if isinstance(participant.get("rules"), list) else [],
+                        "tags": participant.get("tags", []) if isinstance(participant.get("tags"), list) else [],
+                    },
+                )
+            if event_type in {"participant_turn", "participant_note"}:
+                rounds.append(event)
+                continue
+            if event_type == "meeting_summary":
+                summary = str(event.get("summary") or event.get("content") or "")
+        return {
+            "topic": _clip_text(topic, 4000),
+            "participants": list(participants_by_id.values()),
+            "rounds": rounds,
+            "summary": _clip_text(summary, 8000),
+        }
 
     def _write_record(self, meeting_id: str, record: dict[str, Any]) -> Path:
         if _contains_secret_like(record):
@@ -1584,6 +1701,146 @@ class OuroborosChatService:
             "images": images,
         }
 
+    def model_options(self) -> dict[str, Any]:
+        key_status: dict[str, Any] = {}
+        subscription_statuses: dict[str, Any] = {}
+        openai_models = list(OPENAI_MODEL_OPTIONS)
+        try:
+            from controller.api_key_store import provider_key_status
+
+            key_status = provider_key_status()
+        except Exception:
+            key_status = {}
+        try:
+            from controller.subscription_store import subscription_status
+
+            subscription_statuses = subscription_status()
+        except Exception:
+            subscription_statuses = {}
+        try:
+            from controller.openai_model_catalog import openai_api_model_choices
+
+            openai_models = list(openai_api_model_choices()) or openai_models
+        except Exception:
+            pass
+
+        provider_models = {
+            **PROVIDER_MODEL_OPTIONS,
+            "openai": {**PROVIDER_MODEL_OPTIONS["openai"], "models": openai_models, "default_model": openai_models[0] if openai_models else "gpt-5.4-mini"},
+        }
+        providers: list[dict[str, Any]] = [
+            {
+                "id": "ollama",
+                "label": "Ollama local",
+                "models": self._local_ollama_models(),
+                "default_model": DEFAULT_MODEL,
+                "configured": True,
+                "local_only": True,
+                "key_source": "local",
+                "direct_chat": True,
+            }
+        ]
+        for provider_id, config in provider_models.items():
+            key = key_status.get(provider_id) if isinstance(key_status.get(provider_id), dict) else {}
+            sub = subscription_statuses.get(provider_id) if isinstance(subscription_statuses.get(provider_id), dict) else {}
+            key_configured = bool(key.get("configured"))
+            subscription_has_credential = bool(sub.get("active") and sub.get("has_credential") and not sub.get("expired"))
+            api_key_ready = bool(sub.get("api_key_ready"))
+            models = _dedupe_strings(config.get("models", []), fallback=tuple(sub.get("models", []) if isinstance(sub.get("models"), list) else ()))
+            providers.append(
+                {
+                    "id": provider_id,
+                    "label": config.get("label", provider_id),
+                    "models": models,
+                    "default_model": config.get("default_model") or (models[0] if models else ""),
+                    "configured": bool(key_configured or subscription_has_credential),
+                    "direct_chat": bool(key_configured or api_key_ready),
+                    "key_source": key.get("source") if key_configured else (f"subscription:{sub.get('auth_mode')}" if subscription_has_credential else "missing"),
+                    "auth_mode": sub.get("auth_mode", ""),
+                    "subscription_status": sub.get("status", "inactive") if sub else "inactive",
+                    "api_key_ready": api_key_ready or key_configured,
+                    "local_only": False,
+                }
+            )
+
+        try:
+            from controller.roo_cli_runtime import ROO_OAUTH_MODEL, ROO_OAUTH_PROVIDER, roo_cli_status, roo_cloud_models
+
+            roo_status = roo_cli_status()
+            cloud = roo_cloud_models(timeout_seconds=2, max_models=120) if roo_status.get("available") else {}
+            roo_models = _dedupe_strings(cloud.get("models", []) if isinstance(cloud.get("models"), list) else [], fallback=(ROO_OAUTH_MODEL,))
+            providers.append(
+                {
+                    "id": ROO_OAUTH_PROVIDER,
+                    "label": "Roo Cloud OAuth",
+                    "models": roo_models,
+                    "default_model": ROO_OAUTH_MODEL,
+                    "configured": bool(roo_status.get("oauth_logged_in") or roo_status.get("auth", {}).get("ok")),
+                    "direct_chat": False,
+                    "key_source": "roo_oauth",
+                    "auth_mode": "oauth",
+                    "subscription_status": str(roo_status.get("status") or "unknown"),
+                    "agent_runtime_only": True,
+                    "local_only": False,
+                }
+            )
+        except Exception:
+            pass
+
+        brave = key_status.get("brave") if isinstance(key_status.get("brave"), dict) else {}
+        return {
+            "status": "online",
+            "providers": providers,
+            "brave": {
+                "configured": bool(brave.get("configured")),
+                "key_source": brave.get("source", "missing"),
+                "used_for_persona_web_search": True,
+            },
+            "fake_success": False,
+        }
+
+    def _local_ollama_models(self) -> list[str]:
+        models: list[Any] = []
+        if self.ollama_client is not None and callable(getattr(self.ollama_client, "list_models", None)):
+            try:
+                models = list(self.ollama_client.list_models())
+            except Exception:
+                models = []
+        if not models:
+            try:
+                import requests
+
+                base_url = (os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+                if base_url.endswith("/api"):
+                    base_url = base_url[:-4]
+                response = requests.get(f"{base_url}/api/tags", timeout=2.0)
+                response.raise_for_status()
+                models = [item.get("name") for item in response.json().get("models", []) if isinstance(item, dict)]
+            except Exception:
+                models = []
+        return _dedupe_strings(models, fallback=LOCAL_OLLAMA_FALLBACK_MODELS)
+
+    def _cockpit_provider_api_keys(self) -> dict[str, str]:
+        keys: dict[str, str] = {}
+        try:
+            from controller.api_key_store import load_provider_api_keys
+
+            keys.update(load_provider_api_keys())
+        except Exception:
+            pass
+        try:
+            from controller.subscription_store import subscription_api_key_for_provider
+
+            for provider_id in PROVIDER_MODEL_OPTIONS:
+                if keys.get(provider_id):
+                    continue
+                value = subscription_api_key_for_provider(provider_id)
+                if value:
+                    keys[provider_id] = value
+        except Exception:
+            pass
+        return keys
+
     def _brave_knowledge_for_persona(self, persona: dict[str, Any], query: str) -> list[dict[str, Any]]:
         clean_query = _clip_text(query, 400)
         if not clean_query:
@@ -1646,10 +1903,9 @@ class OuroborosChatService:
             )
             return {**result, "provider": DEFAULT_PROVIDER, "model": model}
         try:
-            from controller.api_key_store import load_provider_api_keys
             from controller.multi_api_router import MultiAPIRouter
 
-            router = MultiAPIRouter(api_keys=load_provider_api_keys())
+            router = MultiAPIRouter(api_keys=self._cockpit_provider_api_keys())
             routed = asyncio.run(
                 router.route_chat(
                     provider=provider_id,
@@ -1924,52 +2180,8 @@ async def get_tools() -> dict[str, Any]:
 
 
 @ouroboros_chat_router.get("/model-options")
-async def get_model_options() -> dict[str, Any]:
-    try:
-        from controller.api_key_store import provider_key_status
-        from controller.openai_model_catalog import openai_api_model_choices
-
-        key_status = provider_key_status()
-        openai_models = list(openai_api_model_choices()) or list(OPENAI_MODEL_OPTIONS)
-    except Exception:
-        key_status = {}
-        openai_models = list(OPENAI_MODEL_OPTIONS)
-    providers = [
-        {
-            "id": "ollama",
-            "label": "Ollama local",
-            "models": [DEFAULT_MODEL, "llama3.2:latest", "mistral:latest", "qwen2.5:latest"],
-            "default_model": DEFAULT_MODEL,
-            "configured": True,
-            "local_only": True,
-        },
-        {
-            "id": "anthropic",
-            "label": "Claude via Cockpit API key",
-            "models": list(CLAUDE_MODEL_OPTIONS),
-            "default_model": "claude-sonnet-4-6",
-            "configured": bool((key_status.get("anthropic") or {}).get("configured")),
-            "key_source": (key_status.get("anthropic") or {}).get("source", "missing"),
-        },
-        {
-            "id": "openai",
-            "label": "OpenAI via Cockpit API key",
-            "models": openai_models,
-            "default_model": openai_models[0] if openai_models else "",
-            "configured": bool((key_status.get("openai") or {}).get("configured")),
-            "key_source": (key_status.get("openai") or {}).get("source", "missing"),
-        },
-    ]
-    return {
-        "status": "online",
-        "providers": providers,
-        "brave": {
-            "configured": bool((key_status.get("brave") or {}).get("configured")),
-            "key_source": (key_status.get("brave") or {}).get("source", "missing"),
-            "used_for_persona_web_search": True,
-        },
-        "fake_success": False,
-    }
+async def get_model_options(request: Request) -> dict[str, Any]:
+    return await asyncio.to_thread(_service_from_request(request).model_options)
 
 
 @ouroboros_chat_router.get("/conversations")

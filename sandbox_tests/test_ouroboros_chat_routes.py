@@ -21,6 +21,9 @@ class FakeOllama:
     def __init__(self):
         self.calls = []
 
+    def list_models(self):
+        return ["route-local:latest", "ouroboros:latest"]
+
     def chat(self, **kwargs):
         self.calls.append(kwargs)
         return "lokaal antwoord"
@@ -92,6 +95,9 @@ class TestOuroborosChatRoutes(unittest.TestCase):
         payload = response.json()
         providers = {item["id"]: item for item in payload["providers"]}
         self.assertIn("anthropic", providers)
+        self.assertIn("deepseek", providers)
+        self.assertIn("google", providers)
+        self.assertIn("route-local:latest", providers["ollama"]["models"])
         self.assertIn("claude-sonnet-4-6", providers["anthropic"]["models"])
         self.assertIn("brave", payload)
         self.assertFalse(payload["fake_success"])
