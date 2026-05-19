@@ -11,6 +11,7 @@ BRIDGE_PORT="${WINTRIP_RCLONE_BRIDGE_PORT:-8766}"
 BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
 TOKEN_PATH="${WINTRIP_RCLONE_BRIDGE_TOKEN_PATH_HOST:-$ROOT/.secrets/rclone_bridge_token}"
 VITE_PORT="${OUROBOROS_CHAT_VITE_PORT:-1421}"
+DOCKER_COMPOSE_TIMEOUT="${OUROBOROS_CHAT_DOCKER_TIMEOUT:-20s}"
 
 mkdir -p "$LOG_DIR"
 exec >>"$LOG_DIR/launcher.log" 2>&1
@@ -97,8 +98,20 @@ ensure_backend() {
 
   if command -v docker >/dev/null 2>&1; then
     echo "Backend offline; trying docker compose up -d ouroboros-backend."
-    (cd "$ROOT" && docker compose up -d ouroboros-backend) || true
-    if wait_for_backend; then
+    local compose_timed_out=0
+    if command -v timeout >/dev/null 2>&1; then
+      (cd "$ROOT" && timeout "$DOCKER_COMPOSE_TIMEOUT" docker compose up -d ouroboros-backend)
+      compose_status=$?
+      if [ "$compose_status" -eq 124 ]; then
+        echo "docker compose did not finish within $DOCKER_COMPOSE_TIMEOUT; continuing without blocking the UI."
+        compose_timed_out=1
+      elif [ "$compose_status" -ne 0 ]; then
+        echo "docker compose exited with status $compose_status; continuing."
+      fi
+    else
+      (cd "$ROOT" && docker compose up -d ouroboros-backend) || true
+    fi
+    if [ "$compose_timed_out" -eq 0 ] && wait_for_backend; then
       echo "Backend online after docker compose."
       return 0
     fi
