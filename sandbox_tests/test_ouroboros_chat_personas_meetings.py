@@ -116,6 +116,22 @@ class TestOuroborosChatPersonasMeetings(unittest.TestCase):
         readback = self.client.get(f"/api/ouroboros-chat/meetings/{payload['meeting_id']}")
         self.assertEqual(readback.status_code, 200)
         self.assertEqual(readback.json()["meeting_id"], payload["meeting_id"])
+        self.assertTrue(Path(payload["record_path"]).exists())
+
+        saved = self.client.put(
+            f"/api/ouroboros-chat/meetings/{payload['meeting_id']}",
+            json={
+                "topic": "Plan a safe backend handoff",
+                "participants": payload["participants"],
+                "participant_ids": ["tester"],
+                "rounds": payload["rounds"],
+                "summary": "Consensus: testen en bewaren.",
+                "transcript": payload["transcript"],
+                "status": "saved",
+            },
+        )
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["status"], "saved")
 
     def test_meeting_blocks_requested_cline_or_shell_tools(self):
         response = self.client.post(

@@ -85,6 +85,17 @@ class TestOuroborosChatRoutes(unittest.TestCase):
         self.assertEqual(payload["execution"], "not_executed_by_ouroboros_chat_router")
         self.assertFalse(payload["fake_success"])
 
+    def test_model_options_expose_claude_and_brave_status_without_keys(self):
+        response = self.client.get("/api/ouroboros-chat/model-options")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        providers = {item["id"]: item for item in payload["providers"]}
+        self.assertIn("anthropic", providers)
+        self.assertIn("claude-sonnet-4-6", providers["anthropic"]["models"])
+        self.assertIn("brave", payload)
+        self.assertFalse(payload["fake_success"])
+
 
 if __name__ == "__main__":
     unittest.main()

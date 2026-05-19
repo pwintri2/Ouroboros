@@ -30,7 +30,8 @@ def read_text(path: Path, limit: int = 80_000) -> str:
 
 class KnowledgeStore:
     def snippets_for_persona(self, persona: dict[str, Any], query: str, *, limit: int = 5) -> list[dict[str, Any]]:
-        files = persona.get("knowledge_files") or persona.get("knowledge_sources") or []
+        files = persona.get("knowledge_files") or []
+        sources = persona.get("knowledge_sources") or []
         terms = [term.lower() for term in re.findall(r"\w{3,}", query or "")[:12]]
         snippets: list[dict[str, Any]] = []
         for item in files:
@@ -64,6 +65,26 @@ class KnowledgeStore:
                     "score": score,
                 }
             )
+        for item in sources:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or item.get("href") or "").strip()
+            label = str(item.get("label") or item.get("title") or url).strip()
+            note = str(item.get("note") or item.get("description") or "").strip()
+            if not url:
+                continue
+            haystack = f"{label} {url} {note}".lower()
+            score = sum(haystack.count(term) for term in terms) if terms else 1
+            if score <= 0 and terms:
+                continue
+            snippets.append(
+                {
+                    "source": url,
+                    "label": label or url,
+                    "snippet": "\n".join(part for part in [f"Knowledge link: {url}", note] if part).strip(),
+                    "score": max(score, 1),
+                    "kind": "link",
+                }
+            )
         snippets.sort(key=lambda item: item["score"], reverse=True)
         return snippets[:limit]
-

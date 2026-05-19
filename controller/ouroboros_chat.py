@@ -16,6 +16,7 @@ import time
 import uuid
 import base64
 import copy
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -96,6 +97,112 @@ from controller.ouroboros_chat_core.tool_registry import enforce_tool_policy, to
 APPROVAL_PHRASE = "Akkoord"
 DEFAULT_PROVIDER = "ollama"
 DEFAULT_MODEL = "ouroboros:latest"
+CLAUDE_MODEL_OPTIONS = (
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-3-5-sonnet-latest",
+)
+OPENAI_MODEL_OPTIONS = (
+    "gpt-5.4-mini",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+)
+DEFAULT_MEETING_PERSONAS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "de-voorzitter",
+        "name": "De voorzitter",
+        "description": "Bewaakt doel, agenda, spreektijd, besluiten en actie-eigenaars.",
+        "role": "Meeting facilitator and decision keeper",
+        "introduction": "Ik houd de vergadering scherp: doel, volgorde, besluiten en concrete vervolgstappen.",
+        "instructions": (
+            "Leid het overleg rustig. Vat spanningen samen, vraag om verduidelijking waar nodig, "
+            "en eindig met besluitpunten en eigenaars."
+        ),
+        "system_prompt": (
+            "Leid het overleg rustig. Vat spanningen samen, vraag om verduidelijking waar nodig, "
+            "en eindig met besluitpunten en eigenaars."
+        ),
+        "tone": "Rustig, structurerend, besluitvaardig",
+        "language": "nl",
+        "rules": [
+            "Houd het onderwerp en de gewenste uitkomst zichtbaar.",
+            "Benoem open vragen voordat actiepunten worden gemaakt.",
+            "Geen externe acties zonder expliciete approval-flow.",
+        ],
+        "tools": {"web_search": True, "file_search": True},
+        "model": "claude-sonnet-4-6",
+        "model_settings": {"provider": "anthropic", "name": "claude-sonnet-4-6", "temperature": 0.4, "max_tokens": 2200, "fallback_model": DEFAULT_MODEL},
+        "avatar": {"kind": "initials", "color": "#7bdcc3"},
+        "knowledge_sources": [
+            {"label": "Meeting facilitation patterns", "url": "https://en.wikipedia.org/wiki/Meeting_facilitation", "note": "Algemene context voor overlegstructuur."}
+        ],
+        "tags": ["meeting", "default"],
+        "builtin": True,
+    },
+    {
+        "id": "de-ontwerper",
+        "name": "De ontwerper",
+        "description": "Zet ruwe ideeën om in bruikbare flows, interfaces en ervaarbare concepten.",
+        "role": "Product and interaction designer",
+        "introduction": "Ik vertaal overleg naar heldere gebruikersflows, schermen en ontwerpkeuzes.",
+        "instructions": (
+            "Denk vanuit gebruiker, workflow en visuele hiërarchie. Maak ideeën concreet als schermen, "
+            "states, copy en interactiepatronen."
+        ),
+        "system_prompt": (
+            "Denk vanuit gebruiker, workflow en visuele hiërarchie. Maak ideeën concreet als schermen, "
+            "states, copy en interactiepatronen."
+        ),
+        "tone": "Verbeeldend, praktisch, precies",
+        "language": "nl",
+        "rules": [
+            "Vertaal abstracte wensen naar concrete UI- en workflowkeuzes.",
+            "Let op rust, toegankelijkheid en dagelijkse bruikbaarheid.",
+            "Noem ontwerp-aannames expliciet.",
+        ],
+        "tools": {"web_search": True, "file_search": True},
+        "model": "claude-sonnet-4-6",
+        "model_settings": {"provider": "anthropic", "name": "claude-sonnet-4-6", "temperature": 0.65, "max_tokens": 2600, "fallback_model": DEFAULT_MODEL},
+        "avatar": {"kind": "initials", "color": "#f2c97d"},
+        "knowledge_sources": [
+            {"label": "Human interface guidelines", "url": "https://developer.apple.com/design/human-interface-guidelines/", "note": "Referentie voor rustige, bruikbare interactiepatronen."}
+        ],
+        "tags": ["design", "default"],
+        "builtin": True,
+    },
+    {
+        "id": "de-criticus",
+        "name": "De criticus",
+        "description": "Zoekt risico's, gaten in aannames, regressies en ontbrekende tests.",
+        "role": "Critical reviewer and risk analyst",
+        "introduction": "Ik prik vriendelijk maar stevig in aannames, risico's en testgaten.",
+        "instructions": (
+            "Review voorstellen op risico, veiligheid, regressies, ontbrekende acceptatiecriteria en testbaarheid. "
+            "Geef kritiek als concrete verbetering."
+        ),
+        "system_prompt": (
+            "Review voorstellen op risico, veiligheid, regressies, ontbrekende acceptatiecriteria en testbaarheid. "
+            "Geef kritiek als concrete verbetering."
+        ),
+        "tone": "Scherp, eerlijk, constructief",
+        "language": "nl",
+        "rules": [
+            "Noem eerst het grootste risico.",
+            "Vraag om bewijs wanneer succes niet inspecteerbaar is.",
+            "Maak kritiek actionable en testbaar.",
+        ],
+        "tools": {"web_search": True, "file_search": True},
+        "model": "claude-opus-4-6",
+        "model_settings": {"provider": "anthropic", "name": "claude-opus-4-6", "temperature": 0.25, "max_tokens": 2600, "fallback_model": DEFAULT_MODEL},
+        "avatar": {"kind": "initials", "color": "#fb7185"},
+        "knowledge_sources": [
+            {"label": "Software testing", "url": "https://en.wikipedia.org/wiki/Software_testing", "note": "Basisreferentie voor regressie- en acceptatietesten."}
+        ],
+        "tags": ["critic", "default"],
+        "builtin": True,
+    },
+)
 MAX_TEXT_CHARS = 16_000
 MAX_UPLOAD_BYTES = 20_000_000
 MAX_ATTACHMENT_CONTEXT_CHARS = 24_000
@@ -237,6 +344,18 @@ class MeetingRequest(BaseModel):
     allow_tools: bool = False
 
 
+class MeetingSaveRequest(BaseModel):
+    topic: str = Field(default="", max_length=MAX_TEXT_CHARS)
+    frontend_id: Optional[str] = Field(default=None, max_length=120)
+    participants: list[dict[str, Any]] = Field(default_factory=list)
+    participant_ids: list[str] = Field(default_factory=list)
+    agent_ids: list[str] = Field(default_factory=list)
+    rounds: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str = Field(default="", max_length=MAX_TEXT_CHARS)
+    transcript: str = Field(default="", max_length=MAX_TEXT_CHARS * 2)
+    status: str = Field(default="saved", max_length=40)
+
+
 def init_ouroboros_chat_routes(app: Any, service: "OuroborosChatService | None" = None) -> None:
     """Mount the standalone Ouroboros chat routes onto a FastAPI app."""
 
@@ -265,6 +384,16 @@ def _default_data_dir() -> Path:
 
 def _default_persona() -> dict[str, Any]:
     return core_default_persona()
+
+
+def _default_meeting_personas() -> list[dict[str, Any]]:
+    personas: list[dict[str, Any]] = []
+    for item in DEFAULT_MEETING_PERSONAS:
+        persona = normalize_persona_payload(dict(item), previous={"builtin": True})
+        persona["builtin"] = True
+        persona["tags"] = list(item.get("tags", []))
+        personas.append(persona)
+    return personas
 
 
 def _safe_slug(value: str, fallback: str = "item") -> str:
@@ -516,7 +645,7 @@ class PersonaStore:
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"version": 1, "personas": [_default_persona()]}
+            return {"version": 1, "personas": self._with_builtin_personas([_default_persona()])}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception as exc:
@@ -535,7 +664,14 @@ class PersonaStore:
                 safe_personas.append(normalized)
         if not safe_personas:
             safe_personas.append(_default_persona())
-        return {"version": 1, "personas": safe_personas}
+        return {"version": 1, "personas": self._with_builtin_personas(safe_personas)}
+
+    def _with_builtin_personas(self, personas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_id = {str(item.get("id")): dict(item) for item in personas if item.get("id")}
+        for persona in _default_meeting_personas():
+            if persona["id"] not in by_id:
+                by_id[persona["id"]] = persona
+        return sorted(by_id.values(), key=lambda item: str(item.get("id") or ""))
 
     def _save(self, data: dict[str, Any]) -> None:
         if _contains_secret_like(data):
@@ -582,6 +718,9 @@ class MeetingRunner:
         ):
             for persona in personas:
                 participant = self._public_persona(persona)
+                model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
+                turn_provider = str(model_settings.get("provider") or provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+                turn_model = str(model_settings.get("name") or persona.get("model") or model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
                 system_prompt = self._social_system_prompt(persona, personas, topic)
                 user_prompt = self._turn_prompt(
                     topic=topic,
@@ -594,7 +733,8 @@ class MeetingRunner:
                 response = self._call_model(
                     prompt=user_prompt,
                     system_prompt=system_prompt,
-                    model=model,
+                    provider=turn_provider,
+                    model=turn_model,
                     fallback=fallback,
                 )
                 event = {
@@ -604,8 +744,8 @@ class MeetingRunner:
                     "round": round_number,
                     "phase": phase,
                     "participant": participant,
-                    "provider": provider,
-                    "model": model,
+                    "provider": turn_provider,
+                    "model": turn_model,
                     "content": _clip_text(response["content"], 4000),
                     "ok": response["ok"],
                     "error": response["error"],
@@ -629,7 +769,7 @@ class MeetingRunner:
                     }
                 )
 
-        summary = self._summarize(topic=topic, transcript=transcript, model=model)
+        summary = self._summarize(topic=topic, transcript=transcript, model=model, provider=provider)
         summary_event = {
             "type": "meeting_summary",
             "meeting_id": meeting_id,
@@ -675,6 +815,7 @@ class MeetingRunner:
                 f"Jouw Regels: {', '.join(str(rule) for rule in rules) if rules else 'Geen extra regels opgegeven.'}",
                 f"Jouw Toon: {persona.get('tone') or 'Grounded, practical, inspectable'}",
                 f"Jouw Taal: {persona.get('language') or 'nl'}",
+                self._knowledge_context(persona),
                 (
                     "Instructie: Reageer op het onderwerp en de input van anderen vanuit jouw specifieke expertise. "
                     "Voer geen tools uit en claim geen externe acties."
@@ -704,7 +845,7 @@ class MeetingRunner:
             ]
         )
 
-    def _summarize(self, *, topic: str, transcript: list[dict[str, Any]], model: str) -> dict[str, Any]:
+    def _summarize(self, *, topic: str, transcript: list[dict[str, Any]], model: str, provider: str = DEFAULT_PROVIDER) -> dict[str, Any]:
         prompt = "\n\n".join(
             [
                 f"Onderwerp: {_clip_text(topic, 1600)}",
@@ -723,16 +864,18 @@ class MeetingRunner:
                 "Je bent de neutrale synthese-laag van een Ouroboros Vergadering. "
                 "Vat alleen samen; voer geen tools, shell, browser of agents uit."
             ),
+            provider=provider,
             model=model,
             fallback=fallback,
         )
 
-    def _call_model(self, *, prompt: str, system_prompt: str, model: str, fallback: str) -> dict[str, Any]:
+    def _call_model(self, *, prompt: str, system_prompt: str, provider: str, model: str, fallback: str) -> dict[str, Any]:
         if self.llm_call is None:
             return {"ok": True, "content": fallback, "error": ""}
         try:
             result = self.llm_call(
                 prompt=prompt,
+                provider=provider,
                 model=model,
                 system_prompt=system_prompt,
                 history=[],
@@ -810,6 +953,23 @@ class MeetingRunner:
             lines.append(f"[{phase}] {name}: {item.get('content') or ''}")
         return "\n".join(lines)[-12_000:]
 
+    def _knowledge_context(self, persona: dict[str, Any]) -> str:
+        snippets = persona.get("_meeting_knowledge") if isinstance(persona.get("_meeting_knowledge"), list) else []
+        if not snippets:
+            return ""
+        blocks = []
+        for item in snippets[:5]:
+            if not isinstance(item, dict):
+                continue
+            label = _clip_text(item.get("label") or item.get("source") or "knowledge", 160)
+            source = _clip_text(item.get("source") or "", 240)
+            snippet = _clip_text(item.get("snippet") or "", 1200)
+            if snippet:
+                blocks.append(f"- {label} ({source}): {snippet}")
+        if not blocks:
+            return ""
+        return "Beschikbare read-only kenniscontext voor deze persona:\n" + "\n".join(blocks)
+
 
 class MeetingStore:
     def __init__(self, directory: Path | None = None):
@@ -819,17 +979,33 @@ class MeetingStore:
         if not self.directory.exists():
             return []
         records: list[dict[str, Any]] = []
-        for path in sorted(self.directory.glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True)[:limit]:
+        ids = {path.stem for path in self.directory.glob("*.jsonl")}
+        ids.update(path.stem for path in self.directory.glob("*.json"))
+        sortable: list[tuple[float, str]] = []
+        for meeting_id in ids:
+            jsonl_path = self.directory / f"{meeting_id}.jsonl"
+            record_path = self._record_path(meeting_id)
+            mtimes = [path.stat().st_mtime for path in (jsonl_path, record_path) if path.exists()]
+            sortable.append((max(mtimes) if mtimes else 0, meeting_id))
+        for updated_ts, meeting_id in sorted(sortable, reverse=True)[:limit]:
+            path = self.directory / f"{meeting_id}.jsonl"
             try:
                 event_count = sum(1 for _line in path.open("r", encoding="utf-8"))
             except OSError:
                 event_count = 0
+            record = self._read_record(meeting_id)
             records.append(
                 {
-                    "meeting_id": path.stem,
-                    "artifact_path": str(path),
+                    "meeting_id": meeting_id,
+                    "artifact_path": str(path) if path.exists() else "",
+                    "record_path": str(self._record_path(meeting_id)),
                     "event_count": event_count,
-                    "updated_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).replace(microsecond=0).isoformat(),
+                    "topic": record.get("topic", ""),
+                    "status": record.get("status", "recorded"),
+                    "summary": _clip_text(record.get("summary", ""), 900),
+                    "participants": record.get("participants", []),
+                    "agent_ids": record.get("agent_ids", []),
+                    "updated_at": datetime.fromtimestamp(updated_ts, timezone.utc).replace(microsecond=0).isoformat(),
                 }
             )
         return records
@@ -841,19 +1017,57 @@ class MeetingStore:
             path.relative_to(self.directory.resolve())
         except ValueError as exc:
             raise ValueError("Meeting id escapes meeting directory.") from exc
-        if not path.exists():
-            raise FileNotFoundError(clean_id)
         events: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                events.append(json.loads(line))
-        return {"status": "online", "meeting_id": clean_id, "artifact_path": str(path), "events": events, "fake_success": False}
+        record = self._read_record(clean_id)
+        if not path.exists() and not record:
+            raise FileNotFoundError(clean_id)
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    events.append(json.loads(line))
+        return {
+            "status": record.get("status", "online") if record else "online",
+            "meeting_id": clean_id,
+            "artifact_path": str(path) if path.exists() else "",
+            "record_path": str(self._record_path(clean_id)),
+            "events": events,
+            "record": record,
+            "participants": record.get("participants", []),
+            "rounds": record.get("rounds", [event for event in events if event.get("type") == "participant_turn"]),
+            "summary": record.get("summary", ""),
+            "fake_success": False,
+        }
+
+    def save_snapshot(self, meeting_id: str, request: MeetingSaveRequest) -> dict[str, Any]:
+        clean_id = _safe_slug(meeting_id)
+        if _contains_secret_like(_model_to_dict(request)):
+            raise ValueError("Meeting snapshot appears to contain a secret, token, password, or bearer credential.")
+        existing = self._read_record(clean_id)
+        record = {
+            **existing,
+            "meeting_id": clean_id,
+            "frontend_id": request.frontend_id or existing.get("frontend_id", ""),
+            "topic": _clip_text(request.topic or existing.get("topic", ""), 4000),
+            "participants": request.participants or existing.get("participants", []),
+            "participant_ids": request.participant_ids or existing.get("participant_ids", []),
+            "agent_ids": request.agent_ids or existing.get("agent_ids", []),
+            "rounds": request.rounds or existing.get("rounds", []),
+            "summary": _clip_text(request.summary or existing.get("summary", ""), 8000),
+            "transcript": _clip_text(request.transcript or existing.get("transcript", ""), MAX_TEXT_CHARS * 2),
+            "status": request.status or existing.get("status", "saved"),
+            "updated_at": _now_iso(),
+            "fake_success": False,
+        }
+        path = self._write_record(clean_id, record)
+        return {"status": "saved", "meeting_id": clean_id, "record": record, "record_path": str(path), "fake_success": False}
 
     def create_meeting(
         self,
         request: MeetingRequest,
         persona_store: PersonaStore,
         llm_call: MeetingLLMCall | None = None,
+        knowledge_store: KnowledgeStore | None = None,
+        web_context_fetcher: Callable[[dict[str, Any], str], list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         requested_tools = [str(item).strip() for item in request.tools if str(item).strip()]
         forbidden = [
@@ -878,7 +1092,17 @@ class MeetingStore:
         personas = []
         for persona_id in participants[:12]:
             persona = persona_store.get(persona_id)
-            personas.append(persona or {"id": _safe_slug(persona_id), "name": str(persona_id), "description": "", "tags": []})
+            persona = persona or {"id": _safe_slug(persona_id), "name": str(persona_id), "description": "", "tags": []}
+            persona = dict(persona)
+            policy = enforce_tool_policy(persona)
+            knowledge: list[dict[str, Any]] = []
+            if knowledge_store is not None and policy.get("can_search_files"):
+                knowledge.extend(knowledge_store.snippets_for_persona(persona, request.topic, limit=3))
+            if web_context_fetcher is not None and policy.get("can_search_web"):
+                knowledge.extend(web_context_fetcher(persona, request.topic)[:2])
+            if knowledge:
+                persona["_meeting_knowledge"] = knowledge[:5]
+            personas.append(persona)
 
         meeting_id = f"{int(time.time())}-{uuid.uuid4().hex[:10]}"
         provider = (request.provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
@@ -909,15 +1133,39 @@ class MeetingStore:
         events.extend(runner_payload["events"])
 
         path = self._write_events(meeting_id, events)
+        transcript = self._transcript_from_runner(runner_payload)
+        self._write_record(
+            meeting_id,
+            {
+                "meeting_id": meeting_id,
+                "topic": _clip_text(request.topic, 4000),
+                "participants": runner_payload["participants"],
+                "participant_ids": [str(item.get("id")) for item in runner_payload["participants"] if item.get("id")],
+                "agent_ids": [],
+                "rounds": runner_payload["rounds"],
+                "summary": runner_payload["summary"],
+                "transcript": transcript,
+                "status": "completed",
+                "provider": provider,
+                "model": model,
+                "artifact_path": str(path),
+                "created_at": events[0]["timestamp"],
+                "updated_at": _now_iso(),
+                "tool_policy": self.tool_policy(),
+                "fake_success": False,
+            },
+        )
         return {
             "status": "recorded",
             "meeting_id": meeting_id,
             "artifact_path": str(path),
+            "record_path": str(self._record_path(meeting_id)),
             "event_count": len(events),
             "events": events,
             "participants": runner_payload["participants"],
             "rounds": runner_payload["rounds"],
             "summary": runner_payload["summary"],
+            "transcript": transcript,
             "tool_policy": self.tool_policy(),
             "fake_success": False,
         }
@@ -929,7 +1177,8 @@ class MeetingStore:
             "shell": False,
             "browser": False,
             "write_tools": False,
-            "artifact_write": "jsonl_only",
+            "read_only_web_context": "persona_brave_search_when_enabled",
+            "artifact_write": "jsonl_and_json_snapshot",
         }
 
     def _write_events(self, meeting_id: str, events: list[dict[str, Any]]) -> Path:
@@ -943,6 +1192,47 @@ class MeetingStore:
             for event in events:
                 handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
         return path
+
+    def _record_path(self, meeting_id: str) -> Path:
+        return (self.directory / f"{_safe_slug(meeting_id)}.json").resolve()
+
+    def _read_record(self, meeting_id: str) -> dict[str, Any]:
+        path = self._record_path(meeting_id)
+        try:
+            path.relative_to(self.directory.resolve())
+        except ValueError:
+            return {}
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_record(self, meeting_id: str, record: dict[str, Any]) -> Path:
+        if _contains_secret_like(record):
+            raise ValueError("Meeting record write blocked because content appears to contain a secret.")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self._record_path(meeting_id)
+        try:
+            path.relative_to(self.directory.resolve())
+        except ValueError as exc:
+            raise ValueError("Meeting record path escapes meeting directory.") from exc
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(path)
+        return path
+
+    def _transcript_from_runner(self, runner_payload: dict[str, Any]) -> str:
+        parts = []
+        for turn in runner_payload.get("rounds", []):
+            participant = turn.get("participant") if isinstance(turn.get("participant"), dict) else {}
+            name = participant.get("name") or "Persona"
+            parts.append(f"{name} (ronde {turn.get('round')} / {turn.get('phase')}):\n{turn.get('content', '')}")
+        if runner_payload.get("summary"):
+            parts.append(f"Consensus & Actiepunten:\n{runner_payload['summary']}")
+        return "\n\n---\n\n".join(parts)
 
 
 class OuroborosChatService:
@@ -969,7 +1259,13 @@ class OuroborosChatService:
         self.uploads_dir = self.data_dir / "uploads"
 
     def create_meeting(self, request: MeetingRequest) -> dict[str, Any]:
-        return self.meetings.create_meeting(request, self.personas, llm_call=self._call_ollama)
+        return self.meetings.create_meeting(
+            request,
+            self.personas,
+            llm_call=self._call_model_provider,
+            knowledge_store=self.knowledge,
+            web_context_fetcher=self._brave_knowledge_for_persona,
+        )
 
     def chat(self, request: OuroborosChatRequest) -> dict[str, Any]:
         if _contains_secret_like({"prompt": request.prompt, "system_prompt": request.system_prompt, "history": request.history}):
@@ -982,18 +1278,6 @@ class OuroborosChatService:
         model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
         provider = (request.provider or model_settings.get("provider") or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
         model = (request.model or model_settings.get("name") or persona.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-        if provider not in {DEFAULT_PROVIDER, "local", "ouroboros"}:
-            return {
-                "status": "unsupported_provider",
-                "provider": provider,
-                "model": model,
-                "default_provider": DEFAULT_PROVIDER,
-                "default_model": DEFAULT_MODEL,
-                "local_only": True,
-                "response": "Deze backend ondersteunt in deze slice alleen lokale Ollama-chat.",
-                "approval_phrase": APPROVAL_PHRASE,
-                "fake_success": False,
-            }
 
         attachment_payload = self._prepare_attachments([*request.files, *request.attachments], model=model)
         if attachment_payload["blocked"]:
@@ -1022,6 +1306,8 @@ class OuroborosChatService:
         policy = enforce_tool_policy(persona)
         memories = self.memory.list(persona_id=persona_id, limit=16) if (persona.get("memory") or {}).get("enabled", True) else []
         knowledge = self.knowledge.snippets_for_persona(persona, request.prompt) if policy.get("can_search_files") else []
+        web_knowledge = self._brave_knowledge_for_persona(persona, request.prompt) if policy.get("can_search_web") else []
+        knowledge = [*web_knowledge, *knowledge]
         assembled = self.prompt_assembler.assemble(
             persona=persona,
             memories=memories,
@@ -1031,8 +1317,9 @@ class OuroborosChatService:
             attachment_context=attachment_payload["context"],
         )
         system_prompt = "\n\n".join(part for part in [assembled["system_prompt"], request.system_prompt or ""] if str(part).strip())
-        response = self._call_ollama(
+        response = self._call_model_provider(
             prompt=assembled["user_prompt"],
+            provider=provider,
             model=model,
             system_prompt=system_prompt,
             history=_history_for_ollama(assembled["history"]),
@@ -1048,7 +1335,7 @@ class OuroborosChatService:
         )
         return {
             "status": status,
-            "provider": DEFAULT_PROVIDER,
+            "provider": response.get("provider", provider),
             "model": model,
             "default_provider": DEFAULT_PROVIDER,
             "default_model": DEFAULT_MODEL,
@@ -1059,13 +1346,14 @@ class OuroborosChatService:
             "sources": assembled.get("sources", []),
             "tool_policy": policy,
             "prompt_assembled": True,
-            "local_only": True,
             "approval_phrase": APPROVAL_PHRASE,
             "approval_supplied": str(request.approval or "").strip() == APPROVAL_PHRASE,
             "files_received": [_clip_text(path, 240) for path in request.files[:20]],
             "attachments": attachment_payload["records"],
             "transient_attachment_context": bool(attachment_payload["context"]),
+            "network_call_made": bool(response.get("network_call_made")) or provider not in {DEFAULT_PROVIDER, "local", "ouroboros", "ollama"},
             "fake_success": False,
+            "local_only": provider in {DEFAULT_PROVIDER, "local", "ouroboros", "ollama"} and not response.get("network_call_made"),
         }
 
     def cline_capabilities(self) -> dict[str, Any]:
@@ -1296,6 +1584,96 @@ class OuroborosChatService:
             "images": images,
         }
 
+    def _brave_knowledge_for_persona(self, persona: dict[str, Any], query: str) -> list[dict[str, Any]]:
+        clean_query = _clip_text(query, 400)
+        if not clean_query:
+            return []
+        try:
+            from controller.brave_search import search_brave_llm_context
+
+            result = search_brave_llm_context(clean_query, maximum_number_of_urls=5)
+        except Exception as exc:
+            return [
+                {
+                    "label": "Brave Search",
+                    "source": "brave:error",
+                    "snippet": f"Brave Search context kon niet worden opgehaald: {exc}",
+                    "score": 1,
+                }
+            ]
+        if result.get("status") != "success":
+            reason = result.get("reason") or result.get("status") or "unavailable"
+            return [
+                {
+                    "label": "Brave Search",
+                    "source": "brave:status",
+                    "snippet": f"Brave Search is niet beschikbaar voor deze beurt: {reason}.",
+                    "score": 1,
+                }
+            ]
+        document = str(result.get("document") or "").strip()
+        if not document:
+            return []
+        return [
+            {
+                "label": "Brave Search",
+                "source": "brave:llm_context",
+                "snippet": document[:4000],
+                "score": 5,
+                "source_urls": result.get("source_urls") or [],
+                "taint": "untrusted_web",
+            }
+        ]
+
+    def _call_model_provider(
+        self,
+        *,
+        prompt: str,
+        provider: str,
+        model: str,
+        system_prompt: str,
+        history: list[dict[str, str]],
+        images: list[str] | None = None,
+    ) -> dict[str, Any]:
+        provider_id = str(provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+        if provider_id in {DEFAULT_PROVIDER, "local", "ouroboros", "ollama"}:
+            result = self._call_ollama(
+                prompt=prompt,
+                model=model,
+                system_prompt=system_prompt,
+                history=history,
+                images=images,
+            )
+            return {**result, "provider": DEFAULT_PROVIDER, "model": model}
+        try:
+            from controller.api_key_store import load_provider_api_keys
+            from controller.multi_api_router import MultiAPIRouter
+
+            router = MultiAPIRouter(api_keys=load_provider_api_keys())
+            routed = asyncio.run(
+                router.route_chat(
+                    provider=provider_id,
+                    model=model,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    history=history,
+                )
+            )
+        except Exception as exc:
+            return {"ok": False, "content": "", "error": str(exc), "provider": provider_id, "model": model}
+        content = str(routed.get("response") or routed.get("content") or "").strip()
+        ok = routed.get("status") == "success" and bool(content)
+        error = str(routed.get("error") or routed.get("reason") or routed.get("message") or "")
+        return {
+            "ok": ok,
+            "content": content,
+            "error": "" if ok else error or f"{provider_id} returned no response.",
+            "provider": routed.get("provider", provider_id),
+            "model": routed.get("model", model),
+            "raw_status": routed.get("status"),
+            "network_call_made": routed.get("network_call_made", False),
+        }
+
     def _call_ollama(
         self,
         *,
@@ -1404,7 +1782,7 @@ def _service_from_request(request: Request) -> OuroborosChatService:
 @ouroboros_chat_router.post("/chat")
 async def chat(request_body: OuroborosChatRequest, request: Request) -> dict[str, Any]:
     try:
-        return _service_from_request(request).chat(request_body)
+        return await asyncio.to_thread(_service_from_request(request).chat, request_body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1545,6 +1923,55 @@ async def get_tools() -> dict[str, Any]:
     return tool_catalog()
 
 
+@ouroboros_chat_router.get("/model-options")
+async def get_model_options() -> dict[str, Any]:
+    try:
+        from controller.api_key_store import provider_key_status
+        from controller.openai_model_catalog import openai_api_model_choices
+
+        key_status = provider_key_status()
+        openai_models = list(openai_api_model_choices()) or list(OPENAI_MODEL_OPTIONS)
+    except Exception:
+        key_status = {}
+        openai_models = list(OPENAI_MODEL_OPTIONS)
+    providers = [
+        {
+            "id": "ollama",
+            "label": "Ollama local",
+            "models": [DEFAULT_MODEL, "llama3.2:latest", "mistral:latest", "qwen2.5:latest"],
+            "default_model": DEFAULT_MODEL,
+            "configured": True,
+            "local_only": True,
+        },
+        {
+            "id": "anthropic",
+            "label": "Claude via Cockpit API key",
+            "models": list(CLAUDE_MODEL_OPTIONS),
+            "default_model": "claude-sonnet-4-6",
+            "configured": bool((key_status.get("anthropic") or {}).get("configured")),
+            "key_source": (key_status.get("anthropic") or {}).get("source", "missing"),
+        },
+        {
+            "id": "openai",
+            "label": "OpenAI via Cockpit API key",
+            "models": openai_models,
+            "default_model": openai_models[0] if openai_models else "",
+            "configured": bool((key_status.get("openai") or {}).get("configured")),
+            "key_source": (key_status.get("openai") or {}).get("source", "missing"),
+        },
+    ]
+    return {
+        "status": "online",
+        "providers": providers,
+        "brave": {
+            "configured": bool((key_status.get("brave") or {}).get("configured")),
+            "key_source": (key_status.get("brave") or {}).get("source", "missing"),
+            "used_for_persona_web_search": True,
+        },
+        "fake_success": False,
+    }
+
+
 @ouroboros_chat_router.get("/conversations")
 async def list_conversations(request: Request, persona_id: str = "", limit: int = 100) -> dict[str, Any]:
     service = _service_from_request(request)
@@ -1649,7 +2076,15 @@ async def list_meetings(request: Request, limit: int = 50) -> dict[str, Any]:
 async def create_meeting(request_body: MeetingRequest, request: Request) -> dict[str, Any]:
     service = _service_from_request(request)
     try:
-        return service.create_meeting(request_body)
+        return await asyncio.to_thread(service.create_meeting, request_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@ouroboros_chat_router.put("/meetings/{meeting_id}")
+async def save_meeting_snapshot(meeting_id: str, request_body: MeetingSaveRequest, request: Request) -> dict[str, Any]:
+    try:
+        return _service_from_request(request).meetings.save_snapshot(meeting_id, request_body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1670,6 +2105,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "DEFAULT_PROVIDER",
     "MeetingRequest",
+    "MeetingSaveRequest",
     "OuroborosChatRequest",
     "OuroborosChatService",
     "PersonaRequest",

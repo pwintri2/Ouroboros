@@ -192,6 +192,17 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertTrue(persona["tools"]["file_search"])
         self.assertTrue(persona["memory"]["enabled"])
 
+    def test_default_meeting_personas_are_seeded_with_web_search_and_claude_models(self):
+        personas = {item["id"]: item for item in self.service.personas.list_personas()}
+
+        self.assertIn("de-voorzitter", personas)
+        self.assertIn("de-ontwerper", personas)
+        self.assertIn("de-criticus", personas)
+        self.assertTrue(personas["de-voorzitter"]["builtin"])
+        self.assertTrue(personas["de-voorzitter"]["tools"]["web_search"])
+        self.assertEqual(personas["de-voorzitter"]["model_settings"]["provider"], "anthropic")
+        self.assertTrue(personas["de-voorzitter"]["knowledge_sources"])
+
     def test_custom_persona_assembles_prompt_memory_knowledge_tools_and_conversation(self):
         knowledge = self.data_dir / "uploads" / "monique-atelier.md"
         knowledge.parent.mkdir(parents=True)
@@ -319,6 +330,10 @@ class TestOuroborosChatService(unittest.TestCase):
         lines = [json.loads(line) for line in artifact.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(len(lines), recorded["event_count"])
         self.assertEqual(lines[0]["approval_phrase"], "Akkoord")
+        self.assertTrue(Path(recorded["record_path"]).exists())
+        readback = self.service.meetings.read_meeting(recorded["meeting_id"])
+        self.assertEqual(readback["summary"], "service antwoord")
+        self.assertEqual(len(readback["rounds"]), 4)
 
         blocked = self.service.meetings.create_meeting(
             self.module.MeetingRequest(topic="Execute tools", tools=["cline_execute", "safe_shell"], allow_tools=True),
@@ -327,6 +342,34 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertEqual(blocked["status"], "blocked")
         self.assertIn("cline_execute", blocked["forbidden_tools"])
         self.assertIn("safe_shell", blocked["forbidden_tools"])
+
+    def test_meeting_snapshot_can_be_saved_and_listed_without_jsonl(self):
+        saved = self.service.meetings.save_snapshot(
+            "manual-review",
+            self.module.MeetingSaveRequest(
+                topic="Manual review",
+                participants=[{"id": "de-voorzitter", "name": "De voorzitter"}],
+                participant_ids=["de-voorzitter"],
+                rounds=[
+                    {
+                        "id": "round-1",
+                        "phase": "saved",
+                        "participantId": "de-voorzitter",
+                        "participantName": "De voorzitter",
+                        "content": "Besluit: opslaan.",
+                    }
+                ],
+                summary="Consensus: bewaren.",
+                transcript="De voorzitter: Besluit: opslaan.",
+            ),
+        )
+
+        self.assertEqual(saved["status"], "saved")
+        listed = self.service.meetings.list_meetings()
+        self.assertEqual(listed[0]["meeting_id"], "manual-review")
+        readback = self.service.meetings.read_meeting("manual-review")
+        self.assertEqual(readback["summary"], "Consensus: bewaren.")
+        self.assertEqual(readback["artifact_path"], "")
 
 
 if __name__ == "__main__":

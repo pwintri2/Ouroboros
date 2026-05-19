@@ -43,7 +43,7 @@ def tool_catalog() -> dict[str, Any]:
                 "label": TOOL_LABELS[tool_id],
                 "default_enabled": enabled,
                 "approval_required": tool_id in MUTATING_TOOLS,
-                "available": tool_id in {"file_search"},
+                "available": tool_id in {"file_search", "web_search"},
             }
             for tool_id, enabled in DEFAULT_TOOLS.items()
         ],
@@ -59,5 +59,5 @@ def enforce_tool_policy(persona: dict[str, Any]) -> dict[str, Any]:
         "tools": tools,
         "requires_approval": blocked,
         "can_search_files": bool(tools.get("file_search")),
+        "can_search_web": bool(tools.get("web_search")),
     }
-
