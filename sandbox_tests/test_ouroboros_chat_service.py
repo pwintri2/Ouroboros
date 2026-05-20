@@ -4,8 +4,10 @@ import os
 import sys
 import tempfile
 import types
+import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -105,6 +107,16 @@ class TestOuroborosChatService(unittest.TestCase):
             cline_root=self.cline_root,
             ollama_client=self.fake_ollama,
         )
+
+    def missing_chatgpt_codex_env(self) -> dict[str, str]:
+        return {
+            "CHATGPT_COPILOT_TOKEN_FILE": str(self.data_dir / "missing-chatgpt-copilot.json"),
+            "WINTRIP_CHATGPT_CODEX_TOKEN_FILE": str(self.data_dir / "missing-wintrip-chatgpt-codex.json"),
+            "GOOSE_CHATGPT_CODEX_TOKEN_FILE": str(self.data_dir / "missing-goose-chatgpt-codex.json"),
+            "WINTRIP_GOOSE_CHATGPT_CODEX_TOKEN_FILE": str(self.data_dir / "missing-wintrip-goose-chatgpt-codex.json"),
+            "CODEX_AUTH_FILE": str(self.data_dir / "missing-codex-auth.json"),
+            "WINTRIP_CODEX_AUTH_FILE": str(self.data_dir / "missing-wintrip-codex-auth.json"),
+        }
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -208,15 +220,151 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertTrue(personas["de-voorzitter"]["knowledge_sources"])
 
     def test_model_options_include_local_and_cockpit_cloud_providers(self):
-        payload = self.service.model_options()
+        with patch.dict(os.environ, self.missing_chatgpt_codex_env()):
+            payload = self.service.model_options()
         providers = {item["id"]: item for item in payload["providers"]}
 
         self.assertIn("local-test:latest", providers["ollama"]["models"])
-        for provider in ("openai", "anthropic", "deepseek", "google", "xai", "mistral"):
+        for provider in ("chatgpt_codex", "openai", "anthropic", "deepseek", "google", "xai", "mistral"):
             self.assertIn(provider, providers)
+        self.assertIn("gpt-5.2-codex", providers["chatgpt_codex"]["models"])
+        self.assertEqual(providers["chatgpt_codex"]["auth_mode"], "oauth_shared_file")
+        self.assertFalse(providers["chatgpt_codex"]["configured"])
         self.assertIn("claude-sonnet-4-6", providers["anthropic"]["models"])
         self.assertIn("gemini-2.5-flash", providers["google"]["models"])
         self.assertIn("brave", payload)
+
+    def test_model_options_detect_goose_chatgpt_codex_oauth_token(self):
+        token_file = self.data_dir / "goose" / "chatgpt_codex" / "tokens.json"
+        token_file.parent.mkdir(parents=True)
+        token_file.write_text(
+            json.dumps(
+                {
+                    "access_token": "goose-access-token-123456789",
+                    "refresh_token": "goose-refresh-token-123456789",
+                    "expires_at": "2099-12-31T23:59:59Z",
+                    "account_id": "account-from-goose",
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = {**self.missing_chatgpt_codex_env(), "GOOSE_CHATGPT_CODEX_TOKEN_FILE": str(token_file)}
+
+        with patch.dict(os.environ, env):
+            payload = self.service.model_options()
+
+        provider = {item["id"]: item for item in payload["providers"]}["chatgpt_codex"]
+        self.assertTrue(provider["configured"])
+        self.assertTrue(provider["direct_chat"])
+        self.assertEqual(provider["key_source"], "goose:chatgpt_codex")
+        self.assertEqual(provider["auth_mode"], "oauth_goose")
+        self.assertEqual(provider["token_file"], str(token_file))
+        self.assertTrue(any(item["id"] == "goose:chatgpt_codex" and item["configured"] for item in provider["token_sources"]))
+
+    def test_chatgpt_codex_provider_uses_shared_oauth_token_without_returning_secret(self):
+        token_file = self.data_dir / "chatgpt-copilot" / "oauth-tokens.json"
+        token_file.parent.mkdir(parents=True)
+        access_token = "runtime-chatgpt-access-token-123456789"
+        token_file.write_text(
+            json.dumps(
+                {
+                    "chatgpt": {
+                        "provider": "chatgpt",
+                        "accessToken": access_token,
+                        "refreshToken": "runtime-refresh-token-123456789",
+                        "expiresAt": 4_102_444_800_000,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        captured: dict[str, Any] = {}
+
+        class FakeResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"output": [{"content": [{"type": "output_text", "text": "codex antwoord"}]}]}
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers", {})
+            captured["json"] = kwargs.get("json", {})
+            return FakeResponse()
+
+        fake_requests = types.SimpleNamespace(post=fake_post)
+        env = {**self.missing_chatgpt_codex_env(), "CHATGPT_COPILOT_TOKEN_FILE": str(token_file)}
+        with patch.dict(os.environ, env), patch.dict(sys.modules, {"requests": fake_requests}):
+            payload = self.service.chat(
+                self.module.OuroborosChatRequest(
+                    prompt="Maak een kleine Codex-analyse.",
+                    provider="chatgpt_codex",
+                    model="gpt-5.2-codex",
+                )
+            )
+
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["provider"], "chatgpt_codex")
+        self.assertEqual(payload["response"], "codex antwoord")
+        self.assertTrue(payload["network_call_made"])
+        self.assertIn("/codex/responses", captured["url"])
+        self.assertEqual(captured["headers"]["Authorization"], f"Bearer {access_token}")
+        self.assertEqual(captured["json"]["model"], "gpt-5.2-codex")
+        self.assertNotIn(access_token, str(payload))
+
+    def test_chatgpt_codex_provider_uses_goose_oauth_token_without_returning_secret(self):
+        token_file = self.data_dir / "goose" / "chatgpt_codex" / "tokens.json"
+        token_file.parent.mkdir(parents=True)
+        access_token = "goose-runtime-chatgpt-access-token-123456789"
+        token_file.write_text(
+            json.dumps(
+                {
+                    "access_token": access_token,
+                    "refresh_token": "goose-runtime-refresh-token-123456789",
+                    "expires_at": "2099-12-31T23:59:59Z",
+                    "account_id": "goose-account-id",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        captured: dict[str, Any] = {}
+
+        class FakeResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"output": [{"content": [{"type": "output_text", "text": "goose codex antwoord"}]}]}
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers", {})
+            captured["json"] = kwargs.get("json", {})
+            return FakeResponse()
+
+        fake_requests = types.SimpleNamespace(post=fake_post)
+        env = {**self.missing_chatgpt_codex_env(), "GOOSE_CHATGPT_CODEX_TOKEN_FILE": str(token_file)}
+        with patch.dict(os.environ, env), patch.dict(sys.modules, {"requests": fake_requests}):
+            payload = self.service.chat(
+                self.module.OuroborosChatRequest(
+                    prompt="Gebruik mijn ChatGPT abonnement via Goose.",
+                    provider="chatgpt_codex",
+                    model="gpt-5.2-codex",
+                )
+            )
+
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["provider"], "chatgpt_codex")
+        self.assertEqual(payload["response"], "goose codex antwoord")
+        self.assertIn("/codex/responses", captured["url"])
+        self.assertEqual(captured["headers"]["Authorization"], f"Bearer {access_token}")
+        self.assertEqual(captured["headers"]["chatgpt-account-id"], "goose-account-id")
+        self.assertNotIn(access_token, str(payload))
 
     def test_custom_persona_assembles_prompt_memory_knowledge_tools_and_conversation(self):
         knowledge = self.data_dir / "uploads" / "monique-atelier.md"
@@ -384,11 +532,29 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertEqual(recorded["status"], "recorded")
         self.assertEqual(recorded["participants"][0]["id"], "de-voorzitter")
         phases = [round_item["phase"] for round_item in recorded["rounds"]]
-        self.assertEqual(phases, ["opening", "input", "input", "chair-bridge", "reply", "reply", "closing"])
+        self.assertEqual(
+            phases,
+            [
+                "opening",
+                "input",
+                "floor-control",
+                "input",
+                "floor-control",
+                "chair-bridge",
+                "reply",
+                "floor-control",
+                "reply",
+                "floor-control",
+                "closing",
+            ],
+        )
         self.assertEqual(len(self.fake_ollama.calls), 8)
         self.assertIn("Open als voorzitter", self.fake_ollama.calls[0]["user_input"])
         self.assertIn("Schrijf alsof je hardop aan tafel spreekt", self.fake_ollama.calls[0]["system_prompt"])
+        self.assertIn("Letterlijke herhaling is bij voorbaat niet toegestaan", self.fake_ollama.calls[0]["system_prompt"])
         self.assertTrue(recorded["rounds"][0]["prompt_context"]["chair_led"])
+        self.assertEqual(recorded["rounds"][2]["participant"]["id"], "de-voorzitter")
+        self.assertTrue(recorded["rounds"][2]["prompt_context"]["floor_control"])
         self.assertEqual(recorded["rounds"][0]["prompt_context"]["meeting_type"], "team")
 
     def test_meeting_chair_intervenes_when_personas_parrot_each_other(self):
@@ -412,10 +578,10 @@ class TestOuroborosChatService(unittest.TestCase):
         )
 
         def fake_llm(**_kwargs):
-            return {"ok": True, "content": next(responses), "error": ""}
+            return {"ok": True, "content": next(responses, "Besluit: onderscheidend punt vastgelegd."), "error": ""}
 
         payload = self.module.MeetingRunner(llm_call=fake_llm).run(
-            topic="Voorkom papegaaien",
+            topic="Voorkom letterlijke herhaling",
             personas=personas,
             provider="ollama",
             model="ouroboros:latest",
@@ -424,9 +590,89 @@ class TestOuroborosChatService(unittest.TestCase):
 
         phases = [round_item["phase"] for round_item in payload["rounds"]]
         self.assertIn("intervention", phases)
+        self.assertIn("anti-parrot-redo", phases)
         intervention = next(round_item for round_item in payload["rounds"] if round_item["phase"] == "intervention")
+        retry = next(round_item for round_item in payload["rounds"] if round_item["phase"] == "anti-parrot-redo")
         self.assertEqual(intervention["participant"]["id"], "de-voorzitter")
         self.assertEqual(intervention["prompt_context"]["intervention_reason"], "anti_parroting")
+        self.assertEqual(retry["participant"]["id"], "ouroboros-engineer")
+        self.assertTrue(retry["prompt_context"]["required_distinct_turn"])
+        self.assertTrue(retry["prompt_context"]["forced_distinct_fallback"])
+        self.assertTrue(retry["content"].startswith("Anders punt:"))
+        serialized_rounds = "\n".join(round_item["content"] for round_item in payload["rounds"])
+        self.assertEqual(serialized_rounds.count("dezelfde API keys"), 1)
+
+    def test_meeting_repetition_filter_does_not_spam_interventions(self):
+        personas = [
+            {"id": "de-voorzitter", "name": "De voorzitter", "role": "Meeting facilitator"},
+            {"id": "criticus", "name": "Criticus", "role": "Critical reviewer"},
+            {"id": "ontwerper", "name": "Ontwerper", "role": "Designer"},
+            {"id": "nina", "name": "Nina", "role": "AI specialist"},
+            {"id": "engineer", "name": "Ouroboros engineer", "role": "Engineer"},
+            {"id": "poocky", "name": "Poocky", "role": "Network specialist"},
+        ]
+        repeated = (
+            "We moeten dit praktisch en toetsbaar houden met één criterium, één grens en één stopmoment "
+            "zodat iedereen hetzelfde besluit kan nemen."
+        )
+
+        def fake_llm(**kwargs):
+            prompt = str(kwargs.get("prompt") or "")
+            if "(opening)" in prompt:
+                return {"ok": True, "content": "Ik open en geef de eerste deelnemer het woord.", "error": ""}
+            if "(chair-bridge)" in prompt:
+                return {"ok": True, "content": "Ik orden de tafel en geef de tweede ronde gericht door.", "error": ""}
+            if "(closing)" in prompt:
+                return {"ok": True, "content": "Besluit: monitor, test en herstelroute blijven zichtbaar.", "error": ""}
+            if "Volledige vergaderingstranscriptie:" in prompt:
+                return {"ok": True, "content": "Samenvatting: de echo is afgekapt en de acties zijn toetsbaar.", "error": ""}
+            return {"ok": True, "content": repeated, "error": ""}
+
+        payload = self.module.MeetingRunner(llm_call=fake_llm).run(
+            topic="Zorg dat Ouroboros-cockpit stabiel blijft en zichzelf toetsbaar verbetert",
+            personas=personas,
+            provider="ollama",
+            model="ouroboros:latest",
+            meeting_id="no-visible-echo-loop",
+        )
+
+        serialized_rounds = "\n".join(round_item["content"] for round_item in payload["rounds"])
+        interventions = [round_item for round_item in payload["rounds"] if round_item["phase"] == "intervention"]
+        non_chair_contents = [
+            round_item["content"]
+            for round_item in payload["rounds"]
+            if round_item["participant"]["id"] != "de-voorzitter"
+        ]
+        self.assertLessEqual(len(interventions), 1)
+        self.assertLessEqual(serialized_rounds.count(repeated), 1)
+        self.assertNotIn("ik voeg geen echo toe", serialized_rounds.lower())
+        self.assertNotIn("één nieuw criterium, één grens en één stopmoment", serialized_rounds.lower())
+        self.assertEqual(len(non_chair_contents), len(set(non_chair_contents)))
+
+    def test_meeting_turn_timeout_uses_fallback_instead_of_hanging(self):
+        personas = [
+            {"id": "de-voorzitter", "name": "De voorzitter", "role": "Meeting facilitator"},
+            {"id": "de-ontwerper", "name": "De ontwerper", "role": "Designer"},
+        ]
+
+        def slow_llm(**_kwargs):
+            time.sleep(0.2)
+            return {"ok": True, "content": "te laat", "error": ""}
+
+        started = time.time()
+        payload = self.module.MeetingRunner(llm_call=slow_llm, llm_timeout_seconds=0.01).run(
+            topic="Voorkom Load failed",
+            personas=personas,
+            provider="ollama",
+            model="ouroboros:latest",
+            meeting_id="timeout-meeting",
+        )
+
+        self.assertLess(time.time() - started, 0.8)
+        self.assertEqual(payload["rounds"][0]["participant"]["id"], "de-voorzitter")
+        self.assertFalse(payload["rounds"][0]["ok"])
+        self.assertIn("timed out", payload["rounds"][0]["error"])
+        self.assertTrue(payload["summary"])
 
     def test_brainstorm_meeting_uses_deeper_brave_research_context(self):
         for persona_id, name, role in (
@@ -462,10 +708,353 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertEqual(recorded["meeting_type"], "brainstorm")
         phases = [round_item["phase"] for round_item in recorded["rounds"]]
         self.assertIn("research", phases)
+        self.assertIn("research-layer", phases)
+        self.assertIn("solution-dive", phases)
         self.assertIn("research-synthesis", phases)
-        self.assertGreaterEqual(len(brave_queries), 9)
-        self.assertIn("technische lagen", " ".join(brave_queries))
+        self.assertGreaterEqual(len(brave_queries), 18)
+        joined_queries = " ".join(brave_queries)
+        self.assertIn("technische lagen", joined_queries)
+        self.assertIn("failure modes", joined_queries)
+        self.assertIn("best practices", joined_queries)
+        self.assertIn("aannames alternatieven", joined_queries)
         self.assertIn("Bronlaag voor", self.fake_ollama.calls[0]["system_prompt"])
+        all_prompts = "\n".join(call["user_input"] for call in self.fake_ollama.calls)
+        self.assertIn("BRAINSTORMCONTRACT", all_prompts)
+        self.assertIn("Deep search", all_prompts)
+        self.assertIn("Deep think", all_prompts)
+        self.assertIn("bronlaag", all_prompts)
+        self.assertIn("waarneming", all_prompts)
+        self.assertIn("onzekerheid", all_prompts)
+        self.assertIn("aanname", all_prompts)
+        self.assertIn("alternatief", all_prompts)
+        self.assertIn("experiment", all_prompts)
+        self.assertIn("uitdaging", all_prompts)
+        self.assertIn("niet als block", all_prompts)
+
+    def test_brainstorm_assignment_topic_is_not_treated_as_current_incident(self):
+        personas = [
+            {"id": "de-voorzitter", "name": "De voorzitter", "role": "Meeting facilitator"},
+            {"id": "de-ontwerper", "name": "De ontwerper", "role": "Designer"},
+            {"id": "de-criticus", "name": "Criticus", "role": "Risk reviewer"},
+            {"id": "nina", "name": "Nina", "role": "AI specialist"},
+        ]
+
+        payload = self.module.MeetingRunner(llm_call=None).run(
+            topic="Hoe programmeren we dat Ouroboros stabiel blijft en continu gemonitord wordt?",
+            personas=personas,
+            provider="ollama",
+            model="ouroboros:latest",
+            meeting_id="assignment-intent",
+            meeting_type="brainstorm",
+        )
+
+        transcript = "\n".join(round_item["content"] for round_item in payload["rounds"]).lower()
+        self.assertEqual(payload["topic_intent"], "opdracht")
+        self.assertIn("opdracht", transcript)
+        self.assertIn("acceptatie", transcript)
+        # The opdracht-brainstorm should produce concrete domain language about stability/monitoring,
+        # without needing the internal kebab-case track titles in the visible transcript.
+        self.assertTrue(
+            any(
+                concrete in transcript
+                for concrete in (
+                    "watchdog",
+                    "telemetry",
+                    "health-rollup",
+                    "statuspaneel",
+                    "fallback",
+                    "rollback",
+                )
+            )
+        )
+        self.assertIn("bouwvolgorde", transcript)
+        # Each non-chair persona should be assigned an internal solution track via prompt_context.
+        non_chair_rounds = [
+            round_item
+            for round_item in payload["rounds"]
+            if round_item["participant"]["id"] != "de-voorzitter"
+            and round_item["phase"] not in {"floor-control", "intervention"}
+        ]
+        for round_item in non_chair_rounds:
+            self.assertTrue(
+                round_item["prompt_context"].get("assignment_track_key"),
+                f"persona {round_item['participant']['id']} missing assignment_track_key",
+            )
+        self.assertNotIn("storing start", transcript)
+        self.assertNotIn("storingsdiagnose", transcript)
+        self.assertNotIn("diagnosegesprek", transcript)
+        self.assertNotIn("opdrachtlaag", transcript)
+        self.assertNotIn("bouwrichting verkleint", transcript)
+        self.assertNotIn("forceer één fout", transcript)
+        self.assertNotIn("hersteladvies", transcript)
+        self.assertEqual(payload["rounds"][1]["prompt_context"]["topic_intent"], "opdracht")
+
+    def test_stream_meeting_emits_events_in_order_and_persists_record(self):
+        for persona_id, name, role in (
+            ("de-voorzitter", "De voorzitter", "Meeting facilitator"),
+            ("de-ontwerper", "De ontwerper", "Designer"),
+            ("de-criticus", "De criticus", "Risk reviewer"),
+        ):
+            self.service.personas.upsert(
+                self.module.PersonaRequest(
+                    id=persona_id,
+                    name=name,
+                    role=role,
+                    model_settings={"provider": "ollama", "name": "ouroboros:latest"},
+                )
+            )
+
+        request = self.module.MeetingRequest(
+            topic="Stream-check voor het meeting protocol",
+            participants=["de-voorzitter", "de-ontwerper", "de-criticus"],
+            meeting_type="team",
+        )
+
+        events = list(self.service.stream_meeting(request))
+
+        self.assertGreaterEqual(len(events), 4)
+        self.assertEqual(events[0].get("type"), "meeting_started")
+        self.assertEqual(events[-1].get("type"), "meeting_recorded")
+        types = [event.get("type") for event in events]
+        # At least one participant turn AND one summary event should appear before the recorded envelope.
+        self.assertIn("participant_turn", types)
+        self.assertIn("meeting_summary", types)
+        # The order matters: meeting_started → ...participant_turn/floor-control/intervention/meeting_summary... → meeting_recorded
+        recorded = events[-1]
+        self.assertEqual(recorded.get("status"), "recorded")
+        self.assertTrue(recorded.get("meeting_id"))
+        self.assertTrue(recorded.get("artifact_path"))
+        self.assertTrue(recorded.get("summary"))
+        # The persisted JSONL should match the streamed events one-to-one (excluding the final meeting_recorded envelope).
+        artifact_path = Path(recorded["artifact_path"])
+        self.assertTrue(artifact_path.exists())
+        persisted_lines = [line for line in artifact_path.read_text(encoding="utf-8").splitlines() if line]
+        self.assertEqual(len(persisted_lines), len(events) - 1)
+        first_persisted = json.loads(persisted_lines[0])
+        self.assertEqual(first_persisted.get("type"), "meeting_started")
+
+    def test_meeting_runner_event_sink_receives_each_event_before_return(self):
+        captured: list[str] = []
+        personas = [
+            {"id": "de-voorzitter", "name": "De voorzitter", "role": "Meeting facilitator"},
+            {"id": "de-ontwerper", "name": "De ontwerper", "role": "Designer"},
+        ]
+        runner = self.module.MeetingRunner(llm_call=None)
+        payload = runner.run(
+            topic="event_sink integratiecheck",
+            personas=personas,
+            provider="ollama",
+            model="ouroboros:latest",
+            meeting_id="sink-check",
+            meeting_type="team",
+            event_sink=lambda event: captured.append(str(event.get("type") or "")),
+        )
+        self.assertEqual(captured, [str(event.get("type") or "") for event in payload["events"]])
+        self.assertIn("participant_turn", captured)
+        self.assertIn("meeting_summary", captured)
+
+    def test_brainstorm_assignment_keeps_persona_track_consistent_without_visible_meta_language(self):
+        personas = [
+            {"id": "de-voorzitter", "name": "De voorzitter", "role": "Meeting facilitator"},
+            {"id": "criticus", "name": "Criticus", "role": "Critical reviewer"},
+            {"id": "de-ontwerper", "name": "De ontwerper", "role": "Product designer"},
+            {"id": "nina", "name": "Nina", "role": "AI specialist"},
+            {"id": "wintrip", "name": "Wintrip", "role": "Thinker"},
+            {"id": "ouroboros-engineer", "name": "Ouroboros engineer", "role": "Engineer"},
+            {"id": "poocky", "name": "Poocky", "role": "Netwerk kennis"},
+        ]
+
+        payload = self.module.MeetingRunner(llm_call=None).run(
+            topic="Hoe programmeren we dat Ouroboros stabiel blijft en continu gemonitord wordt?",
+            personas=personas,
+            provider="ollama",
+            model="ouroboros:latest",
+            meeting_id="assignment-track-lock",
+            meeting_type="brainstorm",
+        )
+
+        rounds = payload["rounds"]
+        non_chair_rounds = [
+            round_item
+            for round_item in rounds
+            if round_item["participant"]["id"] != "de-voorzitter"
+            and round_item["phase"] not in {"floor-control", "intervention"}
+        ]
+        self.assertTrue(non_chair_rounds, "expected at least one non-chair participant turn")
+
+        # Each non-chair persona must stay on the same internally-assigned solution track across
+        # their turns. The track is exposed via prompt_context so consistency can be verified
+        # without parsing visible meeting text.
+        tracks_per_persona: dict[str, set[str]] = {}
+        for round_item in non_chair_rounds:
+            persona_id = round_item["participant"]["id"]
+            track_key = round_item["prompt_context"].get("assignment_track_key", "")
+            self.assertTrue(track_key, f"persona {persona_id} missing assignment_track_key in prompt_context")
+            tracks_per_persona.setdefault(persona_id, set()).add(track_key)
+        for persona_id, keys in tracks_per_persona.items():
+            self.assertEqual(
+                len(keys),
+                1,
+                f"persona {persona_id} switched solution track across turns: {sorted(keys)}",
+            )
+
+        # No two non-chair personas should share the same track (each persona has their own angle).
+        all_keys = [next(iter(keys)) for keys in tracks_per_persona.values()]
+        self.assertEqual(len(all_keys), len(set(all_keys)), f"two personas share the same track: {all_keys}")
+
+        # The chair's floor-control turns expose the same internal track per next-speaker, so the
+        # chair and the persona stay aligned on one solution track without having to say it.
+        for round_item in rounds:
+            if round_item["phase"] != "floor-control":
+                continue
+            next_speaker = round_item["prompt_context"].get("next_speaker")
+            if not next_speaker or next_speaker == "de-voorzitter":
+                continue
+            chair_track = round_item["prompt_context"].get("assignment_track_key", "")
+            if chair_track:
+                self.assertEqual(
+                    chair_track,
+                    next(iter(tracks_per_persona.get(next_speaker, {""}))),
+                    f"chair handed the floor to {next_speaker} on a different track than the persona uses",
+                )
+
+        # The visible meeting text MUST NOT contain the internal regie-vocabulary that the previous
+        # implementation leaked into deelnemerbijdragen.
+        forbidden_in_transcript = (
+            "kiest spoor",
+            "verdiept spoor",
+            "maakt spoor",
+            "toetst spoor",
+            "het spoor",
+            "Deep think van",
+            "Deep search van",
+            "Deep think vanuit",
+            "Deep search vanuit",
+            "Deep think:",
+            "Deep search:",
+            "Oplossing-dive van",
+            "Acceptatie blijft:",
+            "Bewijs dat ik wil zien:",
+            "Approvalpoort:",
+            "Approvalpoort.",
+            "Bouwticket:",
+            "patchbaar experiment",
+            "verdiept zijn eigen spoor",
+        )
+        transcript = "\n".join(round_item["content"] for round_item in rounds)
+        for token in forbidden_in_transcript:
+            self.assertNotIn(token, transcript, f"meta-vocabulary leaked into visible transcript: {token!r}")
+
+        # Non-chair participant turns must not start with the persona's own name — the UI already
+        # shows the speaker label.
+        for round_item in non_chair_rounds:
+            name = (round_item["participant"]["name"] or "").strip()
+            content = round_item["content"].lstrip("\u2003 ").lstrip()
+            if content.startswith("Anders punt:"):
+                content = content[len("Anders punt:"):].lstrip()
+            if name:
+                self.assertFalse(
+                    content.startswith(name),
+                    f"turn for {name} starts with the speaker's own name: {content[:80]!r}",
+                )
+
+        # The chair's research-synthesis and closing should still convey the read-only-meten richting,
+        # but as natural prose — not as a Bouwticket: / Approvalpoort: template.
+        self.assertIn("read-only meten, niet herstellen", transcript)
+        summary = payload["summary"]
+        self.assertIn("health-rollup", summary)
+        self.assertIn("telemetry", summary)
+        self.assertNotIn("Gekozen spoor:", summary)
+        self.assertNotIn("Approvalpoort:", summary)
+        self.assertNotIn("Bouwticket:", summary)
+        self.assertNotIn("Kernlagen:", summary)
+
+    def test_brainstorm_incident_topic_keeps_diagnosis_language(self):
+        personas = [
+            {"id": "de-voorzitter", "name": "De voorzitter", "role": "Meeting facilitator"},
+            {"id": "de-ontwerper", "name": "De ontwerper", "role": "Designer"},
+            {"id": "de-criticus", "name": "Criticus", "role": "Risk reviewer"},
+        ]
+
+        payload = self.module.MeetingRunner(llm_call=None).run(
+            topic="Ik krijg Error Load failed bij een vergadering.",
+            personas=personas,
+            provider="ollama",
+            model="ouroboros:latest",
+            meeting_id="incident-intent",
+            meeting_type="brainstorm",
+        )
+
+        transcript = "\n".join(round_item["content"] for round_item in payload["rounds"]).lower()
+        self.assertEqual(payload["topic_intent"], "storing")
+        self.assertIn("diagnose", transcript)
+        self.assertIn("fout", transcript)
+        self.assertEqual(payload["rounds"][1]["prompt_context"]["topic_intent"], "storing")
+
+    def test_idea_topic_stays_in_prototype_language(self):
+        personas = [
+            {"id": "de-voorzitter", "name": "De voorzitter", "role": "Meeting facilitator"},
+            {"id": "de-ontwerper", "name": "De ontwerper", "role": "Designer"},
+            {"id": "de-criticus", "name": "Criticus", "role": "Risk reviewer"},
+        ]
+
+        payload = self.module.MeetingRunner(llm_call=None).run(
+            topic="Ik heb een idee voor een creatieve meetingmodus.",
+            personas=personas,
+            provider="ollama",
+            model="ouroboros:latest",
+            meeting_id="idea-intent",
+            meeting_type="brainstorm",
+        )
+
+        transcript = "\n".join(round_item["content"] for round_item in payload["rounds"]).lower()
+        self.assertEqual(payload["topic_intent"], "idee")
+        self.assertIn("idee", transcript)
+        self.assertIn("prototype", transcript)
+        self.assertNotIn("foutsignaal", transcript)
+
+    def test_sprint_planning_prompts_are_delivery_contracts(self):
+        for persona_id, name, role in (
+            ("de-voorzitter", "De voorzitter", "Meeting facilitator"),
+            ("de-ontwerper", "De ontwerper", "Designer"),
+            ("dev", "Developer", "Engineer"),
+        ):
+            self.service.personas.upsert(
+                self.module.PersonaRequest(
+                    id=persona_id,
+                    name=name,
+                    role=role,
+                    tools={"web_search": True, "file_search": False},
+                    model_settings={"provider": "ollama", "name": "ouroboros:latest"},
+                )
+            )
+
+        queries = []
+
+        def fake_brave(_persona, query):
+            queries.append(query)
+            return [{"label": "Brave Search", "source": query, "snippet": f"Planlaag voor {query}", "score": 5}]
+
+        with patch.object(self.service, "_brave_knowledge_for_persona", side_effect=fake_brave):
+            recorded = self.service.create_meeting(
+                self.module.MeetingRequest(
+                    topic="Maak standalone stabiel",
+                    meeting_type="sprint_planning",
+                    participants=["de-voorzitter", "de-ontwerper", "dev"],
+                )
+            )
+
+        self.assertEqual(recorded["meeting_type"], "sprint_planning")
+        phases = [round_item["phase"] for round_item in recorded["rounds"]]
+        self.assertIn("plan-slice", phases)
+        self.assertIn("plan-check", phases)
+        self.assertGreaterEqual(len(queries), 9)
+        all_prompts = "\n".join(call["user_input"] for call in self.fake_ollama.calls)
+        self.assertIn("SPRINTCONTRACT", all_prompts)
+        self.assertIn("acceptatiecriterium", all_prompts)
+        self.assertIn("testcommando", all_prompts)
+        self.assertIn("rollback", all_prompts)
+        self.assertIn("stopregel", all_prompts)
 
     def test_development_team_creates_approval_gated_agent_prompt(self):
         payload = self.service.development_team(

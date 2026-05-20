@@ -17,9 +17,13 @@ import uuid
 import base64
 import copy
 import asyncio
+import concurrent.futures
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, AsyncIterator, Callable, Iterator, Optional
+
+import threading
+from queue import Queue
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 try:
@@ -97,6 +101,24 @@ from controller.ouroboros_chat_core.tool_registry import enforce_tool_policy, to
 APPROVAL_PHRASE = "Akkoord"
 DEFAULT_PROVIDER = "ollama"
 DEFAULT_MODEL = "ouroboros:latest"
+CHATGPT_CODEX_PROVIDER = "chatgpt_codex"
+CHATGPT_CODEX_ALIASES = {"chatgpt", "chatgpt_codex", "chatgpt-codex", "codex_oauth", "codex-oauth"}
+CHATGPT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CHATGPT_CODEX_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
+CHATGPT_CODEX_BASE_URL = "https://chatgpt.com/backend-api"
+CHATGPT_CODEX_DEFAULT_MODEL = "gpt-5.2-codex"
+CHATGPT_CODEX_MODEL_OPTIONS = (
+    CHATGPT_CODEX_DEFAULT_MODEL,
+    "gpt-5.1-codex",
+    "gpt-5.0-codex",
+    "o3",
+    "o3-mini",
+    "o4-mini",
+)
+CHATGPT_CODEX_INSTRUCTIONS = (
+    "You are Codex, a coding assistant connected through the user's ChatGPT subscription. "
+    "Answer the user directly, stay grounded in the provided context, and do not claim to have run local tools from this route."
+)
 CLAUDE_MODEL_OPTIONS = (
     "claude-sonnet-4-6",
     "claude-opus-4-6",
@@ -349,6 +371,7 @@ MEETING_TYPE_LABELS = {
 }
 
 CODING_MODEL_HINTS = {
+    CHATGPT_CODEX_PROVIDER: (CHATGPT_CODEX_DEFAULT_MODEL, "gpt-5.1-codex"),
     "openai": ("gpt-5.3-codex", "gpt-5.4-mini"),
     "google": ("gemini-2.5-pro", "gemini-2.5-flash"),
     "ollama": ("devstral:latest", "deepseek-coder:latest", "codellama:13b"),
@@ -488,6 +511,64 @@ def _safe_slug(value: str, fallback: str = "item") -> str:
 def _clip_text(value: Any, limit: int = 1200) -> str:
     text = " ".join(str(value or "").replace("\x00", " ").split())
     return text[:limit]
+
+
+def _natural_first_letter(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text[0].upper() + text[1:]
+
+
+_MEETING_META_PATTERNS: tuple[tuple[Any, str], ...] = ()
+
+
+def _strip_meeting_meta_language(content: Any, *, persona_name: str = "") -> str:
+    """Post-process visible turn content so internal meeting labels do not leak into deelnemerbijdragen.
+
+    This is a safety net: deterministic fallbacks already avoid these phrases, but an LLM may still
+    echo them. The replacements keep meaning but remove the meta-vocabulary.
+    """
+    text = str(content or "")
+    if not text:
+        return ""
+    import re as _re
+
+    global _MEETING_META_PATTERNS
+    if not _MEETING_META_PATTERNS:
+        _MEETING_META_PATTERNS = (
+            (_re.compile(r"(?i)\bkiest\s+spoor\s+([^.:\n]+?)([.:\n]|$)"), r"stelt voor om met \1 te beginnen\2"),
+            (_re.compile(r"(?i)\bverdiept\s+spoor\s+([^.:\n]+?)([.:\n]|$)"), r"verdiept \1\2"),
+            (_re.compile(r"(?i)\bmaakt\s+spoor\s+([^.:\n]+?)\s+patchbaar"), r"maakt \1 concreet"),
+            (_re.compile(r"(?i)\btoetst\s+spoor\s+([^.:\n]+?)([.:\n]|$)"), r"toetst \1\2"),
+            (_re.compile(r"(?i)\bhet\s+spoor\s+"), ""),
+            (_re.compile(r"(?i)\bspoor\s+([A-Za-z0-9_-]+)"), r"\1"),
+            (_re.compile(r"(?i)\bDeep\s+search\s+van\s+[^:]+:\s*"), ""),
+            (_re.compile(r"(?i)\bDeep\s+think\s+van\s+[^:]+:\s*"), ""),
+            (_re.compile(r"(?i)\bDeep\s+search(?:\s+vanuit\s+[^:]+)?:\s*"), ""),
+            (_re.compile(r"(?i)\bDeep\s+think(?:\s+vanuit\s+[^:]+)?:\s*"), ""),
+            (_re.compile(r"(?i)\bOplossing-dive\s+van\s+[^:]+:\s*"), ""),
+            (_re.compile(r"(?i)\bAcceptatie\s+blijft:\s*"), "De toets blijft hetzelfde: "),
+            (_re.compile(r"(?i)\bBewijs\s+dat\s+ik\s+wil\s+zien:\s*"), "Wat ik wil zien: "),
+            (_re.compile(r"(?i)\bApprovalpoort:\s*"), ""),
+            (_re.compile(r"(?i)\bApprovalpoort\b"), "Akkoord-grens"),
+            (_re.compile(r"(?i)\bBouwticket:\s*"), "Mijn voorstel: "),
+            (_re.compile(r"(?i)\bpatchbaar\s+experiment\b"), "klein toetsbaar experiment"),
+            (_re.compile(r"(?i)\bde\s+volgende\s+spreker\s+verdiept\s+zijn\s+eigen\s+spoor\b"), "de volgende spreker gaat dieper in op zijn eigen laag"),
+        )
+
+    for pattern, replacement in _MEETING_META_PATTERNS:
+        text = pattern.sub(replacement, text)
+    text = _re.sub(r"\s{2,}", " ", text).strip()
+
+    name = (persona_name or "").strip()
+    if name:
+        leading = _re.match(rf"^\s*{_re.escape(name)}\b[ ,:–-]+", text)
+        if leading:
+            remainder = text[leading.end():].lstrip()
+            if remainder:
+                text = remainder[0].upper() + remainder[1:]
+    return text
 
 
 def _attachment_extension(path_or_name: Any) -> str:
@@ -656,6 +737,456 @@ def _normalize_meeting_type(value: Any) -> str:
     return MEETING_TYPE_ALIASES.get(text, MEETING_TYPE_ALIASES.get(text.replace("_", " "), "team"))
 
 
+def _contains_phrase(text: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in text for phrase in phrases)
+
+
+def _matches_pattern(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _classify_topic_intent(topic: Any) -> str:
+    text = re.sub(r"\s+", " ", str(topic or "").strip().lower())
+    if not text:
+        return "vraag"
+
+    hard_incident_patterns = (
+        r"\bik krijg\b.*\b(error|fout|load failed|exception)\b",
+        r"\bik kan\b.*\bniet\b.*\b(starten|openen|laden|gebruiken|bereiken)\b",
+        r"\b(is|zijn|blijft|blijven)\s+nu\s+(offline|kapot|stuk|rood|vast)\b",
+        r"\b(doet|werkt|laadt|start)\b.*\bniet\b",
+    )
+    incident_phrases = (
+        "load failed bij",
+        "backend is offline",
+        "backend offline",
+        "crasht",
+        "crash",
+        "foutmelding",
+        "error bij",
+        "exception",
+        "niet starten",
+        "niet laden",
+        "loopt vast",
+        "hangt vast",
+    )
+    assignment_phrases = (
+        "hoe programmeren we",
+        "programmeer",
+        "programmeren",
+        "implementeer",
+        "implementeren",
+        "bouw",
+        "bouwen",
+        "maak",
+        "zorg dat",
+        "kan je",
+        "kun je",
+        "wil je",
+        "ik wil dat",
+        "moet een app worden",
+        "verbeter",
+        "voorkom",
+        "monitor",
+        "maak dit",
+        "pas aan",
+    )
+    idea_phrases = (
+        "ik heb een idee",
+        "idee:",
+        "wat als",
+        "misschien kunnen",
+        "concept",
+        "verken",
+        "brainstorm over",
+        "stel je voor",
+        "zou het kunnen",
+        "prototype",
+    )
+    question_patterns = (
+        r"^(wat is|wat zijn|waarom|hoe werkt|welk verschil|wat is het verschil)\b",
+    )
+
+    if _matches_pattern(text, hard_incident_patterns) or _contains_phrase(text, incident_phrases):
+        return "storing"
+    if _contains_phrase(text, assignment_phrases):
+        return "opdracht"
+    if _contains_phrase(text, idea_phrases):
+        return "idee"
+    if _matches_pattern(text, question_patterns):
+        return "vraag"
+    if text.endswith("?") and not _contains_phrase(text, ("bouw", "maak", "zorg dat", "programmeer")):
+        return "vraag"
+    return "opdracht" if _contains_phrase(text, ("moet", "nodig", "doel", "route")) else "vraag"
+
+
+def _topic_intent_label(intent: str) -> str:
+    labels = {
+        "opdracht": "Opdracht / implementatie",
+        "storing": "Storing / incident",
+        "idee": "Idee / verkenning",
+        "vraag": "Vraag / uitleg",
+    }
+    return labels.get(intent, labels["vraag"])
+
+
+def _topic_intent_contract(intent: str) -> str:
+    if intent == "opdracht":
+        return (
+            "ONDERWERPSOORT: dit is een opdracht of implementatievraag. Behandel het als iets dat gebouwd, ontworpen, "
+            "gepland of getest moet worden; spreek niet alsof er al een actuele storing is."
+        )
+    if intent == "storing":
+        return (
+            "ONDERWERPSOORT: dit is een storing of incident. Eerst diagnose, oorzaak, herstelpad en bewijs; "
+            "pas daarna structurele verbetering."
+        )
+    if intent == "idee":
+        return (
+            "ONDERWERPSOORT: dit is een idee of verkenning. Vergroot de oplossingsruimte met waarde, varianten, "
+            "prototype, risico en klein experiment; maak er nog geen incident van."
+        )
+    return (
+        "ONDERWERPSOORT: dit is een vraag of uitlegverzoek. Verhelder begrippen, verschillen, voorbeelden en gevolgen "
+        "voordat je een bouwplan of diagnose maakt."
+    )
+
+
+def _chatgpt_copilot_token_file() -> Path:
+    configured = os.getenv("CHATGPT_COPILOT_TOKEN_FILE") or os.getenv("WINTRIP_CHATGPT_CODEX_TOKEN_FILE")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.home() / ".chatgpt-copilot" / "oauth-tokens.json").resolve()
+
+
+def _goose_chatgpt_codex_token_file() -> Path:
+    configured = os.getenv("GOOSE_CHATGPT_CODEX_TOKEN_FILE") or os.getenv("WINTRIP_GOOSE_CHATGPT_CODEX_TOKEN_FILE")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.home() / ".config" / "goose" / "chatgpt_codex" / "tokens.json").resolve()
+
+
+def _codex_auth_file() -> Path:
+    configured = os.getenv("CODEX_AUTH_FILE") or os.getenv("WINTRIP_CODEX_AUTH_FILE")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    codex_home = os.getenv("CODEX_HOME") or os.getenv("WINTRIP_CODEX_HOME")
+    root = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+    return (root / "auth.json").resolve()
+
+
+def _load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_secret_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f"{path.suffix}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _normalize_chatgpt_codex_token(raw: dict[str, Any]) -> dict[str, Any]:
+    token = {
+        "provider": "chatgpt",
+        "accessToken": str(raw.get("accessToken") or raw.get("access_token") or "").strip(),
+        "refreshToken": str(raw.get("refreshToken") or raw.get("refresh_token") or "").strip(),
+        "idToken": str(raw.get("idToken") or raw.get("id_token") or "").strip(),
+        "expiresAt": raw.get("expiresAt") or raw.get("expires_at") or "",
+        "accountId": str(raw.get("accountId") or raw.get("account_id") or "").strip(),
+    }
+    if not (token["accessToken"] or token["refreshToken"]):
+        return {}
+    return {key: value for key, value in token.items() if value not in ("", None)}
+
+
+def _load_chatgpt_copilot_token() -> dict[str, Any]:
+    path = _chatgpt_copilot_token_file()
+    data = _load_json_dict(path)
+    token = data.get("chatgpt")
+    return _normalize_chatgpt_codex_token(token) if isinstance(token, dict) else {}
+
+
+def _load_goose_chatgpt_codex_token() -> dict[str, Any]:
+    return _normalize_chatgpt_codex_token(_load_json_dict(_goose_chatgpt_codex_token_file()))
+
+
+def _load_codex_auth_token() -> dict[str, Any]:
+    data = _load_json_dict(_codex_auth_file())
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict):
+        return {}
+    auth_mode = str(data.get("auth_mode") or "").strip().lower()
+    if auth_mode and auth_mode != "chatgpt":
+        return {}
+    return _normalize_chatgpt_codex_token(tokens)
+
+
+def _save_chatgpt_copilot_token(token: dict[str, Any]) -> None:
+    path = _chatgpt_copilot_token_file()
+    data = _load_json_dict(path)
+    data["chatgpt"] = {**token, "provider": "chatgpt"}
+    _write_secret_json(path, data)
+
+
+def _timestamp_to_utc_iso(seconds: int) -> str:
+    return datetime.fromtimestamp(seconds, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _chatgpt_token_access(token: dict[str, Any]) -> str:
+    return str(token.get("accessToken") or token.get("access_token") or "").strip()
+
+
+def _chatgpt_token_refresh(token: dict[str, Any]) -> str:
+    return str(token.get("refreshToken") or token.get("refresh_token") or "").strip()
+
+
+def _chatgpt_token_id(token: dict[str, Any]) -> str:
+    return str(token.get("idToken") or token.get("id_token") or "").strip()
+
+
+def _jwt_payload(access_token: str) -> dict[str, Any]:
+    try:
+        parts = str(access_token or "").split(".")
+        if len(parts) != 3:
+            return {}
+        payload_part = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_part.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _token_expiry_seconds(token: dict[str, Any]) -> int:
+    raw = token.get("expiresAt") or token.get("expires_at") or 0
+    value = 0
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text:
+            try:
+                value = int(float(text))
+            except ValueError:
+                try:
+                    value = int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+                except ValueError:
+                    value = 0
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 0
+    if not value:
+        payload = _jwt_payload(_chatgpt_token_access(token))
+        try:
+            value = int(payload.get("exp") or 0)
+        except (TypeError, ValueError):
+            value = 0
+    return value // 1000 if value > 10_000_000_000 else value
+
+
+def _token_has_time_left(token: dict[str, Any], leeway_seconds: int = 300) -> bool:
+    expires_at = _token_expiry_seconds(token)
+    return not expires_at or time.time() < (expires_at - leeway_seconds)
+
+
+def _chatgpt_account_id_from_jwt(access_token: str) -> str:
+    payload = _jwt_payload(access_token)
+    account = payload.get("https://api.openai.com/auth") if isinstance(payload, dict) else {}
+    if isinstance(account, dict):
+        return str(account.get("chatgpt_account_id") or "")
+    return ""
+
+
+def _chatgpt_token_account_id(token: dict[str, Any]) -> str:
+    explicit = str(token.get("accountId") or token.get("account_id") or "").strip()
+    return explicit or _chatgpt_account_id_from_jwt(_chatgpt_token_access(token))
+
+
+def _save_goose_chatgpt_codex_token(token: dict[str, Any]) -> None:
+    path = _goose_chatgpt_codex_token_file()
+    data = _load_json_dict(path)
+    access_token = _chatgpt_token_access(token)
+    refresh_token = _chatgpt_token_refresh(token)
+    id_token = _chatgpt_token_id(token)
+    if access_token:
+        data["access_token"] = access_token
+    if refresh_token:
+        data["refresh_token"] = refresh_token
+    if id_token:
+        data["id_token"] = id_token
+    expires_at = _token_expiry_seconds(token)
+    if expires_at:
+        data["expires_at"] = _timestamp_to_utc_iso(expires_at)
+    account_id = _chatgpt_token_account_id(token)
+    if account_id:
+        data["account_id"] = account_id
+    _write_secret_json(path, data)
+
+
+def _save_codex_auth_token(token: dict[str, Any]) -> None:
+    path = _codex_auth_file()
+    data = _load_json_dict(path)
+    data["auth_mode"] = "chatgpt"
+    tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+    access_token = _chatgpt_token_access(token)
+    refresh_token = _chatgpt_token_refresh(token)
+    id_token = _chatgpt_token_id(token)
+    if access_token:
+        tokens["access_token"] = access_token
+    if refresh_token:
+        tokens["refresh_token"] = refresh_token
+    if id_token:
+        tokens["id_token"] = id_token
+    account_id = _chatgpt_token_account_id(token)
+    if account_id:
+        tokens["account_id"] = account_id
+    data["tokens"] = tokens
+    data["last_refresh"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    _write_secret_json(path, data)
+
+
+def _chatgpt_codex_token_sources() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "chatgpt-copilot",
+            "auth_mode": "oauth_shared_file",
+            "path": _chatgpt_copilot_token_file(),
+            "token": _load_chatgpt_copilot_token(),
+            "save": _save_chatgpt_copilot_token,
+        },
+        {
+            "id": "goose:chatgpt_codex",
+            "auth_mode": "oauth_goose",
+            "path": _goose_chatgpt_codex_token_file(),
+            "token": _load_goose_chatgpt_codex_token(),
+            "save": _save_goose_chatgpt_codex_token,
+        },
+        {
+            "id": "codex:auth.json",
+            "auth_mode": "oauth_codex",
+            "path": _codex_auth_file(),
+            "token": _load_codex_auth_token(),
+            "save": _save_codex_auth_token,
+        },
+    ]
+
+
+def _chatgpt_codex_token_usable(token: dict[str, Any]) -> bool:
+    return bool((_chatgpt_token_access(token) and _token_has_time_left(token)) or _chatgpt_token_refresh(token))
+
+
+def _chatgpt_codex_status(openai_subscription: dict[str, Any] | None = None) -> dict[str, Any]:
+    sources = _chatgpt_codex_token_sources()
+    usable_source = next((source for source in sources if _chatgpt_codex_token_usable(source.get("token", {}))), None)
+    present_source = next((source for source in sources if source.get("token")), None)
+    selected_source = usable_source or present_source or sources[0]
+    token = selected_source.get("token", {}) if isinstance(selected_source.get("token"), dict) else {}
+    expires_at = _token_expiry_seconds(token)
+    has_refresh = any(bool(_chatgpt_token_refresh(source.get("token", {}))) for source in sources)
+    shared_usable = bool(usable_source)
+    source = str(selected_source.get("id") or "missing") if (shared_usable or present_source) else "missing"
+    auth_mode = str(selected_source.get("auth_mode") or "oauth_shared_file")
+    status = "configured" if shared_usable else "missing_token"
+
+    subscription = openai_subscription or {}
+    sub_active = bool(subscription.get("active") and not subscription.get("expired"))
+    sub_oauth_ready = bool(
+        sub_active
+        and subscription.get("has_credential")
+        and str(subscription.get("auth_mode") or "") == "oauth_refresh_token"
+    )
+    if not shared_usable and sub_oauth_ready:
+        source = "subscription:oauth_refresh_token"
+        auth_mode = "oauth_refresh_token"
+        status = "configured"
+    token_sources = [
+        {
+            "id": str(item.get("id") or ""),
+            "auth_mode": str(item.get("auth_mode") or ""),
+            "path": str(item.get("path") or ""),
+            "present": bool(item.get("token")),
+            "configured": _chatgpt_codex_token_usable(item.get("token", {})),
+        }
+        for item in sources
+    ]
+
+    return {
+        "configured": bool(shared_usable or sub_oauth_ready),
+        "direct_chat": bool(shared_usable or sub_oauth_ready),
+        "status": status,
+        "auth_mode": auth_mode,
+        "key_source": source,
+        "token_file": str(selected_source.get("path") or _chatgpt_copilot_token_file()),
+        "token_file_present": bool(present_source),
+        "token_sources": token_sources,
+        "expires_at": _timestamp_to_utc_iso(expires_at) if expires_at else "",
+        "expired": bool(expires_at and time.time() >= expires_at),
+        "has_refresh_token": has_refresh,
+    }
+
+
+class _SimpleHTTPResponse:
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.text = text
+        self.ok = 200 <= status_code < 300
+
+    def json(self) -> Any:
+        return json.loads(self.text or "{}")
+
+
+def _http_post(
+    url: str,
+    *,
+    headers: dict[str, str],
+    data: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+    timeout: float = 20.0,
+) -> Any:
+    try:
+        import requests
+
+        kwargs: dict[str, Any] = {"headers": headers, "timeout": timeout}
+        if json_body is not None:
+            kwargs["json"] = json_body
+        else:
+            kwargs["data"] = data or {}
+        return requests.post(url, **kwargs)
+    except ModuleNotFoundError:
+        pass
+
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    if json_body is not None:
+        body = json.dumps(json_body).encode("utf-8")
+        request_headers = {"Content-Type": "application/json", **headers}
+    else:
+        body = urllib.parse.urlencode(data or {}).encode("utf-8")
+        request_headers = {"Content-Type": "application/x-www-form-urlencoded", **headers}
+    request = urllib.request.Request(url, data=body, headers=request_headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return _SimpleHTTPResponse(response.getcode(), response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        return _SimpleHTTPResponse(exc.code, exc.read().decode("utf-8", errors="replace"))
+
+
 class PersonaStore:
     def __init__(self, path: Path | None = None):
         self.path = path or (_default_data_dir() / "personas.json")
@@ -799,8 +1330,16 @@ MeetingLLMCall = Callable[..., dict[str, Any]]
 class MeetingRunner:
     """Runs a transcript-only persona meeting without granting tool access."""
 
-    def __init__(self, llm_call: MeetingLLMCall | None = None):
+    def __init__(self, llm_call: MeetingLLMCall | None = None, llm_timeout_seconds: float | None = None):
         self.llm_call = llm_call
+        self.llm_timeout_seconds = max(
+            0.01,
+            float(
+                llm_timeout_seconds
+                if llm_timeout_seconds is not None
+                else os.getenv("WINTRIP_OUROBOROS_CHAT_MEETING_TURN_TIMEOUT", "2")
+            ),
+        )
 
     def run(
         self,
@@ -811,17 +1350,27 @@ class MeetingRunner:
         model: str,
         meeting_id: str,
         meeting_type: str = "team",
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         meeting_type = _normalize_meeting_type(meeting_type)
+        topic_intent = _classify_topic_intent(topic)
         personas = self._ordered_personas(personas)
         participants = [self._public_persona(persona) for persona in personas]
         chair = self._chair_persona(personas)
         transcript: list[dict[str, Any]] = []
         events: list[dict[str, Any]] = []
 
+        def emit(event: dict[str, Any]) -> None:
+            events.append(event)
+            if event_sink is not None:
+                try:
+                    event_sink(event)
+                except Exception:
+                    pass
+
         if chair:
-            agenda = self._chair_led_agenda(chair, personas, meeting_type)
-            for round_number, phase, persona, instruction in agenda:
+            agenda = self._chair_led_agenda(chair, personas, meeting_type, topic)
+            for index, (round_number, phase, persona, instruction) in enumerate(agenda):
                 event = self._run_turn(
                     topic=topic,
                     meeting_type=meeting_type,
@@ -837,57 +1386,156 @@ class MeetingRunner:
                     transcript=transcript,
                     max_words=95 if self._is_chair_persona(persona) else 80,
                 )
-                events.append(event)
-                transcript.append(
-                    {
+                parrot_handled = False
+                candidate = {
+                    "round": round_number,
+                    "phase": phase,
+                    "participant": event["participant"],
+                    "content": event["content"],
+                }
+                forced_by_parrot = (
+                    not self._is_chair_persona(persona)
+                    and not event.get("prompt_context", {}).get("used_fallback")
+                    and event.get("prompt_context", {}).get("distinctness_reason") == "parroting"
+                )
+                still_parroting = (
+                    not self._is_chair_persona(persona)
+                    and not event.get("prompt_context", {}).get("used_fallback")
+                    and self._looks_like_parroting([*transcript, candidate], event["content"])
+                )
+                if forced_by_parrot or still_parroting:
+                    parrot_handled = True
+                    if not any(
+                        item.get("phase") == "intervention"
+                        and item.get("prompt_context", {}).get("intervention_reason") == "anti_parroting"
+                        for item in events
+                    ):
+                        intervention = self._chair_intervention_event(
+                            chair=chair,
+                            repeated_persona=persona,
+                            meeting_id=meeting_id,
+                            meeting_type=meeting_type,
+                            round_number=round_number,
+                            transcript_turns=len(transcript),
+                        )
+                        emit(intervention)
+                        transcript.append(
+                            {
+                                "round": round_number,
+                                "phase": "intervention",
+                                "participant": intervention["participant"],
+                                "content": intervention["content"],
+                            }
+                        )
+                    event["phase"] = "anti-parrot-redo"
+                    event["prompt_context"]["intervention_reason"] = "anti_parroting_redo"
+                    event["prompt_context"]["required_distinct_turn"] = True
+                    event["prompt_context"]["forced_distinct_fallback"] = True
+                    if still_parroting:
+                        event["content"] = self._distinctive_fallback_turn(
+                            persona,
+                            topic,
+                            "anti-parrot-redo",
+                            transcript,
+                            meeting_type=meeting_type,
+                            strict=True,
+                        )
+                    if not str(event["content"]).strip().lower().startswith("anders punt"):
+                        event["content"] = _clip_text(f"Anders punt: {event['content']}", 1800)
+                    retry_candidate = {
                         "round": round_number,
-                        "phase": phase,
+                        "phase": "anti-parrot-redo",
                         "participant": event["participant"],
                         "content": event["content"],
                     }
-                )
-                if not self._is_chair_persona(persona) and self._looks_like_parroting(transcript, event["content"]):
-                    intervention = self._run_turn(
-                        topic=topic,
-                        meeting_type=meeting_type,
-                        personas=personas,
-                        participants=participants,
-                        persona=chair,
-                        provider=provider,
-                        model=model,
-                        meeting_id=meeting_id,
-                        round_number=round_number,
-                        phase="intervention",
-                        instruction=(
-                            "Grijp als voorzitter kort in: benoem dat twee bijdragen elkaar te veel herhalen, "
-                            "vraag om één nieuw onderscheidend punt en bepaal wie daarna spreekt. Maximaal 55 woorden."
-                        ),
-                        transcript=transcript,
-                        max_words=65,
-                    )
-                    intervention["prompt_context"]["intervention_reason"] = "anti_parroting"
-                    events.append(intervention)
+                    if self._looks_like_parroting([*transcript, retry_candidate], event["content"]):
+                        event["content"] = self._distinctive_fallback_turn(
+                            persona,
+                            topic,
+                            "anti-parrot-redo",
+                            transcript,
+                            meeting_type=meeting_type,
+                            strict=True,
+                        )
+                        event["prompt_context"]["forced_distinct_fallback"] = True
+                    emit(event)
                     transcript.append(
                         {
                             "round": round_number,
-                            "phase": "intervention",
-                            "participant": intervention["participant"],
-                            "content": intervention["content"],
+                            "phase": "anti-parrot-redo",
+                            "participant": event["participant"],
+                            "content": event["content"],
                         }
                     )
+                else:
+                    emit(event)
+                    transcript.append(candidate)
+                if not self._is_chair_persona(persona):
+                    next_item = agenda[index + 1] if index + 1 < len(agenda) else None
+                    if next_item:
+                        next_round, _next_phase, next_persona, _next_instruction = next_item
+                        floor_control = self._chair_floor_control_event(
+                            chair=chair,
+                            previous_persona=persona,
+                            next_persona=next_persona,
+                            meeting_id=meeting_id,
+                            meeting_type=meeting_type,
+                            topic=topic,
+                            next_phase=_next_phase,
+                            round_number=next_round if parrot_handled else round_number,
+                            transcript_turns=len(transcript),
+                            transcript=transcript,
+                        )
+                        emit(floor_control)
+                        transcript.append(
+                            {
+                                "round": floor_control["round"],
+                                "phase": floor_control["phase"],
+                                "participant": floor_control["participant"],
+                                "content": floor_control["content"],
+                            }
+                        )
         else:
-            for round_number, phase, instruction in (
-                (
-                    1,
-                    "brainstorm",
-                    "Geef je eerste reactie als spreekbeurt in het gesprek: maximaal 80 woorden, één concreet punt, één risico en één vraag of vervolgstap.",
-                ),
-                (
-                    2,
-                    "discussion",
-                    "Reageer op de vorige spreker alsof je aan tafel zit: maximaal 80 woorden, bouw voort of nuanceer, en eindig met één concrete vervolgstap.",
-                ),
-            ):
+            if meeting_type == "sprint_planning":
+                open_agenda = (
+                    (
+                        1,
+                        "plan-slice",
+                        "Lever één sprint-plak: taak, acceptatiecriterium, testcommando, risico en rollback. Maximaal 70 woorden.",
+                    ),
+                    (
+                        2,
+                        "plan-check",
+                        "Controleer het plan: voeg één ontbrekende afhankelijkheid, stopregel of smoke-run toe. Maximaal 60 woorden.",
+                    ),
+                )
+            elif meeting_type == "brainstorm":
+                open_agenda = (
+                    (
+                        1,
+                        "research",
+                        "Deep search: noem één bronlaag, waarneming en onzekerheid uit beschikbare read-only context. Maximaal 85 woorden.",
+                    ),
+                    (
+                        2,
+                        "research-layer",
+                        "Deep think: geef één aanname, alternatief, tegenvoorbeeld of experiment dat de oplossing verdiept. Maximaal 80 woorden.",
+                    ),
+                )
+            else:
+                open_agenda = (
+                    (
+                        1,
+                        "input",
+                        "Geef je eerste besluitvormende bijdrage: maximaal 80 woorden, één standpunt, één risico en één vervolgstap.",
+                    ),
+                    (
+                        2,
+                        "reply",
+                        "Reageer op de vorige spreker: maximaal 80 woorden, kies accepteren, aanpassen of parkeren, en eindig besluitbaar.",
+                    ),
+                )
+            for round_number, phase, instruction in open_agenda:
                 for persona in personas:
                     event = self._run_turn(
                         topic=topic,
@@ -904,7 +1552,7 @@ class MeetingRunner:
                         transcript=transcript,
                         max_words=80,
                     )
-                    events.append(event)
+                    emit(event)
                     transcript.append(
                         {
                             "round": round_number,
@@ -921,6 +1569,7 @@ class MeetingRunner:
             "meeting_id": meeting_id,
             "timestamp": _now_iso(),
             "meeting_type": meeting_type,
+            "topic_intent": topic_intent,
             "content": _clip_text(summary_content, 3000),
             "summary": _clip_text(summary_content, 3000),
             "provider": provider,
@@ -935,9 +1584,10 @@ class MeetingRunner:
                 "when real-world changes are intended."
             ),
         }
-        events.append(summary_event)
+        emit(summary_event)
         return {
             "meeting_type": meeting_type,
+            "topic_intent": topic_intent,
             "participants": participants,
             "rounds": [event for event in events if event.get("type") == "participant_turn"],
             "summary": summary_event["summary"],
@@ -959,17 +1609,197 @@ class MeetingRunner:
         role = str(persona.get("role") or "").strip().lower()
         return persona_id == "de-voorzitter" or "voorzitter" in name or "facilitator" in role
 
+    def _is_critic_persona(self, persona: dict[str, Any]) -> bool:
+        persona_id = str(persona.get("id") or "").strip().lower()
+        name = str(persona.get("name") or "").strip().lower()
+        role = str(persona.get("role") or "").strip().lower()
+        tags = persona.get("tags") if isinstance(persona.get("tags"), list) else []
+        tag_text = " ".join(str(tag).lower() for tag in tags)
+        return "criticus" in persona_id or "critic" in persona_id or "criticus" in name or "critic" in name or "risk" in role or "critic" in tag_text
+
+    def _meeting_type_contract(self, meeting_type: str) -> str:
+        meeting_type = _normalize_meeting_type(meeting_type)
+        if meeting_type == "sprint_planning":
+            return (
+                "SPRINTCONTRACT: doel is een uitvoerbaar bouwplan. Elke bijdrage maakt het werk kleiner: taak, eigenaar, "
+                "acceptatiecriterium, testcommando, afhankelijkheid, rollback of stopregel. Geen vrije discussie zonder planwaarde."
+            )
+        if meeting_type == "brainstorm":
+            return (
+                "BRAINSTORMCONTRACT: doel is onderzoek en oplossingsruimte vergroten. Elke niet-voorzitter doet deep search "
+                "op beschikbare read-only bronnen en daarna deep think: aanname, alternatief, tegenvoorbeeld en experiment. "
+                "Kritiek is altijd een uitdaging om dieper naar een oplossing te zoeken, nooit een blokkade."
+            )
+        return (
+            "TEAMCONTRACT: doel is besluitvorming. Elke bijdrage helpt kiezen: standpunt, bewijs, spanning, risico, eigenaar "
+            "of besluitbare vervolgstap. De voorzitter bewaakt tempo, verschil tussen punten en expliciete woordgeving."
+        )
+
+    def _chair_floor_control_event(
+        self,
+        *,
+        chair: dict[str, Any],
+        previous_persona: dict[str, Any],
+        next_persona: dict[str, Any],
+        meeting_id: str,
+        meeting_type: str,
+        topic: str,
+        next_phase: str,
+        round_number: int,
+        transcript_turns: int,
+        transcript: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        previous_name = str(previous_persona.get("name") or previous_persona.get("id") or "de vorige spreker")
+        next_name = str(next_persona.get("name") or next_persona.get("id") or "de volgende spreker")
+        topic_intent = _classify_topic_intent(topic)
+        focus_options = {
+            "team": [
+                "de besliskeuze",
+                "het doorslaggevende risico",
+                "de eigenaar",
+                "de open vraag",
+                "de besluitbare vervolgstap",
+                "de stopconditie",
+            ],
+            "sprint_planning": [
+                "de eerste bouwtaak",
+                "het acceptatiecriterium",
+                "het testcommando",
+                "de rollbackroute",
+                "de afhankelijkheid",
+                "de stopregel",
+                "de smoke-run",
+            ],
+            "brainstorm": [
+                "een nieuwe bronlaag waar we nog niet naar gekeken hebben",
+                "een aanname die hier nog onzeker is",
+                "een alternatief oplossingspad",
+                "het ontbrekende tegenvoorbeeld",
+                "de oplossingsroute na de kritiek van net",
+                "een klein toetsbaar experiment",
+            ],
+        }
+        options = focus_options.get(meeting_type, focus_options["team"])
+        assignment_track_key = ""
+        opdracht_floor_template: str | None = None
+        if meeting_type == "brainstorm" and topic_intent == "opdracht":
+            track = self._assignment_track_for_persona_identity(topic, next_persona)
+            assignment_track_key = track["key"]
+            if next_phase == "research":
+                opdracht_options = [
+                    "hoe jij dit vanuit jouw rol zou aanpakken",
+                    "wat hier vanuit jouw werk als eerste opvalt",
+                    "welke eerste praktische stap jij hier zou maken",
+                    "waar de opdracht volgens jou het kleinst gemaakt kan worden",
+                ]
+            elif next_phase == "research-layer":
+                opdracht_options = [
+                    "welke aanname jij hier nog onzeker vindt",
+                    "welk risico jij verder zou willen uitwerken",
+                    "wat je hier nog dieper zou willen onderzoeken",
+                ]
+            elif next_phase == "solution-dive":
+                opdracht_options = [
+                    "hoe je dit klein en toetsbaar maakt",
+                    "welke kleine eerste patch dit voorstel concreet maakt",
+                    "welke ene test bewijst dat je voorstel werkt",
+                ]
+            else:
+                opdracht_options = [
+                    "hoe we deze ideeën in een werkbare volgorde zetten",
+                    "welke stap als eerste op tafel moet komen",
+                ]
+            opdracht_floor_template = opdracht_options[transcript_turns % len(opdracht_options)]
+        existing_text = self._transcript_text(transcript or []).lower()
+        ordered = options[transcript_turns % len(options):] + options[: transcript_turns % len(options)]
+        focus = next((option for option in ordered if option.lower() not in existing_text), ordered[0])
+        if self._is_chair_persona(next_persona):
+            content = f"Dank {previous_name}. Ik neem het woord even terug om de lijn op orde te brengen en een besluitbare vervolgstap te maken."
+        elif opdracht_floor_template is not None:
+            content = f"Dank {previous_name}. {next_name}, {opdracht_floor_template}?"
+        else:
+            content = f"Dank {previous_name}. Ik geef nu het woord aan {next_name} voor {focus}."
+        return {
+            "type": "participant_turn",
+            "meeting_id": meeting_id,
+            "timestamp": _now_iso(),
+            "round": round_number,
+            "phase": "floor-control",
+            "meeting_type": meeting_type,
+            "participant": self._public_persona(chair),
+            "provider": "deterministic",
+            "model": "chair-floor-control",
+            "content": _clip_text(content, 1800),
+            "ok": True,
+            "error": "",
+            "prompt_context": {
+                "social_awareness": True,
+                "chair_led": True,
+                "meeting_type": meeting_type,
+                "floor_control": True,
+                "previous_speaker": previous_persona.get("id"),
+                "next_speaker": next_persona.get("id"),
+                "anti_parrot_required": True,
+                "transcript_turns_supplied": transcript_turns,
+                "max_words_requested": 35,
+                "assignment_track_key": assignment_track_key,
+            },
+        }
+
+    def _chair_intervention_event(
+        self,
+        *,
+        chair: dict[str, Any],
+        repeated_persona: dict[str, Any],
+        meeting_id: str,
+        meeting_type: str,
+        round_number: int,
+        transcript_turns: int,
+    ) -> dict[str, Any]:
+        repeated_name = str(repeated_persona.get("name") or repeated_persona.get("id") or "de spreker")
+        redirects = [
+            f"Ik stop de echo hier. {repeated_name}, maak er nu een ander bewijsstuk van.",
+            f"Ik grijp in op overlap. {repeated_name}, geef nu een eigen risico, test of randvoorwaarde.",
+            f"Dit is te dicht op wat al gezegd is. {repeated_name}, draai naar een nieuwe laag.",
+        ]
+        content = redirects[transcript_turns % len(redirects)]
+        return {
+            "type": "participant_turn",
+            "meeting_id": meeting_id,
+            "timestamp": _now_iso(),
+            "round": round_number,
+            "phase": "intervention",
+            "meeting_type": meeting_type,
+            "participant": self._public_persona(chair),
+            "provider": "deterministic",
+            "model": "chair-anti-parrot",
+            "content": _clip_text(content, 1800),
+            "ok": True,
+            "error": "",
+            "prompt_context": {
+                "social_awareness": True,
+                "chair_led": True,
+                "meeting_type": meeting_type,
+                "intervention_reason": "anti_parroting",
+                "anti_parrot_required": True,
+                "repeated_speaker": repeated_persona.get("id"),
+                "transcript_turns_supplied": transcript_turns,
+                "max_words_requested": 35,
+            },
+        }
+
     def _chair_led_agenda(
         self,
         chair: dict[str, Any],
         personas: list[dict[str, Any]],
         meeting_type: str,
+        topic: str,
     ) -> list[tuple[int, str, dict[str, Any], str]]:
         meeting_type = _normalize_meeting_type(meeting_type)
         if meeting_type == "sprint_planning":
             return self._sprint_planning_agenda(chair, personas)
         if meeting_type == "brainstorm":
-            return self._brainstorm_agenda(chair, personas)
+            return self._brainstorm_agenda(chair, personas, topic)
         return self._team_agenda(chair, personas)
 
     def _team_agenda(
@@ -985,8 +1815,9 @@ class MeetingRunner:
                 "opening",
                 chair,
                 (
-                    "Open als voorzitter. Noem in gewone spreektaal het doel van dit overleg, de volgorde, "
-                    f"en geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+                    "Open als voorzitter een besluitvormende teamvergadering. Noem het besluit dat nodig is, "
+                    "de volgorde standpunt-risico-keuze en geef daarna expliciet het woord aan "
+                    f"{first_name}. Maximaal 65 woorden."
                 ),
             )
         ]
@@ -997,8 +1828,8 @@ class MeetingRunner:
                     "input",
                     persona,
                     (
-                        "Geef je bijdrage aan de voorzitter en de andere deelnemers. Spreek natuurlijk, maximaal 75 woorden. "
-                        "Noem één voorstel en één aandachtspunt. Geen rapportstijl."
+                        "Geef één besluitvormende bijdrage. Kies een standpunt, bewijsstuk of risico dat de keuze scherper maakt. "
+                        "Benoem wat vandaag wel of niet besloten kan worden. Spreek natuurlijk, maximaal 75 woorden."
                     ),
                 )
             )
@@ -1009,8 +1840,8 @@ class MeetingRunner:
                     "chair-bridge",
                     chair,
                     (
-                        "Vat als voorzitter in maximaal 70 woorden samen wat je hoort. Benoem de spanning of keuze die nu op tafel ligt "
-                        "en stel één gerichte vraag voor de tweede ronde."
+                        "Vat als voorzitter de keuze samen. Benoem optie A/B, de belangrijkste spanning en één vraag die nodig is "
+                        "om tot besluit of eigenaar te komen. Maximaal 70 woorden."
                     ),
                 )
             )
@@ -1021,8 +1852,8 @@ class MeetingRunner:
                         "reply",
                         persona,
                         (
-                            "Reageer kort op de vraag of samenvatting van de voorzitter. Maximaal 70 woorden. "
-                            "Maak je antwoord concreet en eindig met één besluitbaar punt."
+                            "Reageer op de beslisvraag van de voorzitter. Kies: accepteren, aanpassen of parkeren. "
+                            "Eindig met één besluitbaar punt, eigenaar of stopconditie. Maximaal 70 woorden."
                         ),
                     )
                 )
@@ -1032,8 +1863,8 @@ class MeetingRunner:
                 "closing",
                 chair,
                 (
-                    "Sluit als voorzitter af in maximaal 90 woorden. Geef gewone spreektaal met drie korte regels: "
-                    "Besluit, Open vraag, Volgende stap. Wijs geen acties toe buiten de approval-flow."
+                    "Sluit als voorzitter af in maximaal 90 woorden. Geef gewone spreektaal met vier korte regels: "
+                    "Besluit, Open vraag, Eigenaar, Volgende stap. Wijs geen acties toe buiten de approval-flow."
                 ),
             )
         )
@@ -1052,7 +1883,7 @@ class MeetingRunner:
                 "opening",
                 chair,
                 (
-                    "Open als voorzitter een sprint planning. Zet direct de timebox, het doel en de volgorde neer. "
+                    "Open als voorzitter een sprint planning. Zet direct timebox, sprintdoel, bouwvolgorde en testpoort neer. "
                     f"Geef daarna het woord aan {first_name}. Maximaal 55 woorden."
                 ),
             )
@@ -1064,8 +1895,8 @@ class MeetingRunner:
                     "plan-slice",
                     persona,
                     (
-                        "Lever één sprint-plak: doel, eerste taak, grootste risico en test. "
-                        "Spreek kort en besluitbaar, maximaal 65 woorden."
+                        "Lever één sprint-plak: backlog-item, eerste taak, acceptatiecriterium, testcommando en grootste risico. "
+                        "Maak het uitvoerbaar voor een ontwikkelagent. Maximaal 70 woorden."
                     ),
                 )
             )
@@ -1076,8 +1907,8 @@ class MeetingRunner:
                     "plan-bridge",
                     chair,
                     (
-                        "Maak als voorzitter een concept-plan in gewone taal. Benoem de volgorde, het scherpste risico "
-                        "en de ene vraag die nog nodig is om te starten. Maximaal 75 woorden."
+                        "Maak als voorzitter een concept-sprintbord. Benoem volgorde, eigenaar, acceptatietest, rollback "
+                        "en de ene vraag die nog nodig is om te starten. Maximaal 80 woorden."
                     ),
                 )
             )
@@ -1088,8 +1919,8 @@ class MeetingRunner:
                         "plan-check",
                         persona,
                         (
-                            "Controleer het concept-plan. Voeg alleen één correctie, gat of test toe die het plan beter maakt. "
-                            "Maximaal 55 woorden."
+                            "Controleer het concept-plan als delivery-check. Voeg één ontbrekend acceptatiecriterium, testcommando, "
+                            "afhankelijkheid, rollback of stopregel toe. Maximaal 60 woorden."
                         ),
                     )
                 )
@@ -1099,7 +1930,8 @@ class MeetingRunner:
                 "closing",
                 chair,
                 (
-                    "Presenteer het sprintplan als voorzitter. Gebruik vier korte regels: Doel, Taken, Test, Stopregel. "
+                    "Presenteer het sprintplan als voorzitter in natuurlijke spreektaal. Benoem sprintdoel, taken, acceptatie, "
+                    "test en rollback, en wanneer een agent pas mag bouwen. Geen labels of opsommingsheaders; spreek het uit zoals aan een echte tafel. "
                     "Geen externe uitvoering buiten de approval-flow."
                 ),
             )
@@ -1110,30 +1942,72 @@ class MeetingRunner:
         self,
         chair: dict[str, Any],
         personas: list[dict[str, Any]],
+        topic: str,
     ) -> list[tuple[int, str, dict[str, Any], str]]:
         contributors = [persona for persona in personas if persona is not chair]
         first_name = contributors[0].get("name") if contributors else "de tafel"
+        critic = next((persona for persona in contributors if self._is_critic_persona(persona)), None)
+        solution_contributors = [persona for persona in contributors if persona is not critic]
+        topic_intent = _classify_topic_intent(topic)
+        if topic_intent == "opdracht":
+            opening_instruction = (
+                "Open als voorzitter een opdracht-brainstorm. Vraag om concrete oplossingssporen: component, ontwerpkeuze, "
+                "acceptatiebewijs en risico. Geen algemene lagenlijst. "
+                f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+            )
+        elif topic_intent == "storing":
+            opening_instruction = (
+                "Open als voorzitter een diagnose-brainstorm. Vraag om foutsignaal, vermoedelijke laag, herstelpad en preventie. "
+                f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+            )
+        elif topic_intent == "idee":
+            opening_instruction = (
+                "Open als voorzitter een idee-brainstorm. Vraag om waarde, variant, prototype en leerexperiment. "
+                f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+            )
+        else:
+            opening_instruction = (
+                "Open als voorzitter een brainstormsessie. Zet het contract neer: eerst deep search per persona, daarna deep think "
+                "op aannames, alternatieven, risico's en experimenten. "
+                f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+            )
         agenda: list[tuple[int, str, dict[str, Any], str]] = [
             (
                 1,
                 "opening",
                 chair,
-                (
-                    "Open als voorzitter een brainstormsessie. Zet de onderzoekslagen neer: bronnen, aannames, alternatieven, risico's. "
-                    f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
-                ),
+                opening_instruction,
             )
         ]
         for persona in contributors:
+            if topic_intent == "opdracht":
+                track = self._assignment_track_for_persona_identity(topic, persona)
+                if self._is_critic_persona(persona):
+                    instruction = (
+                        f"Jouw vaste oplossingsspoor is {track['title']}. Toets dit spoor hard: welk component bouwen we, welk bewijs ontbreekt, "
+                        "welk risico maakt dit spoor onveilig of te groot? Maximaal 85 woorden."
+                    )
+                else:
+                    instruction = (
+                        f"Jouw vaste oplossingsspoor is {track['title']}. Noem component, ontwerpkeuze, eerste acceptatiebewijs en waarom dit "
+                        "de opdracht kleiner maakt. Geen abstracte bronlaag. Maximaal 85 woorden."
+                    )
+            elif self._is_critic_persona(persona):
+                instruction = (
+                    "Deep search: gebruik de beschikbare read-only kennis- of Brave-context als die aanwezig is. Noem één bronlaag, "
+                    "één concreet ontbrekend bewijs en één kritisch risico als uitdaging voor een sterkere oplossing. Maximaal 85 woorden."
+                )
+            else:
+                instruction = (
+                    "Deep search: gebruik de beschikbare read-only kennis- of Brave-context als die aanwezig is. Noem één bronlaag, "
+                    "één concrete waarneming en één onzekerheid die verder denken verdient. Maximaal 85 woorden."
+                )
             agenda.append(
                 (
                     1,
                     "research",
                     persona,
-                    (
-                        "Breng één nieuwe onderzoekslaag in. Gebruik de beschikbare kennis- of Brave-context als die aanwezig is, "
-                        "noem de bronlaag kort en voeg één aanname of vraag toe. Maximaal 85 woorden."
-                    ),
+                    instruction,
                 )
             )
         if contributors:
@@ -1143,31 +2017,82 @@ class MeetingRunner:
                     "research-bridge",
                     chair,
                     (
-                        "Cluster als voorzitter de bronnen en lagen die op tafel liggen. Benoem welke laag nog ontbreekt "
-                        "en geef de volgende spreker gericht het woord. Maximaal 80 woorden."
+                        "Cluster als voorzitter de concrete oplossingssporen. Kies maximaal drie kansrijke sporen en benoem "
+                        "welk bewijs per spoor nodig is. Geef daarna gericht het woord voor deep think. Maximaal 80 woorden."
+                        if topic_intent == "opdracht"
+                        else (
+                            "Cluster als voorzitter de deep-search lagen. Benoem welke bronlaag ontbreekt en geef de volgende spreker "
+                            "gericht het woord voor deep think, niet voor besluitvorming. Maximaal 80 woorden."
+                        )
                     ),
                 )
             )
             for persona in contributors:
+                if topic_intent == "opdracht":
+                    track = self._assignment_track_for_persona_identity(topic, persona)
+                    if self._is_critic_persona(persona):
+                        instruction = (
+                            f"Deep think op hetzelfde spoor {track['title']}: welke aanname kan breken, welke contracttest bewijst het, "
+                            "en welke grens houdt de patch klein? Maximaal 80 woorden."
+                        )
+                    else:
+                        instruction = (
+                            f"Deep think op hetzelfde spoor {track['title']}: geef de ontwerp-trade-off, één edge case en één testbare eerste patch. "
+                            "Maximaal 80 woorden."
+                        )
+                elif self._is_critic_persona(persona):
+                    instruction = (
+                        "Deep think: verdiep je risico als productieve uitdaging. Formuleer de aanname die kan breken, "
+                        "een tegenvoorbeeld en de vraag die de oplossing beter maakt. Je blokkeert niet. Maximaal 80 woorden."
+                    )
+                else:
+                    instruction = (
+                        "Deep think: vertrek vanuit je eigen bronlaag. Geef één aanname, alternatief, tegenvoorbeeld of experiment "
+                        "dat de oplossingsruimte vergroot. Maximaal 80 woorden."
+                    )
                 agenda.append(
                     (
                         2,
                         "research-layer",
                         persona,
-                        (
-                            "Voeg nu geen herhaling toe. Geef één andere invalshoek, bronlaag, tegenvoorbeeld of dieper risico. "
-                            "Maximaal 80 woorden."
-                        ),
+                        instruction,
                     )
                 )
+            if critic and solution_contributors:
+                critic_name = str(critic.get("name") or "de criticus")
+                for persona in solution_contributors[:3]:
+                    track = self._assignment_track_for_persona_identity(topic, persona)
+                    agenda.append(
+                        (
+                            2,
+                            "solution-dive",
+                            persona,
+                            (
+                                (
+                                    f"Behandel de opmerking van {critic_name} als uitdaging voor {track['title']}. Maak dit spoor patchbaar: "
+                                    "welke file/route, welke test, welke rollbackgrens? Maximaal 85 woorden."
+                                )
+                                if topic_intent == "opdracht"
+                                else (
+                                    f"Behandel de opmerking van {critic_name} als uitdaging, niet als block. Doe een oplossing-dive: "
+                                    "welke aanpassing, randvoorwaarde, test of alternatief maakt het voorstel sterker? Maximaal 85 woorden."
+                                )
+                            ),
+                        )
+                    )
             agenda.append(
                 (
                     2,
                     "research-synthesis",
                     chair,
                     (
-                        "Maak als voorzitter een korte synthese van de lagen. Benoem wat voldoende onderbouwd lijkt, "
-                        "wat onzeker blijft en welke bronlaag nog extra onderzoek vraagt. Maximaal 90 woorden."
+                        "Maak als voorzitter een opdrachtsynthese: gekozen oplossingsspoor, eerste patch, acceptatietest, risico "
+                        "en approval-gated volgende stap. Maximaal 90 woorden."
+                        if topic_intent == "opdracht"
+                        else (
+                            "Maak als voorzitter een synthese van deep search en deep think. Benoem bronlagen, kansrijke oplossing, "
+                            "kritieke onzekerheid en volgend experiment. Maximaal 90 woorden."
+                        )
                     ),
                 )
             )
@@ -1177,8 +2102,13 @@ class MeetingRunner:
                 "closing",
                 chair,
                 (
-                    "Sluit de brainstorm af met drie korte regels: Sterkste inzicht, Nog onzeker, Volgende onderzoeksstap. "
-                    "Geen claims zonder bronlaag en geen uitvoering buiten de approval-flow."
+                    "Sluit als voorzitter af in natuurlijke spreektaal. Vertel kort welk voorstel we als eerste bouwen, welke eerste patch en acceptatietest erbij horen, "
+                    "en wanneer een agent pas mag beginnen. Geen labels of opsommingsheaders; geen vakjargon als 'spoor' of 'approvalpoort'. Geen uitvoering buiten de approval-flow."
+                    if topic_intent == "opdracht"
+                    else (
+                        "Sluit de brainstorm af in natuurlijke spreektaal. Vertel kort wat het sterkste inzicht is, welke richting het meest belooft, "
+                        "wat nog onzeker blijft en welke onderzoeksstap nu volgt. Geen labels of opsommingsheaders, en geen uitvoering buiten de approval-flow."
+                    )
                 ),
             )
         )
@@ -1202,6 +2132,17 @@ class MeetingRunner:
         max_words: int,
     ) -> dict[str, Any]:
         participant = self._public_persona(persona)
+        topic_intent = _classify_topic_intent(topic)
+        assignment_track_key = ""
+        if (
+            meeting_type == "brainstorm"
+            and topic_intent == "opdracht"
+            and not self._is_chair_persona(persona)
+        ):
+            try:
+                assignment_track_key = self._assignment_track_for_persona_identity(topic, persona).get("key", "")
+            except Exception:
+                assignment_track_key = ""
         model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
         turn_provider = str(model_settings.get("provider") or provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
         turn_model = str(model_settings.get("name") or persona.get("model") or model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
@@ -1214,7 +2155,7 @@ class MeetingRunner:
             instruction=instruction,
             transcript=transcript,
         )
-        fallback = self._fallback_turn(persona, topic, phase, transcript)
+        fallback = self._fallback_turn(persona, topic, phase, transcript, meeting_type=meeting_type)
         response = self._call_model(
             prompt=user_prompt,
             system_prompt=system_prompt,
@@ -1222,7 +2163,31 @@ class MeetingRunner:
             model=turn_model,
             fallback=fallback,
         )
+        used_fallback = str(response.get("content") or "").strip() == str(fallback or "").strip()
         content = self._compact_conversation_text(response["content"], max_words=max_words)
+        content = _clip_text(content, 1800)
+        forced_distinct = False
+        distinctness_reason = ""
+        generic_content = self._generic_meeting_content(content)
+        candidate = {
+            "round": round_number,
+            "phase": phase,
+            "participant": participant,
+            "content": content,
+        }
+        parroting = not self._is_chair_persona(persona) and self._looks_like_parroting([*transcript, candidate], content)
+        if not self._is_chair_persona(persona) and (parroting or generic_content):
+            forced_distinct = True
+            distinctness_reason = "parroting" if parroting else "generic_fallback"
+            content = self._distinctive_fallback_turn(
+                persona,
+                topic,
+                phase,
+                transcript,
+                meeting_type=meeting_type,
+                strict=parroting or phase == "anti-parrot-redo",
+            )
+        content = _strip_meeting_meta_language(content, persona_name=participant.get("name") or "")
         return {
             "type": "participant_turn",
             "meeting_id": meeting_id,
@@ -1240,6 +2205,16 @@ class MeetingRunner:
                 "social_awareness": True,
                 "chair_led": any(self._is_chair_persona(item) for item in personas),
                 "meeting_type": meeting_type,
+                "topic_intent": topic_intent,
+                "topic_intent_label": _topic_intent_label(topic_intent),
+                "meeting_contract": self._meeting_type_contract(meeting_type),
+                "topic_intent_contract": _topic_intent_contract(topic_intent),
+                "deep_search_required": bool(meeting_type == "brainstorm" and not self._is_chair_persona(persona)),
+                "deep_think_required": bool(meeting_type == "brainstorm" and not self._is_chair_persona(persona)),
+                "sprint_planning_required": bool(meeting_type == "sprint_planning"),
+                "decision_meeting_required": bool(meeting_type == "team"),
+                "anti_parrot_required": True,
+                "critic_is_challenge": bool(meeting_type == "brainstorm" and self._is_critic_persona(persona)),
                 "other_participants": [
                     {"id": item.get("id"), "name": item.get("name"), "role": item.get("role")}
                     for item in participants
@@ -1247,10 +2222,15 @@ class MeetingRunner:
                 ],
                 "transcript_turns_supplied": len(transcript),
                 "max_words_requested": max_words,
+                "forced_distinct_fallback": forced_distinct,
+                "distinctness_reason": distinctness_reason,
+                "used_fallback": used_fallback,
+                "assignment_track_key": assignment_track_key,
             },
         }
 
     def _social_system_prompt(self, persona: dict[str, Any], personas: list[dict[str, Any]], topic: str) -> str:
+        topic_intent = _classify_topic_intent(topic)
         others = [
             f"- {item.get('name') or item.get('id')}: {item.get('role') or 'geen rol opgegeven'}"
             for item in personas
@@ -1264,6 +2244,8 @@ class MeetingRunner:
                 base_prompt,
                 "Je bent in een Ouroboros Vergadering.",
                 f"Onderwerp: {_clip_text(topic, 1200)}",
+                f"Onderwerpsoort: {_topic_intent_label(topic_intent)}",
+                _topic_intent_contract(topic_intent),
                 "Andere aanwezigen:\n" + ("\n".join(others) if others else "- Geen andere persona's."),
                 f"Jouw Rol: {persona.get('role') or 'Niet opgegeven'}",
                 f"Jouw Regels: {', '.join(str(rule) for rule in rules) if rules else 'Geen extra regels opgegeven.'}",
@@ -1274,8 +2256,10 @@ class MeetingRunner:
                     "Instructie: Schrijf alsof je hardop aan tafel spreekt, niet als rapport. "
                     "Houd het kort: 3 tot 5 zinnen, maximaal één kort lijstje als dat echt helpt. "
                     "Help lichtere modellen door expliciet te kiezen voor één punt tegelijk. "
-                    "Papegaai eerdere sprekers niet: als je het eens bent, voeg een nieuwe invalshoek, beperking of test toe. "
+                    "Letterlijke herhaling is bij voorbaat niet toegestaan: als je het eens bent, voeg een nieuwe invalshoek, beperking of test toe. "
+                    "Verwar een opdracht, storing, idee en vraag niet met elkaar; laat je bijdrage passen bij de onderwerpsoort. "
                     "Als je voorzitter bent, leid jij de volgorde en grijp je in wanneer twee deelnemers elkaar herhalen. "
+                    "In brainstorms is kritiek altijd een uitdaging om dieper naar een oplossing te zoeken, nooit een blokkade. "
                     "Voer geen tools uit en claim geen externe acties."
                 ),
             ]
@@ -1292,11 +2276,15 @@ class MeetingRunner:
         instruction: str,
         transcript: list[dict[str, Any]],
     ) -> str:
+        topic_intent = _classify_topic_intent(topic)
         transcript_text = self._transcript_text(transcript)
         return "\n\n".join(
             [
                 f"Onderwerp: {_clip_text(topic, 1600)}",
                 f"Vergadertype: {MEETING_TYPE_LABELS.get(meeting_type, 'Team vergadering')}",
+                f"Onderwerpsoort: {_topic_intent_label(topic_intent)}",
+                self._meeting_type_contract(meeting_type),
+                _topic_intent_contract(topic_intent),
                 f"Ronde {round_number} ({phase})",
                 instruction,
                 "Volledige transcriptie tot nu toe:",
@@ -1305,9 +2293,22 @@ class MeetingRunner:
                     "Schrijf als een spreekbeurt in een gesprek. Geen lange inleiding, geen markdown-koppen. "
                     "Gebruik maximaal 80 woorden, tenzij de voorzitter expliciet afsluit. "
                     "Begin meteen met je punt en verwijs waar nuttig naar de vorige spreker. "
-                    "Herhaal geen formulering of conclusie die al is gezegd; maak je bijdrage onderscheidend."
+                    "Herhaal geen formulering of conclusie die al is gezegd; maak je bijdrage onderscheidend. "
+                    "Bij brainstorm geldt: behandel kritiek als uitdaging en zoek dieper naar een oplossing, niet naar een block."
                 ),
             ]
+        )
+
+    def _distinctive_retry_instruction(self, repeated_content: str, transcript: list[dict[str, Any]]) -> str:
+        repeated_terms = self._meaningful_terms(repeated_content)[:10]
+        previous_terms = self._meaningful_terms(self._transcript_text(transcript))[:24]
+        avoid_terms = ", ".join(_dedupe_strings([*repeated_terms, *previous_terms])[:12])
+        avoid_clause = f" Vermijd deze kernwoorden als kapstok: {avoid_terms}." if avoid_terms else ""
+        return (
+            "De voorzitter heeft net ingegrepen omdat je bijdrage te veel overlapte met een andere spreker. "
+            "Je moet nu iets anders zeggen: geef één nieuw bewijsstuk, ander risico, randvoorwaarde, test of tegenvoorbeeld. "
+            "Begin met 'Anders punt:' en herhaal de vorige conclusie niet."
+            f"{avoid_clause} Maximaal 65 woorden."
         )
 
     def _summarize(
@@ -1319,19 +2320,37 @@ class MeetingRunner:
         provider: str = DEFAULT_PROVIDER,
         meeting_type: str = "team",
     ) -> dict[str, Any]:
+        meeting_type = _normalize_meeting_type(meeting_type)
+        topic_intent = _classify_topic_intent(topic)
+        summary_instructions = {
+            "team": "Sluit af als besluitnotulen. Noem: besluit, open keuze, eigenaar en eerstvolgende approval-gated stap.",
+            "sprint_planning": "Sluit af als sprintkaart in natuurlijke spreektaal. Vertel kort sprintdoel, taken, acceptatiecriteria, test en rollback, en wanneer een agent pas mag beginnen. Geen labels of opsommingsheaders.",
+            "brainstorm": "Sluit af als onderzoekssynthese. Noem: bronlagen, beste oplossingsrichting, onzekerheden en volgend experiment.",
+        }
+        if meeting_type == "brainstorm" and topic_intent == "opdracht":
+            summary_instructions["brainstorm"] = (
+                "Sluit af als opdrachtsynthese voor ontwikkelwerk. Kies één bouwvolgorde en noem: eerste patch, acceptatiebewijs, "
+                "privacy/veiligheidsgrens en wat pas na Akkoord gebouwd of uitgevoerd mag worden. Knip geen losse zinnen uit het transcript."
+            )
+        elif meeting_type == "brainstorm" and topic_intent == "storing":
+            summary_instructions["brainstorm"] = (
+                "Sluit af als diagnosesynthese. Noem: vermoedelijke laag, foutsignaal, herstelpad, bewijs en structurele preventie."
+            )
+        elif meeting_type == "brainstorm" and topic_intent == "idee":
+            summary_instructions["brainstorm"] = (
+                "Sluit af als idee-synthese. Noem: waarde, varianten, spannendste aanname, prototype en leerexperiment."
+            )
         prompt = "\n\n".join(
             [
                 f"Onderwerp: {_clip_text(topic, 1600)}",
                 f"Vergadertype: {MEETING_TYPE_LABELS.get(meeting_type, 'Team vergadering')}",
+                f"Onderwerpsoort: {_topic_intent_label(topic_intent)}",
                 "Volledige vergaderingstranscriptie:",
                 self._transcript_text(transcript) or "Geen bijdragen.",
-                (
-                    "Sluit het overleg af als korte vergadernotulen. Gebruik gewone zinnen, geen lange paragrafen. "
-                    "Noem: wat is besloten, wat blijft open, en wat is de eerstvolgende stap."
-                ),
+                summary_instructions.get(meeting_type, summary_instructions["team"]),
             ]
         )
-        fallback = self._fallback_summary(topic, transcript)
+        fallback = self._fallback_summary(topic, transcript, meeting_type=meeting_type)
         return self._call_model(
             prompt=prompt,
             system_prompt=(
@@ -1364,7 +2383,7 @@ class MeetingRunner:
 
     def _looks_like_parroting(self, transcript: list[dict[str, Any]], current_content: str) -> bool:
         current_terms = self._meaningful_terms(current_content)
-        if len(current_terms) < 8:
+        if len(current_terms) < 5:
             return False
         current_set = set(current_terms)
         for previous in reversed(transcript[:-1]):
@@ -1372,19 +2391,39 @@ class MeetingRunner:
             if self._is_public_chair(participant):
                 continue
             previous_terms = self._meaningful_terms(str(previous.get("content") or ""))
-            if len(previous_terms) < 8:
+            if len(previous_terms) < 5:
                 continue
             previous_set = set(previous_terms)
             overlap = len(current_set & previous_set)
-            if overlap < 6:
+            if overlap < 4:
                 continue
             containment = overlap / max(1, min(len(current_set), len(previous_set)))
             jaccard = overlap / max(1, len(current_set | previous_set))
-            if containment >= 0.76 or jaccard >= 0.58:
+            if containment >= 0.5 or jaccard >= 0.32:
                 return True
-            if self._shared_bigram_count(previous_terms, current_terms) >= 5:
+            if self._shared_bigram_count(previous_terms, current_terms) >= 2:
                 return True
         return False
+
+    def _generic_meeting_content(self, text: str) -> bool:
+        cleaned = str(text or "").strip().lower()
+        if not cleaned:
+            return True
+        generic_markers = [
+            "ik sluit aan vanuit",
+            "praktisch en toetsbaar",
+            "één keuze vastleggen",
+            "een keuze vastleggen",
+            "één risico expliciet maken",
+            "een risico expliciet maken",
+            "anders punt: ik voeg geen echo toe",
+            "één nieuw criterium, één grens en één stopmoment",
+            "een nieuw criterium, een grens en een stopmoment",
+            "de richting lijkt bruikbaar",
+            "scope te verkleinen",
+            "zonder tool-uitvoering af te spreken",
+        ]
+        return any(marker in cleaned for marker in generic_markers)
 
     def _meaningful_terms(self, text: str) -> list[str]:
         stopwords = {
@@ -1411,10 +2450,16 @@ class MeetingRunner:
             "te",
             "tot",
             "van",
+            "vanuit",
             "voor",
             "we",
             "wel",
             "zou",
+            "mijn",
+            "jouw",
+            "geen",
+            "punt",
+            "anders",
             "moet",
             "naar",
             "ook",
@@ -1424,6 +2469,29 @@ class MeetingRunner:
             "that",
             "this",
             "with",
+            "deep",
+            "search",
+            "think",
+            "bronlaag",
+            "waarneming",
+            "onzekerheid",
+            "aanname",
+            "alternatief",
+            "tegenvoorbeeld",
+            "experiment",
+            "sprint",
+            "taak",
+            "acceptatie",
+            "bewijs",
+            "zichtbaar",
+            "eerste",
+            "klaar",
+            "betekent",
+            "patch",
+            "voorstel",
+            "groene",
+            "smoke-run",
+            "uitvoering",
         }
         words = re.findall(r"[A-Za-zÀ-ÿ0-9_:-]{4,}", str(text or "").lower())
         return [word for word in words if word not in stopwords]
@@ -1445,8 +2513,10 @@ class MeetingRunner:
     def _call_model(self, *, prompt: str, system_prompt: str, provider: str, model: str, fallback: str) -> dict[str, Any]:
         if self.llm_call is None:
             return {"ok": True, "content": fallback, "error": ""}
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            result = self.llm_call(
+            future = executor.submit(
+                self.llm_call,
                 prompt=prompt,
                 provider=provider,
                 model=model,
@@ -1454,13 +2524,36 @@ class MeetingRunner:
                 history=[],
                 images=[],
             )
+            result = future.result(timeout=self.llm_timeout_seconds)
         except TypeError:
             try:
-                result = self.llm_call(prompt=prompt, model=model, system_prompt=system_prompt, history=[])
+                future = executor.submit(self.llm_call, prompt=prompt, model=model, system_prompt=system_prompt, history=[])
+                result = future.result(timeout=self.llm_timeout_seconds)
+            except concurrent.futures.TimeoutError:
+                executor.shutdown(wait=False, cancel_futures=True)
+                return {
+                    "ok": False,
+                    "content": fallback,
+                    "error": f"Meeting model call timed out after {self.llm_timeout_seconds:.1f}s.",
+                }
             except Exception as exc:
+                executor.shutdown(wait=False, cancel_futures=True)
                 return {"ok": False, "content": fallback, "error": str(exc)}
+        except concurrent.futures.TimeoutError:
+            executor.shutdown(wait=False, cancel_futures=True)
+            return {
+                "ok": False,
+                "content": fallback,
+                "error": f"Meeting model call timed out after {self.llm_timeout_seconds:.1f}s.",
+            }
         except Exception as exc:
+            executor.shutdown(wait=False, cancel_futures=True)
             return {"ok": False, "content": fallback, "error": str(exc)}
+        finally:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
         if isinstance(result, dict):
             content = str(result.get("content") or result.get("response") or "").strip()
@@ -1478,69 +2571,752 @@ class MeetingRunner:
         topic: str,
         phase: str,
         transcript: list[dict[str, Any]],
+        *,
+        meeting_type: str = "team",
     ) -> str:
-        name = persona.get("name") or persona.get("id") or "participant"
-        role = persona.get("role") or "deelnemer"
+        meeting_type = _normalize_meeting_type(meeting_type)
+        topic_intent = _classify_topic_intent(topic)
         if self._is_chair_persona(persona):
             if phase == "opening":
+                if meeting_type == "sprint_planning":
+                    return (
+                        f"Ik open de sprint planning over '{_clip_text(topic, 180)}'. We maken dit bouwbaar: eerst taken, "
+                        "dan acceptatie en test, daarna rollback en approvalpoort. Ik geef nu het woord aan de eerste deelnemer."
+                    )
+                if meeting_type == "brainstorm":
+                    if topic_intent == "opdracht":
+                        return (
+                            f"Ik open de brainstorm over de opdracht '{_clip_text(topic, 180)}'. Eerst zoeken we implementatieroutes, "
+                            "daarna denken we door op ontwerpkeuzes, risico's en acceptatiebewijs. Ik geef nu het woord aan de eerste deelnemer."
+                        )
+                    if topic_intent == "storing":
+                        return (
+                            f"Ik open de diagnose-brainstorm over '{_clip_text(topic, 180)}'. Eerst isoleren we foutsignalen en lagen, "
+                            "daarna bepalen we herstelpad en structurele preventie. Ik geef nu het woord aan de eerste deelnemer."
+                        )
+                    if topic_intent == "idee":
+                        return (
+                            f"Ik open de idee-brainstorm over '{_clip_text(topic, 180)}'. Eerst zoeken we waarde en varianten, "
+                            "daarna toetsen we aannames met een klein prototype. Ik geef nu het woord aan de eerste deelnemer."
+                        )
+                    return (
+                        f"Ik open de brainstorm over '{_clip_text(topic, 180)}'. Eerst verkennen we bronlagen, "
+                        "daarna toetsen we aannames, alternatieven en experimenten. Ik geef nu het woord aan de eerste deelnemer."
+                    )
                 return (
-                    f"Ik open dit overleg over '{_clip_text(topic, 180)}'. We houden het compact: eerst de kern van de tafel, "
-                    "daarna de belangrijkste spanning, en dan een besluitbare vervolgstap. Ik geef nu het woord aan de eerste deelnemer."
+                    f"Ik open de teamvergadering over '{_clip_text(topic, 180)}'. We werken naar een keuze toe: standpunt, "
+                    "spanning, eigenaar en besluitbare vervolgstap. Ik geef nu het woord aan de eerste deelnemer."
                 )
             if phase == "chair-bridge":
                 return (
-                    "Ik hoor een gedeelde richting, maar ook nog een keuze die scherper moet. "
-                    "Laten we nu per persoon benoemen wat minimaal nodig is om dit verantwoord af te ronden."
+                    "Ik orden de keuze: welke optie nemen we nu, welke vraag blijft open en wie bewaakt de eerste toets? "
+                    "Ik geef de tweede ronde langs besluit, eigenaar en stopconditie."
                 )
             if phase == "intervention":
                 return (
-                    "Ik onderbreek kort: deze twee bijdragen herhalen elkaar te veel. "
-                    "Voeg nu een nieuw onderscheidend punt toe, of benoem expliciet welk risico anders is. Daarna geef ik het woord door."
+                    "Ik stop de echo hier. De volgende bijdrage moet een ander bewijsstuk, risico of test toevoegen."
                 )
-            if phase in {"plan-bridge", "research-bridge", "research-synthesis"}:
+            if phase == "plan-bridge":
                 return (
-                    "Ik zet de lijnen even naast elkaar. We hebben richting, maar nog verschil nodig in bewijs, risico en volgorde. "
-                    "De volgende spreker voegt daarom één nieuwe laag toe in plaats van dezelfde conclusie te herhalen."
+                    "Ik zet het sprintbord neer: taak, eigenaar, acceptatie, testcommando en rollback. "
+                    "De volgende spreker vult alleen het ontbrekende delivery-risico aan."
+                )
+            if phase in {"research-bridge", "research-synthesis"}:
+                if topic_intent == "opdracht":
+                    if phase == "research-synthesis":
+                        return (
+                            "Mijn samenvatting: de eerste bouwstap is read-only meten, niet herstellen. "
+                            "Eerst een health-rollup endpoint en metadata-only telemetry, daarna pas een compact statuspaneel. "
+                            f"Herstelknoppen, rollback en agentbouw beginnen pas zodra iemand expliciet {APPROVAL_PHRASE} geeft."
+                        )
+                    return (
+                        "Mijn bouwvolgorde: eerst meten met watchdog en telemetry, dan een compact statuspaneel, "
+                        "en pas daarna herstelknoppen met rollback. "
+                        "De volgende spreker gaat dieper in op zijn eigen laag binnen die volgorde."
+                    )
+                if topic_intent == "storing":
+                    return (
+                        "Ik leg de diagnoselagen naast elkaar: foutsignaal, oorzaak, herstelpad en preventie. "
+                        "De volgende spreker gaat dieper in op de laag die nog het minst bewezen is."
+                    )
+                if topic_intent == "idee":
+                    return (
+                        "Ik leg de ideelagen naast elkaar: waarde, variant, randvoorwaarde en prototype. "
+                        "De volgende spreker gaat dieper in op de meest leerzame aanname."
+                    )
+                return (
+                    "Ik leg de bronlagen naast elkaar: waarneming, aanname, alternatief en experiment. "
+                    "De volgende spreker neemt de laag die nog het meest onzeker is."
                 )
             if phase == "closing":
+                if meeting_type == "sprint_planning":
+                    return (
+                        "Sprintdoel: maak de eerstvolgende verbetering klein en testbaar. "
+                        "Taken: patch, regressietest en smoke-run. "
+                        "Test en rollback: groen voor merge, anders terug naar voorstel. "
+                        f"Een agent begint pas met bouwen zodra iemand expliciet {APPROVAL_PHRASE} geeft."
+                    )
+                if meeting_type == "brainstorm":
+                    if topic_intent == "opdracht":
+                        return (
+                            "Mijn voorstel: begin met een read-only stabiliteitsmonitor die niets herstart. "
+                            "Eerste patch: `/api/ouroboros/health-rollup` met metadata-only JSONL-statusregels. "
+                            "Als twee opeenvolgende checks missen, kleurt alleen die laag rood, met timestamp en foutcode. "
+                            f"Herstel, rollback en agentbouw beginnen pas zodra iemand expliciet {APPROVAL_PHRASE} geeft."
+                        )
+                    if topic_intent == "storing":
+                        return (
+                            "Sterkste inzicht: diagnose gaat voor verbetering. "
+                            "Beste richting: bewijs eerst de falende laag. "
+                            "Nog onzeker: welk foutsignaal doorslaggevend is. "
+                            "Volgende stap: één herstelcheck lokaal en inspecteerbaar maken."
+                        )
+                    if topic_intent == "idee":
+                        return (
+                            "Sterkste inzicht: het idee moet eerst waarde en randvoorwaarden krijgen. "
+                            "Beste richting: klein prototype met één meetbare leeruitkomst. "
+                            "Nog onzeker: welke gebruiker of workflow het meest baat heeft. "
+                            "Volgende stap: één prototype-experiment formuleren."
+                        )
+                    return (
+                        "Sterkste inzicht: de oplossing moet uit bronlagen en experimenten komen. "
+                        "Beste richting: test eerst de meest onzekere aanname. "
+                        "Nog onzeker: welke bron is doorslaggevend. "
+                        "Volgende onderzoeksstap: één experiment formuleren zonder externe uitvoering."
+                    )
                 return (
-                    "Besluit: we werken verder in kleine, controleerbare stappen. "
-                    "Open vraag: wie is eigenaar van de eerste toets? "
-                    "Volgende stap: formuleer één approval-gated vervolgactie voordat er iets extern wordt uitgevoerd."
+                    "Besluit: de volgende stap blijft klein en controleerbaar. "
+                    "Open vraag: wie bewaakt de eerste toets en de rollback? "
+                    "Volgende stap: pas na Akkoord gaat een gekozen agent bouwen of extern uitvoeren."
                 )
-        if phase == "brainstorm":
-            return (
-                f"Vanuit mijn rol als {role} zou ik '{_clip_text(topic, 180)}' eerst kleiner maken. "
-                "De kans zit in een helder doel en een zichtbaar resultaat. Het risico is dat we te snel naar uitvoering springen. "
-                "Mijn vervolgstap: bepaal eerst wat we willen kunnen toetsen."
-            )
-        if phase in {"input", "reply"}:
-            return (
-                f"Ik sluit aan vanuit {role}. Mijn belangrijkste punt is om dit praktisch en toetsbaar te houden. "
-                "Ik zou nu één keuze vastleggen, één risico expliciet maken en pas daarna een vervolgstap formuleren."
-            )
-        if phase in {"plan-slice", "plan-check"}:
-            return (
-                f"Vanuit {role} zou ik het plan klein houden. De eerste taak moet zichtbaar resultaat geven, "
-                "de test moet vooraf bekend zijn en de stopregel moet voorkomen dat we blijven draaien."
-            )
-        if phase in {"research", "research-layer"}:
-            return (
-                f"Mijn extra laag vanuit {role}: scheid bron, aanname en conclusie. "
-                "Ik zou één bronlaag valideren, één alternatief scenario naast het voorstel zetten en daarna pas kiezen."
-            )
-        return (
-            f"Ik bouw voort op {len(transcript)} eerdere bijdrage(n). De richting lijkt bruikbaar, maar de aannames moeten korter en scherper. "
-            "Mijn voorstel is om de scope te verkleinen en één concrete volgende stap zonder tool-uitvoering af te spreken."
+        return self._distinctive_fallback_turn(persona, topic, phase, transcript, meeting_type=meeting_type)
+
+    def _assignment_solution_tracks(self, topic: str) -> list[dict[str, str]]:
+        text = str(topic or "").lower()
+        if _contains_phrase(text, ("stabiel", "monitor", "gemonitord", "monitoring", "health", "watchdog")):
+            return [
+                {
+                    "key": "watchdog",
+                    "title": "watchdog-service",
+                    "research": "een lokale scheduler pingt backend, Tauri bridge, modelpoort en opslag elke minuut en zet elke laag op groen, geel of rood",
+                    "proof": "na twee gemiste checks verschijnt rood met laatste foutregel en timestamp",
+                    "risk": "als de watchdog zelf te veel mag doen, wordt monitoring stiekem uitvoering",
+                    "think": "maak de watchdog read-only: hij schrijft status en advies, maar herstarten blijft via de approval-route",
+                    "solution": "start met een `/api/ouroboros/health-rollup` contracttest en een JSONL-regel per check",
+                },
+                {
+                    "key": "telemetry",
+                    "title": "telemetry-JSONL",
+                    "research": "elke meeting en modelcall bewaart provider, latency, timeout, retry-teller, GPU/CPU-druk en laatste fout als inspecteerbare JSONL",
+                    "proof": "een testmeeting levert minimaal één regel met status, duur, provider en foutveld",
+                    "risk": "ruwe logs kunnen ruis of privé-inhoud opslaan",
+                    "think": "log alleen metagegevens en korte foutcodes; transcriptinhoud blijft buiten de health-telemetry",
+                    "solution": "voeg een kleine telemetry-writer toe met schema-test en redactie op geheimen",
+                },
+                {
+                    "key": "recovery",
+                    "title": "herstelcontroller",
+                    "research": "de cockpit toont per laag een veilige herstelknop met wachtrijstatus, laatste logregel en duidelijke rollbackgrens",
+                    "proof": "een droge run toont queued, running, waiting-for-Akkoord, done of failed zonder shellactie",
+                    "risk": "gebruikers kunnen herstel verwarren met automatisch bouwen",
+                    "think": "scheid diagnose, advies en actie visueel; alleen de actieknop vraagt exact Akkoord",
+                    "solution": "bouw eerst een dry-run endpoint dat herstelstappen plant maar niets uitvoert",
+                },
+                {
+                    "key": "status-ui",
+                    "title": "statuspaneel",
+                    "research": "het eerste scherm toont backend, Tauri, modelpoort, opslag en GPU als vaste statusrijen met laatste meting",
+                    "proof": "bij backend offline blijft persona-lijst zichtbaar als cached readback plus duidelijke rode backendstatus",
+                    "risk": "te veel tekst maakt de cockpit weer onrustig",
+                    "think": "gebruik compacte statuschips en open details pas op klik; de meetingtekst blijft ondergeschikt aan systeemstatus",
+                    "solution": "voeg een statusmodel toe en test dat de UI niet springt als waarden veranderen",
+                },
+                {
+                    "key": "rollback",
+                    "title": "rollback-register",
+                    "research": "elke werkende binary, backendconfig en modelkeuze krijgt een herkenbare laatste-goede markering",
+                    "proof": "na een mislukte smoke-run kan de cockpit de laatste-goede versie tonen zonder te gissen",
+                    "risk": "rollback zonder bewijs kan oude fouten terugzetten",
+                    "think": "koppel rollback alleen aan een groene smoke-run en bewaar waarom die versie geldig is",
+                    "solution": "schrijf `last_good.json` met build-id, config hash en smoke-resultaat",
+                },
+                {
+                    "key": "circuit-breaker",
+                    "title": "modelpoort-circuitbreaker",
+                    "research": "modelcalls krijgen timeout, korte fallbacktekst en providerstatus zodat een trage call geen Load failed veroorzaakt",
+                    "proof": "een kunstmatige timeout levert binnen de limiet transcript-fallback en foutcode op",
+                    "risk": "fallback kan inhoudelijk te dun zijn",
+                    "think": "laat fallback alleen de beurt redden en markeer hem zichtbaar als fallback in telemetry",
+                    "solution": "test één trage modelcall en controleer dat de meeting blijft laden",
+                },
+            ]
+        return [
+            {
+                "key": "vertical-slice",
+                "title": "dunne verticale slice",
+                "research": "kies één route van invoer naar zichtbaar resultaat en laat alle extra's buiten scope",
+                "proof": "één acceptatietest bewijst de route end-to-end",
+                "risk": "de eerste slice kan te klein lijken om waarde te tonen",
+                "think": "maak de slice waardevol door een echte gebruikersuitkomst te kiezen",
+                "solution": "formuleer één patch, één test en één rollbackgrens",
+            },
+            {
+                "key": "contract-first",
+                "title": "contract-first implementatie",
+                "research": "leg eerst het API- of data-contract vast voordat UI of agentgedrag wordt aangepast",
+                "proof": "schema-test faalt eerst en wordt daarna groen",
+                "risk": "een contract zonder workflow voelt abstract",
+                "think": "koppel het contract aan één zichtbaar scherm of CLI-uitkomst",
+                "solution": "schrijf de contracttest en één minimale adapter",
+            },
+        ]
+
+    def _select_assignment_track(self, topic: str, transcript: list[dict[str, Any]], seed: int) -> dict[str, str]:
+        tracks = self._assignment_solution_tracks(topic)
+        existing_text = self._transcript_text(transcript).lower()
+        ordered = tracks[seed % len(tracks):] + tracks[: seed % len(tracks)]
+        return next(
+            (
+                track
+                for track in ordered
+                if track["title"].lower() not in existing_text
+            ),
+            ordered[0],
         )
 
-    def _fallback_summary(self, topic: str, transcript: list[dict[str, Any]]) -> str:
+    def _assignment_track_for_persona_identity(self, topic: str, persona: dict[str, Any]) -> dict[str, str]:
+        tracks = self._assignment_solution_tracks(topic)
+        by_key = {track["key"]: track for track in tracks}
+        persona_id = str(persona.get("id") or "").strip().lower()
+        name = str(persona.get("name") or "").strip().lower()
+        role = str(persona.get("role") or "").strip().lower()
+        text = " ".join((persona_id, name, role))
+
+        if self._is_critic_persona(persona):
+            preferred_keys = ("telemetry", "contract-first")
+        elif "ontwerp" in text or "design" in text or "interaction" in text or "product" in text:
+            preferred_keys = ("status-ui", "vertical-slice")
+        elif "nina" in text or "ai" in text or "model" in text:
+            preferred_keys = ("circuit-breaker", "contract-first")
+        elif "wintrip" in text or "thinker" in text:
+            preferred_keys = ("recovery", "vertical-slice")
+        elif "engineer" in text or "backend" in text or "tauri" in text:
+            preferred_keys = ("watchdog", "contract-first")
+        elif "poocky" in text or "netwerk" in text or "network" in text:
+            preferred_keys = ("rollback", "vertical-slice")
+        else:
+            seed = sum(ord(ch) for ch in text)
+            return tracks[seed % len(tracks)]
+
+        for key in preferred_keys:
+            if key in by_key:
+                return by_key[key]
+        seed = sum(ord(ch) for ch in text)
+        return tracks[seed % len(tracks)]
+
+    def _assignment_track_for_persona(
+        self,
+        topic: str,
+        transcript: list[dict[str, Any]],
+        persona: dict[str, Any],
+        seed: int,
+    ) -> dict[str, str]:
+        tracks = self._assignment_solution_tracks(topic)
+        persona_id = str(persona.get("id") or "").strip()
+        persona_name = str(persona.get("name") or persona.get("id") or "").strip()
+        for item in reversed(transcript):
+            participant = item.get("participant") if isinstance(item.get("participant"), dict) else {}
+            same_persona = bool(
+                persona_id
+                and str(participant.get("id") or "").strip() == persona_id
+                or persona_name
+                and str(participant.get("name") or "").strip() == persona_name
+            )
+            if not same_persona:
+                continue
+            content = str(item.get("content") or "").lower()
+            for track in tracks:
+                if track["title"].lower() in content:
+                    return track
+        return self._assignment_track_for_persona_identity(topic, persona) or self._select_assignment_track(topic, transcript, seed)
+
+    def _distinctive_fallback_turn(
+        self,
+        persona: dict[str, Any],
+        topic: str,
+        phase: str,
+        transcript: list[dict[str, Any]],
+        *,
+        meeting_type: str = "team",
+        strict: bool = False,
+    ) -> str:
+        meeting_type = _normalize_meeting_type(meeting_type)
+        topic_intent = _classify_topic_intent(topic)
+        role = str(persona.get("role") or "").strip()
+        name = str(persona.get("name") or persona.get("id") or "deelnemer").strip()
+        prefix = "Anders punt: " if phase == "anti-parrot-redo" else ""
+        role_clause = f" vanuit {role}" if role else ""
+        topic_hint = _clip_text(topic, 90)
+        seed = sum(ord(ch) for ch in str(persona.get("id") or persona.get("name") or phase)) + len(transcript)
+        existing_text = self._transcript_text(transcript).lower()
+        if meeting_type == "sprint_planning" and phase in {"plan-slice", "plan-check", "anti-parrot-redo"}:
+            transcript_phases = {str(item.get("phase") or "") for item in transcript}
+            effective_phase = "plan-check" if phase == "anti-parrot-redo" and "plan-bridge" in transcript_phases else phase
+            if topic_intent == "storing":
+                sprint_items = [
+                    ("diagnose", "foutsignaal, reproduceerstap en laatste logregel"),
+                    ("herstelpad", "veilige restart, statusfeedback en rollback"),
+                    ("incidentbewijs", "health-endpoint, latency en retry-teller"),
+                    ("gebruikersmelding", "heldere fouttekst en volgende actie"),
+                    ("regressietest", "failing test, fix en smoke-run"),
+                    ("preventie", "monitoringregel en stopconditie"),
+                ]
+            elif topic_intent == "idee":
+                sprint_items = [
+                    ("prototype", "hypothese, kleine demo en feedbackmoment"),
+                    ("gebruikerswaarde", "doelgroep, workflow en meetbare opbrengst"),
+                    ("variantkeuze", "twee alternatieven en één selectiecriterium"),
+                    ("randvoorwaarde", "wat buiten scope valt en waarom"),
+                    ("leerexperiment", "verwachte uitkomst, observatie en vervolgkeuze"),
+                    ("risicocheck", "wat het idee onbruikbaar zou maken"),
+                ]
+            else:
+                sprint_items = [
+                    ("opdrachtomschrijving", "doel, scope en non-goal"),
+                    ("implementatiestap", "kleinste patch, geraakt bestand en eigenaar"),
+                    ("acceptatiepoort", "acceptatiecriterium, testcommando en smoke-run"),
+                    ("monitoringcontract", "statussignaal, meetfrequentie en grenswaarde"),
+                    ("rollbackroute", "laatst werkende configuratie en terugvalkeuze"),
+                    ("approval-route", f"wachtrijstatus en exacte {APPROVAL_PHRASE}-poort"),
+                ]
+            ordered_sprint_items = sprint_items[seed % len(sprint_items):] + sprint_items[: seed % len(sprint_items)]
+            item, check = next(
+                (
+                    candidate
+                    for candidate in ordered_sprint_items
+                    if candidate[0].lower() not in existing_text and candidate[1].split(",", 1)[0].lower() not in existing_text
+                ),
+                ordered_sprint_items[0],
+            )
+            if effective_phase == "plan-check":
+                return _clip_text(
+                    f"{prefix}{name} doet de delivery-check op {item}. Ontbrekende grens: {check}. "
+                    "Stop als dat signaal rood blijft of de rollback niet benoemd is.",
+                    1800,
+                )
+            sprint_templates = [
+                f"{prefix}{name} zet {item} bovenaan. Klaar betekent zichtbaar bewijs van {check}. "
+                "Pas daarna is de patch meer dan een voorstel.",
+                f"{prefix}Voor {name} is {item} de dunste bouwstap. Acceptatie: {check}. "
+                "Zonder groene smoke-run blijft dit buiten uitvoering.",
+                f"{prefix}{name} knipt {item} los als eerste ticket. Meet {check}; "
+                "bij falen gaat de kaart terug naar analyse.",
+            ]
+            return _clip_text(sprint_templates[seed % len(sprint_templates)], 1800)
+        if meeting_type == "brainstorm" and phase in {"research", "research-layer", "solution-dive", "anti-parrot-redo"}:
+            transcript_phases = {str(item.get("phase") or "") for item in transcript}
+            if phase == "anti-parrot-redo":
+                effective_phase = "research-layer" if "research-bridge" in transcript_phases else "research"
+            else:
+                effective_phase = phase
+            if topic_intent == "opdracht":
+                if effective_phase == "research":
+                    track = self._assignment_track_for_persona_identity(topic, persona)
+                    research_text = _natural_first_letter(track["research"])
+                    proof_text = track["proof"]
+                    risk_text = track["risk"]
+                    if self._is_critic_persona(persona):
+                        return _clip_text(
+                            f"{prefix}Mijn zorg bij dit voorstel: {risk_text}. "
+                            f"Voordat ik dit akkoord vind, wil ik zien dat {proof_text}.",
+                            1800,
+                        )
+                    return _clip_text(
+                        f"{prefix}{research_text}. "
+                        f"Het eerste bewijs dat dit werkt: {proof_text}.",
+                        1800,
+                    )
+                track = self._assignment_track_for_persona(topic, transcript, persona, seed)
+                think_text = _natural_first_letter(track["think"])
+                proof_text = track["proof"]
+                risk_text = track["risk"]
+                solution_text = track["solution"]
+                if effective_phase == "solution-dive":
+                    return _clip_text(
+                        f"{prefix}Mijn concrete voorstel: {solution_text}. "
+                        "Daarna pas verbreden naar de andere lagen.",
+                        1800,
+                    )
+                if self._is_critic_persona(persona):
+                    return _clip_text(
+                        f"{prefix}De aanname die hier kan breken: {risk_text}. "
+                        f"{think_text}.",
+                        1800,
+                    )
+                return _clip_text(
+                    f"{prefix}{think_text}. "
+                    f"De toets blijft hetzelfde: {proof_text}.",
+                    1800,
+                )
+            if topic_intent == "storing":
+                source_layers = [
+                    "runtime-log en health endpoint",
+                    "Tauri/NVIDIA startspoor",
+                    "modelprovider en timeoutmetingen",
+                    "meeting transcript en snapshot-opslag",
+                    "UI-scrollgedrag en actieve sprekerbalk",
+                    "approval-wachtrij en agentrouter",
+                    "rollbackconfig en laatste werkende build",
+                ]
+            elif topic_intent == "idee":
+                source_layers = [
+                    "gebruikerswaarde en workflow",
+                    "mogelijke interactievariant",
+                    "prototypevorm en demo-grens",
+                    "randvoorwaarde en non-goal",
+                    "leerexperiment en feedbacksignaal",
+                    "risico bij opschalen",
+                    "verrassend tegenvoorbeeld",
+                ]
+            elif topic_intent == "vraag":
+                source_layers = [
+                    "definitie en begrenzing",
+                    "verschil met verwante begrippen",
+                    "concreet voorbeeld",
+                    "tegenvoorbeeld",
+                    "praktische consequentie",
+                    "beslisregel voor toepassing",
+                ]
+            else:
+                source_layers = [
+                    "doel en gewenste uitkomst",
+                    "architectuurgrens tussen backend, Tauri en modelpoort",
+                    "acceptatiecriteria en smoke-test",
+                    "monitoringcontract en statuskleuren",
+                    "rollbackroute en releasepad",
+                    "agent-approval workflow",
+                    "observability en auditlog",
+                ]
+            ordered_layers = source_layers[seed % len(source_layers):] + source_layers[: seed % len(source_layers)]
+            layer = next((candidate for candidate in ordered_layers if candidate.lower() not in existing_text), ordered_layers[0])
+            if effective_phase == "research":
+                if self._is_critic_persona(persona):
+                    if topic_intent == "opdracht":
+                        critic_templates = [
+                            f"{prefix}In {layer} mis ik bewijs: welke acceptatiecheck laat zien dat '{topic_hint}' echt gebouwd is? "
+                            "Het risico is dat de opdracht te breed blijft voor één veilige patch.",
+                            f"{prefix}Bij {layer} houd ik de implementatie graag uitvoerbaar met één non-goal, "
+                            "één acceptatiecriterium en één stopregel.",
+                        ]
+                        return _clip_text(critic_templates[seed % len(critic_templates)], 1800)
+                    if topic_intent == "idee":
+                        critic_templates = [
+                            f"{prefix}Rond {layer} klinkt het aantrekkelijk, maar het bewijs van waarde ontbreekt nog. "
+                            "Wat ik wil zien: één prototype dat snel leert.",
+                            f"{prefix}Bij {layer} wil ik weten wanneer dit idee de moeite niet waard is. "
+                            "Dat maakt de volgende variant sterker.",
+                        ]
+                        return _clip_text(critic_templates[seed % len(critic_templates)], 1800)
+                    if topic_intent == "vraag":
+                        critic_templates = [
+                            f"{prefix}Bij {layer} merk ik dat we een andere vraag dreigen te beantwoorden dan gesteld. "
+                            "Eerst het onderscheid scherp maken.",
+                        ]
+                        return _clip_text(critic_templates[seed % len(critic_templates)], 1800)
+                    critic_templates = [
+                        f"{prefix}Rond {layer} mis ik bewijs: welke concrete fout laat '{topic_hint}' breken? "
+                        "Ik zou eerst een meting maken die techniek, wachtrij en modelkeuze van elkaar scheidt.",
+                        f"{prefix}In {layer} schuilt het risico dat een mooie oplossing de echte oorzaak maskeert. "
+                        "Daarom eerst één falsifieerbare check die de route kan ontkrachten.",
+                    ]
+                    return _clip_text(critic_templates[seed % len(critic_templates)], 1800)
+                if topic_intent == "opdracht":
+                    research_templates = [
+                        f"{prefix}De opdracht wordt bouwbaar zodra {layer} een eigen acceptatiebewijs krijgt. "
+                        "De vraag is welke ontwerpkeuze de eerste patch het kleinst maakt.",
+                        f"{prefix}Bij {layer} zie ik dat we een implementatieroute met expliciet acceptatiebewijs nodig hebben. "
+                        "De vraag: welk testcommando bewijst dat de opdracht werkt?",
+                        f"{prefix}In {layer} zoek ik een voorbeeld dat de bouwrichting verkleint. "
+                        "Onzeker blijft welke grens buiten scope moet blijven.",
+                    ]
+                    return _clip_text(research_templates[seed % len(research_templates)], 1800)
+                if topic_intent == "idee":
+                    research_templates = [
+                        f"{prefix}Het idee krijgt waarde zodra {layer} concreet wordt. "
+                        "De vraag: welk prototype leert het snelst?",
+                        f"{prefix}Bij {layer} wil ik eerst varianten vergelijken voordat we bouwen. "
+                        "De vraag: welk feedbacksignaal beslist tussen die varianten?",
+                    ]
+                    return _clip_text(research_templates[seed % len(research_templates)], 1800)
+                if topic_intent == "vraag":
+                    research_templates = [
+                        f"{prefix}Bij {layer} vraagt dit eerst om onderscheid en voorbeeld. "
+                        "Onzeker: welke vergelijking de gebruiker nodig heeft.",
+                    ]
+                    return _clip_text(research_templates[seed % len(research_templates)], 1800)
+                research_templates = [
+                    f"{prefix}{layer.capitalize()} kan los van de rest groen of rood staan. "
+                    "Onzeker: welk signaal de eerste breuk voorspelt.",
+                    f"{prefix}De oplossing wordt sterker als {layer} eigen telemetrie krijgt. "
+                    "Vraag: welke meting maakt een herstelpad zichtbaar?",
+                    f"{prefix}In {layer} zoek ik een afwijkend patroon. "
+                    "Onzeker blijft of de storing bij runtime, UI of providerkeuze begint.",
+                ]
+                return _clip_text(research_templates[seed % len(research_templates)], 1800)
+            if effective_phase == "solution-dive":
+                if topic_intent == "opdracht":
+                    return _clip_text(
+                        f"{prefix}De kritiek vertaal ik naar een bouwexperiment rond {layer}: "
+                        "verwachte uitkomst, acceptatiebewijs en rollbackgrens. Zo blijft de opdracht uitvoerbaar.",
+                        1800,
+                    )
+                if topic_intent == "idee":
+                    return _clip_text(
+                        f"{prefix}De kritiek vertaal ik naar een prototype rond {layer}: "
+                        "welke variant, welk feedbacksignaal en welke stopvraag leren het meest?",
+                        1800,
+                    )
+                return _clip_text(
+                    f"{prefix}Ik behandel de kritiek als testontwerp en bouw een klein experiment rond {layer}: "
+                    "verwacht signaal, faalsignaal en herstelactie. Als het faalt, scherpt dat de oplossing aan.",
+                    1800,
+                )
+            if topic_intent == "opdracht":
+                think_templates = [
+                    f"{prefix}Mijn aanname is dat {layer} de opdracht klein genoeg maakt. Een alternatief is eerst een contracttest schrijven. "
+                    "Tegenvoorbeeld: de patch werkt, maar monitoring ontbreekt; dan is acceptatie nog niet rond.",
+                    f"{prefix}Bij {layer} zou ik eerst de dunste verticale route bouwen en de rest expliciet buiten scope houden. "
+                    "Experiment: één test die succes en rollback tegelijk zichtbaar maakt.",
+                    f"{prefix}De aanname dat {layer} voldoende richting geeft, kan vallen als de taak te breed blijft. "
+                    "Dan moet de opdracht geknipt worden in criterium, patch en bewijs.",
+                ]
+                return _clip_text(think_templates[seed % len(think_templates)], 1800)
+            if topic_intent == "idee":
+                think_templates = [
+                    f"{prefix}Mijn aanname is dat {layer} waarde oplevert. Een alternatief is een kleiner prototype met één meetbare reactie. "
+                    "Tegenvoorbeeld: gebruikers snappen het niet; dan wint de eenvoudigere variant.",
+                    f"{prefix}Bij {layer} zou ik twee varianten tonen en meten welke vraag spontaan ontstaat. "
+                    "Dat houdt het idee onderzoekend in plaats van voortijdig bouwend.",
+                ]
+                return _clip_text(think_templates[seed % len(think_templates)], 1800)
+            if topic_intent == "vraag":
+                think_templates = [
+                    f"{prefix}De aanname is dat {layer} het verschil verklaart. Een alternatief is een concreet voorbeeld naast een tegenvoorbeeld. "
+                    "Dan wordt duidelijk of dit een uitleg, besluit of opdracht moet worden.",
+                ]
+                return _clip_text(think_templates[seed % len(think_templates)], 1800)
+            think_templates = [
+                f"{prefix}Mijn aanname is dat {layer} de bottleneck zichtbaar maakt. Een alternatief: een sandbox-smoke-run "
+                "per laag. Tegenvoorbeeld: alles staat op groen maar de meeting faalt; dan moet telemetrie per beurt leidend worden.",
+                f"{prefix}Een alternatief: laat de cockpit eerst een mini-diagnose draaien en pas daarna nieuwe tekst genereren. "
+                "Experiment: dwing één fout af en kijk of het hersteladvies daadwerkelijk verandert.",
+                f"{prefix}De aanname dat {layer} genoeg bewijs geeft, kan vallen als de bron zwijgt. "
+                "Dan hoort er een tweede bronlaag naast de eerste.",
+            ]
+            return _clip_text(think_templates[seed % len(think_templates)], 1800)
+        options = [
+            (
+                "Stabiliteitsmeter",
+                "stabiliteitsmeter",
+                f"Ik zou de stabiliteit eerst zichtbaar maken{role_clause}. Geef backend, Tauri, modelpoort en opslag elk een groen/geel/rood-status, zodat meteen duidelijk is welke laag hapert.",
+            ),
+            (
+                "Watchdog",
+                "watchdog",
+                "Mijn aanvullende punt is monitoring zelf. Laat lokaal elke minuut health, latency en laatste fout meten; na twee missers moet de cockpit herstelstatus tonen in plaats van opnieuw vergadertekst te produceren.",
+            ),
+            (
+                "Herstelpad",
+                "herstelpad",
+                "Ik wil een expliciet herstelpad. Leg vast welke knop of agent backend, frontend en Tauri veilig herstart, met voortgang, laatste logregel en zichtbare bevestiging dat NVIDIA werkelijk actief is.",
+            ),
+            (
+                "Regressieschild",
+                "regressieschild",
+                "Voor zelfverbetering hoort er een rem op de deur. Elke verbetering krijgt eerst een failing test, daarna de patch en daarna een smoke-run; zonder groene test blijft het een voorstel.",
+            ),
+            (
+                "Telemetrie",
+                "telemetrie",
+                "Ik mis nog telemetrie per overleg. Bewaar model-timeouts, Load-failed oorzaak, retry-teller en gekozen provider, zodat verbetering uit waarnemingen komt en niet uit indrukken.",
+            ),
+            (
+                "Werkgeheugen",
+                "werkgeheugen",
+                "Het werkgeheugen moet inspecteerbaar blijven. Schrijf besluiten, open risico's en uitgevoerde checks als JSONL; de app mag leren van zulke regels, niet van verborgen aannames.",
+            ),
+            (
+                "Agentwachtrij",
+                "agentwachtrij",
+                "Voor het ontwikkelteam wil ik een zichtbare wachtrij. Bouwtaken moeten queued, running, waiting-for-Akkoord, done of failed zijn, zodat starten na akkoord niet verstopt raakt.",
+            ),
+            (
+                "UI-anker",
+                "ui-anker",
+                "Aan de UI-kant moet het sprekerkader een anker blijven. Geef de balk vaste hoogte en kap de gedachtenloop netjes af, zodat het kader niet wegzakt wanneer iemand langer denkt.",
+            ),
+            (
+                "ApprovalGate",
+                "approvalgate",
+                f"De grens voor uitvoering moet scherp blijven. Bouwen of externe acties starten alleen na exact {APPROVAL_PHRASE}; alles daarvoor is plan, testvoorstel of lokale analyse.",
+            ),
+            (
+                "Zelfverbeterlus",
+                "zelfverbeterlus",
+                "De zelfverbetering moet als lus worden behandeld. Feedback wordt issue, acceptatiecriterium, test, patch en auditregel; zo leert de app via controleerbare stappen.",
+            ),
+            (
+                "Resourcebewaking",
+                "resourcebewaking",
+                "Ik voeg resourcebewaking toe. Meet GPU, CPU, geheugen en modelduur naast de appstatus, en schakel bij drukte naar kortere beurten of een fallbackmodel.",
+            ),
+            (
+                "Rollback",
+                "rollback",
+                "Er moet een nuchtere rollbackroute zijn. Houd de laatst werkende binary en backendconfig herkenbaar, zodat teruggaan een expliciete keuze is als een verbetering de cockpit breekt.",
+            ),
+            (
+                "Eigenaarschap",
+                "eigenaarschap",
+                f"Ik maak eigenaarschap concreet: kies één toetsbaar onderdeel van '{topic_hint}' en lever daarbij resultaat, bewijs en stopconditie in dezelfde beurt.",
+            ),
+        ]
+        if strict:
+            options = list(reversed(options))
+        ordered = options[seed % len(options):] + options[: seed % len(options)]
+        for _label, marker, body in ordered:
+            if marker in existing_text:
+                continue
+            text = prefix + body
+            candidate = {
+                "round": len(transcript) + 1,
+                "phase": phase,
+                "participant": self._public_persona(persona),
+                "content": text,
+            }
+            if not self._looks_like_parroting([*transcript, candidate], text):
+                return _clip_text(text, 1800)
+        action_words = ["meter", "watchdog", "logboek", "herstartpad", "testpoort", "rollback", "wachtrij", "resourcecheck"]
+        action = action_words[seed % len(action_words)]
+        return _clip_text(
+            f"{prefix}Ik pak de {action} op en benoem één meetbaar signaal, één herstelactie en één acceptatiecheck voor '{topic_hint}'.",
+            1800,
+        )
+
+    def _fallback_summary(self, topic: str, transcript: list[dict[str, Any]], *, meeting_type: str = "team") -> str:
+        meeting_type = _normalize_meeting_type(meeting_type)
+        topic_intent = _classify_topic_intent(topic)
         names = []
+        points = []
         for item in transcript:
             participant = item.get("participant") if isinstance(item.get("participant"), dict) else {}
             name = participant.get("name")
             if name and name not in names:
                 names.append(str(name))
+            if self._is_public_chair(participant):
+                continue
+            phase = str(item.get("phase") or "")
+            if phase in {"floor-control", "intervention"}:
+                continue
+            content = self._compact_conversation_text(str(item.get("content") or ""), max_words=24).strip()
+            if content and content not in points:
+                points.append(content)
+        workpoints = "; ".join(_clip_text(point, 130) for point in points[:4])
+        if workpoints:
+            if meeting_type == "sprint_planning":
+                if topic_intent == "storing":
+                    return (
+                        "Incident-sprint: herstel eerst reproduceerbaar en toetsbaar maken. "
+                        f"Werkpunten: {workpoints}. "
+                        "Acceptatie: foutsignaal, herstelpad, regressietest en rollback zijn zichtbaar. "
+                        f"Bouwen of agentuitvoering begint pas na exact {APPROVAL_PHRASE}."
+                    )
+                if topic_intent == "idee":
+                    return (
+                        "Prototype-sprint: maak het idee klein genoeg om te leren. "
+                        f"Werkpunten: {workpoints}. "
+                        "Acceptatie: hypothese, demo, feedbacksignaal en stopvraag zijn benoemd."
+                    )
+                return (
+                    "Sprintdoel: maak de verbetering bouwbaar in kleine taken. "
+                    f"Werkpunten: {workpoints}. "
+                    "Acceptatie: iedere taak heeft een zichtbaar criterium en test of smoke-run. "
+                    f"Bouwen of agentuitvoering begint pas na exact {APPROVAL_PHRASE}."
+                )
+            if meeting_type == "brainstorm":
+                if topic_intent == "opdracht":
+                    return (
+                        "Samenvatting van de tafel: de eerste bouwstap is read-only meten, niet herstellen. "
+                        "We beginnen met read-only health-rollup plus metadata-only telemetry: een `/api/ouroboros/health-rollup` endpoint "
+                        "en een JSONL-writer met status, duur, provider, foutcode en timestamp. "
+                        "Acceptatie: twee gemiste checks maken alleen de falende laag rood; transcriptinhoud en privédata blijven uit de telemetry. "
+                        f"Statuspaneel, herstelcontroller en rollback komen pas daarna aan de beurt, en alleen na {APPROVAL_PHRASE}."
+                    )
+                if topic_intent == "storing":
+                    return (
+                        "Diagnosesynthese: de tafel heeft foutsignalen, oorzaken en herstelroutes verkend. "
+                        f"Kernlagen: {workpoints}. "
+                        "Nog onzeker: welke laag de storing als eerste veroorzaakt. "
+                        "Volgend experiment: één reproduceerbare herstelcheck uitvoeren na approval."
+                    )
+                if topic_intent == "idee":
+                    return (
+                        "Idee-synthese: de tafel heeft waarde, varianten en prototypes verkend. "
+                        f"Kernlagen: {workpoints}. "
+                        "Nog onzeker: welke aanname eerst bewezen moet worden. "
+                        "Volgend experiment: één prototype met feedbacksignaal ontwerpen."
+                    )
+                return (
+                    "Onderzoekssynthese: de tafel heeft bronlagen, aannames en oplossingsrichtingen verkend. "
+                    f"Kernlagen: {workpoints}. "
+                    "Nog onzeker: welke bronlaag de doorslag geeft. "
+                    "Volgend experiment: test de scherpste aanname lokaal en inspecteerbaar."
+                )
+            return (
+                "Besluit: de cockpit moet zichzelf verbeteren via zichtbare metingen, herstelroutes en tests, niet via verborgen automatische acties. "
+                f"Belangrijkste werkpunten: {workpoints}. "
+                f"Open risico: bouwen, herstarten of externe acties mogen pas na exact {APPROVAL_PHRASE}. "
+                "Volgende stap: kies één eigenaar voor de eerste monitor-test en leg de rollbackroute vast."
+            )
+        if meeting_type == "sprint_planning":
+            if topic_intent == "storing":
+                return (
+                    "Incident-sprint: leg eerst reproduceerstap, foutsignaal, herstelpad en regressietest vast. "
+                    f"Een agent begint pas met bouwen na exact {APPROVAL_PHRASE}."
+                )
+            if topic_intent == "idee":
+                return (
+                    "Prototype-sprint: formuleer hypothese, kleinste demo, feedbacksignaal en stopvraag voordat er gebouwd wordt."
+                )
+            return (
+                "Sprintdoel: formuleer één kleine bouwtaak. "
+                "Taken: acceptatiecriterium, testcommando en rollbackroute eerst vastleggen. "
+                f"Een agent begint pas met bouwen na exact {APPROVAL_PHRASE}."
+            )
+        if meeting_type == "brainstorm":
+            if topic_intent == "opdracht":
+                return (
+                    "Samenvatting van de tafel: de eerste bouwstap is read-only meten, niet herstellen. "
+                    "We beginnen met read-only health-rollup plus metadata-only telemetry. "
+                    "Eerste patch: een `/api/ouroboros/health-rollup` endpoint met JSONL-statusregels. "
+                    f"Herstel, rollback en agentbouw beginnen pas na {APPROVAL_PHRASE}."
+                )
+            if topic_intent == "storing":
+                return (
+                    "Sterkste inzicht: diagnose gaat voor structurele verbetering. "
+                    "Beste richting: foutsignaal, oorzaak en herstelpad isoleren. "
+                    "Volgende onderzoeksstap: kies de eerste reproduceerbare check."
+                )
+            if topic_intent == "idee":
+                return (
+                    "Sterkste inzicht: het idee heeft eerst waarde, varianten en prototypegrens nodig. "
+                    "Beste richting: één leerexperiment voordat er gebouwd wordt."
+                )
+            return (
+                "Sterkste inzicht: eerst bronnen en aannames uit elkaar trekken. "
+                "Beste richting: deep search per persona, daarna één experiment per onzekerheid. "
+                "Volgende onderzoeksstap: kies de bronlaag die lokaal bewijs kan leveren."
+            )
         return (
             "De tafel is het eens dat dit praktisch, controleerbaar en zonder automatische externe acties moet blijven. "
             f"Het grootste risico is onduidelijke eigenaarschap of tool-uitvoering zonder {APPROVAL_PHRASE}. "
@@ -1574,7 +3350,7 @@ class MeetingRunner:
         if not snippets:
             return ""
         blocks = []
-        for item in snippets[:10]:
+        for item in snippets[:14]:
             if not isinstance(item, dict):
                 continue
             label = _clip_text(item.get("label") or item.get("source") or "knowledge", 160)
@@ -1617,6 +3393,7 @@ class MeetingStore:
                     "event_count": event_count,
                     "topic": record.get("topic") or fallback.get("topic", ""),
                     "meeting_type": record.get("meeting_type") or fallback.get("meeting_type", "team"),
+                    "topic_intent": record.get("topic_intent") or fallback.get("topic_intent", ""),
                     "status": record.get("status", "recorded"),
                     "summary": _clip_text(record.get("summary") or fallback.get("summary", ""), 900),
                     "participants": record.get("participants") or fallback.get("participants", []),
@@ -1652,6 +3429,7 @@ class MeetingStore:
             "summary": record.get("summary") or fallback.get("summary", ""),
             "topic": record.get("topic") or fallback.get("topic", ""),
             "meeting_type": record.get("meeting_type") or fallback.get("meeting_type", "team"),
+            "topic_intent": record.get("topic_intent") or fallback.get("topic_intent", ""),
             "fake_success": False,
         }
 
@@ -1666,6 +3444,7 @@ class MeetingStore:
             "frontend_id": request.frontend_id or existing.get("frontend_id", ""),
             "topic": _clip_text(request.topic or existing.get("topic", ""), 4000),
             "meeting_type": _normalize_meeting_type(request.meeting_type or existing.get("meeting_type", "team")),
+            "topic_intent": existing.get("topic_intent") or _classify_topic_intent(request.topic or existing.get("topic", "")),
             "participants": request.participants or existing.get("participants", []),
             "participant_ids": request.participant_ids or existing.get("participant_ids", []),
             "agent_ids": request.agent_ids or existing.get("agent_ids", []),
@@ -1679,6 +3458,87 @@ class MeetingStore:
         path = self._write_record(clean_id, record)
         return {"status": "saved", "meeting_id": clean_id, "record": record, "record_path": str(path), "fake_success": False}
 
+    def _meeting_web_queries(self, meeting_type: str, topic: str, persona: dict[str, Any]) -> list[str]:
+        meeting_type = _normalize_meeting_type(meeting_type)
+        clean_topic = str(topic or "").strip()
+        topic_intent = _classify_topic_intent(clean_topic)
+        if not clean_topic:
+            return []
+        if meeting_type == "sprint_planning":
+            if topic_intent == "storing":
+                return _dedupe_strings(
+                    [
+                        clean_topic,
+                        f"{clean_topic} incident diagnose reproduceerstap logs herstelpad rollback",
+                        f"{clean_topic} regressietest smoke test monitoring preventie",
+                    ]
+                )
+            if topic_intent == "idee":
+                return _dedupe_strings(
+                    [
+                        clean_topic,
+                        f"{clean_topic} prototype hypothese gebruikersfeedback acceptatiecriteria",
+                        f"{clean_topic} sprint planning experiment scope stopregel",
+                    ]
+                )
+            return _dedupe_strings(
+                [
+                    clean_topic,
+                    f"{clean_topic} implementatie acceptatiecriteria testcommando rollback",
+                    f"{clean_topic} sprint planning afhankelijkheden stopregel smoke test",
+                ]
+            )
+        if meeting_type == "brainstorm":
+            persona_lens = " ".join(
+                str(part).strip()
+                for part in (persona.get("name"), persona.get("role"))
+                if str(part or "").strip()
+            )
+            if topic_intent == "opdracht":
+                return _dedupe_strings(
+                    [
+                        clean_topic,
+                        f"{clean_topic} implementatie architectuur ontwerpkeuzes acceptatiecriteria",
+                        f"{clean_topic} monitoring observability smoke test rollback",
+                        f"{clean_topic} {persona_lens} perspectief randvoorwaarden risico's failure modes",
+                        f"{clean_topic} vergelijkbare systemen best practices implementatiepatronen",
+                        f"{clean_topic} aannames alternatieven tegenvoorbeelden experimenten",
+                    ]
+                )
+            if topic_intent == "storing":
+                return _dedupe_strings(
+                    [
+                        clean_topic,
+                        f"{clean_topic} incident diagnose logs foutsignalen herstelpad",
+                        f"{clean_topic} technische lagen failure modes recovery rollback",
+                        f"{clean_topic} {persona_lens} perspectief reproduceren monitoren voorkomen",
+                        f"{clean_topic} vergelijkbare storingen best practices monitoring",
+                        f"{clean_topic} aannames alternatieven tegenvoorbeelden experimenten",
+                    ]
+                )
+            if topic_intent == "idee":
+                return _dedupe_strings(
+                    [
+                        clean_topic,
+                        f"{clean_topic} concept voorbeelden alternatieven gebruikerswaarde prototype",
+                        f"{clean_topic} ontwerpvarianten randvoorwaarden evaluatie experiment",
+                        f"{clean_topic} {persona_lens} perspectief risico's failure modes",
+                        f"{clean_topic} vergelijkbare systemen best practices",
+                        f"{clean_topic} aannames alternatieven tegenvoorbeelden experimenten",
+                    ]
+                )
+            return _dedupe_strings(
+                [
+                    clean_topic,
+                    f"{clean_topic} bronnen onderzoek risico's alternatieven",
+                    f"{clean_topic} technische lagen ontwerp implementatie bewijs",
+                    f"{clean_topic} {persona_lens} perspectief failure modes ontwerpkeuzes",
+                    f"{clean_topic} vergelijkbare systemen best practices monitoring recovery testing",
+                    f"{clean_topic} aannames alternatieven tegenvoorbeelden experimenten",
+                ]
+            )
+        return [clean_topic]
+
     def create_meeting(
         self,
         request: MeetingRequest,
@@ -1686,6 +3546,164 @@ class MeetingStore:
         llm_call: MeetingLLMCall | None = None,
         knowledge_store: KnowledgeStore | None = None,
         web_context_fetcher: Callable[[dict[str, Any], str], list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
+        prep = self._prepare_meeting_run(
+            request,
+            persona_store=persona_store,
+            knowledge_store=knowledge_store,
+            web_context_fetcher=web_context_fetcher,
+        )
+        if prep.get("blocked"):
+            return prep["blocked"]
+        meeting_id = prep["meeting_id"]
+        meeting_type = prep["meeting_type"]
+        provider = prep["provider"]
+        model = prep["model"]
+        events: list[dict[str, Any]] = [prep["started_event"]]
+
+        runner_payload = MeetingRunner(llm_call=llm_call).run(
+            topic=request.topic,
+            personas=prep["personas"],
+            provider=provider,
+            model=model,
+            meeting_id=meeting_id,
+            meeting_type=meeting_type,
+        )
+        events.extend(runner_payload["events"])
+        return self._finalize_meeting_run(
+            request=request,
+            prep=prep,
+            events=events,
+            runner_payload=runner_payload,
+        )
+
+    def stream_meeting(
+        self,
+        request: MeetingRequest,
+        persona_store: PersonaStore,
+        llm_call: MeetingLLMCall | None = None,
+        knowledge_store: KnowledgeStore | None = None,
+        web_context_fetcher: Callable[[dict[str, Any], str], list[dict[str, Any]]] | None = None,
+    ) -> "Iterator[dict[str, Any]]":
+        """Generator that yields meeting events live and persists artifacts at the end.
+
+        The first yielded event is the `meeting_started` envelope (same shape as
+        `create_meeting`'s first event). For every event produced by the runner an
+        intermediate envelope is yielded immediately. The final event is a
+        `meeting_recorded` envelope containing the persisted summary, transcript and
+        artifact path.
+        """
+        prep = self._prepare_meeting_run(
+            request,
+            persona_store=persona_store,
+            knowledge_store=knowledge_store,
+            web_context_fetcher=web_context_fetcher,
+        )
+        if prep.get("blocked"):
+            yield prep["blocked"]
+            return
+
+        meeting_id = prep["meeting_id"]
+        meeting_type = prep["meeting_type"]
+        provider = prep["provider"]
+        model = prep["model"]
+        personas_for_run = prep["personas"]
+        topic_intent = prep["topic_intent"]
+        started_event = prep["started_event"]
+        events: list[dict[str, Any]] = [started_event]
+
+        yield started_event
+
+        sentinel: dict[str, Any] = {"type": "__meeting_stream_done__"}
+        queue: "Queue[dict[str, Any]]" = Queue()
+        runner = MeetingRunner(llm_call=llm_call)
+        captured_payload: dict[str, Any] = {}
+        runner_error: dict[str, BaseException | None] = {"error": None}
+
+        def _run() -> None:
+            try:
+                captured_payload["payload"] = runner.run(
+                    topic=request.topic,
+                    personas=personas_for_run,
+                    provider=provider,
+                    model=model,
+                    meeting_id=meeting_id,
+                    meeting_type=meeting_type,
+                    event_sink=queue.put,
+                )
+            except BaseException as exc:  # pragma: no cover - protective
+                runner_error["error"] = exc
+            finally:
+                queue.put(sentinel)
+
+        thread = threading.Thread(target=_run, name="meeting-stream-runner", daemon=True)
+        thread.start()
+        try:
+            while True:
+                event = queue.get()
+                if event is sentinel:
+                    break
+                events.append(event)
+                yield event
+        finally:
+            thread.join()
+
+        error = runner_error["error"]
+        if error is not None:
+            yield {
+                "type": "meeting_error",
+                "meeting_id": meeting_id,
+                "timestamp": _now_iso(),
+                "error": str(error),
+            }
+            return
+
+        runner_payload = captured_payload.get("payload") or {
+            "meeting_type": meeting_type,
+            "topic_intent": topic_intent,
+            "participants": [self._public_persona_for_participant(p) for p in personas_for_run],
+            "rounds": [event for event in events if event.get("type") == "participant_turn"],
+            "summary": "",
+            "events": events[1:],
+        }
+        finalized = self._finalize_meeting_run(
+            request=request,
+            prep=prep,
+            events=events,
+            runner_payload=runner_payload,
+        )
+        yield {
+            "type": "meeting_recorded",
+            "meeting_id": meeting_id,
+            "timestamp": _now_iso(),
+            "status": finalized.get("status"),
+            "artifact_path": finalized.get("artifact_path"),
+            "record_path": finalized.get("record_path"),
+            "event_count": finalized.get("event_count"),
+            "meeting_type": finalized.get("meeting_type"),
+            "topic_intent": finalized.get("topic_intent"),
+            "participants": finalized.get("participants"),
+            "rounds": finalized.get("rounds"),
+            "summary": finalized.get("summary"),
+            "transcript": finalized.get("transcript"),
+            "tool_policy": finalized.get("tool_policy"),
+            "fake_success": False,
+        }
+
+    def _public_persona_for_participant(self, persona: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": persona.get("id"),
+            "name": persona.get("name") or persona.get("id"),
+            "role": persona.get("role") or "",
+        }
+
+    def _prepare_meeting_run(
+        self,
+        request: MeetingRequest,
+        *,
+        persona_store: PersonaStore,
+        knowledge_store: KnowledgeStore | None,
+        web_context_fetcher: Callable[[dict[str, Any], str], list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         requested_tools = [str(item).strip() for item in request.tools if str(item).strip()]
         forbidden = [
@@ -1695,20 +3713,23 @@ class MeetingStore:
         ]
         if request.allow_tools or requested_tools:
             return {
-                "status": "blocked",
-                "reason": "Ouroboros chat meetings are transcript-only and do not execute Cline, shell, browser, or write tools.",
-                "requested_tools": requested_tools,
-                "forbidden_tools": forbidden,
-                "tool_policy": self.tool_policy(),
-                "approval_phrase": APPROVAL_PHRASE,
-                "fake_success": False,
+                "blocked": {
+                    "status": "blocked",
+                    "reason": "Ouroboros chat meetings are transcript-only and do not execute Cline, shell, browser, or write tools.",
+                    "requested_tools": requested_tools,
+                    "forbidden_tools": forbidden,
+                    "tool_policy": self.tool_policy(),
+                    "approval_phrase": APPROVAL_PHRASE,
+                    "fake_success": False,
+                }
             }
         if _contains_secret_like({"topic": request.topic, "participants": request.participants}):
             raise ValueError("Meeting content appears to contain a secret, token, password, or bearer credential.")
 
         meeting_type = _normalize_meeting_type(request.meeting_type)
+        topic_intent = _classify_topic_intent(request.topic)
         participants = request.participants or ["ouroboros"]
-        personas = []
+        personas: list[dict[str, Any]] = []
         for persona_id in participants[:12]:
             persona = persona_store.get(persona_id)
             persona = persona or {"id": _safe_slug(persona_id), "name": str(persona_id), "description": "", "tags": []}
@@ -1718,51 +3739,63 @@ class MeetingStore:
             if knowledge_store is not None and policy.get("can_search_files"):
                 knowledge.extend(knowledge_store.snippets_for_persona(persona, request.topic, limit=3))
             if web_context_fetcher is not None and policy.get("can_search_web"):
-                web_queries = [request.topic]
-                if meeting_type == "brainstorm":
-                    web_queries.extend(
-                        [
-                            f"{request.topic} bronnen onderzoek risico's alternatieven",
-                            f"{request.topic} technische lagen ontwerp implementatie bewijs",
-                        ]
-                    )
+                web_queries = self._meeting_web_queries(meeting_type, request.topic, persona)
                 for query in web_queries:
                     knowledge.extend(web_context_fetcher(persona, query)[:2])
             if knowledge:
-                persona["_meeting_knowledge"] = self._dedupe_knowledge(knowledge)[:10 if meeting_type == "brainstorm" else 5]
+                if meeting_type == "brainstorm":
+                    knowledge_limit = 14
+                elif meeting_type == "sprint_planning":
+                    knowledge_limit = 8
+                else:
+                    knowledge_limit = 5
+                persona["_meeting_knowledge"] = self._dedupe_knowledge(knowledge)[:knowledge_limit]
             personas.append(persona)
 
         meeting_id = f"{int(time.time())}-{uuid.uuid4().hex[:10]}"
         provider = (request.provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
         model = (request.model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-        events: list[dict[str, Any]] = [
-            {
-                "type": "meeting_started",
-                "meeting_id": meeting_id,
-                "timestamp": _now_iso(),
-                "topic": _clip_text(request.topic, 2000),
-                "meeting_type": meeting_type,
-                "meeting_type_label": MEETING_TYPE_LABELS.get(meeting_type, MEETING_TYPE_LABELS["team"]),
-                "provider": provider,
-                "model": model,
-                "approval_phrase": APPROVAL_PHRASE,
-                "approval_supplied": str(request.approval or "").strip() == APPROVAL_PHRASE,
-                "tool_policy": self.tool_policy(),
-                "safety_note": (
-                    "No Cline execution, shell commands, browser control, agent execution, or write tools were run."
-                ),
-            }
-        ]
-        runner_payload = MeetingRunner(llm_call=llm_call).run(
-            topic=request.topic,
-            personas=personas,
-            provider=provider,
-            model=model,
-            meeting_id=meeting_id,
-            meeting_type=meeting_type,
-        )
-        events.extend(runner_payload["events"])
+        started_event = {
+            "type": "meeting_started",
+            "meeting_id": meeting_id,
+            "timestamp": _now_iso(),
+            "topic": _clip_text(request.topic, 2000),
+            "meeting_type": meeting_type,
+            "meeting_type_label": MEETING_TYPE_LABELS.get(meeting_type, MEETING_TYPE_LABELS["team"]),
+            "topic_intent": topic_intent,
+            "topic_intent_label": _topic_intent_label(topic_intent),
+            "provider": provider,
+            "model": model,
+            "approval_phrase": APPROVAL_PHRASE,
+            "approval_supplied": str(request.approval or "").strip() == APPROVAL_PHRASE,
+            "tool_policy": self.tool_policy(),
+            "safety_note": (
+                "No Cline execution, shell commands, browser control, agent execution, or write tools were run."
+            ),
+        }
+        return {
+            "meeting_id": meeting_id,
+            "meeting_type": meeting_type,
+            "topic_intent": topic_intent,
+            "provider": provider,
+            "model": model,
+            "personas": personas,
+            "started_event": started_event,
+        }
 
+    def _finalize_meeting_run(
+        self,
+        *,
+        request: MeetingRequest,
+        prep: dict[str, Any],
+        events: list[dict[str, Any]],
+        runner_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        meeting_id = prep["meeting_id"]
+        meeting_type = prep["meeting_type"]
+        topic_intent = prep["topic_intent"]
+        provider = prep["provider"]
+        model = prep["model"]
         path = self._write_events(meeting_id, events)
         transcript = self._transcript_from_runner(runner_payload)
         self._write_record(
@@ -1771,6 +3804,7 @@ class MeetingStore:
                 "meeting_id": meeting_id,
                 "topic": _clip_text(request.topic, 4000),
                 "meeting_type": meeting_type,
+                "topic_intent": runner_payload.get("topic_intent") or topic_intent,
                 "participants": runner_payload["participants"],
                 "participant_ids": [str(item.get("id")) for item in runner_payload["participants"] if item.get("id")],
                 "agent_ids": [],
@@ -1794,6 +3828,7 @@ class MeetingStore:
             "record_path": str(self._record_path(meeting_id)),
             "event_count": len(events),
             "meeting_type": meeting_type,
+            "topic_intent": runner_payload.get("topic_intent") or topic_intent,
             "events": events,
             "participants": runner_payload["participants"],
             "rounds": runner_payload["rounds"],
@@ -1874,12 +3909,14 @@ class MeetingStore:
         rounds: list[dict[str, Any]] = []
         topic = ""
         meeting_type = "team"
+        topic_intent = ""
         summary = ""
         for index, event in enumerate(events):
             event_type = str(event.get("type") or "")
             if event_type == "meeting_started":
                 topic = topic or str(event.get("topic") or "")
                 meeting_type = _normalize_meeting_type(event.get("meeting_type") or meeting_type)
+                topic_intent = str(event.get("topic_intent") or topic_intent or "")
                 continue
             participant = event.get("participant") if isinstance(event.get("participant"), dict) else {}
             if participant:
@@ -1903,6 +3940,7 @@ class MeetingStore:
         return {
             "topic": _clip_text(topic, 4000),
             "meeting_type": meeting_type,
+            "topic_intent": topic_intent or _classify_topic_intent(topic),
             "participants": list(participants_by_id.values()),
             "rounds": rounds,
             "summary": _clip_text(summary, 8000),
@@ -1958,6 +3996,15 @@ class OuroborosChatService:
 
     def create_meeting(self, request: MeetingRequest) -> dict[str, Any]:
         return self.meetings.create_meeting(
+            request,
+            self.personas,
+            llm_call=self._call_model_provider,
+            knowledge_store=self.knowledge,
+            web_context_fetcher=self._brave_knowledge_for_persona,
+        )
+
+    def stream_meeting(self, request: MeetingRequest) -> Iterator[dict[str, Any]]:
+        return self.meetings.stream_meeting(
             request,
             self.personas,
             llm_call=self._call_model_provider,
@@ -2430,6 +4477,27 @@ class OuroborosChatService:
                 "direct_chat": True,
             }
         ]
+        chatgpt_codex = _chatgpt_codex_status(
+            subscription_statuses.get("openai") if isinstance(subscription_statuses.get("openai"), dict) else {}
+        )
+        providers.append(
+            {
+                "id": CHATGPT_CODEX_PROVIDER,
+                "label": "ChatGPT-Codex abonnement",
+                "models": list(CHATGPT_CODEX_MODEL_OPTIONS),
+                "default_model": CHATGPT_CODEX_DEFAULT_MODEL,
+                "configured": chatgpt_codex["configured"],
+                "direct_chat": chatgpt_codex["direct_chat"],
+                "key_source": chatgpt_codex["key_source"],
+                "auth_mode": chatgpt_codex["auth_mode"],
+                "subscription_status": chatgpt_codex["status"],
+                "token_file_present": chatgpt_codex["token_file_present"],
+                "token_file": chatgpt_codex["token_file"],
+                "token_sources": chatgpt_codex["token_sources"],
+                "login_command": "goose configure chatgpt_codex, codex login, or cd /home/pwintri2/chatgpt-copilot && npx ts-node scripts/chatgpt-oauth.ts",
+                "local_only": False,
+            }
+        )
         for provider_id, config in provider_models.items():
             key = key_status.get(provider_id) if isinstance(key_status.get(provider_id), dict) else {}
             sub = subscription_statuses.get(provider_id) if isinstance(subscription_statuses.get(provider_id), dict) else {}
@@ -2572,6 +4640,239 @@ class OuroborosChatService:
             }
         ]
 
+    def _chatgpt_codex_runtime_token(self) -> tuple[dict[str, Any] | None, str]:
+        refresh_errors: list[str] = []
+        for source in _chatgpt_codex_token_sources():
+            token = source.get("token", {}) if isinstance(source.get("token"), dict) else {}
+            if not token:
+                continue
+            if _token_has_time_left(token) and _chatgpt_token_access(token):
+                return token, str(source.get("id") or "oauth_shared_file")
+            if _chatgpt_token_refresh(token):
+                save_token = source.get("save") if callable(source.get("save")) else None
+                try:
+                    return (
+                        self._refresh_chatgpt_codex_token(token, persist=bool(save_token), save_token=save_token),
+                        str(source.get("id") or "oauth_shared_file"),
+                    )
+                except ValueError as exc:
+                    refresh_errors.append(f"{source.get('id')}: {_redact_secret_like(str(exc))}")
+
+        try:
+            from controller.subscription_store import subscription_credential_for_provider
+
+            credential = subscription_credential_for_provider("openai")
+        except Exception:
+            credential = {}
+        if credential.get("usable") and credential.get("auth_mode") == "oauth_refresh_token":
+            refreshed = self._refresh_chatgpt_codex_token(
+                {"provider": "chatgpt", "refreshToken": credential.get("refresh_token")},
+                persist=False,
+            )
+            return refreshed, "subscription:oauth_refresh_token"
+        if refresh_errors:
+            raise ValueError("ChatGPT-Codex OAuth refresh failed for known token stores: " + "; ".join(refresh_errors))
+        return None, "missing"
+
+    def _refresh_chatgpt_codex_token(
+        self,
+        token: dict[str, Any],
+        *,
+        persist: bool,
+        save_token: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        refresh_token = _chatgpt_token_refresh(token)
+        if not refresh_token:
+            raise ValueError("ChatGPT-Codex OAuth refresh token is missing.")
+        try:
+            response = _http_post(
+                CHATGPT_CODEX_TOKEN_ENDPOINT,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "client_id": CHATGPT_CODEX_CLIENT_ID,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+                timeout=20,
+            )
+        except Exception as exc:
+            raise ValueError(f"ChatGPT-Codex token refresh failed: {_redact_secret_like(str(exc))}") from exc
+        if not response.ok:
+            raise ValueError(f"ChatGPT-Codex token refresh failed: {_redact_secret_like(response.text[:240])}")
+        data = response.json()
+        access_token = str(data.get("access_token") or "").strip()
+        if not access_token:
+            raise ValueError("ChatGPT-Codex token refresh returned no access token.")
+        refreshed = {
+            **token,
+            "provider": "chatgpt",
+            "accessToken": access_token,
+            "refreshToken": str(data.get("refresh_token") or refresh_token),
+            "expiresAt": int((time.time() + int(data.get("expires_in") or 3600)) * 1000),
+        }
+        id_token = str(data.get("id_token") or "").strip()
+        if id_token:
+            refreshed["idToken"] = id_token
+        if persist:
+            if save_token is not None:
+                save_token(refreshed)
+            else:
+                _save_chatgpt_copilot_token(refreshed)
+        return refreshed
+
+    def _call_chatgpt_codex(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        system_prompt: str,
+        history: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        try:
+            token, source = self._chatgpt_codex_runtime_token()
+        except ValueError as exc:
+            return {"ok": False, "content": "", "error": str(exc), "provider": CHATGPT_CODEX_PROVIDER, "model": model}
+        if not token:
+            return {
+                "ok": False,
+                "content": "",
+                "error": (
+                    "ChatGPT-Codex OAuth is not linked. Link Goose ChatGPT-Codex, run codex login, run the "
+                    "chatgpt-copilot OAuth login, or configure an OpenAI oauth_refresh_token subscription."
+                ),
+                "provider": CHATGPT_CODEX_PROVIDER,
+                "model": model,
+            }
+        access_token = _chatgpt_token_access(token)
+        account_id = _chatgpt_token_account_id(token)
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "originator": "codex_cli_rs",
+            "OpenAI-Beta": "responses=experimental",
+        }
+        if account_id:
+            headers["chatgpt-account-id"] = account_id
+
+        input_items: list[dict[str, Any]] = []
+        if system_prompt.strip():
+            input_items.append(
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": _clip_text(system_prompt, MAX_TEXT_CHARS)}],
+                }
+            )
+        for item in history[-20:]:
+            role = "assistant" if item.get("role") == "assistant" else "user"
+            content = _clip_text(item.get("content", ""), MAX_TEXT_CHARS)
+            if not content:
+                continue
+            input_items.append(
+                {
+                    "type": "message",
+                    "role": role,
+                    "content": [{"type": "output_text" if role == "assistant" else "input_text", "text": content}],
+                }
+            )
+        input_items.append(
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": _clip_text(prompt, MAX_TEXT_CHARS)}],
+            }
+        )
+        body = {
+            "model": model or CHATGPT_CODEX_DEFAULT_MODEL,
+            "input": input_items,
+            "instructions": CHATGPT_CODEX_INSTRUCTIONS,
+            "store": False,
+            "stream": False,
+            "include": ["reasoning.encrypted_content"],
+            "text": {"verbosity": "medium"},
+        }
+        try:
+            response = _http_post(
+                f"{CHATGPT_CODEX_BASE_URL}/codex/responses",
+                headers=headers,
+                json_body=body,
+                timeout=max(10.0, self.ollama_timeout_seconds),
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "content": "",
+                "error": f"ChatGPT-Codex request failed: {_redact_secret_like(str(exc))}",
+                "provider": CHATGPT_CODEX_PROVIDER,
+                "model": model,
+                "network_call_made": True,
+            }
+        if not response.ok:
+            return {
+                "ok": False,
+                "content": "",
+                "error": f"ChatGPT-Codex API error {response.status_code}: {_redact_secret_like(response.text[:500])}",
+                "provider": CHATGPT_CODEX_PROVIDER,
+                "model": model,
+                "network_call_made": True,
+                "auth_source": source,
+            }
+        try:
+            data = response.json()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "content": "",
+                "error": f"ChatGPT-Codex returned invalid JSON: {exc}",
+                "provider": CHATGPT_CODEX_PROVIDER,
+                "model": model,
+                "network_call_made": True,
+                "auth_source": source,
+            }
+        content = self._extract_chatgpt_codex_text(data).strip()
+        return {
+            "ok": bool(content),
+            "content": content,
+            "error": "" if content else "ChatGPT-Codex returned no response text.",
+            "provider": CHATGPT_CODEX_PROVIDER,
+            "model": model,
+            "raw_status": "success" if content else "empty",
+            "network_call_made": True,
+            "auth_source": source,
+        }
+
+    def _extract_chatgpt_codex_text(self, payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, list):
+            return "\n".join(part for part in (self._extract_chatgpt_codex_text(item) for item in payload) if part)
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("output_text", "response", "content", "text"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        output = payload.get("output")
+        if isinstance(output, list):
+            parts: list[str] = []
+            for item in output:
+                if isinstance(item, dict):
+                    content = item.get("content")
+                    if isinstance(content, list):
+                        parts.extend(self._extract_chatgpt_codex_text(part) for part in content)
+                    else:
+                        parts.append(self._extract_chatgpt_codex_text(item))
+            return "\n".join(part for part in parts if part)
+        choices = payload.get("choices")
+        if isinstance(choices, list):
+            parts = []
+            for choice in choices:
+                if isinstance(choice, dict):
+                    message = choice.get("message")
+                    parts.append(self._extract_chatgpt_codex_text(message if message is not None else choice))
+            return "\n".join(part for part in parts if part)
+        return ""
+
     def _call_model_provider(
         self,
         *,
@@ -2583,6 +4884,13 @@ class OuroborosChatService:
         images: list[str] | None = None,
     ) -> dict[str, Any]:
         provider_id = str(provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+        if provider_id in CHATGPT_CODEX_ALIASES:
+            return self._call_chatgpt_codex(
+                prompt=prompt,
+                model=model or CHATGPT_CODEX_DEFAULT_MODEL,
+                system_prompt=system_prompt,
+                history=history,
+            )
         if provider_id in {DEFAULT_PROVIDER, "local", "ouroboros", "ollama"}:
             result = self._call_ollama(
                 prompt=prompt,
@@ -2990,6 +5298,47 @@ async def create_meeting(request_body: MeetingRequest, request: Request) -> dict
         return await asyncio.to_thread(service.create_meeting, request_body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@ouroboros_chat_router.post("/meetings/stream")
+async def stream_meeting(request_body: MeetingRequest, request: Request) -> Any:
+    try:
+        from fastapi.responses import StreamingResponse
+    except Exception as exc:  # pragma: no cover - fastapi shim path
+        raise HTTPException(status_code=500, detail=f"StreamingResponse not available: {exc}") from exc
+    service = _service_from_request(request)
+    try:
+        iterator = service.stream_meeting(request_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def event_stream() -> "AsyncIterator[bytes]":
+        loop = asyncio.get_event_loop()
+
+        def _next(it: "Iterator[dict[str, Any]]") -> dict[str, Any] | None:
+            try:
+                return next(it)
+            except StopIteration:
+                return None
+
+        while True:
+            event = await loop.run_in_executor(None, _next, iterator)
+            if event is None:
+                break
+            event_name = str(event.get("type") or "meeting_event").replace("\n", " ")
+            payload = json.dumps(event, ensure_ascii=False, sort_keys=True)
+            chunk = f"event: {event_name}\ndata: {payload}\n\n"
+            yield chunk.encode("utf-8")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @ouroboros_chat_router.put("/meetings/{meeting_id}")

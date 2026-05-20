@@ -12,6 +12,8 @@ BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
 TOKEN_PATH="${WINTRIP_RCLONE_BRIDGE_TOKEN_PATH_HOST:-$ROOT/.secrets/rclone_bridge_token}"
 VITE_PORT="${OUROBOROS_CHAT_VITE_PORT:-1421}"
 DOCKER_COMPOSE_TIMEOUT="${OUROBOROS_CHAT_DOCKER_TIMEOUT:-20s}"
+DOCKER_CONTEXT="${OUROBOROS_CHAT_DOCKER_CONTEXT:-desktop-linux}"
+FORCE_DEV="${OUROBOROS_CHAT_FORCE_DEV:-0}"
 
 mkdir -p "$LOG_DIR"
 exec >>"$LOG_DIR/launcher.log" 2>&1
@@ -90,6 +92,14 @@ wait_for_backend() {
   return 1
 }
 
+docker_cmd() {
+  if [ -n "$DOCKER_CONTEXT" ] && docker context inspect "$DOCKER_CONTEXT" >/dev/null 2>&1; then
+    docker --context "$DOCKER_CONTEXT" "$@"
+    return $?
+  fi
+  docker "$@"
+}
+
 ensure_backend() {
   if url_is_up "$BACKEND_URL"; then
     echo "Backend already online."
@@ -97,10 +107,10 @@ ensure_backend() {
   fi
 
   if command -v docker >/dev/null 2>&1; then
-    echo "Backend offline; trying docker compose up -d ouroboros-backend."
+    echo "Backend offline; trying docker compose up -d ouroboros-backend via context ${DOCKER_CONTEXT:-default}."
     local compose_timed_out=0
     if command -v timeout >/dev/null 2>&1; then
-      (cd "$ROOT" && timeout "$DOCKER_COMPOSE_TIMEOUT" docker compose up -d ouroboros-backend)
+      (cd "$ROOT" && timeout "$DOCKER_COMPOSE_TIMEOUT" bash -lc 'docker_context="$1"; shift; if [ -n "$docker_context" ] && docker context inspect "$docker_context" >/dev/null 2>&1; then docker --context "$docker_context" "$@"; else docker "$@"; fi' _ "$DOCKER_CONTEXT" compose up -d ouroboros-backend)
       compose_status=$?
       if [ "$compose_status" -eq 124 ]; then
         echo "docker compose did not finish within $DOCKER_COMPOSE_TIMEOUT; continuing without blocking the UI."
@@ -109,7 +119,7 @@ ensure_backend() {
         echo "docker compose exited with status $compose_status; continuing."
       fi
     else
-      (cd "$ROOT" && docker compose up -d ouroboros-backend) || true
+      (cd "$ROOT" && docker_cmd compose up -d ouroboros-backend) || true
     fi
     if [ "$compose_timed_out" -eq 0 ] && wait_for_backend; then
       echo "Backend online after docker compose."
@@ -120,6 +130,15 @@ ensure_backend() {
   echo "Backend is still offline; launching Ouroboros Chat anyway."
   notify "Ouroboros backend offline" "Ouroboros Chat start, maar $BACKEND_URL is nog niet bereikbaar."
   return 0
+}
+
+export_nvidia_tauri_env() {
+  export __NV_PRIME_RENDER_OFFLOAD="${__NV_PRIME_RENDER_OFFLOAD:-1}"
+  export __GLX_VENDOR_LIBRARY_NAME="${__GLX_VENDOR_LIBRARY_NAME:-nvidia}"
+  export __VK_LAYER_NV_optimus="${__VK_LAYER_NV_optimus:-NVIDIA_only}"
+  export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+  export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"
+  export NO_AT_BRIDGE="${NO_AT_BRIDGE:-1}"
 }
 
 ensure_host_bridge() {
@@ -219,17 +238,34 @@ launch_chat() {
     exit 1
   fi
 
+  # If a Tauri binary of Ouroboros Chat is already running, focus delegation
+  # is handled by tauri-plugin-single-instance in main.rs. We still guard
+  # here so the launcher doesn't even spawn the second binary in the first
+  # place. Match on process name (comm), not on the full command line, to
+  # avoid catching unrelated bash invocations that happen to mention the
+  # release-binary path in their argv (e.g. build/monitor commands).
+  if pgrep -x ouroboros-chat >/dev/null 2>&1; then
+    echo "Ouroboros Chat is already running; skipping launch to avoid Tauri webview conflict."
+    notify "Ouroboros Chat draait al" "Een venster van Ouroboros Chat is al actief."
+    exit 0
+  fi
+
   export TAURI_BACKEND_URL="$BACKEND_URL"
   export VITE_BACKEND_URL="$BACKEND_URL"
+  export_nvidia_tauri_env
 
   local release_binary="$CHAT_DIR/src-tauri/target/release/ouroboros-chat"
   local debug_binary="$CHAT_DIR/src-tauri/target/debug/ouroboros-chat"
 
-  if release_binary_is_fresh "$release_binary"; then
-    echo "Launching release Tauri binary."
-    exec "$release_binary"
-  elif [ -x "$release_binary" ]; then
-    echo "Release Tauri binary is older than Ouroboros Chat sources; using live Tauri dev path."
+  if [ "$FORCE_DEV" != "1" ] && [ -x "$release_binary" ]; then
+    if release_binary_is_fresh "$release_binary"; then
+      echo "Launching fresh release Tauri binary through NVIDIA-safe wrapper."
+    else
+      echo "Release Tauri binary is older than Ouroboros Chat sources; launching it anyway for reliable taskbar startup."
+    fi
+    exec "$CHAT_DIR/scripts/start-tauri-nvidia.sh"
+  elif [ "$FORCE_DEV" = "1" ] && [ -x "$release_binary" ]; then
+    echo "OUROBOROS_CHAT_FORCE_DEV=1; skipping release binary and using live Tauri dev path."
   fi
 
   if debug_binary_native_is_fresh "$debug_binary"; then
