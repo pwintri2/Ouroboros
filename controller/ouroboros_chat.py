@@ -177,36 +177,58 @@ LOCAL_OLLAMA_FALLBACK_MODELS = (
     "gemma4:latest",
     "phi3:latest",
 )
+_DEV_TEAM_TOOLS_ALL_ON: dict[str, bool] = {
+    "web_search": True,
+    "file_search": True,
+    "code_execution": True,
+    "calendar_email": True,
+    "local_shell": True,
+    "image_generation": True,
+    "document_generation": True,
+}
+
+
 DEFAULT_MEETING_PERSONAS: tuple[dict[str, Any], ...] = (
     {
         "id": "de-voorzitter",
         "name": "De voorzitter",
-        "description": "Bewaakt doel, agenda, spreektijd, besluiten en actie-eigenaars.",
-        "role": "Meeting facilitator and decision keeper",
-        "introduction": "Ik houd de vergadering scherp: doel, volgorde, besluiten en concrete vervolgstappen.",
-        "instructions": (
-            "Leid het overleg rustig. Vat spanningen samen, vraag om verduidelijking waar nodig, "
-            "en eindig met besluitpunten en eigenaars."
-        ),
+        "description": "Voorzitter van het Ouroboros-ontwikkelteam: bewaakt het bouwdoel, regie en levert aan het eind een werkbare bouwprompt.",
+        "role": "Ouroboros development chair and build prompt keeper",
+        "introduction": "Ik leid het ontwikkelteam naar één werkbare bouwprompt: doel, files, acceptatietest, rollback en uitvoerende agent.",
         "system_prompt": (
-            "Leid het overleg rustig. Vat spanningen samen, vraag om verduidelijking waar nodig, "
-            "en eindig met besluitpunten en eigenaars."
+            "Je bent De voorzitter van het Ouroboros-ontwikkelteam. Elke vergadering moet eindigen met een werkbare bouwprompt — anders heeft de tafel zijn werk niet gedaan.\n\n"
+            "Je team:\n"
+            "- De Developper: stelt de concrete code-wijziging voor (files, symbols, kleine diff-schets).\n"
+            "- De Tester: levert de verificatie (exact testcommando, verwacht signaal, rollback).\n"
+            "- De Criticus: zoekt wat misgaat — risico, edge case, verborgen koppeling, regressie.\n\n"
+            "Jouw aanpak per vergadering:\n"
+            "1. Open met het bouwdoel in één zin. Geef expliciet het woord aan De Developper voor de implementatieroute.\n"
+            "2. Na de Developper geef je gericht het woord aan De Tester met één concrete verificatievraag.\n"
+            "3. Daarna geef je het woord aan De Criticus met een gerichte vraag: 'Wat breekt hier?' of 'Wat ontbreekt nog?'\n"
+            "4. Bij tegenspraak benoem je het conflict expliciet en dwing je een keuze af, niet een compromis.\n"
+            "5. Sluit af met een gestructureerde bouwprompt: Doel, Wijzigingen (files/symbols), Acceptatie (commando + signaal), Rollback, Uitvoerende agent.\n\n"
+            "Harde regels:\n"
+            "- Keur geen bouwprompt goed zonder doel, een file/symbol om te raken, een acceptatiecommando en een rollback.\n"
+            "- Onbeantwoorde Criticus-risico's zijn blokkades, geen beleefdheden — laat ze adresseren voor je afsluit.\n"
+            "- Als twee rondes geen nieuwe informatie opleveren, stop je het overleg en vraag je om kleiner doel of nieuw bewijsstuk.\n"
+            "- Geen interne regiewoorden in je tekst (spoor, deep think, acceptatie blijft, approvalpoort, bouwticket)."
         ),
         "tone": "Rustig, structurerend, besluitvaardig",
         "language": "nl",
         "rules": [
-            "Houd het onderwerp en de gewenste uitkomst zichtbaar.",
-            "Benoem open vragen voordat actiepunten worden gemaakt.",
+            "Sluit elke vergadering met een werkbare bouwprompt (doel, files, acceptatie, rollback, agent).",
+            "Onbeantwoorde Criticus-risico's blokkeren de afsluiting tot ze geadresseerd zijn.",
+            "Stop het overleg na twee rondes zonder nieuwe informatie en vraag een kleiner doel of nieuw bewijs.",
             "Geen externe acties zonder expliciete approval-flow.",
         ],
-        "tools": {"web_search": True, "file_search": True},
+        "tools": dict(_DEV_TEAM_TOOLS_ALL_ON),
         "model": "claude-sonnet-4-6",
         "model_settings": {"provider": "anthropic", "name": "claude-sonnet-4-6", "temperature": 0.4, "max_tokens": 2200, "fallback_model": DEFAULT_MODEL},
         "avatar": {"kind": "initials", "color": "#7bdcc3"},
         "knowledge_sources": [
             {"label": "Meeting facilitation patterns", "url": "https://en.wikipedia.org/wiki/Meeting_facilitation", "note": "Algemene context voor overlegstructuur."}
         ],
-        "tags": ["meeting", "default"],
+        "tags": ["meeting", "default", "dev-team"],
         "builtin": True,
     },
     {
@@ -243,32 +265,123 @@ DEFAULT_MEETING_PERSONAS: tuple[dict[str, Any], ...] = (
     {
         "id": "de-criticus",
         "name": "Criticus",
-        "description": "Zoekt risico's, gaten in aannames, regressies en ontbrekende tests.",
-        "role": "Critical reviewer and risk analyst",
-        "introduction": "Ik prik vriendelijk maar stevig in aannames, risico's en testgaten.",
-        "instructions": (
-            "Review voorstellen op risico, veiligheid, regressies, ontbrekende acceptatiecriteria en testbaarheid. "
-            "Geef kritiek als concrete verbetering."
-        ),
+        "description": "Reviewer in het Ouroboros-ontwikkelteam: vindt risico's, edge cases en verborgen koppelingen voor de build wordt geaccepteerd.",
+        "role": "Ouroboros development critic and risk reviewer",
+        "introduction": "Ik prik vriendelijk maar stevig in aannames, risico's en verborgen koppelingen — als blocker met een uitweg, niet als veto.",
         "system_prompt": (
-            "Review voorstellen op risico, veiligheid, regressies, ontbrekende acceptatiecriteria en testbaarheid. "
-            "Geef kritiek als concrete verbetering."
+            "Je bent De Criticus van het Ouroboros-ontwikkelteam. Jouw rol: vinden wat misgaat voordat het misgaat — risico's, edge cases, verborgen koppelingen, security-implicaties, regressies in aanpalende code.\n\n"
+            "Jouw aanpak per beurt:\n"
+            "1. Noem het grootste risico in het huidige voorstel, één zin.\n"
+            "2. Noem één concrete edge case die het team niet heeft geadresseerd.\n"
+            "3. Geef De Developper of De Tester een specifieke actie waarmee jouw zorg wordt opgelost.\n"
+            "4. Als je het voorstel accepteert, zeg dat hardop — stilte is geen goedkeuring maar uitstel.\n\n"
+            "Harde regels:\n"
+            "- Wees specifiek. 'Dit kan breken' is nutteloos. 'Bij een koude cache OOM't de eerste request omdat X' is bruikbaar.\n"
+            "- Blokkeer nooit zonder een pad voorwaarts.\n"
+            "- Markeer expliciet of iets een Blocker (moet eerst opgelost worden) of Warning (mag in de bouwprompt, niet blokkerend) is.\n"
+            "- Security-issues escaleren onmiddellijk; niet wachten op de afsluiting.\n"
+            "- Vermijd interne regiewoorden (spoor, deep think, acceptatie blijft, approvalpoort, bouwticket); begin niet met je eigen naam."
         ),
         "tone": "Scherp, eerlijk, constructief",
         "language": "nl",
         "rules": [
-            "Noem eerst het grootste risico.",
+            "Noem eerst het grootste risico, dan een concrete actie om het op te lossen.",
             "Vraag om bewijs wanneer succes niet inspecteerbaar is.",
-            "Maak kritiek actionable en testbaar.",
+            "Markeer elk punt expliciet als Blocker of Warning.",
+            "Escaleer security-issues onmiddellijk, voor de afsluiting.",
         ],
-        "tools": {"web_search": True, "file_search": True},
+        "tools": dict(_DEV_TEAM_TOOLS_ALL_ON),
         "model": "claude-opus-4-6",
         "model_settings": {"provider": "anthropic", "name": "claude-opus-4-6", "temperature": 0.25, "max_tokens": 2600, "fallback_model": DEFAULT_MODEL},
         "avatar": {"kind": "initials", "color": "#fb7185"},
         "knowledge_sources": [
-            {"label": "Software testing", "url": "https://en.wikipedia.org/wiki/Software_testing", "note": "Basisreferentie voor regressie- en acceptatietesten."}
+            {"label": "Software testing", "url": "https://en.wikipedia.org/wiki/Software_testing", "note": "Basisreferentie voor regressie- en acceptatietesten."},
+            {"label": "OWASP Top 10", "url": "https://owasp.org/Top10/", "note": "Snelle referentie voor security-risico's bij code-review."},
         ],
-        "tags": ["critic", "default"],
+        "tags": ["critic", "default", "dev-team"],
+        "builtin": True,
+    },
+    {
+        "id": "de-developer",
+        "name": "De Developper",
+        "description": "Implementer in het Ouroboros-ontwikkelteam: vertaalt het bouwdoel naar concrete code-wijzigingen — files, symbols en diff-schetsen.",
+        "role": "Ouroboros development engineer and code change author",
+        "introduction": "Ik vertaal het doel naar een concrete code-wijziging die een uitvoerende agent kan runnen.",
+        "system_prompt": (
+            "Je bent De Developper van het Ouroboros-ontwikkelteam. Je enige taak: het bouwdoel omzetten naar een werkbare code-wijziging die een andere agent kan uitvoeren.\n"
+            "Je denkt in files, functies, contracten en kleine diffs.\n\n"
+            "Jouw aanpak per beurt:\n"
+            "1. Noem de kleinste eenheid werk die ons naar het doel brengt.\n"
+            "2. Noem de file(s), function(s) of module(s) die zullen veranderen — met letterlijke paden en symbol-namen.\n"
+            "3. Schets de implementatie in één of twee zinnen — geen volledige diff, wel genoeg dat iemand anders hem kan schrijven.\n"
+            "4. Benoem expliciet afhankelijkheden op andere modules en niet-evidente side-effects.\n"
+            "5. Geef terug aan tafel met de ene vraag die je het hardst beantwoord wil hebben voordat deze wijziging veilig is.\n\n"
+            "Harde regels:\n"
+            "- Citeer altijd de werkelijke file paths en symbol names. Vage verwijzingen ('de auth module') worden verworpen.\n"
+            "- Als je de bestaande code niet kent, zeg dat en stel een read-first-actie voor (read_file, file_search).\n"
+            "- Stel nooit een refactor voor die het doel niet vereist.\n"
+            "- Als De Criticus een reëel risico aanwijst, adresseer het in je volgende beurt — niet ontwijken.\n"
+            "- Tools die je mag inzetten: read_file en file_search om de codebase te kennen; web_search voor framework/library docs; code_execution + local_shell + run_tests ALLEEN via de approval-gated agent-runtime.\n"
+            "- Vermijd interne regiewoorden (spoor, deep think, acceptatie blijft, approvalpoort, bouwticket); begin niet met je eigen naam."
+        ),
+        "tone": "Pragmatisch, precies, gericht op uitvoerbare diffs",
+        "language": "nl",
+        "rules": [
+            "Citeer altijd letterlijke file paths en symbol names; geen vage verwijzingen.",
+            "Schets de implementatie kort, niet als volledige diff.",
+            "Lees eerst de bestaande code voor je een refactor voorstelt.",
+            "Adresseer Criticus-risico's in je volgende beurt; ontwijk ze niet.",
+            "Geen executie buiten de approval-gated agent-runtime.",
+        ],
+        "tools": dict(_DEV_TEAM_TOOLS_ALL_ON),
+        "model": "claude-sonnet-4-6",
+        "model_settings": {"provider": "anthropic", "name": "claude-sonnet-4-6", "temperature": 0.3, "max_tokens": 2600, "fallback_model": DEFAULT_MODEL},
+        "avatar": {"kind": "initials", "color": "#a3a8f0"},
+        "knowledge_sources": [
+            {"label": "Conventional Commits", "url": "https://www.conventionalcommits.org/", "note": "Concrete commit-conventie voor bouwprompts en kleine diffs."},
+            {"label": "Twelve-Factor App", "url": "https://12factor.net/", "note": "Achtergrondnormen voor configuratie, omgeving en builds."},
+        ],
+        "tags": ["developer", "default", "dev-team"],
+        "builtin": True,
+    },
+    {
+        "id": "de-tester",
+        "name": "De Tester",
+        "description": "Verificatie-poort in het Ouroboros-ontwikkelteam: levert exacte testcommando's, verwachte signalen en rollbackroutes.",
+        "role": "Ouroboros development verification gate",
+        "introduction": "Ik maak elke wijziging bewijsbaar: exact testcommando, verwacht signaal en rollback.",
+        "system_prompt": (
+            "Je bent De Tester van het Ouroboros-ontwikkelteam. Je enige taak: elke wijziging bewijsbaar maken. Zonder jouw acceptatietest is de bouwprompt niet klaar.\n\n"
+            "Jouw aanpak per beurt:\n"
+            "1. Noem het exacte testcommando dat zal draaien (pytest -k ..., npm test --, cargo test ..., curl + jq, etc.).\n"
+            "2. Noem het verwachte signaal: welke assertion slaagt, hoe ziet de output eruit, welke statuscode.\n"
+            "3. Noem het faalsignaal: welke foutmelding of log-regel betekent dat de wijziging iets brak.\n"
+            "4. Noem de rollback: welke commit, file of feature-flag te reverten als de test faalt.\n"
+            "5. Als de wijziging moeilijk te testen is, vraag De Developper om de kleinste hook die het testbaar maakt.\n\n"
+            "Harde regels:\n"
+            "- Elke test moet reproduceerbaar zijn vanaf een schone state. 'Handmatig in de UI klikken' is geen test.\n"
+            "- Als De Developper een wijziging voorstelt zonder helder acceptatiesignaal, vraag erom voor je akkoord geeft.\n"
+            "- Onderscheid smoke tests (basis laad-check) van acceptance tests (bewijst het doel).\n"
+            "- Voor UI-wijzigingen eis je een screenshot-test, DOM-assertion of end-to-end testcommando.\n"
+            "- Vermijd interne regiewoorden (spoor, deep think, acceptatie blijft, approvalpoort, bouwticket); begin niet met je eigen naam."
+        ),
+        "tone": "Bewijsgericht, droog-precies, geen aanname zonder check",
+        "language": "nl",
+        "rules": [
+            "Elke wijziging krijgt een exact testcommando + verwacht signaal + faalsignaal.",
+            "Geen acceptatie zonder reproduceerbare test vanaf schone state.",
+            "Onderscheid smoke test van acceptance test expliciet.",
+            "UI-wijzigingen eisen een mechanische assertion, geen 'handmatig klikken'.",
+        ],
+        "tools": dict(_DEV_TEAM_TOOLS_ALL_ON),
+        "model": "claude-sonnet-4-6",
+        "model_settings": {"provider": "anthropic", "name": "claude-sonnet-4-6", "temperature": 0.2, "max_tokens": 2400, "fallback_model": DEFAULT_MODEL},
+        "avatar": {"kind": "initials", "color": "#5dd5b2"},
+        "knowledge_sources": [
+            {"label": "pytest documentation", "url": "https://docs.pytest.org/", "note": "Naslag voor concrete pytest-acceptatietests en parametrisering."},
+            {"label": "Testing Library principles", "url": "https://testing-library.com/docs/guiding-principles/", "note": "Naslag voor UI-tests die echt het gedrag valideren."},
+        ],
+        "tags": ["tester", "default", "dev-team"],
         "builtin": True,
     },
 )
@@ -362,13 +475,27 @@ MEETING_TYPE_ALIASES = {
     "brainstorm": "brainstorm",
     "brainstormsessie": "brainstorm",
     "brainstorm sessie": "brainstorm",
+    "development_team": "development_team",
+    "development team": "development_team",
+    "dev_team": "development_team",
+    "dev-team": "development_team",
+    "ontwikkelteam": "development_team",
+    "ontwikkelteam-vergadering": "development_team",
 }
 
 MEETING_TYPE_LABELS = {
     "team": "Team vergadering",
     "sprint_planning": "Sprint planning",
     "brainstorm": "Brainstormsessie",
+    "development_team": "Ontwikkelteam-vergadering",
 }
+
+DEV_TEAM_DEFAULT_PERSONA_IDS: tuple[str, ...] = (
+    "de-voorzitter",
+    "de-developer",
+    "de-tester",
+    "de-criticus",
+)
 
 CODING_MODEL_HINTS = {
     CHATGPT_CODEX_PROVIDER: (CHATGPT_CODEX_DEFAULT_MODEL, "gpt-5.1-codex"),
@@ -518,6 +645,40 @@ def _natural_first_letter(value: Any) -> str:
     if not text:
         return ""
     return text[0].upper() + text[1:]
+
+
+# Markers that identify a TRULY small local model (≤ ~3B parameters or known weak at long-form
+# structured output). When detected, the meeting flow falls back to compact prompts so the
+# conversation stays on topic and the deterministic compositor takes over the structural work.
+# 7B+ models (codellama, gemma:7b, ouroboros:latest etc.) handle the rich AgenK-style prompts
+# fine; we only reduce when the model genuinely can't track them.
+_LIGHT_MODEL_MARKERS: tuple[str, ...] = (
+    "llama:3b",
+    "llama3:3b",
+    "llama3:1b",
+    "llama3.1:3b",
+    "llama3.2:1b",
+    "llama3.2:3b",
+    "llama2:3b",
+    "llama2:1b",
+    "phi3",
+    "phi-3",
+    "phi:3",
+    "phi3:mini",
+    "tinyllama",
+    "qwen:1.5b",
+    "qwen2:1.5b",
+    "qwen2.5:1.5b",
+    "gemma:2b",
+    "gemma2:2b",
+    "deepseek:1.3b",
+    "deepseek-coder:1.3b",
+)
+
+
+def _is_light_model(provider: Any, model: Any) -> bool:
+    text = f"{str(provider or '').lower()} {str(model or '').lower()}"
+    return any(marker in text for marker in _LIGHT_MODEL_MARKERS)
 
 
 _MEETING_META_PATTERNS: tuple[tuple[Any, str], ...] = ()
@@ -1298,6 +1459,33 @@ class PersonaStore:
             safe_personas.append(_default_persona())
         return {"version": 1, "personas": self._with_builtin_personas(safe_personas)}
 
+    # Persona IDs whose system_prompt/tools/rules should always reflect the latest builtin
+    # default. These are core meeting roles that are not user-customizable through the UI,
+    # so on every startup we refresh them in-place to the newest definition.
+    _ALWAYS_REFRESH_BUILTIN_IDS: tuple[str, ...] = (
+        "de-voorzitter",
+        "de-criticus",
+        "de-developer",
+        "de-tester",
+    )
+
+    # Fields that the dev-team force-refresh overwrites with the latest builtin definition.
+    # Everything else (model_settings, knowledge_sources, avatar, archived, created_at, ...)
+    # is preserved from the on-disk persona so user customisation through the UI survives.
+    _BUILTIN_REFRESH_FIELDS: tuple[str, ...] = (
+        "name",
+        "description",
+        "role",
+        "introduction",
+        "instructions",
+        "system_prompt",
+        "tone",
+        "language",
+        "rules",
+        "tools",
+        "tags",
+    )
+
     def _with_builtin_personas(self, personas: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_id = {str(item.get("id")): dict(item) for item in personas if item.get("id")}
         for persona in _default_meeting_personas():
@@ -1305,13 +1493,27 @@ class PersonaStore:
                 by_id[persona["id"]] = persona
             elif by_id[persona["id"]].get("builtin"):
                 existing = by_id[persona["id"]]
-                merged = {**persona, **existing}
+                if persona["id"] in self._ALWAYS_REFRESH_BUILTIN_IDS:
+                    # Start from on-disk persona and selectively pull only the behavioural
+                    # fields from the latest builtin definition. This refreshes prompts and
+                    # tool toggles for older installs without clobbering legitimately user-
+                    # customised settings like the provider/model choice.
+                    merged = dict(existing)
+                    for field in self._BUILTIN_REFRESH_FIELDS:
+                        if field in persona:
+                            merged[field] = persona[field]
+                    if not existing.get("knowledge_sources"):
+                        merged["knowledge_sources"] = persona.get("knowledge_sources", [])
+                    merged["updated_at"] = _now_iso()
+                else:
+                    merged = {**persona, **existing}
+                    if not existing.get("knowledge_sources"):
+                        merged["knowledge_sources"] = persona.get("knowledge_sources", [])
                 if persona["id"] == "de-criticus" and str(existing.get("name") or "").strip().lower() == "de criticus":
                     merged["name"] = persona["name"]
-                merged["tools"] = {**persona.get("tools", {}), **existing.get("tools", {})}
-                merged["model_settings"] = {**persona.get("model_settings", {}), **existing.get("model_settings", {})}
-                if not existing.get("knowledge_sources"):
-                    merged["knowledge_sources"] = persona.get("knowledge_sources", [])
+                if persona["id"] not in self._ALWAYS_REFRESH_BUILTIN_IDS:
+                    merged["tools"] = {**persona.get("tools", {}), **existing.get("tools", {})}
+                    merged["model_settings"] = {**persona.get("model_settings", {}), **existing.get("model_settings", {})}
                 by_id[persona["id"]] = merged
         return sorted(by_id.values(), key=lambda item: str(item.get("id") or ""))
 
@@ -1332,12 +1534,17 @@ class MeetingRunner:
 
     def __init__(self, llm_call: MeetingLLMCall | None = None, llm_timeout_seconds: float | None = None):
         self.llm_call = llm_call
+        # Defaults to 25s so a local Ollama or a cloud call can actually return
+        # a substantive paragraph; the previous 2s default made every meeting
+        # turn time out and fall back to deterministic templates. The env var
+        # WINTRIP_OUROBOROS_CHAT_MEETING_TURN_TIMEOUT still overrides this for
+        # test suites and quick CI runs.
         self.llm_timeout_seconds = max(
             0.01,
             float(
                 llm_timeout_seconds
                 if llm_timeout_seconds is not None
-                else os.getenv("WINTRIP_OUROBOROS_CHAT_MEETING_TURN_TIMEOUT", "2")
+                else os.getenv("WINTRIP_OUROBOROS_CHAT_MEETING_TURN_TIMEOUT", "25")
             ),
         )
 
@@ -1393,13 +1600,21 @@ class MeetingRunner:
                     "participant": event["participant"],
                     "content": event["content"],
                 }
+                # In the development_team flow the four fixed roles are *supposed* to
+                # converge on the same files, symbols and tests — that overlap is not
+                # parroting, it is collaboration. The anti-parrot circuit was tuned for
+                # brainstorms where every speaker should add a new angle, and it produces
+                # off-topic "Anders punt:" templates here. Skip it for dev-team meetings.
+                disable_anti_parrot = meeting_type == "development_team"
                 forced_by_parrot = (
-                    not self._is_chair_persona(persona)
+                    not disable_anti_parrot
+                    and not self._is_chair_persona(persona)
                     and not event.get("prompt_context", {}).get("used_fallback")
                     and event.get("prompt_context", {}).get("distinctness_reason") == "parroting"
                 )
                 still_parroting = (
-                    not self._is_chair_persona(persona)
+                    not disable_anti_parrot
+                    and not self._is_chair_persona(persona)
                     and not event.get("prompt_context", {}).get("used_fallback")
                     and self._looks_like_parroting([*transcript, candidate], event["content"])
                 )
@@ -1630,6 +1845,15 @@ class MeetingRunner:
                 "op beschikbare read-only bronnen en daarna deep think: aanname, alternatief, tegenvoorbeeld en experiment. "
                 "Kritiek is altijd een uitdaging om dieper naar een oplossing te zoeken, nooit een blokkade."
             )
+        if meeting_type == "development_team":
+            return (
+                "ONTWIKKELTEAM-CONTRACT: doel is één werkbare bouwprompt aan het eind. Vier rollen werken samen: "
+                "De Developper schetst de code-wijziging met letterlijke file paths en symbolen; "
+                "De Tester levert een reproduceerbaar testcommando, verwacht signaal en rollback; "
+                "De Criticus markeert risico's als Blocker of Warning met een concrete actie; "
+                "De Voorzitter bewaakt het bouwdoel en sluit af met een gestructureerde bouwprompt. "
+                "Blockers van De Criticus moeten geadresseerd zijn voor de Voorzitter afsluit."
+            )
         return (
             "TEAMCONTRACT: doel is besluitvorming. Elke bijdrage helpt kiezen: standpunt, bewijs, spanning, risico, eigenaar "
             "of besluitbare vervolgstap. De voorzitter bewaakt tempo, verschil tussen punten en expliciete woordgeving."
@@ -1800,7 +2024,182 @@ class MeetingRunner:
             return self._sprint_planning_agenda(chair, personas)
         if meeting_type == "brainstorm":
             return self._brainstorm_agenda(chair, personas, topic)
+        if meeting_type == "development_team":
+            return self._development_team_agenda(chair, personas, topic)
         return self._team_agenda(chair, personas)
+
+    def _is_developer_persona(self, persona: dict[str, Any]) -> bool:
+        persona_id = str(persona.get("id") or "").strip().lower()
+        name = str(persona.get("name") or "").strip().lower()
+        role = str(persona.get("role") or "").strip().lower()
+        tags = persona.get("tags") if isinstance(persona.get("tags"), list) else []
+        tag_text = " ".join(str(tag).lower() for tag in tags)
+        return (
+            persona_id in {"de-developer", "de-developper"}
+            or "developper" in name
+            or "developer" in name
+            or "ouroboros development engineer" in role
+            or "developer" in tag_text
+        )
+
+    def _is_tester_persona(self, persona: dict[str, Any]) -> bool:
+        persona_id = str(persona.get("id") or "").strip().lower()
+        name = str(persona.get("name") or "").strip().lower()
+        role = str(persona.get("role") or "").strip().lower()
+        tags = persona.get("tags") if isinstance(persona.get("tags"), list) else []
+        tag_text = " ".join(str(tag).lower() for tag in tags)
+        return (
+            persona_id == "de-tester"
+            or "tester" in name
+            or "verification gate" in role
+            or "tester" in tag_text
+        )
+
+    def _development_team_agenda(
+        self,
+        chair: dict[str, Any],
+        personas: list[dict[str, Any]],
+        topic: str,
+    ) -> list[tuple[int, str, dict[str, Any], str]]:
+        contributors = [persona for persona in personas if persona is not chair]
+        developer = next((p for p in contributors if self._is_developer_persona(p)), None)
+        tester = next((p for p in contributors if self._is_tester_persona(p)), None)
+        critic = next((p for p in contributors if self._is_critic_persona(p)), None)
+        exclude_ids = {str(p.get("id") or "") for p in (developer, tester, critic) if p}
+        others = [p for p in contributors if str(p.get("id") or "") not in exclude_ids]
+        agenda: list[tuple[int, str, dict[str, Any], str]] = []
+        topic_hint = _clip_text(topic, 220)
+
+        agenda.append(
+            (
+                1,
+                "opening",
+                chair,
+                (
+                    f"Open als voorzitter de ontwikkelteam-vergadering over '{topic_hint}'. "
+                    "Beschrijf in één zin het concrete bouwdoel (wat is na deze build anders). "
+                    f"Geef daarna gericht het woord aan {(developer or {}).get('name') or 'De Developper'} "
+                    "voor de implementatieroute (welke files, welke symbol). Maximaal 60 woorden."
+                ),
+            )
+        )
+
+        if developer is not None:
+            agenda.append(
+                (
+                    1,
+                    "implementation-route",
+                    developer,
+                    (
+                        "Vertaal het bouwdoel naar een concrete code-wijziging. Noem letterlijke file paths en symbol/function-namen "
+                        "die zullen veranderen, schets de implementatie in 1-2 zinnen (geen volledige diff), benoem afhankelijkheden en "
+                        "side-effects, en eindig met de ene vraag die je beantwoord wil zien voor de wijziging veilig is. Maximaal 80 woorden."
+                    ),
+                )
+            )
+
+        if tester is not None:
+            agenda.append(
+                (
+                    1,
+                    "test-plan",
+                    tester,
+                    (
+                        "Maak het voorstel van De Developper bewijsbaar. Noem het exacte testcommando, het verwachte signaal "
+                        "(welke assertion / output / statuscode), het faalsignaal (welke foutmelding) en de rollback (welke commit/file/flag). "
+                        "Als de wijziging moeilijk te testen is, vraag De Developper om de kleinste hook. Maximaal 80 woorden."
+                    ),
+                )
+            )
+
+        if critic is not None:
+            agenda.append(
+                (
+                    1,
+                    "critic-review",
+                    critic,
+                    (
+                        "Wijs het grootste risico in het huidige voorstel aan, één concrete edge case die het team niet heeft "
+                        "geadresseerd, en geef De Developper of De Tester een specifieke actie. Markeer expliciet als Blocker of Warning. "
+                        "Bij security-vermoeden: escaleer direct. Maximaal 75 woorden."
+                    ),
+                )
+            )
+
+        # Optional extra contributors get a single inbreng-turn before round 2 so they still get a voice.
+        for extra in others:
+            agenda.append(
+                (
+                    1,
+                    "extra-input",
+                    extra,
+                    (
+                        "Lever vanuit jouw rol één concreet inhoudelijk punt over het voorstel tot nu toe — een aanvulling, "
+                        "een ontwerpkeuze, of een waarschuwing. Maximaal 60 woorden."
+                    ),
+                )
+            )
+
+        if developer is not None:
+            agenda.append(
+                (
+                    2,
+                    "dev-revise",
+                    developer,
+                    (
+                        "Reageer op de Blockers en Warnings van De Criticus en op de testeisen van De Tester. Pas de implementatie aan: "
+                        "welke files/symbols veranderen nu, welke afhankelijkheid is toegevoegd, welk risico is afgedekt. Maximaal 80 woorden."
+                    ),
+                )
+            )
+
+        if tester is not None:
+            agenda.append(
+                (
+                    2,
+                    "test-confirm",
+                    tester,
+                    (
+                        "Bevestig of het herziene voorstel met je testcommando bewijsbaar is. Pas het testcommando aan als de wijzigingen "
+                        "dat eisen. Markeer expliciet: groen voor merge, of welke vraag eerst nog open is. Maximaal 60 woorden."
+                    ),
+                )
+            )
+
+        if critic is not None:
+            agenda.append(
+                (
+                    2,
+                    "critic-final",
+                    critic,
+                    (
+                        "Geef je eindoordeel: zijn alle Blockers geadresseerd? Welke Warnings horen expliciet in de bouwprompt "
+                        "(en welke kunnen dicht)? Stilte is geen goedkeuring — zeg expliciet 'akkoord' of 'nog niet, want ...'. "
+                        "Maximaal 55 woorden."
+                    ),
+                )
+            )
+
+        agenda.append(
+            (
+                2,
+                "closing",
+                chair,
+                (
+                    "Sluit nu af als voorzitter met EXACT vijf zinnen, in deze volgorde — geen labels, "
+                    "geen opsommingstekens, geen tussenkopjes, geen losse vraag aan andere deelnemers:\n"
+                    "Zin 1 — Begin met 'Na deze build' en beschrijf in één zin het doel: wat is anders.\n"
+                    "Zin 2 — Noem de 1-3 concrete files of symbolen die moeten veranderen, met letterlijke paden of namen.\n"
+                    "Zin 3 — Geef het exacte testcommando dat het werk bewijst en het verwachte signaal (statuscode, log-regel of assertion).\n"
+                    "Zin 4 — Beschrijf hoe terug te rollen als de test faalt (welke commit, file of feature-flag).\n"
+                    "Zin 5 — Noem de uitvoerende agent met slash-prefix (/codex, /claude, /roo of /agents) en zeg dat hij pas mag bouwen na 'Akkoord'.\n"
+                    "Onbeantwoorde Criticus-Blockers gaan NIET door — benoem die als zesde zin die start met 'Open blocker:'. "
+                    "Geen interne regiewoorden ('spoor', 'deep think', 'acceptatie blijft', 'approvalpoort', 'bouwticket'). "
+                    "Maximaal 140 woorden. Geen vragen, geen vragen aan deelnemers — dit is de afsluiting."
+                ),
+            )
+        )
+        return agenda
 
     def _team_agenda(
         self,
@@ -2146,15 +2545,35 @@ class MeetingRunner:
         model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
         turn_provider = str(model_settings.get("provider") or provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
         turn_model = str(model_settings.get("name") or persona.get("model") or model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-        system_prompt = self._social_system_prompt(persona, personas, topic)
-        user_prompt = self._turn_prompt(
-            topic=topic,
-            meeting_type=meeting_type,
-            round_number=round_number,
-            phase=phase,
-            instruction=instruction,
-            transcript=transcript,
-        )
+        fallback_model = str(model_settings.get("fallback_model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+        fallback_provider = str(model_settings.get("fallback_provider") or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+        # Small local models (codellama, gemma, ouroboros:latest, llama:3b, phi3) lose track of
+        # long system + user prompts and drift after 2-3 sentences. Detect them and swap in
+        # compact variants so the conversation stays on-topic and the deterministic compositor
+        # can finish the structural work.
+        is_light = _is_light_model(turn_provider, turn_model) or _is_light_model(fallback_provider, fallback_model)
+        if is_light:
+            system_prompt = self._light_system_prompt(persona, meeting_type, topic)
+            user_prompt = self._light_turn_prompt(
+                topic=topic,
+                meeting_type=meeting_type,
+                phase=phase,
+                instruction=instruction,
+                transcript=transcript,
+                persona=persona,
+            )
+            max_words = min(max_words, 70)
+        else:
+            system_prompt = self._social_system_prompt(persona, personas, topic)
+            user_prompt = self._turn_prompt(
+                topic=topic,
+                meeting_type=meeting_type,
+                round_number=round_number,
+                phase=phase,
+                instruction=instruction,
+                transcript=transcript,
+                persona=persona,
+            )
         fallback = self._fallback_turn(persona, topic, phase, transcript, meeting_type=meeting_type)
         response = self._call_model(
             prompt=user_prompt,
@@ -2162,6 +2581,8 @@ class MeetingRunner:
             provider=turn_provider,
             model=turn_model,
             fallback=fallback,
+            fallback_provider=fallback_provider,
+            fallback_model=fallback_model,
         )
         used_fallback = str(response.get("content") or "").strip() == str(fallback or "").strip()
         content = self._compact_conversation_text(response["content"], max_words=max_words)
@@ -2175,8 +2596,16 @@ class MeetingRunner:
             "participant": participant,
             "content": content,
         }
-        parroting = not self._is_chair_persona(persona) and self._looks_like_parroting([*transcript, candidate], content)
-        if not self._is_chair_persona(persona) and (parroting or generic_content):
+        # Same rationale as in `run`: development_team turns are role-aligned by design
+        # so the anti-parrot replacement (which falls back to generic templates) hurts
+        # more than it helps.
+        anti_parrot_active = meeting_type != "development_team"
+        parroting = (
+            anti_parrot_active
+            and not self._is_chair_persona(persona)
+            and self._looks_like_parroting([*transcript, candidate], content)
+        )
+        if anti_parrot_active and not self._is_chair_persona(persona) and (parroting or generic_content):
             forced_distinct = True
             distinctness_reason = "parroting" if parroting else "generic_fallback"
             content = self._distinctive_fallback_turn(
@@ -2226,8 +2655,88 @@ class MeetingRunner:
                 "distinctness_reason": distinctness_reason,
                 "used_fallback": used_fallback,
                 "assignment_track_key": assignment_track_key,
+                "light_model_path": is_light,
             },
         }
+
+    def _light_system_prompt(self, persona: dict[str, Any], meeting_type: str, topic: str) -> str:
+        """Compact system prompt for small local models (≤ 7B).
+
+        These models lose track of the verbose AgenK-style persona prompts; instead we hand
+        them a short directive tied to their role and the meeting type. The deterministic
+        compositor downstream (`_extract_build_prompt`) will pick up structure that the
+        model misses.
+        """
+        meeting_type = _normalize_meeting_type(meeting_type)
+        persona_id = str(persona.get("id") or "").strip().lower()
+        name = str(persona.get("name") or persona.get("id") or "deelnemer")
+        role = str(persona.get("role") or "")
+        if meeting_type == "development_team":
+            role_brief = {
+                "de-voorzitter": (
+                    "Je leidt het ontwikkelteam. Open in één zin met het bouwdoel (start met 'Na deze build'). "
+                    "Geef expliciet het woord aan De Developper, De Tester of De Criticus. "
+                    "Sluit af met vijf korte zinnen: doel, files/symbolen, exact testcommando, rollback, uitvoerende agent (/codex, /claude, /roo of /agents) na Akkoord."
+                ),
+                "de-developer": (
+                    "Je bent De Developper. Noem letterlijke file paths (met /) en symbol-namen die veranderen. "
+                    "Schets de wijziging in 1-2 zinnen, dan één gerichte vraag aan De Tester of De Criticus."
+                ),
+                "de-developper": (
+                    "Je bent De Developper. Noem letterlijke file paths (met /) en symbol-namen die veranderen. "
+                    "Schets de wijziging in 1-2 zinnen, dan één gerichte vraag aan De Tester of De Criticus."
+                ),
+                "de-tester": (
+                    "Je bent De Tester. Geef het exacte testcommando (pytest/npm test/curl/cargo), het verwachte signaal "
+                    "(statuscode of assertion), het faalsignaal en de rollback (welke commit/file/flag te reverten). "
+                    "Geen 'handmatig in de UI klikken'."
+                ),
+                "de-criticus": (
+                    "Je bent De Criticus. Wijs één Blocker of Warning aan met concrete actie voor De Developper of De Tester. "
+                    "Bij security-vermoeden: escaleer en gebruik het woord Blocker. Stilte is geen goedkeuring."
+                ),
+            }.get(persona_id, f"Je bent {name} ({role}). Geef één concrete inhoudelijke bijdrage met een file, symbol, test of risico.")
+        elif meeting_type == "brainstorm":
+            role_brief = f"Je bent {name} ({role}). Geef één concreet inzicht over '{_clip_text(topic, 100)}': een waarneming, aanname, alternatief of klein testbaar experiment."
+        elif meeting_type == "sprint_planning":
+            role_brief = f"Je bent {name} ({role}). Geef één bouwbare slice voor '{_clip_text(topic, 100)}': taak, acceptatiecriterium, testcommando, rollback."
+        else:
+            role_brief = f"Je bent {name} ({role}). Geef één besluitvormende bijdrage over '{_clip_text(topic, 100)}': standpunt, bewijs of besluitbare vervolgstap."
+
+        return (
+            f"{role_brief}\n"
+            "Schrijf in natuurlijke spreektaal, 2 tot 4 zinnen. Begin niet met je eigen naam. "
+            "Geen labels of opsommingstekens. Geen interne regiewoorden ('spoor', 'deep think', 'acceptatie blijft', 'approvalpoort', 'bouwticket'). "
+            "Verwijs minstens één keer met naam naar de vorige spreker, tenzij je de eerste bent."
+        )
+
+    def _light_turn_prompt(
+        self,
+        *,
+        topic: str,
+        meeting_type: str,
+        phase: str,
+        instruction: str,
+        transcript: list[dict[str, Any]],
+        persona: dict[str, Any] | None = None,
+    ) -> str:
+        """Compact user-prompt for small local models — drops the verbose contracts."""
+        last = self._last_substantive_turn(transcript)
+        if last:
+            last_line = (
+                f"Vorige spreker {last['name']} ({last.get('phase') or 'beurt'}): \"{_clip_text(last['content'], 320)}\"\n"
+                "Reageer hier inhoudelijk op."
+            )
+        else:
+            last_line = "Je bent de eerste inhoudelijke spreker. Open met een concrete stelling over het onderwerp."
+        clean_instruction = _clip_text(str(instruction or "").splitlines()[0] if instruction else "", 320)
+        return (
+            f"Onderwerp: {_clip_text(topic, 240)}\n"
+            f"Fase: {phase}\n"
+            f"{last_line}\n\n"
+            f"Opdracht: {clean_instruction}\n\n"
+            "Antwoord in 2-4 zinnen, concreet en op het onderwerp. Noem een file, symbol, testcommando of risico waar relevant."
+        )
 
     def _social_system_prompt(self, persona: dict[str, Any], personas: list[dict[str, Any]], topic: str) -> str:
         topic_intent = _classify_topic_intent(topic)
@@ -2275,9 +2784,35 @@ class MeetingRunner:
         phase: str,
         instruction: str,
         transcript: list[dict[str, Any]],
+        persona: dict[str, Any] | None = None,
     ) -> str:
         topic_intent = _classify_topic_intent(topic)
         transcript_text = self._transcript_text(transcript)
+        last_substantive = self._last_substantive_turn(transcript)
+        if last_substantive:
+            last_block = (
+                f"Laatste inhoudelijke spreker: {last_substantive['name']}.\n"
+                f"Wat zij/hij net zei: \"{_clip_text(last_substantive['content'], 600)}\"\n"
+                "Reageer hier inhoudelijk op: bevestigen met nieuwe onderbouwing, aanvullen "
+                "met een concrete observatie, of gemotiveerd weerleggen met een tegenvoorbeeld."
+            )
+        else:
+            persona_name = str((persona or {}).get("name") or "")
+            last_block = (
+                "Je bent de eerste inhoudelijke spreker. Open met een concrete stelling die "
+                "direct over het onderwerp gaat — geen procedurewoorden, geen samenvatting "
+                f"van wat de voorzitter zei{(', ' + persona_name + ' kan meteen positie nemen') if persona_name else ''}."
+            )
+        substantive_instruction = (
+            "Schrijf je beurt zoals iemand aan een echte tafel praat. Eén concreet inhoudelijk punt over "
+            f"'{_clip_text(topic, 200)}', niet over de vergadering zelf. Geef minstens één van: een "
+            "harde claim met onderbouwing, een verifieerbaar voorbeeld, een aanname die kan breken, een "
+            "concrete vervolgstap of een ene gerichte vraag aan een andere deelnemer. Verwijs minstens "
+            "één keer met naam naar wat een eerdere spreker zei, tenzij je de eerste bent. "
+            "Geen markdown-koppen, geen lijstjes langer dan drie items, maximaal 80 woorden. "
+            "Geen interne regiewoorden ('spoor', 'deep think', 'acceptatie blijft', 'approvalpoort', "
+            "'bouwticket'). Begin niet met je eigen naam."
+        )
         return "\n\n".join(
             [
                 f"Onderwerp: {_clip_text(topic, 1600)}",
@@ -2287,17 +2822,29 @@ class MeetingRunner:
                 _topic_intent_contract(topic_intent),
                 f"Ronde {round_number} ({phase})",
                 instruction,
+                last_block,
                 "Volledige transcriptie tot nu toe:",
                 transcript_text or "Nog geen eerdere bijdragen.",
-                (
-                    "Schrijf als een spreekbeurt in een gesprek. Geen lange inleiding, geen markdown-koppen. "
-                    "Gebruik maximaal 80 woorden, tenzij de voorzitter expliciet afsluit. "
-                    "Begin meteen met je punt en verwijs waar nuttig naar de vorige spreker. "
-                    "Herhaal geen formulering of conclusie die al is gezegd; maak je bijdrage onderscheidend. "
-                    "Bij brainstorm geldt: behandel kritiek als uitdaging en zoek dieper naar een oplossing, niet naar een block."
-                ),
+                substantive_instruction,
             ]
         )
+
+    def _last_substantive_turn(self, transcript: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for item in reversed(transcript):
+            phase = str(item.get("phase") or "")
+            if phase in {"floor-control", "intervention", "opening"}:
+                continue
+            participant = item.get("participant") if isinstance(item.get("participant"), dict) else {}
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            return {
+                "name": str(participant.get("name") or participant.get("id") or "een eerdere spreker"),
+                "role": str(participant.get("role") or ""),
+                "content": content,
+                "phase": phase,
+            }
+        return None
 
     def _distinctive_retry_instruction(self, repeated_content: str, transcript: list[dict[str, Any]]) -> str:
         repeated_terms = self._meaningful_terms(repeated_content)[:10]
@@ -2510,45 +3057,93 @@ class MeetingRunner:
             }
         )
 
-    def _call_model(self, *, prompt: str, system_prompt: str, provider: str, model: str, fallback: str) -> dict[str, Any]:
+    def _call_model(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        provider: str,
+        model: str,
+        fallback: str,
+        fallback_provider: str | None = None,
+        fallback_model: str | None = None,
+    ) -> dict[str, Any]:
+        """Call the configured LLM once, and once more on a local fallback before giving up.
+
+        The first attempt uses the persona's preferred provider/model. If that returns
+        an error or empty content (e.g. cloud API key missing, network down, timeout),
+        a second attempt is made against `fallback_provider`/`fallback_model` — usually
+        the local Ollama default — so meetings still get LLM-generated content even when
+        the persona's primary route is unavailable. Only when both attempts fail do we
+        fall back to the deterministic transcript text.
+        """
         if self.llm_call is None:
             return {"ok": True, "content": fallback, "error": ""}
+
+        first = self._invoke_llm_once(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            provider=provider,
+            model=model,
+        )
+        if first["ok"] and first["content"].strip():
+            return {**first, "fallback_used": False}
+
+        fallback_provider = (fallback_provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+        fallback_model = (fallback_model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+        same_route = fallback_provider == str(provider or "").strip().lower() and fallback_model == str(model or "").strip()
+        if not same_route:
+            second = self._invoke_llm_once(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                provider=fallback_provider,
+                model=fallback_model,
+            )
+            if second["ok"] and second["content"].strip():
+                return {
+                    **second,
+                    "fallback_used": True,
+                    "primary_error": first.get("error") or "",
+                    "primary_provider": provider,
+                    "primary_model": model,
+                }
+
+        # Both attempts failed — use deterministic transcript text.
+        error = str(first.get("error") or "").strip() or "Meeting model returned no content."
+        return {"ok": False, "content": fallback, "error": error, "fallback_used": False}
+
+    def _invoke_llm_once(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        provider: str,
+        model: str,
+    ) -> dict[str, Any]:
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            future = executor.submit(
-                self.llm_call,
-                prompt=prompt,
-                provider=provider,
-                model=model,
-                system_prompt=system_prompt,
-                history=[],
-                images=[],
-            )
-            result = future.result(timeout=self.llm_timeout_seconds)
-        except TypeError:
             try:
+                future = executor.submit(
+                    self.llm_call,
+                    prompt=prompt,
+                    provider=provider,
+                    model=model,
+                    system_prompt=system_prompt,
+                    history=[],
+                    images=[],
+                )
+                result = future.result(timeout=self.llm_timeout_seconds)
+            except TypeError:
                 future = executor.submit(self.llm_call, prompt=prompt, model=model, system_prompt=system_prompt, history=[])
                 result = future.result(timeout=self.llm_timeout_seconds)
-            except concurrent.futures.TimeoutError:
-                executor.shutdown(wait=False, cancel_futures=True)
-                return {
-                    "ok": False,
-                    "content": fallback,
-                    "error": f"Meeting model call timed out after {self.llm_timeout_seconds:.1f}s.",
-                }
-            except Exception as exc:
-                executor.shutdown(wait=False, cancel_futures=True)
-                return {"ok": False, "content": fallback, "error": str(exc)}
         except concurrent.futures.TimeoutError:
-            executor.shutdown(wait=False, cancel_futures=True)
             return {
                 "ok": False,
-                "content": fallback,
+                "content": "",
                 "error": f"Meeting model call timed out after {self.llm_timeout_seconds:.1f}s.",
             }
         except Exception as exc:
-            executor.shutdown(wait=False, cancel_futures=True)
-            return {"ok": False, "content": fallback, "error": str(exc)}
+            return {"ok": False, "content": "", "error": str(exc)}
         finally:
             try:
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -2559,11 +3154,11 @@ class MeetingRunner:
             content = str(result.get("content") or result.get("response") or "").strip()
             return {
                 "ok": bool(result.get("ok", True)) and bool(content),
-                "content": content or fallback,
+                "content": content,
                 "error": str(result.get("error") or ""),
             }
         content = str(result or "").strip()
-        return {"ok": bool(content), "content": content or fallback, "error": ""}
+        return {"ok": bool(content), "content": content, "error": ""}
 
     def _fallback_turn(
         self,
@@ -2649,6 +3244,15 @@ class MeetingRunner:
                     "De volgende spreker neemt de laag die nog het meest onzeker is."
                 )
             if phase == "closing":
+                if meeting_type == "development_team":
+                    topic_hint = _clip_text(topic, 160)
+                    return (
+                        f"Doel: lever een werkbare wijziging voor '{topic_hint}' die meteen door een uitvoerende agent gerund kan worden. "
+                        "Wijzigingen: de tafel benoemde de file/symbol-route hierboven — pak de kleinste eenheid eerst. "
+                        "Acceptatie: het testcommando van De Tester moet groen draaien vanaf een schone state met het verwachte signaal. "
+                        "Rollback: revert van de laatste commit of de feature-flag terug op uit. "
+                        f"Uitvoerende agent: /codex (of /claude / /roo) na expliciet {APPROVAL_PHRASE}."
+                    )
                 if meeting_type == "sprint_planning":
                     return (
                         "Sprintdoel: maak de eerstvolgende verbetering klein en testbaar. "
@@ -3223,6 +3827,15 @@ class MeetingRunner:
                 points.append(content)
         workpoints = "; ".join(_clip_text(point, 130) for point in points[:4])
         if workpoints:
+            if meeting_type == "development_team":
+                topic_hint = _clip_text(topic, 160)
+                return (
+                    f"Doel: lever een werkbare wijziging voor '{topic_hint}'. "
+                    f"Wijzigingen: {workpoints}. "
+                    "Acceptatie: het testcommando van De Tester moet groen draaien vanaf een schone state met het verwachte signaal. "
+                    "Rollback: revert van de laatste commit of de feature-flag terug op uit. "
+                    f"Uitvoerende agent: /codex (of /claude / /roo) na expliciet {APPROVAL_PHRASE}."
+                )
             if meeting_type == "sprint_planning":
                 if topic_intent == "storing":
                     return (
@@ -3277,6 +3890,15 @@ class MeetingRunner:
                 f"Belangrijkste werkpunten: {workpoints}. "
                 f"Open risico: bouwen, herstarten of externe acties mogen pas na exact {APPROVAL_PHRASE}. "
                 "Volgende stap: kies één eigenaar voor de eerste monitor-test en leg de rollbackroute vast."
+            )
+        if meeting_type == "development_team":
+            topic_hint = _clip_text(topic, 160)
+            return (
+                f"Doel: lever een werkbare wijziging voor '{topic_hint}'. "
+                "Wijzigingen: de tafel moet nog een file/symbol-route en testcommando vaststellen. "
+                "Acceptatie: kleinste reproduceerbare test groen vanaf schone state. "
+                "Rollback: revert van de laatste commit. "
+                f"Uitvoerende agent: /codex (of /claude / /roo) na expliciet {APPROVAL_PHRASE}."
             )
         if meeting_type == "sprint_planning":
             if topic_intent == "storing":
@@ -3686,6 +4308,7 @@ class MeetingStore:
             "rounds": finalized.get("rounds"),
             "summary": finalized.get("summary"),
             "transcript": finalized.get("transcript"),
+            "build_prompt": finalized.get("build_prompt", ""),
             "tool_policy": finalized.get("tool_policy"),
             "fake_success": False,
         }
@@ -3798,6 +4421,7 @@ class MeetingStore:
         model = prep["model"]
         path = self._write_events(meeting_id, events)
         transcript = self._transcript_from_runner(runner_payload)
+        build_prompt = self._extract_build_prompt(meeting_type, request, runner_payload)
         self._write_record(
             meeting_id,
             {
@@ -3811,6 +4435,7 @@ class MeetingStore:
                 "rounds": runner_payload["rounds"],
                 "summary": runner_payload["summary"],
                 "transcript": transcript,
+                "build_prompt": build_prompt,
                 "status": "completed",
                 "provider": provider,
                 "model": model,
@@ -3834,9 +4459,169 @@ class MeetingStore:
             "rounds": runner_payload["rounds"],
             "summary": runner_payload["summary"],
             "transcript": transcript,
+            "build_prompt": build_prompt,
             "tool_policy": self.tool_policy(),
             "fake_success": False,
         }
+
+    def _extract_build_prompt(self, meeting_type: str, request: MeetingRequest, runner_payload: dict[str, Any]) -> str:
+        """Compose a workable build prompt from the dev-team meeting transcript.
+
+        The chair's closing turn is the primary source — when the LLM produces a clean
+        five-section closing we use it verbatim. When the model trails off (lighter
+        local models often do) we synthesise the missing sections from the right
+        contributors: the developer for files/symbols, the tester for the acceptance
+        command and rollback, the critic for outstanding blockers.
+        """
+        if _normalize_meeting_type(meeting_type) != "development_team":
+            return ""
+        rounds = [item for item in (runner_payload.get("rounds") or []) if isinstance(item, dict)]
+        if not rounds:
+            return _clip_text(str(runner_payload.get("summary") or ""), 4000)
+
+        def participant_of(item: dict[str, Any]) -> dict[str, Any]:
+            participant = item.get("participant") if isinstance(item.get("participant"), dict) else {}
+            return participant or {}
+
+        def is_chair(item: dict[str, Any]) -> bool:
+            p = participant_of(item)
+            return str(p.get("id") or "").strip().lower() == "de-voorzitter" or "voorzitter" in str(p.get("name") or "").lower()
+
+        def is_developer(item: dict[str, Any]) -> bool:
+            p = participant_of(item)
+            persona_id = str(p.get("id") or "").strip().lower()
+            return persona_id in {"de-developer", "de-developper"} or "developper" in str(p.get("name") or "").lower() or "developer" in str(p.get("name") or "").lower()
+
+        def is_tester(item: dict[str, Any]) -> bool:
+            p = participant_of(item)
+            return str(p.get("id") or "").strip().lower() == "de-tester" or "tester" in str(p.get("name") or "").lower()
+
+        def is_critic(item: dict[str, Any]) -> bool:
+            p = participant_of(item)
+            return str(p.get("id") or "").strip().lower() in {"de-criticus", "de-critic"} or "criticus" in str(p.get("name") or "").lower()
+
+        chair_closing = ""
+        for item in reversed(rounds):
+            if str(item.get("phase") or "") == "closing" and is_chair(item):
+                chair_closing = str(item.get("content") or "").strip()
+                break
+
+        lower = chair_closing.lower()
+        has_doel = "doel" in lower or "na deze build" in lower or "deze build" in lower or chair_closing.lower().startswith("na ")
+        has_files = any(token in lower for token in (".py", ".ts", ".tsx", ".rs", ".go", ".php", ".java", ".rb", ".kt", "/", "config/", "src/", "::", "function ", "def "))
+        has_test = any(token in lower for token in ("pytest", "npm test", "cargo test", "curl", "go test", "phpunit", "jest", "mocha", "rspec", "vitest", "deno test", "shellcheck", "smoke"))
+        has_rollback = "rollback" in lower or "git revert" in lower or "feature-flag" in lower or "feature flag" in lower or "terugdraai" in lower
+        has_agent = any(token in lower for token in ("/codex", "/claude", "/roo", "/agents", "uitvoerende agent", "agent: /"))
+
+        # If the chair already produced a clean five-section closing, use it verbatim.
+        if has_doel and has_files and has_test and has_rollback and has_agent:
+            return _clip_text(chair_closing, 4000)
+
+        # Otherwise synthesise. Pull the most recent substantive contributions from each role.
+        def last_substantive(predicate: Callable[[dict[str, Any]], bool], exclude_phases: tuple[str, ...] = ()) -> str:
+            for item in reversed(rounds):
+                if not predicate(item):
+                    continue
+                phase = str(item.get("phase") or "")
+                if phase in {"floor-control", "intervention"}:
+                    continue
+                if phase in exclude_phases:
+                    continue
+                content = str(item.get("content") or "").strip()
+                if content:
+                    return content
+            return ""
+
+        topic = _clip_text(str(getattr(request, "topic", "") or runner_payload.get("topic") or ""), 200)
+
+        # Goal preference order:
+        # 1. The chair's opening turn (where the build goal is stated explicitly), first sentence
+        #    that starts with "Na deze build" or otherwise the first non-empty sentence.
+        # 2. The first goal-shaped sentence anywhere in the chair's closing.
+        # 3. A generated default from the topic.
+        def first_sentence_starting_with_na_deze_build(text: str) -> str:
+            sentences = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+            for sentence in sentences:
+                stripped = sentence.strip()
+                if not stripped:
+                    continue
+                if stripped.lower().startswith("na deze build"):
+                    return stripped
+            sentences = [s.strip() for s in sentences if s.strip()]
+            return sentences[0] if sentences else ""
+
+        chair_opening = ""
+        for item in rounds:
+            if is_chair(item) and str(item.get("phase") or "") == "opening":
+                chair_opening = str(item.get("content") or "").strip()
+                break
+        goal_sentence = (
+            first_sentence_starting_with_na_deze_build(chair_opening)
+            or first_sentence_starting_with_na_deze_build(chair_closing)
+            or f"Na deze build levert het team een werkbare wijziging voor '{topic}'."
+        )
+
+        dev_content = last_substantive(is_developer)
+        tester_content = (
+            last_substantive(is_tester, exclude_phases=("test-confirm",))
+            or last_substantive(is_tester)
+        )
+        tester_confirm = last_substantive(is_tester) if tester_content != last_substantive(is_tester) else ""
+        critic_final = ""
+        for item in reversed(rounds):
+            if is_critic(item) and str(item.get("phase") or "") == "critic-final":
+                critic_final = str(item.get("content") or "").strip()
+                break
+        critic_first = last_substantive(is_critic)
+
+        changes_line = (
+            f"Wijzigingen: {_clip_text(dev_content, 700)}"
+            if dev_content
+            else "Wijzigingen: De Developper heeft nog geen concrete file of symbool benoemd; eerst opnemen voor de bouwprompt definitief is."
+        )
+        accept_line = (
+            f"Acceptatie: {_clip_text(tester_confirm or tester_content, 600)}"
+            if (tester_confirm or tester_content)
+            else "Acceptatie: De Tester moet nog een reproduceerbaar testcommando en verwacht signaal leveren."
+        )
+        # Try to extract an explicit rollback statement from the tester contributions.
+        rollback_text = ""
+        for source in (tester_confirm, tester_content):
+            if not source:
+                continue
+            match = re.search(r"(?i)rollback\s*[:\-]\s*([^\n.]+[.!?])", source)
+            if match:
+                rollback_text = match.group(1).strip()
+                break
+            match = re.search(r"(?i)(git\s+revert[^\n.]*[.!?])", source)
+            if match:
+                rollback_text = match.group(1).strip()
+                break
+        rollback_line = (
+            f"Rollback: {_clip_text(rollback_text, 500)}"
+            if rollback_text
+            else "Rollback: revert van de laatste commit op het geraakte path of de feature-flag terug op uit."
+        )
+        agent_line = (
+            f"Uitvoerende agent: /codex (of /claude / /roo / /agents) start pas met bouwen na expliciet {APPROVAL_PHRASE}."
+        )
+        outstanding = ""
+        for source in (critic_final, critic_first):
+            if not source:
+                continue
+            if "blocker" in source.lower() and "akkoord" not in source.lower():
+                outstanding = source
+                break
+        blocker_line = (
+            f"Open blocker: {_clip_text(outstanding, 500)}"
+            if outstanding
+            else ""
+        )
+
+        parts = [goal_sentence, changes_line, accept_line, rollback_line, agent_line]
+        if blocker_line:
+            parts.append(blocker_line)
+        return _clip_text(" ".join(part for part in parts if part).strip(), 4000)
 
     def _dedupe_knowledge(self, knowledge: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
