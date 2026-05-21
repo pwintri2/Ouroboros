@@ -602,6 +602,19 @@ class DevelopmentTeamIntakeRequest(BaseModel):
     model: Optional[str] = Field(default=DEFAULT_MODEL, max_length=160)
 
 
+class DevelopmentTeamBuildRequest(BaseModel):
+    """Aider-modus: developer schrijft files, tester draait pytest, criticus reviewt, iteratie tot groen."""
+
+    build_prompt: str = Field(..., min_length=1, max_length=MAX_TEXT_CHARS)
+    persona_ids: list[str] = Field(default_factory=list)
+    clarifications: list[dict[str, str]] = Field(default_factory=list)
+    provider: Optional[str] = Field(default=DEFAULT_PROVIDER, max_length=80)
+    model: Optional[str] = Field(default=DEFAULT_MODEL, max_length=160)
+    max_iterations: int = Field(default=4)
+    test_timeout_seconds: float = Field(default=120.0)
+    approval: Optional[str] = Field(default=None, max_length=128)
+
+
 def init_ouroboros_chat_routes(app: Any, service: "OuroborosChatService | None" = None) -> None:
     """Mount the standalone Ouroboros chat routes onto a FastAPI app."""
 
@@ -5056,6 +5069,101 @@ class OuroborosChatService:
             "fake_success": False,
         }
 
+    def stream_development_team_build(
+        self, request: "DevelopmentTeamBuildRequest"
+    ) -> "Iterator[dict[str, Any]]":
+        """Aider-modus: orchestreer een echte build-loop in een sandbox workspace.
+
+        De developer schrijft files door zijn output op te splitsen in `<file>` blokken;
+        de tester levert een `<cmd>` blok dat in de workspace draait; bij rode test
+        analyseert de criticus de output en stuurt de developer de volgende iteratie aan.
+        De loop stopt op de eerste groene test of na `max_iterations`.
+        """
+        from controller.dev_team_build import (
+            DevTeamBuildSession,
+            new_build_session_id,
+            workspace_for,
+        )
+
+        if _contains_secret_like({"build_prompt": request.build_prompt, "persona_ids": request.persona_ids}):
+            raise ValueError(
+                "Build-loop prompt appears to contain a secret, token, password, or bearer credential."
+            )
+
+        persona_ids = list(request.persona_ids) if request.persona_ids else list(DEV_TEAM_DEFAULT_PERSONA_IDS)
+        personas_by_role: dict[str, dict[str, Any]] = {}
+        runner_helper = MeetingRunner()
+        for persona_id in persona_ids:
+            persona = self.personas.get(persona_id)
+            if not persona:
+                continue
+            persona = dict(persona)
+            if runner_helper._is_chair_persona(persona):
+                personas_by_role.setdefault("chair", persona)
+            elif runner_helper._is_developer_persona(persona):
+                personas_by_role.setdefault("developer", persona)
+            elif runner_helper._is_tester_persona(persona):
+                personas_by_role.setdefault("tester", persona)
+            elif runner_helper._is_critic_persona(persona):
+                personas_by_role.setdefault("criticus", persona)
+
+        if "developer" not in personas_by_role or "tester" not in personas_by_role:
+            yield {
+                "type": "build_error",
+                "error": "De ontwikkelteam-bouwloop heeft minstens een Developper en Tester persona nodig.",
+                "missing": [
+                    role for role in ("developer", "tester", "criticus", "chair")
+                    if role not in personas_by_role
+                ],
+                "fake_success": False,
+            }
+            return
+
+        provider = str(request.provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+        requested_model = str(request.model or "").strip()
+        model_hints = CODING_MODEL_HINTS.get(provider, ())
+        model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
+        session_id = new_build_session_id()
+        builds_root = (self.data_dir / "dev-team-builds")
+        builds_root.mkdir(parents=True, exist_ok=True)
+        workspace = workspace_for(session_id, builds_root)
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        session = DevTeamBuildSession(
+            session_id=session_id,
+            workspace=workspace,
+            llm_call=self._call_model_provider,
+            max_iterations=int(getattr(request, "max_iterations", 4) or 4),
+            test_timeout=float(getattr(request, "test_timeout_seconds", 120.0) or 120.0),
+        )
+
+        clarifications = [
+            item for item in (request.clarifications or [])
+            if isinstance(item, dict) and str(item.get("answer") or "").strip()
+        ]
+
+        try:
+            for event in session.iterate(
+                build_prompt=request.build_prompt,
+                clarifications=clarifications,
+                provider=provider,
+                model=model,
+                personas=personas_by_role,
+            ):
+                envelope = {"type": event.type, **event.data}
+                envelope.setdefault("session_id", session_id)
+                envelope.setdefault("timestamp", _now_iso())
+                yield envelope
+        except Exception as exc:  # noqa: BLE001
+            yield {
+                "type": "build_error",
+                "session_id": session_id,
+                "workspace_path": str(workspace),
+                "error": str(exc),
+                "timestamp": _now_iso(),
+                "fake_success": False,
+            }
+
     def chat(self, request: OuroborosChatRequest) -> dict[str, Any]:
         if _contains_secret_like({"prompt": request.prompt, "system_prompt": request.system_prompt, "history": request.history}):
             raise ValueError("Chat prompt/system/history content appears to contain a secret, token, password, or bearer credential.")
@@ -6228,6 +6336,50 @@ async def plan_development_team(request_body: DevelopmentTeamRequest, request: R
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@ouroboros_chat_router.post("/development-team/build")
+async def stream_development_team_build(
+    request_body: DevelopmentTeamBuildRequest, request: Request
+) -> Any:
+    """SSE stream: dev-team agents bouwen zelf in een sandbox tot tests groen zijn."""
+    try:
+        from fastapi.responses import StreamingResponse
+    except Exception as exc:  # pragma: no cover - fastapi shim path
+        raise HTTPException(status_code=500, detail=f"StreamingResponse not available: {exc}") from exc
+    service = _service_from_request(request)
+    try:
+        iterator = service.stream_development_team_build(request_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def event_stream() -> "AsyncIterator[bytes]":
+        loop = asyncio.get_event_loop()
+
+        def _next(it: "Iterator[dict[str, Any]]") -> dict[str, Any] | None:
+            try:
+                return next(it)
+            except StopIteration:
+                return None
+
+        while True:
+            event = await loop.run_in_executor(None, _next, iterator)
+            if event is None:
+                break
+            event_name = str(event.get("type") or "build_event").replace("\n", " ")
+            payload = json.dumps(event, ensure_ascii=False, sort_keys=True)
+            chunk = f"event: {event_name}\ndata: {payload}\n\n"
+            yield chunk.encode("utf-8")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @ouroboros_chat_router.get("/meetings")
 async def list_meetings(request: Request, limit: int = 50) -> dict[str, Any]:
     service = _service_from_request(request)
@@ -6317,6 +6469,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "DEFAULT_PROVIDER",
     "DEV_TEAM_DEFAULT_PERSONA_IDS",
+    "DevelopmentTeamBuildRequest",
     "DevelopmentTeamIntakeRequest",
     "DevelopmentTeamRequest",
     "MeetingRequest",
