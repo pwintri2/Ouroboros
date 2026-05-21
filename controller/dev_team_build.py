@@ -400,15 +400,62 @@ class DevTeamBuildSession:
             self.iteration_log.append(iteration_data)
 
             if test_result.exit_code == 0:
+                # Green test — but is the *application* finished? Let De Voorzitter assess
+                # whether the build prompt is fully realized by what's now on disk. If not,
+                # she returns a CONTINUE-directive that becomes the focus of the next iteration.
+                chair_persona = personas.get("chair") or {}
+                workspace_listing = self._snapshot_workspace()
+                review_response = self._call_llm(
+                    user_prompt=self._chair_review_user_prompt(
+                        build_prompt=build_prompt,
+                        iteration=iteration,
+                        last_test_command=command,
+                        last_test_stdout=test_result.stdout,
+                        workspace_listing=workspace_listing,
+                    ),
+                    system_prompt=self._chair_review_system_prompt(chair_persona),
+                    provider=provider,
+                    model=model,
+                    persona=chair_persona,
+                )
+                review_content = (review_response.get("content") or "").strip()
+                verdict = _parse_chair_review(review_content)
+                iteration_data["chair_review"] = {
+                    "verdict": verdict["verdict"],
+                    "reason": verdict["reason"],
+                    "next_subtask": verdict["next_subtask"],
+                    "raw": review_content,
+                }
                 yield DevTeamBuildEvent(
-                    "build_complete",
+                    "chair_review",
                     {
-                        "iterations": iteration,
-                        "workspace_path": str(self.workspace),
-                        "last_command": command,
+                        "iteration": iteration,
+                        "content": review_content,
+                        "verdict": verdict["verdict"],
+                        "reason": verdict["reason"],
+                        "next_subtask": verdict["next_subtask"],
+                        "ok": bool(review_response.get("ok")),
                     },
                 )
-                return
+
+                if verdict["verdict"] == "DONE":
+                    yield DevTeamBuildEvent(
+                        "build_complete",
+                        {
+                            "iterations": iteration,
+                            "workspace_path": str(self.workspace),
+                            "last_command": command,
+                            "reason": verdict["reason"] or "Voorzitter verklaart de build af.",
+                        },
+                    )
+                    return
+
+                # CONTINUE — the chair's `next_subtask` becomes the focus for the next iteration.
+                # We keep the original build_prompt on file but append the new subtask so the
+                # developer/tester turns next round know what to work on.
+                next_focus = verdict["next_subtask"] or "Bouw de volgende ontbrekende capaciteit uit het bouwdoel."
+                build_prompt = self._append_subtask(build_prompt, next_focus, iteration)
+                continue  # to next iteration
 
             # ---- Criticus turn (only on failure) ----
             critic_persona = personas.get("criticus") or {}
@@ -647,6 +694,152 @@ class DevTeamBuildSession:
         if any(item.path.endswith(".py") for item in files):
             return "python -m pytest -v"
         return "ls -la"
+
+    def _chair_review_system_prompt(self, persona: dict[str, Any]) -> str:
+        base = str(persona.get("system_prompt") or "").strip()
+        return (
+            (base + "\n\n" if base else "")
+            + "BOUWMODE — Voorzitter-review: De Tester heeft net groen gemeld. Beslis of het "
+              "BOUWDOEL nu volledig gerealiseerd is door de files op disk + de werkende test, "
+              "of dat er nog ontbrekende capaciteiten zijn voordat het bouwdoel echt af is.\n\n"
+              "Antwoord uitsluitend in deze JSON-vorm (geen markdown, geen toelichting eromheen):\n"
+              "{\"verdict\": \"DONE\", \"reason\": \"...\"}\n"
+              "OF\n"
+              "{\"verdict\": \"CONTINUE\", \"reason\": \"...\", \"next_subtask\": \"De ene meest urgente capaciteit die nu mist, in één zin.\"}\n\n"
+              "Beslisregels:\n"
+              "- DONE alleen als het bouwdoel volledig werkt voor de gebruiker zoals beschreven. "
+              "Een eerste 'add(a,b)' test is NIET genoeg om 'maak een schaakprogramma' DONE te verklaren.\n"
+              "- CONTINUE als belangrijke onderdelen ontbreken: noem dan de KLEINSTE volgende stap die het bouwdoel "
+              "merkbaar dichterbij brengt — een specifieke file/feature/test die nu mist.\n"
+              "- Herhaal jezelf niet: kijk naar de werkhistorie en focus op iets nieuws.\n"
+              "- Maximaal 3 zinnen in de reason; maximaal 1 zin in next_subtask."
+        )
+
+    def _chair_review_user_prompt(
+        self,
+        *,
+        build_prompt: str,
+        iteration: int,
+        last_test_command: str,
+        last_test_stdout: str,
+        workspace_listing: str,
+    ) -> str:
+        history_summary = ""
+        if self.iteration_log:
+            history_lines = []
+            for entry in self.iteration_log[-5:]:
+                it = entry.get("iteration")
+                files = [f.get("path", "") for f in entry.get("files_written", []) or []]
+                test = entry.get("test_result") or {}
+                feedback = entry.get("critic_feedback") or ""
+                review = entry.get("chair_review") or {}
+                history_lines.append(
+                    f"  Iter {it}: files={files or '[]'}, test exit={test.get('exit_code')}"
+                    + (f", criticus='{feedback[:200]}'" if feedback else "")
+                    + (f", chair-review='{(review.get('verdict') or '')}: {(review.get('next_subtask') or review.get('reason') or '')[:160]}'" if review else "")
+                )
+            history_summary = "\nWerkhistorie:\n" + "\n".join(history_lines)
+        return (
+            f"Bouwdoel:\n{build_prompt}\n\n"
+            f"Iteratie {iteration} groen via commando: {last_test_command}\n"
+            f"Stdout (geclipt):\n{(last_test_stdout or '').strip()[:1200]}\n\n"
+            f"Workspace inhoud:\n{workspace_listing[:1800]}\n"
+            f"{history_summary}\n\n"
+            "Beoordeel: is het bouwdoel hiermee volledig gerealiseerd? Antwoord in JSON."
+        )
+
+    def _snapshot_workspace(self, max_entries: int = 60) -> str:
+        """Walk the workspace and return a flat listing (path + size) for the chair review."""
+        try:
+            entries: list[tuple[str, int]] = []
+            for path in sorted(self.workspace.rglob("*")):
+                if not path.is_file():
+                    continue
+                try:
+                    rel = path.relative_to(self.workspace)
+                except ValueError:
+                    continue
+                entries.append((str(rel), path.stat().st_size))
+                if len(entries) >= max_entries:
+                    break
+            if not entries:
+                return "(workspace is leeg)"
+            return "\n".join(f"  {rel} ({size}B)" for rel, size in entries)
+        except OSError:
+            return "(workspace listing onbeschikbaar)"
+
+    def _append_subtask(self, build_prompt: str, subtask: str, iteration: int) -> str:
+        """Append a chair-decided subtask to the original build prompt for the next iteration."""
+        marker = "\n\nVervolgstap"
+        cleaned = build_prompt
+        return (
+            f"{cleaned}{marker} (na iteratie {iteration}, volgens De Voorzitter): {subtask}"
+        )
+
+
+def _parse_chair_review(content: str) -> dict[str, str]:
+    """Parse the chair-review JSON. Falls back to heuristic DONE/CONTINUE detection.
+
+    When the chair gives no answer at all, default to CONTINUE so the loop keeps
+    building. Stopping at "DONE" on empty input would cut the team off mid-build —
+    which is exactly the failure mode the user complained about. Stopping early at
+    max_iterations is much less harmful than stopping too soon.
+    """
+    import json
+
+    text = str(content or "").strip()
+    if not text:
+        return {
+            "verdict": "CONTINUE",
+            "reason": "Voorzitter-oordeel ontbreekt; ga voor de zekerheid door met de volgende kleine bouwstap.",
+            "next_subtask": "Werk de bouwprompt verder uit met de eerstvolgende concrete capaciteit die nog mist.",
+        }
+
+    candidates: list[str] = [text]
+    if text.startswith("```"):
+        stripped = text[3:]
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:]
+        if stripped.endswith("```"):
+            stripped = stripped[:-3]
+        candidates.insert(0, stripped.strip())
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        candidates.insert(0, text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        verdict_raw = str(data.get("verdict") or "").strip().upper()
+        reason = str(data.get("reason") or "").strip()
+        next_subtask = str(data.get("next_subtask") or "").strip()
+        if verdict_raw in {"DONE", "AFGEROND", "KLAAR", "FINISHED"}:
+            return {"verdict": "DONE", "reason": reason, "next_subtask": ""}
+        if verdict_raw in {"CONTINUE", "DOOR", "DOORGAAN", "FURTHER"}:
+            return {
+                "verdict": "CONTINUE",
+                "reason": reason,
+                "next_subtask": next_subtask,
+            }
+
+    # Heuristic fallback: look for the literal words in the raw text.
+    lowered = text.lower()
+    if "\"verdict\": \"done\"" in lowered or " done\"" in lowered or lowered.startswith("done"):
+        return {"verdict": "DONE", "reason": text[:240], "next_subtask": ""}
+    if "continue" in lowered:
+        # Try to grab the line that mentions the next step.
+        for line in text.splitlines():
+            if "next_subtask" in line.lower():
+                _, _, payload = line.partition(":")
+                return {"verdict": "CONTINUE", "reason": text[:240], "next_subtask": payload.strip().strip('",')[:240]}
+        return {"verdict": "CONTINUE", "reason": text[:240], "next_subtask": "Werk de bouwprompt verder uit."}
+    # When in doubt, assume the build is not yet finished — better to over-iterate than to declare done early.
+    return {"verdict": "CONTINUE", "reason": "Voorzitter-oordeel onduidelijk; ga door.", "next_subtask": "Werk de bouwprompt verder uit."}
 
 
 def new_build_session_id() -> str:

@@ -17,3 +17,14 @@ numpy
 cirq-core
 scikit-learn
 joblib
+
+# Dev-team Aider-modus sandbox toolset — keeps the build-loop able to run pytest,
+# python-chess, pygame (headless via SDL_VIDEODRIVER=dummy) and common web/CLI deps.
+pytest
+pytest-cov
+pytest-asyncio
+hypothesis
+python-chess
+pygame
+flask
+typer

@@ -175,6 +175,11 @@ class TestDevTeamBuildSession(unittest.TestCase):
                 "name": "Criticus",
                 "system_prompt": "Je bent de Criticus.",
             },
+            "chair": {
+                "id": "de-voorzitter",
+                "name": "De voorzitter",
+                "system_prompt": "Je bent de Voorzitter.",
+            },
         }
 
     def test_session_completes_in_one_iteration_when_first_test_is_green(self) -> None:
@@ -204,6 +209,13 @@ class TestDevTeamBuildSession(unittest.TestCase):
                         "<cmd>python3 -c \"import sys; sys.path.insert(0,'src'); from dummy import value; assert value() == 4; print('PASS')\"</cmd>\n"
                         "Verwacht: stdout bevat PASS."
                     ),
+                    "error": "",
+                }
+            if system_prompt.startswith("Je bent de Voorzitter."):
+                # Chair declares the build complete after the first green test.
+                return {
+                    "ok": True,
+                    "content": '{"verdict": "DONE", "reason": "Eerste passing test bewijst dummy.value()."}',
                     "error": "",
                 }
             return {"ok": True, "content": "leeg", "error": ""}
@@ -283,6 +295,12 @@ class TestDevTeamBuildSession(unittest.TestCase):
                     "content": "AssertionError op add(2,2). De functie telt er +1 bij. Vervang `return a + b + 1` door `return a + b`.",
                     "error": "",
                 }
+            if system_prompt.startswith("Je bent de Voorzitter."):
+                return {
+                    "ok": True,
+                    "content": '{"verdict": "DONE", "reason": "calc.add(2,2)==4 bewijst het bouwdoel."}',
+                    "error": "",
+                }
             return {"ok": True, "content": "leeg", "error": ""}
 
         session = self.mod.DevTeamBuildSession(
@@ -313,6 +331,92 @@ class TestDevTeamBuildSession(unittest.TestCase):
         self.assertNotEqual(first_run.data["exit_code"], 0)
         self.assertEqual(last_run.data["exit_code"], 0)
 
+    def test_session_continues_after_first_green_when_chair_says_continue(self) -> None:
+        """First green test should NOT end the build if the chair says CONTINUE."""
+
+        developer_responses = iter(
+            [
+                # Iter 1: write minimal add() — passes basic test
+                (
+                    "Ik schrijf de eerste functie.\n"
+                    "<file path=\"src/calc.py\">\n"
+                    "def add(a, b):\n"
+                    "    return a + b\n"
+                    "</file>\n"
+                ),
+                # Iter 2: add subtract() per chair's directive
+                (
+                    "Ik voeg subtract toe.\n"
+                    "<file path=\"src/calc.py\">\n"
+                    "def add(a, b):\n"
+                    "    return a + b\n"
+                    "\n"
+                    "def subtract(a, b):\n"
+                    "    return a - b\n"
+                    "</file>\n"
+                ),
+            ]
+        )
+        chair_responses = iter(
+            [
+                # After iter 1: still need subtract
+                '{"verdict": "CONTINUE", "reason": "Alleen add() bestaat; subtract ontbreekt.", "next_subtask": "Voeg subtract(a,b) toe in src/calc.py."}',
+                # After iter 2: done
+                '{"verdict": "DONE", "reason": "Beide functies werken en zijn getest."}',
+            ]
+        )
+        tester_responses = iter(
+            [
+                "<cmd>python3 -c \"import sys; sys.path.insert(0,'src'); from calc import add; assert add(2,2) == 4; print('OK')\"</cmd>",
+                "<cmd>python3 -c \"import sys; sys.path.insert(0,'src'); from calc import add, subtract; assert add(2,2) == 4 and subtract(5,3) == 2; print('OK')\"</cmd>",
+            ]
+        )
+
+        def fake_llm(**kwargs: Any) -> dict[str, Any]:
+            system_prompt = str(kwargs.get("system_prompt") or "")
+            if system_prompt.startswith("Je bent de Developper."):
+                return {"ok": True, "content": next(developer_responses), "error": ""}
+            if system_prompt.startswith("Je bent de Tester."):
+                return {"ok": True, "content": next(tester_responses), "error": ""}
+            if system_prompt.startswith("Je bent de Voorzitter."):
+                return {"ok": True, "content": next(chair_responses), "error": ""}
+            return {"ok": True, "content": "leeg", "error": ""}
+
+        session = self.mod.DevTeamBuildSession(
+            session_id="multi-step-add-subtract",
+            workspace=self.workspace,
+            llm_call=fake_llm,
+            max_iterations=4,
+            test_timeout=20,
+        )
+        events = list(
+            session.iterate(
+                build_prompt="Bouw een calc-module met add EN subtract functies.",
+                clarifications=[],
+                provider="ollama",
+                model="ouroboros:latest",
+                personas=self._personas(),
+            )
+        )
+        types = [event.type for event in events]
+        # Two iterations because chair said CONTINUE after the first.
+        self.assertEqual(types.count("developer_turn"), 2)
+        self.assertEqual(types.count("test_run"), 2)
+        self.assertEqual(types.count("chair_review"), 2)
+        self.assertEqual(types.count("build_complete"), 1)
+        self.assertNotIn("critic_turn", types)  # both tests went green
+
+        # The first chair_review was CONTINUE.
+        chair_events = [event for event in events if event.type == "chair_review"]
+        self.assertEqual(chair_events[0].data["verdict"], "CONTINUE")
+        self.assertIn("subtract", chair_events[0].data["next_subtask"].lower())
+        self.assertEqual(chair_events[1].data["verdict"], "DONE")
+
+        # Final file has both functions.
+        final = (self.workspace / "src" / "calc.py").read_text()
+        self.assertIn("def add", final)
+        self.assertIn("def subtract", final)
+
     def test_session_exhausts_after_max_iterations(self) -> None:
         """Tests stay red — we expect exactly `max_iterations` developer turns then build_exhausted."""
 
@@ -339,6 +443,8 @@ class TestDevTeamBuildSession(unittest.TestCase):
                 }
             if system_prompt.startswith("Je bent de Criticus."):
                 return {"ok": True, "content": "Blijft rood.", "error": ""}
+            if system_prompt.startswith("Je bent de Voorzitter."):
+                return {"ok": True, "content": '{"verdict": "DONE"}', "error": ""}
             return {"ok": True, "content": "leeg", "error": ""}
 
         session = self.mod.DevTeamBuildSession(
