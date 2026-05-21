@@ -4922,14 +4922,26 @@ class OuroborosChatService:
         Returns either {"needs_clarification": False, "questions": []} or
         {"needs_clarification": True, "questions": [...]} so the FE can put a short Q&A in
         front of the actual development_team meeting. Keeps the meeting itself focused.
+
+        The intake question is a simple yes/no JSON decision and does not benefit from a heavy
+        coding model. To avoid a cold-start delay of 30-60s on `devstral:latest` and friends,
+        we force the intake call onto a fast lightweight model (`ouroboros:latest` by default
+        — overridable via WINTRIP_DEVTEAM_INTAKE_MODEL). The user's chosen model is preserved
+        for the actual development meeting and build loop.
         """
         if _contains_secret_like({"prompt": request.prompt}):
             raise ValueError("Development-team intake prompt appears to contain a secret, token, password, or bearer credential.")
 
         provider = str(request.provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
-        requested_model = str(request.model or "").strip()
-        model_hints = CODING_MODEL_HINTS.get(provider, ())
-        model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
+        # Override the model for intake: always a fast small Ollama model unless the user
+        # is on a cloud provider (where cold-start isn't a concern in the same way).
+        if provider in {DEFAULT_PROVIDER, "ollama", "local", "ouroboros"}:
+            model = os.getenv("WINTRIP_DEVTEAM_INTAKE_MODEL", "ouroboros:latest").strip() or "ouroboros:latest"
+            provider = DEFAULT_PROVIDER
+        else:
+            requested_model = str(request.model or "").strip()
+            model_hints = CODING_MODEL_HINTS.get(provider, ())
+            model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
 
         intake_system_prompt = (
             "Je bent De Voorzitter van het Ouroboros-ontwikkelteam (developer, tester, criticus). "
