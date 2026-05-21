@@ -310,15 +310,17 @@ DEFAULT_MEETING_PERSONAS: tuple[dict[str, Any], ...] = (
         "system_prompt": (
             "Je bent De Developper van het Ouroboros-ontwikkelteam. Je enige taak: het bouwdoel omzetten naar een werkbare code-wijziging die een andere agent kan uitvoeren.\n"
             "Je denkt in files, functies, contracten en kleine diffs.\n\n"
-            "Jouw aanpak per beurt:\n"
-            "1. Noem de kleinste eenheid werk die ons naar het doel brengt.\n"
-            "2. Noem de file(s), function(s) of module(s) die zullen veranderen — met letterlijke paden en symbol-namen.\n"
-            "3. Schets de implementatie in één of twee zinnen — geen volledige diff, wel genoeg dat iemand anders hem kan schrijven.\n"
-            "4. Benoem expliciet afhankelijkheden op andere modules en niet-evidente side-effects.\n"
-            "5. Geef terug aan tafel met de ene vraag die je het hardst beantwoord wil hebben voordat deze wijziging veilig is.\n\n"
+            "Verplichte vorm voor ELKE bijdrage — als deze ontbreekt wordt je beurt door De Voorzitter teruggestuurd:\n"
+            "- Minstens één concreet file path (bv. `src/cli.py`, `tests/test_engine.py`) — niet alleen een laagnaam.\n"
+            "- Minstens één concreet symbol of function-naam (bv. `ChessGame.make_move`, `parse_move(uci: str) -> Move`).\n"
+            "- Een korte schets (1-2 zinnen) van wat er in die file/symbol verandert.\n"
+            "- Eén vervolgvraag aan De Tester of De Criticus die je beantwoord wil zien.\n"
+            "Als je de bestaande codebase nog niet kent: noem dán toch een PROPOSED file path (waar de wijziging logischerwijs hoort) en zeg expliciet dat je hem eerst wil lezen via read_file of file_search.\n\n"
+            "Voorbeeld van een goed antwoord:\n"
+            "\"Voor het Ollama-koppeling-stuk maak ik `src/ollama_client.py` met `get_model_move(model: str, fen: str, max_retries: int = 3) -> str | None`. De functie POST't naar `http://localhost:11434/api/generate`, valideert het antwoord tegen `chess.Board.legal_moves` en geeft `None` bij uitputting. Vraag aan De Tester: hoe mock je de POST in `tests/test_ollama_client.py` deterministisch?\"\n\n"
             "Harde regels:\n"
             "- Citeer altijd de werkelijke file paths en symbol names. Vage verwijzingen ('de auth module') worden verworpen.\n"
-            "- Als je de bestaande code niet kent, zeg dat en stel een read-first-actie voor (read_file, file_search).\n"
+            "- Als je de bestaande code niet kent, propose een aannemelijk pad EN stel een read_file-stap voor.\n"
             "- Stel nooit een refactor voor die het doel niet vereist.\n"
             "- Als De Criticus een reëel risico aanwijst, adresseer het in je volgende beurt — niet ontwijken.\n"
             "- Tools die je mag inzetten: read_file en file_search om de codebase te kennen; web_search voor framework/library docs; code_execution + local_shell + run_tests ALLEEN via de approval-gated agent-runtime.\n"
@@ -2156,9 +2158,11 @@ class MeetingRunner:
                     "implementation-route",
                     developer,
                     (
-                        "Vertaal het bouwdoel naar een concrete code-wijziging. Noem letterlijke file paths en symbol/function-namen "
-                        "die zullen veranderen, schets de implementatie in 1-2 zinnen (geen volledige diff), benoem afhankelijkheden en "
-                        "side-effects, en eindig met de ene vraag die je beantwoord wil zien voor de wijziging veilig is. Maximaal 80 woorden."
+                        "Vertaal het bouwdoel naar een concrete code-wijziging. Verplicht: noem MINSTENS één letterlijk file path "
+                        "(bv. `src/cli.py`) en MINSTENS één symbol/function naam (bv. `play_round()`). Schets de implementatie in 1-2 "
+                        "zinnen — geen volledige diff. Benoem afhankelijkheden en side-effects. Eindig met de ene vraag die je "
+                        "beantwoord wil zien voordat de wijziging veilig is. Als je de bestaande codebase niet kent: noem dán toch "
+                        "een PROPOSED file path en zeg dat je `read_file` of `file_search` eerst wil draaien. Maximaal 100 woorden."
                     ),
                 )
             )
@@ -4639,28 +4643,65 @@ class MeetingStore:
                 break
         critic_first = last_substantive(is_critic)
 
+        def _strip_inline_rollback(text: str) -> str:
+            # The Developer/Tester often append a "Rollback: ..." line in their own turn.
+            # Strip it from the Wijzigingen/Acceptatie sections so the dedicated Rollback line
+            # downstream doesn't get duplicated.
+            return re.sub(r"(?is)(?:\n|\s+)?\b(rollback|open\s+blocker|uitvoerende agent)\s*[:\-—].+$", "", text or "").rstrip(" .;,")
+
         changes_line = (
-            f"Wijzigingen: {_clip_text(dev_content, 700)}"
+            f"Wijzigingen: {_clip_text(_strip_inline_rollback(dev_content), 700)}"
             if dev_content
             else "Wijzigingen: De Developper heeft nog geen concrete file of symbool benoemd; eerst opnemen voor de bouwprompt definitief is."
         )
+        accept_source = tester_confirm or tester_content
         accept_line = (
-            f"Acceptatie: {_clip_text(tester_confirm or tester_content, 600)}"
-            if (tester_confirm or tester_content)
+            f"Acceptatie: {_clip_text(_strip_inline_rollback(accept_source), 600)}"
+            if accept_source
             else "Acceptatie: De Tester moet nog een reproduceerbaar testcommando en verwacht signaal leveren."
         )
         # Try to extract an explicit rollback statement from the tester contributions.
+        # The pattern stops at a sentence boundary OUTSIDE of backtick code spans so we don't
+        # truncate halfway through `src/foo.py`. We also tolerate "Rollback —" / "Rollback -"
+        # variants and accept "git revert ..." statements anywhere in the tester text.
         rollback_text = ""
+
+        def _balanced_rollback_match(source_text: str) -> str:
+            # Find "Rollback:" / "Rollback -" / "Rollback —"
+            label_match = re.search(r"(?i)\brollback\s*[:\-—]\s*", source_text)
+            if not label_match:
+                return ""
+            tail = source_text[label_match.end() :]
+            # Read characters until we hit a sentence terminator that's NOT inside backticks.
+            in_backtick = False
+            collected: list[str] = []
+            for ch in tail:
+                if ch == "`":
+                    in_backtick = not in_backtick
+                    collected.append(ch)
+                    continue
+                if ch in {"\n"} and not in_backtick:
+                    break
+                if ch in {".", "!", "?"} and not in_backtick:
+                    collected.append(ch)
+                    break
+                collected.append(ch)
+            # If we ended inside backticks, close them for cosmetic balance.
+            text = "".join(collected).strip()
+            if text.count("`") % 2 == 1:
+                text += "`"
+            return text
+
         for source in (tester_confirm, tester_content):
             if not source:
                 continue
-            match = re.search(r"(?i)rollback\s*[:\-]\s*([^\n.]+[.!?])", source)
-            if match:
-                rollback_text = match.group(1).strip()
+            extracted = _balanced_rollback_match(source)
+            if extracted:
+                rollback_text = extracted
                 break
-            match = re.search(r"(?i)(git\s+revert[^\n.]*[.!?])", source)
-            if match:
-                rollback_text = match.group(1).strip()
+            git_match = re.search(r"(?i)(git\s+revert[^\n]+)", source)
+            if git_match:
+                rollback_text = git_match.group(1).strip().rstrip(".")
                 break
         rollback_line = (
             f"Rollback: {_clip_text(rollback_text, 500)}"
