@@ -1235,7 +1235,7 @@ class TestOuroborosChatService(unittest.TestCase):
         payload = self.service.development_team(
             self.module.DevelopmentTeamRequest(
                 prompt="Maak de meeting runner robuuster en testbaar.",
-                persona_ids=["de-voorzitter", "de-ontwerper", "de-criticus"],
+                persona_ids=["de-voorzitter", "de-developer", "de-tester", "de-criticus"],
                 agent_ids=["codex"],
                 provider="google",
                 model="gemini-2.5-pro",
@@ -1247,8 +1247,67 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertTrue(payload["approval_required"])
         self.assertEqual(payload["agent_command"], "/codex")
         self.assertIn("/codex", payload["slash_prompt"])
-        self.assertIn("gemini-2.5-pro", payload["rounds"][1]["content"])
+        # The development_team route now drives a real four-persona meeting; the chosen
+        # provider/model lives on the envelope (the meeting transcript itself stays in
+        # natural prose, free of internal regie-vocabulary).
+        self.assertEqual(payload["meeting_type"], "development_team")
+        self.assertIn(payload["provider"], {"google", "ollama"})  # may fall back to local Ollama
+        # The transcript exists, and the build_prompt deliverable is present.
+        self.assertTrue(payload["rounds"], "expected meeting rounds to be populated")
+        self.assertIn("build_prompt", payload)
         self.assertFalse(payload["fake_success"])
+
+    def test_development_team_intake_returns_clarification_questions_when_prompt_is_vague(self):
+        # Stub the LLM call to return a structured intake JSON so we don't depend on the live model.
+        class _IntakeOllama:
+            def __init__(self):
+                self.calls = []
+
+            def chat(self, **kwargs):
+                self.calls.append(kwargs)
+                return (
+                    '{"needs_clarification": true, "questions": '
+                    '["Voor welk platform (web, desktop, CLI)?", '
+                    '"Welk Ollama-model standaard?", '
+                    '"Wat is de gewenste tijdslimiet per zet?"]}'
+                )
+
+        intake_ollama = _IntakeOllama()
+        intake_service = self.module.OuroborosChatService(
+            data_dir=self.data_dir / "intake",
+            cline_root=self.cline_root,
+            ollama_client=intake_ollama,
+        )
+
+        payload = intake_service.development_team_intake(
+            self.module.DevelopmentTeamIntakeRequest(
+                prompt="Maak een schaakprogrammaatje",
+                provider="ollama",
+                model="ouroboros:latest",
+            )
+        )
+        self.assertEqual(payload["status"], "intake_complete")
+        self.assertTrue(payload["needs_clarification"])
+        self.assertEqual(len(payload["questions"]), 3)
+        self.assertTrue(all(q.endswith("?") for q in payload["questions"]))
+
+    def test_development_team_consumes_clarifications_in_topic(self):
+        payload = self.service.development_team(
+            self.module.DevelopmentTeamRequest(
+                prompt="Maak een 2D schaakprogrammaatje tegen Ollama modellen.",
+                persona_ids=["de-voorzitter", "de-developer", "de-tester", "de-criticus"],
+                agent_ids=["codex"],
+                clarifications=[
+                    {"question": "Welk platform?", "answer": "Desktop Python met pygame."},
+                    {"question": "Welk Ollama-model?", "answer": "ouroboros:latest met fallback naar llama3:3b."},
+                ],
+            )
+        )
+        self.assertEqual(payload["status"], "planned")
+        # Both clarification answers must be carried into the meeting context.
+        self.assertIn("pygame", payload["augmented_prompt"])
+        self.assertIn("ouroboros:latest", payload["augmented_prompt"])
+        self.assertIn("Verduidelijking", payload["augmented_prompt"])
 
     def test_meeting_snapshot_can_be_saved_and_listed_without_jsonl(self):
         saved = self.service.meetings.save_snapshot(

@@ -588,6 +588,16 @@ class DevelopmentTeamRequest(BaseModel):
     model: Optional[str] = Field(default=DEFAULT_MODEL, max_length=160)
     approval: Optional[str] = Field(default=None, max_length=128)
     max_iterations: int = Field(default=3)
+    # Optional list of {"question": "...", "answer": "..."} pairs from a preceding intake step.
+    # When present, the development team meeting receives the original prompt plus the Q&A as
+    # extra context so the four roles don't have to rediscover the user's intent.
+    clarifications: list[dict[str, str]] = Field(default_factory=list)
+
+
+class DevelopmentTeamIntakeRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=MAX_TEXT_CHARS)
+    provider: Optional[str] = Field(default=DEFAULT_PROVIDER, max_length=80)
+    model: Optional[str] = Field(default=DEFAULT_MODEL, max_length=160)
 
 
 def init_ouroboros_chat_routes(app: Any, service: "OuroborosChatService | None" = None) -> None:
@@ -679,6 +689,61 @@ _LIGHT_MODEL_MARKERS: tuple[str, ...] = (
 def _is_light_model(provider: Any, model: Any) -> bool:
     text = f"{str(provider or '').lower()} {str(model or '').lower()}"
     return any(marker in text for marker in _LIGHT_MODEL_MARKERS)
+
+
+def _parse_intake_response(content: Any) -> dict[str, Any]:
+    """Parse the chair's intake JSON response with graceful fallbacks.
+
+    Many small models return JSON inside markdown fences or with extra prose. This
+    helper extracts the JSON object if it can find one, validates the shape, and
+    falls back to a heuristic question-mark scan if the response isn't parseable.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return {"needs_clarification": False, "questions": []}
+    candidates: list[str] = [text]
+    # Strip a markdown code fence if present.
+    if text.startswith("```"):
+        without_fence = text[3:]
+        if without_fence.lower().startswith("json"):
+            without_fence = without_fence[4:]
+        if without_fence.endswith("```"):
+            without_fence = without_fence[:-3]
+        candidates.insert(0, without_fence.strip())
+    # Try to slice from the first '{' to the matching '}' — handles preamble like
+    # "Hier is mijn JSON: {...}".
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        candidates.insert(0, text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        needs = bool(parsed.get("needs_clarification"))
+        raw_questions = parsed.get("questions") or []
+        if isinstance(raw_questions, list):
+            questions = [str(q).strip() for q in raw_questions if str(q).strip()]
+        else:
+            questions = []
+        if not questions:
+            needs = False
+        return {"needs_clarification": needs, "questions": questions[:3]}
+
+    # Heuristic fallback — pick the lines that end with a question mark.
+    fallback_questions = [
+        line.strip(" -*•")
+        for line in text.splitlines()
+        if "?" in line and len(line.strip()) > 6
+    ]
+    return {
+        "needs_clarification": bool(fallback_questions),
+        "questions": fallback_questions[:3],
+    }
 
 
 _MEETING_META_PATTERNS: tuple[tuple[Any, str], ...] = ()
@@ -4797,7 +4862,65 @@ class OuroborosChatService:
             web_context_fetcher=self._brave_knowledge_for_persona,
         )
 
+    def development_team_intake(self, request: DevelopmentTeamIntakeRequest) -> dict[str, Any]:
+        """Single chair-LLM call that decides whether the user's prompt needs clarification.
+
+        Returns either {"needs_clarification": False, "questions": []} or
+        {"needs_clarification": True, "questions": [...]} so the FE can put a short Q&A in
+        front of the actual development_team meeting. Keeps the meeting itself focused.
+        """
+        if _contains_secret_like({"prompt": request.prompt}):
+            raise ValueError("Development-team intake prompt appears to contain a secret, token, password, or bearer credential.")
+
+        provider = str(request.provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+        requested_model = str(request.model or "").strip()
+        model_hints = CODING_MODEL_HINTS.get(provider, ())
+        model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
+
+        intake_system_prompt = (
+            "Je bent De Voorzitter van het Ouroboros-ontwikkelteam (developer, tester, criticus). "
+            "Beoordeel of de gebruikersopdracht specifiek genoeg is om met het team aan de slag te gaan. "
+            "Stel ALLEEN verduidelijkingsvragen die de Developper of Tester niet zelf met read-only code-inspectie kan beantwoorden — "
+            "bijvoorbeeld over scope, gewenste UI/CLI, doelgroep, of expliciete acceptatiecriteria. Twijfel = geen vraag, dan kan het team beginnen.\n\n"
+            "Antwoord uitsluitend in JSON, zonder markdown, zonder toelichting. Twee mogelijke vormen:\n"
+            "{\"needs_clarification\": false, \"questions\": []}\n"
+            "OF\n"
+            "{\"needs_clarification\": true, \"questions\": [\"vraag 1\", \"vraag 2\"]}\n"
+            "Maximaal 3 vragen. Elke vraag is kort, concreet, eindigt met een vraagteken."
+        )
+        intake_user_prompt = (
+            "Ontwikkelopdracht van de gebruiker:\n"
+            f"{_clip_text(request.prompt, 2400)}\n\n"
+            "Beoordeel de opdracht en lever de JSON."
+        )
+        response = self._call_model_provider(
+            prompt=intake_user_prompt,
+            provider=provider,
+            model=model,
+            system_prompt=intake_system_prompt,
+            history=[],
+        )
+        parsed = _parse_intake_response(response.get("content"))
+        return {
+            "status": "intake_complete",
+            "needs_clarification": parsed["needs_clarification"],
+            "questions": parsed["questions"][:3],
+            "prompt": _clip_text(request.prompt, 3000),
+            "provider": response.get("provider", provider),
+            "model": response.get("model", model),
+            "raw": _clip_text(str(response.get("content") or ""), 1600),
+            "fake_success": False,
+        }
+
     def development_team(self, request: DevelopmentTeamRequest) -> dict[str, Any]:
+        """Run a real `development_team` meeting and surface a workable build prompt.
+
+        Replaces the old templated rounds with the four-persona collaboration: the chair
+        keeps the goal in view, De Developper proposes concrete files/symbols, De Tester
+        delivers an acceptance command + rollback, De Criticus catches risks. The
+        deterministic build-prompt compositor turns the transcript into a slash-command
+        that the agent-runtime can execute inside its Docker-isolated job.
+        """
         if _contains_secret_like({"prompt": request.prompt, "persona_ids": request.persona_ids, "agent_ids": request.agent_ids}):
             raise ValueError("Development-team prompt appears to contain a secret, token, password, or bearer credential.")
 
@@ -4806,94 +4929,88 @@ class OuroborosChatService:
         model_hints = CODING_MODEL_HINTS.get(provider, ())
         model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
         max_iterations = max(1, min(int(getattr(request, "max_iterations", 3) or 3), 8))
-        persona_ids = request.persona_ids or ["de-voorzitter", "de-ontwerper", "de-criticus"]
+        persona_ids = list(request.persona_ids) if request.persona_ids else list(DEV_TEAM_DEFAULT_PERSONA_IDS)
         agent_ids = request.agent_ids or ["codex"]
-        personas: list[dict[str, Any]] = []
-        for persona_id in persona_ids[:12]:
-            persona = self.personas.get(persona_id)
-            if persona:
-                personas.append(dict(persona))
-        personas = MeetingRunner()._ordered_personas(personas)
-        public_personas = [MeetingRunner()._public_persona(persona) for persona in personas]
-        slash_command = self._development_slash_command(agent_ids)
-        clipped_prompt = _clip_text(request.prompt, 3000)
-        slash_prompt = (
-            f"{slash_command} {clipped_prompt}\n\n"
-            "Ontwikkelteam-protocol:\n"
-            "- Werk iteratief: plan, kleine wijziging, test, review.\n"
-            f"- Stop na maximaal {max_iterations} pogingen zonder nieuwe informatie.\n"
-            "- Laat de voorzitter ingrijpen bij herhaling, tunnelvisie of test-loops.\n"
-            "- Rapporteer welke bestanden zijn aangepast en welke tests zijn gedraaid.\n"
-            f"- Gebruik alleen bestaande approval-gated routes; approval phrase blijft {APPROVAL_PHRASE}."
-        )
-        rounds = [
-            {
-                "id": f"dev-{uuid.uuid4().hex[:8]}-intake",
-                "phase": "intake",
-                "participantName": "De voorzitter",
-                "participantId": "de-voorzitter",
-                "content": (
-                    "Ik start dit als ontwikkelteam, maar voer hier nog niets uit. Eerst bakenen we succes af, kiezen we de uitvoerende agent "
-                    f"en zetten we een stopregel: maximaal {max_iterations} iteraties zonder nieuwe testinformatie."
-                ),
-                "createdAt": _now_iso(),
-            },
-            {
-                "id": f"dev-{uuid.uuid4().hex[:8]}-route",
-                "phase": "implementation-route",
-                "participantName": "Ouroboros engineer",
-                "participantId": "ouroboros-engineer",
-                "content": (
-                    f"Gebruik {provider} / {model} als gekozen modelcontext waar de agent-runtime dat ondersteunt. "
-                    "Laat Codex, Roo, Claude of Gemini via de bestaande Cockpit-koppelingen werken; deze route maakt alleen de opdracht klaar."
-                ),
-                "createdAt": _now_iso(),
-            },
-            {
-                "id": f"dev-{uuid.uuid4().hex[:8]}-test",
-                "phase": "test-plan",
-                "participantName": "Criticus",
-                "participantId": "de-criticus",
-                "content": (
-                    "Voor elke wijziging is er een verificatie nodig: gerichte tests eerst, daarna build of smoke-test. "
-                    "Als een test faalt zonder duidelijke hypothese, terug naar analyse in plaats van dezelfde fix herhalen."
-                ),
-                "createdAt": _now_iso(),
-            },
-            {
-                "id": f"dev-{uuid.uuid4().hex[:8]}-guard",
-                "phase": "loop-guard",
-                "participantName": "De voorzitter",
-                "participantId": "de-voorzitter",
-                "content": (
-                    "Ik houd de volgorde vast: uitvoerder, reviewer, test, besluit. Als twee rollen elkaar napraten of rondjes draaien, "
-                    "onderbreek ik en vraag ik om een nieuw bewijsstuk, kleiner doel of expliciete stop."
-                ),
-                "createdAt": _now_iso(),
-            },
+
+        # Augment topic with any clarification Q&A from a preceding intake step.
+        topic = _clip_text(request.prompt, 3000)
+        clarifications = [
+            item for item in (request.clarifications or [])
+            if isinstance(item, dict) and str(item.get("answer") or "").strip()
         ]
+        if clarifications:
+            qa_lines = []
+            for item in clarifications:
+                question = _clip_text(str(item.get("question") or ""), 400)
+                answer = _clip_text(str(item.get("answer") or ""), 1200)
+                if question and answer:
+                    qa_lines.append(f"- {question}\n  Antwoord: {answer}")
+            if qa_lines:
+                topic = f"{topic}\n\nVerduidelijking van de gebruiker:\n" + "\n".join(qa_lines)
+
+        # Run the real four-persona meeting via the existing dev-team agenda.
+        meeting_request = MeetingRequest(
+            topic=topic,
+            meeting_type="development_team",
+            participants=persona_ids[:12],
+            provider=provider,
+            model=model,
+            tools=[],
+            allow_tools=False,
+        )
+        meeting_result = self.meetings.create_meeting(
+            meeting_request,
+            self.personas,
+            llm_call=self._call_model_provider,
+            knowledge_store=self.knowledge,
+            web_context_fetcher=self._brave_knowledge_for_persona,
+        )
+        if meeting_result.get("status") == "blocked":
+            return {**meeting_result, "next_route": "/api/cockpit/chat"}
+
+        build_prompt = (meeting_result.get("build_prompt") or "").strip()
+        slash_command = self._development_slash_command(agent_ids)
+        # Always produce a non-empty slash_prompt — fall back to the (augmented) topic so the
+        # agent-runtime still has something concrete even when the meeting did not converge.
+        effective_brief = build_prompt or topic
+        slash_prompt = (
+            f"{slash_command} {effective_brief}\n\n"
+            "---\n"
+            "Ontwikkelteam-protocol:\n"
+            "- Werk binnen de Docker-isolated agent-sandbox; geen wijzigingen op de host buiten approval.\n"
+            "- Codeer iteratief: kleinste werkbare diff, test, review.\n"
+            f"- Stop na maximaal {max_iterations} pogingen zonder nieuwe testinformatie en vraag om verduidelijking.\n"
+            "- Rapporteer welke files je raakt en welke tests je draait.\n"
+            f"- Approval phrase blijft {APPROVAL_PHRASE}."
+        )
         return {
             "status": "planned",
             "execution": "not_executed_by_ouroboros_chat_router",
             "approval_required": True,
             "approval_phrase": APPROVAL_PHRASE,
             "approval_supplied": str(request.approval or "").strip() == APPROVAL_PHRASE,
-            "prompt": clipped_prompt,
-            "provider": provider,
-            "model": model,
+            "prompt": _clip_text(request.prompt, 3000),
+            "augmented_prompt": _clip_text(topic, 6000),
+            "clarifications_supplied": clarifications,
+            "provider": meeting_result.get("provider") or provider,
+            "model": meeting_result.get("model") or model,
             "recommended_models": {
                 key: list(value)
                 for key, value in CODING_MODEL_HINTS.items()
             },
-            "personas": public_personas,
+            "personas": meeting_result.get("participants", []),
             "agent_ids": agent_ids[:12],
             "agent_command": slash_command,
             "slash_prompt": slash_prompt,
-            "rounds": rounds,
+            "build_prompt": build_prompt,
+            "rounds": meeting_result.get("rounds", []),
+            "summary": meeting_result.get("summary", ""),
+            "meeting_id": meeting_result.get("meeting_id"),
+            "meeting_type": meeting_result.get("meeting_type"),
             "next_route": "/api/cockpit/chat",
             "safety_note": (
-                "Dit ontwikkelteam bereidt agentisch coderen voor, maar voert geen shell, browser, patch of CLI uit. "
-                "Werkelijke uitvoering blijft bij de bestaande Cockpit approval-flow."
+                "Het ontwikkelteam levert een werkbare bouwprompt. De uitvoering gebeurt in de "
+                "Cockpit agent-runtime achter de approval-gate, idealiter in een Docker-isolated job."
             ),
             "fake_success": False,
         }
@@ -6052,6 +6169,15 @@ async def search_knowledge(request: Request, persona_id: str, q: str = "", limit
     return {"status": "online", "snippets": snippets, "count": len(snippets), "fake_success": False}
 
 
+@ouroboros_chat_router.post("/development-team/intake")
+async def plan_development_team_intake(request_body: DevelopmentTeamIntakeRequest, request: Request) -> dict[str, Any]:
+    service = _service_from_request(request)
+    try:
+        return await asyncio.to_thread(service.development_team_intake, request_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @ouroboros_chat_router.post("/development-team")
 async def plan_development_team(request_body: DevelopmentTeamRequest, request: Request) -> dict[str, Any]:
     service = _service_from_request(request)
@@ -6149,6 +6275,8 @@ __all__ = [
     "ALLOWED_CLINE_FILES",
     "DEFAULT_MODEL",
     "DEFAULT_PROVIDER",
+    "DEV_TEAM_DEFAULT_PERSONA_IDS",
+    "DevelopmentTeamIntakeRequest",
     "DevelopmentTeamRequest",
     "MeetingRequest",
     "MeetingSaveRequest",
