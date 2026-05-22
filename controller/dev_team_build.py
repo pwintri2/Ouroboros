@@ -776,12 +776,13 @@ def _run_test_command_in_docker(
     docker_image: str,
 ) -> TestResult:
     started = time.time()
+    container_workspace = workspace.resolve()
     host_workspace = _workspace_host_mount(workspace)
-    if not host_workspace.exists():
+    if not container_workspace.exists():
         return TestResult(
             exit_code=-5,
             stdout="",
-            stderr=f"Docker workspace mount does not exist on host: {host_workspace}",
+            stderr=f"Docker workspace does not exist: {container_workspace}",
             duration_s=0.0,
             command=command,
             runner="docker",

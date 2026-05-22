@@ -193,6 +193,53 @@ class TestDevTeamBuildRunCommand(unittest.TestCase):
         self.assertEqual(result.exit_code, -3)
         self.assertTrue(result.timed_out)
 
+    def test_docker_runner_allows_host_mount_that_is_not_visible_in_backend_container(self) -> None:
+        calls: list[dict[str, Any]] = []
+        host_only_path = Path("/host/workspace/not-visible-in-backend-container")
+
+        def fake_cli(
+            host_workspace: Path,
+            command: str,
+            *,
+            timeout: float,
+            extra_env: dict[str, str] | None,
+            docker_image: str,
+            started: float,
+        ) -> Any:
+            calls.append(
+                {
+                    "host_workspace": host_workspace,
+                    "command": command,
+                    "timeout": timeout,
+                    "extra_env": extra_env,
+                    "docker_image": docker_image,
+                    "started": started,
+                }
+            )
+            return self.mod.TestResult(
+                exit_code=0,
+                stdout="OK",
+                stderr="",
+                duration_s=0.01,
+                command=command,
+                runner="docker",
+                docker_image=docker_image,
+            )
+
+        with patch.object(self.mod, "_workspace_host_mount", return_value=host_only_path):
+            with patch.object(self.mod, "_run_test_command_in_docker_cli", side_effect=fake_cli):
+                result = self.mod.run_test_command(
+                    self.workspace,
+                    "python -V",
+                    timeout=10,
+                    isolation="docker",
+                    docker_image="test-image:latest",
+                )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.runner, "docker")
+        self.assertEqual(calls[0]["host_workspace"], host_only_path)
+
 
 class TestDevTeamBuildSession(unittest.TestCase):
     def setUp(self) -> None:
