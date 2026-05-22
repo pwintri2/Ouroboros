@@ -33,6 +33,7 @@ services:
     environment:
       PYTHONPATH: /workspace
       WINTRIP_WORKSPACE: /workspace
+      WINTRIP_HOST_WORKSPACE: /home/pwintri2/WintripAI
       WINTRIP_DB_PATH: /workspace/wintrip_brain
       WINTRIP_CHROMA_HTTP_URL: http://chroma:8000
       WINTRIP_LIVING_LOOP_AUTOSTART: "1"

@@ -640,9 +640,12 @@ class DevelopmentTeamBuildRequest(BaseModel):
     provider: Optional[str] = Field(default=DEFAULT_PROVIDER, max_length=80)
     model: Optional[str] = Field(default=DEFAULT_MODEL, max_length=160)
     max_iterations: int = Field(default=4)
+    max_strategy_cycles: int = Field(default=24)
     min_iterations: int = Field(default=2)
     test_timeout_seconds: float = Field(default=120.0)
     llm_timeout_seconds: float = Field(default=90.0)
+    test_isolation: str = Field(default="docker", max_length=40)
+    docker_test_image: str = Field(default="", max_length=240)
     approval: Optional[str] = Field(default=None, max_length=128)
 
 
@@ -5547,7 +5550,7 @@ class OuroborosChatService:
                 "- Werk binnen de Docker-isolated agent-sandbox; geen wijzigingen op de host buiten approval.\n"
                 "- Codeer iteratief: kleinste werkbare diff, test, review.\n"
                 "- Ondersteunende rollen communiceren via Gas Town MODE: nudge/mail/handoff; De Developper gebruikt het gekozen code-model.\n"
-                f"- Stop na maximaal {max_iterations} pogingen zonder nieuwe testinformatie en vraag om verduidelijking.\n"
+                f"- Pivot na maximaal {max_iterations} rode pogingen naar een nieuwe insteek; blijf testen tot Docker groen is.\n"
                 "- Rapporteer welke files je raakt en welke tests je draait.\n"
                 f"- Approval phrase blijft {APPROVAL_PHRASE}."
             )
@@ -5614,7 +5617,7 @@ class OuroborosChatService:
             "Ontwikkelteam-protocol:\n"
             "- Werk binnen de Docker-isolated agent-sandbox; geen wijzigingen op de host buiten approval.\n"
             "- Codeer iteratief: kleinste werkbare diff, test, review.\n"
-            f"- Stop na maximaal {max_iterations} pogingen zonder nieuwe testinformatie en vraag om verduidelijking.\n"
+            f"- Pivot na maximaal {max_iterations} rode pogingen naar een nieuwe insteek; blijf testen tot Docker groen is.\n"
             "- Rapporteer welke files je raakt en welke tests je draait.\n"
             f"- Approval phrase blijft {APPROVAL_PHRASE}."
         )
@@ -5706,9 +5709,12 @@ class OuroborosChatService:
             workspace=workspace,
             llm_call=self._call_model_provider,
             max_iterations=max(1, min(int(request.max_iterations or 4), 12)),
+            max_strategy_cycles=max(1, min(int(request.max_strategy_cycles or 24), 200)),
             min_iterations=max(1, min(int(request.min_iterations or 2), 12)),
             test_timeout=max(1.0, min(float(request.test_timeout_seconds or 120.0), 600.0)),
             llm_timeout_seconds=max(5.0, min(float(request.llm_timeout_seconds or 90.0), 600.0)),
+            test_isolation=request.test_isolation or "docker",
+            docker_test_image=request.docker_test_image or "",
         )
 
         try:

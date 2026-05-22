@@ -1330,6 +1330,7 @@ class TestOuroborosChatService(unittest.TestCase):
                     min_iterations=1,
                     test_timeout_seconds=1,
                     llm_timeout_seconds=5,
+                    test_isolation="host",
                 )
             )
         )

@@ -240,6 +240,7 @@ class TestDevTeamBuildSession(unittest.TestCase):
             llm_call=slow_llm,
             max_iterations=1,
             test_timeout=20,
+            test_isolation="host",
         )
         session.llm_timeout_seconds = 0.1
 
@@ -301,6 +302,7 @@ class TestDevTeamBuildSession(unittest.TestCase):
             llm_call=fake_llm,
             max_iterations=3,
             test_timeout=20,
+            test_isolation="host",
         )
         events = list(
             session.iterate(
@@ -379,6 +381,7 @@ class TestDevTeamBuildSession(unittest.TestCase):
             max_iterations=1,
             min_iterations=1,
             test_timeout=20,
+            test_isolation="host",
         )
         events = list(
             session.iterate(
@@ -463,6 +466,7 @@ class TestDevTeamBuildSession(unittest.TestCase):
             llm_call=fake_llm,
             max_iterations=3,
             test_timeout=20,
+            test_isolation="host",
         )
         events = list(
             session.iterate(
@@ -550,6 +554,7 @@ class TestDevTeamBuildSession(unittest.TestCase):
                 llm_call=fake_llm,
                 max_iterations=4,
                 test_timeout=20,
+                test_isolation="host",
             )
             events = list(
                 session.iterate(
@@ -579,22 +584,36 @@ class TestDevTeamBuildSession(unittest.TestCase):
         self.assertIn("def add", final)
         self.assertIn("def subtract", final)
 
-    def test_session_exhausts_after_max_iterations(self) -> None:
-        """Tests stay red — we expect exactly `max_iterations` developer turns then build_exhausted."""
+    def test_session_pivots_after_max_iterations_and_keeps_testing_until_green(self) -> None:
+        """After a red cycle hits max_iterations, the team pivots and keeps testing."""
+
+        developer_responses = iter(
+            [
+                (
+                    "<file path=\"src/wrong.py\">\n"
+                    "def value():\n"
+                    "    return 0\n"
+                    "</file>\n"
+                ),
+                (
+                    "<file path=\"src/wrong.py\">\n"
+                    "def value():\n"
+                    "    return 1\n"
+                    "</file>\n"
+                ),
+                (
+                    "<file path=\"src/wrong.py\">\n"
+                    "def value():\n"
+                    "    return 4\n"
+                    "</file>\n"
+                ),
+            ]
+        )
 
         def fake_llm(**kwargs: Any) -> dict[str, Any]:
             system_prompt = str(kwargs.get("system_prompt") or "")
             if system_prompt.startswith("Je bent de Developper."):
-                return {
-                    "ok": True,
-                    "content": (
-                        "<file path=\"src/wrong.py\">\n"
-                        "def value():\n"
-                        "    return 0\n"
-                        "</file>\n"
-                    ),
-                    "error": "",
-                }
+                return {"ok": True, "content": next(developer_responses), "error": ""}
             if system_prompt.startswith("Je bent de Tester."):
                 return {
                     "ok": True,
@@ -606,15 +625,18 @@ class TestDevTeamBuildSession(unittest.TestCase):
             if system_prompt.startswith("Je bent de Criticus."):
                 return {"ok": True, "content": "Blijft rood.", "error": ""}
             if system_prompt.startswith("Je bent de Voorzitter."):
-                return {"ok": True, "content": '{"verdict": "DONE"}', "error": ""}
+                return {"ok": True, "content": '{"verdict": "DONE", "reason": "value() is groen."}', "error": ""}
             return {"ok": True, "content": "leeg", "error": ""}
 
         session = self.mod.DevTeamBuildSession(
-            session_id="never-green",
+            session_id="pivot-then-green",
             workspace=self.workspace,
             llm_call=fake_llm,
             max_iterations=2,
+            max_strategy_cycles=2,
+            min_iterations=1,
             test_timeout=20,
+            test_isolation="host",
         )
         events = list(
             session.iterate(
@@ -633,11 +655,19 @@ class TestDevTeamBuildSession(unittest.TestCase):
             )
         )
         types = [event.type for event in events]
-        self.assertEqual(types.count("developer_turn"), 2)
-        self.assertEqual(types.count("test_run"), 2)
+        self.assertEqual(types.count("developer_turn"), 3)
+        self.assertEqual(types.count("test_run"), 3)
         self.assertEqual(types.count("critic_turn"), 2)
-        self.assertNotIn("build_complete", types)
-        self.assertIn("build_exhausted", types)
+        self.assertEqual(types.count("strategy_pivot"), 1)
+        self.assertIn("build_complete", types)
+        self.assertNotIn("build_exhausted", types)
+        pivot = next(event for event in events if event.type == "strategy_pivot")
+        self.assertEqual(pivot.data["strategy_cycle"], 1)
+        self.assertEqual(pivot.data["next_strategy_cycle"], 2)
+        test_runs = [event for event in events if event.type == "test_run"]
+        self.assertEqual([event.data["strategy_cycle"] for event in test_runs], [1, 1, 2])
+        self.assertEqual([event.data["cycle_iteration"] for event in test_runs], [1, 2, 1])
+        self.assertTrue(test_runs[-1].data["green"])
 
     def test_support_roles_are_deterministic_by_default(self) -> None:
         calls: list[dict[str, Any]] = []
@@ -666,6 +696,7 @@ class TestDevTeamBuildSession(unittest.TestCase):
                 max_iterations=1,
                 min_iterations=1,
                 test_timeout=20,
+                test_isolation="host",
             )
             events = list(
                 session.iterate(
@@ -691,6 +722,87 @@ class TestDevTeamBuildSession(unittest.TestCase):
         self.assertEqual(sources.get("foreman_turn"), "deterministic")
         self.assertEqual(sources.get("designer_turn"), "deterministic")
         self.assertEqual(sources.get("tester_turn"), "deterministic")
+
+    def test_build_session_defaults_to_docker_test_runner(self) -> None:
+        captured_runs: list[dict[str, Any]] = []
+
+        def fake_llm(**kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "content": (
+                    "Ik schrijf één module.\n"
+                    "<file path=\"src/default_docker.py\">\n"
+                    "def value():\n"
+                    "    return 8\n"
+                    "</file>\n"
+                    "Tester, draai de plan-test."
+                ),
+                "error": "",
+            }
+
+        def fake_run_test_command(
+            workspace: Path,
+            command: str,
+            *,
+            timeout: float,
+            isolation: str,
+            docker_image: str | None,
+            **kwargs: Any,
+        ) -> Any:
+            captured_runs.append(
+                {
+                    "workspace": workspace,
+                    "command": command,
+                    "timeout": timeout,
+                    "isolation": isolation,
+                    "docker_image": docker_image,
+                }
+            )
+            return self.mod.TestResult(
+                exit_code=0,
+                stdout="GREEN",
+                stderr="",
+                duration_s=0.01,
+                command=command,
+                runner=isolation,
+                docker_image=docker_image or "",
+            )
+
+        with patch.object(self.mod, "run_test_command", side_effect=fake_run_test_command):
+            session = self.mod.DevTeamBuildSession(
+                session_id="default-docker-tests",
+                workspace=self.workspace,
+                llm_call=fake_llm,
+                max_iterations=1,
+                min_iterations=1,
+                test_timeout=20,
+            )
+            events = list(
+                session.iterate(
+                    build_prompt="Maak een module en bewijs die in Docker.",
+                    build_plan={
+                        "title": "Docker default",
+                        "goals": ["Test runner is Docker by default."],
+                        "components": [{"name": "src/default_docker.py", "description": "kleine module"}],
+                        "tests": ["python -m py_compile src/default_docker.py"],
+                        "constraints": ["Geen netwerk"],
+                    },
+                    clarifications=[],
+                    provider="ollama",
+                    model="codellama:13b",
+                    personas=self._personas(),
+                )
+            )
+
+        self.assertEqual(len(captured_runs), 1)
+        self.assertEqual(captured_runs[0]["isolation"], "docker")
+        self.assertIn("wintripai-ouroboros-backend", str(captured_runs[0]["docker_image"]))
+        test_run = next(event for event in events if event.type == "test_run")
+        self.assertEqual(test_run.data["runner"], "docker")
+        self.assertIn("wintripai-ouroboros-backend", test_run.data["docker_image"])
+        complete = next(event for event in events if event.type == "build_complete")
+        self.assertEqual(complete.data["test_runner"], "docker")
+        self.assertIn("Docker:", complete.data["summary"])
 
 
 if __name__ == "__main__":

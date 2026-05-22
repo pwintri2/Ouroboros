@@ -5,10 +5,10 @@ Development Team runtime. It does not reuse Meeting personas or Meeting prompts.
 Each iteration runs Voorman -> Ontwerper -> Developper -> Tester -> Criticus so
 small local models get explicit handoffs instead of implicit context guessing.
 
-All file writes and subprocess calls are confined to a sandbox workspace. The default
-isolation mode is `inline` (host subprocess in a tempdir under
-`data/dev-team-builds/{session_id}/`); the call sites can switch to a Docker-isolated
-mode via the `isolation` parameter once the buildbox image is available.
+All file writes and subprocess calls are confined to a sandbox workspace. Build sessions
+default to Docker-isolated tests so a green result means De Tester actually executed the
+acceptance command in a container; host execution remains available for unit tests and
+explicit diagnostics.
 """
 
 from __future__ import annotations
@@ -35,6 +35,9 @@ DEFAULT_TEST_TIMEOUT_SECONDS = 120
 MAX_TEST_OUTPUT_CHARS = 6_000
 MAX_HISTORY_IN_PROMPT = 3
 MAX_TEAM_BUS_MESSAGES = 10
+DEFAULT_MAX_STRATEGY_CYCLES = 24
+DEFAULT_DOCKER_TEST_IMAGE = "wintripai-ouroboros-backend:latest"
+DEFAULT_DOCKER_TEST_WORKDIR = "/work"
 
 
 def _default_gastown_root() -> Path:
@@ -179,6 +182,8 @@ class TestResult:
     duration_s: float
     command: str
     timed_out: bool = False
+    runner: str = "host"
+    docker_image: str = ""
 
 
 @dataclass
@@ -345,6 +350,14 @@ def _support_role_strategy_from_env() -> str:
 def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
     try:
         value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         value = default
     return max(minimum, min(value, maximum))
@@ -630,15 +643,27 @@ def run_test_command(
     *,
     timeout: float = DEFAULT_TEST_TIMEOUT_SECONDS,
     extra_env: dict[str, str] | None = None,
+    isolation: str = "host",
+    docker_image: str | None = None,
 ) -> TestResult:
     """Run `command` in `workspace` and capture stdout/stderr.
 
-    The command is executed via `sh -c` from within the workspace directory. Output is
-    truncated to `MAX_TEST_OUTPUT_CHARS` per stream so a chatty test framework can't
-    blow up the SSE event payload.
+    In build sessions this should normally run with `isolation="docker"` so De Tester
+    proves the result in an ephemeral container. The host mode remains for unit tests
+    and explicit local diagnostics.
     """
+    selected_isolation = str(isolation or "host").strip().lower()
+    if selected_isolation not in {"docker", "host"}:
+        selected_isolation = "host"
     if not command or not command.strip():
-        return TestResult(exit_code=-1, stdout="", stderr="(empty command)", duration_s=0.0, command="")
+        return TestResult(
+            exit_code=-1,
+            stdout="",
+            stderr="(empty command)",
+            duration_s=0.0,
+            command="",
+            runner=selected_isolation,
+        )
     if not _is_safe_command(command):
         return TestResult(
             exit_code=-2,
@@ -646,7 +671,27 @@ def run_test_command(
             stderr=f"Command rejected for safety: {command!r}",
             duration_s=0.0,
             command=command,
+            runner=selected_isolation,
         )
+    if selected_isolation == "docker":
+        return _run_test_command_in_docker(
+            workspace,
+            command,
+            timeout=timeout,
+            extra_env=extra_env,
+            docker_image=docker_image or os.getenv("WINTRIP_DEVTEAM_TEST_DOCKER_IMAGE", DEFAULT_DOCKER_TEST_IMAGE),
+        )
+    return _run_test_command_on_host(workspace, command, timeout=timeout, extra_env=extra_env)
+
+
+def _run_test_command_on_host(
+    workspace: Path,
+    command: str,
+    *,
+    timeout: float,
+    extra_env: dict[str, str] | None = None,
+) -> TestResult:
+    """Host/container-shell fallback used only when Docker isolation is disabled."""
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -671,6 +716,7 @@ def run_test_command(
             duration_s=time.time() - started,
             command=command,
             timed_out=True,
+            runner="host",
         )
     except Exception as exc:  # noqa: BLE001
         return TestResult(
@@ -679,6 +725,7 @@ def run_test_command(
             stderr=f"Command failed to start: {exc}",
             duration_s=time.time() - started,
             command=command,
+            runner="host",
         )
     return TestResult(
         exit_code=proc.returncode,
@@ -686,7 +733,237 @@ def run_test_command(
         stderr=(proc.stderr or "")[:MAX_TEST_OUTPUT_CHARS],
         duration_s=time.time() - started,
         command=command,
+        runner="host",
     )
+
+
+def _workspace_host_mount(workspace: Path) -> Path:
+    """Translate container `/workspace/...` paths to the host path Docker can mount."""
+    resolved = workspace.resolve()
+    container_root = Path(os.getenv("WINTRIP_WORKSPACE", "/workspace")).resolve()
+    host_root = Path(os.getenv("WINTRIP_HOST_WORKSPACE", "/home/pwintri2/WintripAI")).expanduser()
+    try:
+        relative = resolved.relative_to(container_root)
+    except ValueError:
+        return resolved
+    return (host_root / relative).resolve()
+
+
+def _docker_executable() -> str:
+    configured = os.getenv("WINTRIP_DOCKER_BIN") or os.getenv("DOCKER_BIN")
+    candidates = [
+        configured,
+        shutil.which("docker"),
+        "/run/host/usr/bin/docker",
+        "/usr/local/bin/docker",
+        "/usr/bin/docker",
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if path.exists() and os.access(path, os.X_OK):
+            return str(path)
+    return ""
+
+
+def _run_test_command_in_docker(
+    workspace: Path,
+    command: str,
+    *,
+    timeout: float,
+    extra_env: dict[str, str] | None = None,
+    docker_image: str,
+) -> TestResult:
+    started = time.time()
+    host_workspace = _workspace_host_mount(workspace)
+    if not host_workspace.exists():
+        return TestResult(
+            exit_code=-5,
+            stdout="",
+            stderr=f"Docker workspace mount does not exist on host: {host_workspace}",
+            duration_s=0.0,
+            command=command,
+            runner="docker",
+            docker_image=docker_image,
+        )
+    cli_result = _run_test_command_in_docker_cli(
+        host_workspace,
+        command,
+        timeout=timeout,
+        extra_env=extra_env,
+        docker_image=docker_image,
+        started=started,
+    )
+    if cli_result is not None:
+        return cli_result
+    return _run_test_command_in_docker_sdk(
+        host_workspace,
+        command,
+        timeout=timeout,
+        extra_env=extra_env,
+        docker_image=docker_image,
+        started=started,
+    )
+
+
+def _docker_test_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "SDL_VIDEODRIVER": "dummy",
+        "PYTHONPATH": DEFAULT_DOCKER_TEST_WORKDIR,
+    }
+    if extra_env:
+        env.update(extra_env)
+    return env
+
+
+def _run_test_command_in_docker_cli(
+    host_workspace: Path,
+    command: str,
+    *,
+    timeout: float,
+    extra_env: dict[str, str] | None,
+    docker_image: str,
+    started: float,
+) -> TestResult | None:
+    docker_path = _docker_executable()
+    if not docker_path:
+        return None
+    env_args: list[str] = []
+    for key, value in _docker_test_env(extra_env).items():
+        env_args.extend(["-e", f"{key}={value}"])
+    docker_command = [
+        docker_path,
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--memory",
+        os.getenv("WINTRIP_DEVTEAM_TEST_DOCKER_MEMORY", "1g"),
+        "-v",
+        f"{host_workspace}:{DEFAULT_DOCKER_TEST_WORKDIR}:rw",
+        "-w",
+        DEFAULT_DOCKER_TEST_WORKDIR,
+        *env_args,
+        docker_image,
+        "sh",
+        "-lc",
+        command,
+    ]
+    try:
+        proc = subprocess.run(
+            docker_command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return TestResult(
+            exit_code=-3,
+            stdout="",
+            stderr=f"Docker test timed out after {timeout:.0f}s",
+            duration_s=time.time() - started,
+            command=command,
+            timed_out=True,
+            runner="docker",
+            docker_image=docker_image,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return TestResult(
+            exit_code=-5,
+            stdout="",
+            stderr=f"Docker test failed to start via CLI: {exc}",
+            duration_s=time.time() - started,
+            command=command,
+            runner="docker",
+            docker_image=docker_image,
+        )
+    if proc.returncode == 125 and "Cannot connect to the Docker daemon" in (proc.stderr or ""):
+        return None
+    return TestResult(
+        exit_code=proc.returncode,
+        stdout=(proc.stdout or "")[:MAX_TEST_OUTPUT_CHARS],
+        stderr=(proc.stderr or "")[:MAX_TEST_OUTPUT_CHARS],
+        duration_s=time.time() - started,
+        command=command,
+        runner="docker",
+        docker_image=docker_image,
+    )
+
+
+def _run_test_command_in_docker_sdk(
+    host_workspace: Path,
+    command: str,
+    *,
+    timeout: float,
+    extra_env: dict[str, str] | None,
+    docker_image: str,
+    started: float,
+) -> TestResult:
+    container = None
+    try:
+        import docker
+
+        client = docker.from_env()
+        container = client.containers.create(
+            image=docker_image,
+            command=["sh", "-lc", command],
+            working_dir=DEFAULT_DOCKER_TEST_WORKDIR,
+            volumes={str(host_workspace): {"bind": DEFAULT_DOCKER_TEST_WORKDIR, "mode": "rw"}},
+            environment=_docker_test_env(extra_env),
+            network_disabled=True,
+            mem_limit=os.getenv("WINTRIP_DEVTEAM_TEST_DOCKER_MEMORY", "1g"),
+            detach=True,
+        )
+        container.start()
+        try:
+            wait_result = container.wait(timeout=timeout)
+            exit_code = int(wait_result.get("StatusCode", 1))
+            timed_out = False
+        except Exception:
+            try:
+                container.kill()
+            except Exception:
+                pass
+            exit_code = -3
+            timed_out = True
+        raw_logs = container.logs(stdout=True, stderr=True, stream=False) or b""
+        output = raw_logs.decode("utf-8", errors="replace")[:MAX_TEST_OUTPUT_CHARS]
+        return TestResult(
+            exit_code=exit_code,
+            stdout="" if timed_out else output,
+            stderr=f"Docker test timed out after {timeout:.0f}s" if timed_out else "",
+            duration_s=time.time() - started,
+            command=command,
+            timed_out=timed_out,
+            runner="docker",
+            docker_image=docker_image,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return TestResult(
+            exit_code=-5,
+            stdout="",
+            stderr=f"Docker unavailable for Tester: {exc}",
+            duration_s=time.time() - started,
+            command=command,
+            runner="docker",
+            docker_image=docker_image,
+        )
+    finally:
+        if container is not None:
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass
+        try:
+            client.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
 
 
 def normalize_build_plan(value: Any, *, fallback_title: str = "") -> dict[str, Any]:
@@ -757,16 +1034,33 @@ class DevTeamBuildSession:
         llm_call: Callable[..., Any],
         max_iterations: int = 4,
         min_iterations: int = 2,
+        max_strategy_cycles: int | None = None,
         test_timeout: float = DEFAULT_TEST_TIMEOUT_SECONDS,
         llm_timeout_seconds: float = 90.0,
+        test_isolation: str | None = None,
+        docker_test_image: str | None = None,
     ):
         self.session_id = session_id
         self.workspace = workspace
         self.llm_call = llm_call
         self.max_iterations = max(1, min(int(max_iterations), 12))
         self.min_iterations = max(1, min(int(min_iterations), self.max_iterations))
+        self.max_strategy_cycles = max(
+            1,
+            min(
+                int(max_strategy_cycles or _env_int("WINTRIP_DEVTEAM_MAX_STRATEGY_CYCLES", DEFAULT_MAX_STRATEGY_CYCLES, minimum=1, maximum=200)),
+                200,
+            ),
+        )
         self.test_timeout = test_timeout
         self.llm_timeout_seconds = max(5.0, float(llm_timeout_seconds))
+        self.test_isolation = str(test_isolation or os.getenv("WINTRIP_DEVTEAM_TEST_ISOLATION", "docker")).strip().lower() or "docker"
+        if self.test_isolation not in {"docker", "host"}:
+            self.test_isolation = "docker"
+        self.docker_test_image = str(
+            docker_test_image
+            or os.getenv("WINTRIP_DEVTEAM_TEST_DOCKER_IMAGE", DEFAULT_DOCKER_TEST_IMAGE)
+        ).strip() or DEFAULT_DOCKER_TEST_IMAGE
         self.support_role_strategy = _support_role_strategy_from_env()
         self.support_role_provider = (
             os.getenv("WINTRIP_DEVTEAM_FAST_ROLE_PROVIDER", DEFAULT_FAST_ROLE_PROVIDER).strip().lower()
@@ -805,6 +1099,9 @@ class DevTeamBuildSession:
                 "session_id": self.session_id,
                 "workspace_path": str(self.workspace),
                 "max_iterations": self.max_iterations,
+                "max_strategy_cycles": self.max_strategy_cycles,
+                "test_isolation": self.test_isolation,
+                "docker_test_image": self.docker_test_image if self.test_isolation == "docker" else "",
                 "build_plan": plan,
                 "development_agents": [
                     {"role": role, "id": agents[role].get("id"), "name": agents[role].get("name")}
@@ -843,10 +1140,16 @@ class DevTeamBuildSession:
 
         last_test_result: TestResult | None = None
         chat_history: list[dict[str, str]] = []
+        global_iteration = 0
 
-        for iteration in range(1, self.max_iterations + 1):
+        for strategy_cycle in range(1, self.max_strategy_cycles + 1):
+          for cycle_iteration in range(1, self.max_iterations + 1):
+            global_iteration += 1
+            iteration = global_iteration
             iteration_data: dict[str, Any] = {
                 "iteration": iteration,
+                "strategy_cycle": strategy_cycle,
+                "cycle_iteration": cycle_iteration,
                 "files_written": [],
                 "test_result": None,
                 "critic_feedback": "",
@@ -881,6 +1184,8 @@ class DevTeamBuildSession:
                 "foreman_turn",
                 {
                     "iteration": iteration,
+                    "strategy_cycle": strategy_cycle,
+                    "cycle_iteration": cycle_iteration,
                     "content": foreman_content,
                     "ok": bool(foreman_response.get("ok")) or bool(foreman_content),
                     "error": str(foreman_response.get("error") or ""),
@@ -914,6 +1219,8 @@ class DevTeamBuildSession:
                 "designer_turn",
                 {
                     "iteration": iteration,
+                    "strategy_cycle": strategy_cycle,
+                    "cycle_iteration": cycle_iteration,
                     "content": designer_content,
                     "ok": bool(designer_response.get("ok")) or bool(designer_content),
                     "error": str(designer_response.get("error") or ""),
@@ -954,6 +1261,8 @@ class DevTeamBuildSession:
                 "developer_turn",
                 {
                     "iteration": iteration,
+                    "strategy_cycle": strategy_cycle,
+                    "cycle_iteration": cycle_iteration,
                     "content": dev_content,
                     "ok": bool(dev_response.get("ok")),
                     "error": str(dev_response.get("error") or ""),
@@ -966,6 +1275,8 @@ class DevTeamBuildSession:
                 "files_written",
                 {
                     "iteration": iteration,
+                    "strategy_cycle": strategy_cycle,
+                    "cycle_iteration": cycle_iteration,
                     "files": [asdict(w) for w in file_writes],
                     "block_count": diff_count + file_count,
                     "diff_count": diff_count,
@@ -1002,6 +1313,8 @@ class DevTeamBuildSession:
                 "tester_turn",
                 {
                     "iteration": iteration,
+                    "strategy_cycle": strategy_cycle,
+                    "cycle_iteration": cycle_iteration,
                     "content": tester_content,
                     "ok": bool(tester_response.get("ok")) or bool(tester_content),
                     "error": str(tester_response.get("error") or ""),
@@ -1010,19 +1323,29 @@ class DevTeamBuildSession:
             )
 
             command = extract_cmd_block(tester_content) or self._guess_default_test_command(file_writes, plan)
-            test_result = run_test_command(self.workspace, command, timeout=self.test_timeout)
+            test_result = run_test_command(
+                self.workspace,
+                command,
+                timeout=self.test_timeout,
+                isolation=self.test_isolation,
+                docker_image=self.docker_test_image,
+            )
             last_test_result = test_result
             iteration_data["test_result"] = asdict(test_result)
             yield DevTeamBuildEvent(
                 "test_run",
                 {
                     "iteration": iteration,
+                    "strategy_cycle": strategy_cycle,
+                    "cycle_iteration": cycle_iteration,
                     "command": command,
                     "exit_code": test_result.exit_code,
                     "stdout": test_result.stdout,
                     "stderr": test_result.stderr,
                     "duration_s": test_result.duration_s,
                     "timed_out": test_result.timed_out,
+                    "runner": test_result.runner,
+                    "docker_image": test_result.docker_image,
                     "green": test_result.exit_code == 0,
                 },
             )
@@ -1073,6 +1396,8 @@ class DevTeamBuildSession:
                     "chair_review",
                     {
                         "iteration": iteration,
+                        "strategy_cycle": strategy_cycle,
+                        "cycle_iteration": cycle_iteration,
                         "content": review_content,
                         "verdict": verdict["verdict"],
                         "reason": verdict["reason"],
@@ -1094,14 +1419,19 @@ class DevTeamBuildSession:
                             iterations=iteration,
                             workspace_files=workspace_files,
                             last_command=command,
+                            last_test_runner=test_result.runner,
+                            last_test_image=test_result.docker_image,
                             chair_reason=verdict["reason"] or "",
                         )
                         yield DevTeamBuildEvent(
                             "build_complete",
                             {
                                 "iterations": iteration,
+                                "strategy_cycles": strategy_cycle,
                                 "workspace_path": str(self.workspace),
                                 "last_command": command,
+                                "test_runner": test_result.runner,
+                                "docker_image": test_result.docker_image,
                                 "reason": verdict["reason"] or "Voorman verklaart de build af.",
                                 "summary": summary,
                             },
@@ -1113,6 +1443,8 @@ class DevTeamBuildSession:
                             "chair_review",
                             {
                                 "iteration": iteration,
+                                "strategy_cycle": strategy_cycle,
+                                "cycle_iteration": cycle_iteration,
                                 "content": review_content,
                                 "verdict": "CONTINUE",
                                 "reason": f"Minimaal {self.min_iterations} iteraties vereist. {verdict['reason'] or ''}".strip(),
@@ -1173,6 +1505,8 @@ class DevTeamBuildSession:
                 "critic_turn",
                 {
                     "iteration": iteration,
+                    "strategy_cycle": strategy_cycle,
+                    "cycle_iteration": cycle_iteration,
                     "content": critic_content,
                     "ok": bool(critic_response.get("ok")) or bool(critic_content),
                     "error": str(critic_response.get("error") or ""),
@@ -1180,14 +1514,54 @@ class DevTeamBuildSession:
                 },
             )
 
-        yield DevTeamBuildEvent(
-            "build_exhausted",
-            {
-                "iterations": self.max_iterations,
-                "workspace_path": str(self.workspace),
-                "last_test_result": asdict(last_test_result) if last_test_result else None,
-            },
-        )
+          if strategy_cycle < self.max_strategy_cycles:
+              pivot_content = self._fallback_strategy_pivot_turn(
+                  build_plan=plan,
+                  strategy_cycle=strategy_cycle,
+                  last_test_result=last_test_result,
+              )
+              chat_history.append(
+                  self._record_team_message(
+                      "Voorman/Critikus",
+                      "Ontwerper/Developper/Tester",
+                      pivot_content,
+                      mode="handoff",
+                  )
+              )
+              build_prompt = self._append_subtask(
+                  build_prompt,
+                  f"Nieuwe insteek na cyclus {strategy_cycle}: {pivot_content}",
+                  global_iteration,
+              )
+              yield DevTeamBuildEvent(
+                  "strategy_pivot",
+                  {
+                      "strategy_cycle": strategy_cycle,
+                      "next_strategy_cycle": strategy_cycle + 1,
+                      "iterations_in_cycle": self.max_iterations,
+                      "total_iterations": global_iteration,
+                      "content": pivot_content,
+                      "last_test_result": asdict(last_test_result) if last_test_result else None,
+                      "workspace_path": str(self.workspace),
+                  },
+              )
+              continue
+
+          yield DevTeamBuildEvent(
+              "build_exhausted",
+              {
+                  "iterations": global_iteration,
+                  "strategy_cycles": self.max_strategy_cycles,
+                  "exhaustion_kind": "hard_safety_limit",
+                  "reason": (
+                      "Hard safety limit bereikt na meerdere strategiecycli. "
+                      "Verhoog WINTRIP_DEVTEAM_MAX_STRATEGY_CYCLES om verder automatisch door te gaan."
+                  ),
+                  "workspace_path": str(self.workspace),
+                  "last_test_result": asdict(last_test_result) if last_test_result else None,
+              },
+          )
+          return
 
     # ------------------------------------------------------------------
     # LLM glue
@@ -1664,6 +2038,46 @@ class DevTeamBuildSession:
             ensure_ascii=False,
         )
 
+    def _fallback_strategy_pivot_turn(
+        self,
+        *,
+        build_plan: dict[str, Any],
+        strategy_cycle: int,
+        last_test_result: TestResult | None,
+    ) -> str:
+        goals = build_plan.get("goals") if isinstance(build_plan.get("goals"), list) else []
+        goal = str(goals[0] if goals else build_plan.get("title") or "het bouwdoel")
+        stderr = (last_test_result.stderr if last_test_result else "") or ""
+        stdout = (last_test_result.stdout if last_test_result else "") or ""
+        evidence = (stderr or stdout or "geen testoutput beschikbaar").strip()[:900]
+        lowered = evidence.lower()
+        if "no such file" in lowered or "not found" in lowered:
+            new_angle = "begin met een minimale skeleton-file op het exacte pad uit het testcommando voordat je gedrag uitbreidt"
+        elif "importerror" in lowered or "modulenotfounderror" in lowered:
+            new_angle = "herstel eerst modulepad, bestandsnaam en package-init zodat de test de code kan importeren"
+        elif "assertion" in lowered or "assert" in lowered:
+            new_angle = "maak de kleinste implementatie die letterlijk aan de failing assertion voldoet en voeg daarna pas extra structuur toe"
+        elif last_test_result and last_test_result.timed_out:
+            new_angle = "verklein de oplossing en het testpad; lever eerst een snelle deterministische kern zonder lange model- of runtimecalls"
+        elif last_test_result and last_test_result.runner != "docker":
+            new_angle = "zet de verificatie terug op Docker en bewijs eerst een minimale smoke-test in de container"
+        else:
+            new_angle = "gooi de vorige aanpak weg, bouw een minimale verticale slice, en voeg alleen toe wat de acceptance-test direct nodig heeft"
+        command = (last_test_result.command if last_test_result else "") or _command_from_build_plan(build_plan) or "python -m pytest -q"
+        return (
+            "MODE: handoff\n"
+            "FROM: Voorman/Critikus\n"
+            "TO: Ontwerper/Developper/Tester\n"
+            f"SUBJECT: strategie-pivot na cyclus {strategy_cycle}\n"
+            "BODY:\n"
+            f"De vorige cyclus leverde nog geen afgeronde groene build op voor: {goal}.\n"
+            f"Laatste bewijs: {evidence}\n"
+            f"NIEUWE_INSTEEK: {new_angle}.\n"
+            f"TEST_IN_DOCKER: De Tester draait opnieuw `{command}` in Docker-isolatie; host-only bewijs telt niet als groen.\n"
+            "REGEL: herhaal niet dezelfde editroute; verander filevolgorde, interface of minimale skeleton-aanpak.\n"
+            "NEXT: Voorman start cyclus opnieuw met deze nieuwe insteek als harde context."
+        )
+
     def _guess_default_test_command(self, files: list[FileWrite], build_plan: dict[str, Any] | None = None) -> str:
         """Pick a sensible default if the Tester didn't emit a <cmd> block."""
         plan_command = _command_from_build_plan(build_plan)
@@ -1772,7 +2186,9 @@ class DevTeamBuildSession:
         iterations: int,
         workspace_files: str,
         last_command: str,
-        chair_reason: str,
+        last_test_runner: str = "",
+        last_test_image: str = "",
+        chair_reason: str = "",
     ) -> str:
         """Generate a human-readable summary of what was built."""
         lines = []
@@ -1789,7 +2205,13 @@ class DevTeamBuildSession:
         
         # Last test command
         if last_command:
-            lines.append(f"Laatste test: `{last_command}`")
+            if last_test_runner == "docker":
+                image = last_test_image or DEFAULT_DOCKER_TEST_IMAGE
+                lines.append(f"Laatste test: `{last_command}` (Docker: {image})")
+            elif last_test_runner:
+                lines.append(f"Laatste test: `{last_command}` ({last_test_runner})")
+            else:
+                lines.append(f"Laatste test: `{last_command}`")
         
         # Chair's reason
         if chair_reason:
