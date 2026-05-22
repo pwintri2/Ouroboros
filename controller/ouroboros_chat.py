@@ -747,17 +747,19 @@ def _parse_intake_response(content: Any) -> dict[str, Any]:
             questions = []
         if not questions:
             needs = False
-        return {"needs_clarification": needs, "questions": questions[:3]}
+        return {"needs_clarification": needs, "questions": questions[:4]}
 
     # Heuristic fallback — pick the lines that end with a question mark.
-    fallback_questions = [
-        line.strip(" -*•")
-        for line in text.splitlines()
-        if "?" in line and len(line.strip()) > 6
-    ]
+    fallback_questions = []
+    for line in text.splitlines():
+        line = line.strip(" -*•\"'")
+        # Ignore lines that look like code or json
+        if line.endswith("?") and len(line) > 6 and "{" not in line and "}" not in line and "import " not in line and "def " not in line:
+            fallback_questions.append(line)
+            
     return {
         "needs_clarification": bool(fallback_questions),
-        "questions": fallback_questions[:3],
+        "questions": fallback_questions[:4],
     }
 
 
@@ -4547,200 +4549,50 @@ class MeetingStore:
         }
 
     def _extract_build_prompt(self, meeting_type: str, request: MeetingRequest, runner_payload: dict[str, Any]) -> str:
-        """Compose a workable build prompt from the dev-team meeting transcript.
-
-        The chair's closing turn is the primary source — when the LLM produces a clean
-        five-section closing we use it verbatim. When the model trails off (lighter
-        local models often do) we synthesise the missing sections from the right
-        contributors: the developer for files/symbols, the tester for the acceptance
-        command and rollback, the critic for outstanding blockers.
-        """
+        """Compose a BUILD_PLAN from the dev-team meeting transcript."""
         if _normalize_meeting_type(meeting_type) != "development_team":
             return ""
         rounds = [item for item in (runner_payload.get("rounds") or []) if isinstance(item, dict)]
         if not rounds:
             return _clip_text(str(runner_payload.get("summary") or ""), 4000)
 
-        def participant_of(item: dict[str, Any]) -> dict[str, Any]:
-            participant = item.get("participant") if isinstance(item.get("participant"), dict) else {}
-            return participant or {}
-
-        def is_chair(item: dict[str, Any]) -> bool:
-            p = participant_of(item)
-            return str(p.get("id") or "").strip().lower() == "de-voorzitter" or "voorzitter" in str(p.get("name") or "").lower()
-
-        def is_developer(item: dict[str, Any]) -> bool:
-            p = participant_of(item)
-            persona_id = str(p.get("id") or "").strip().lower()
-            return persona_id in {"de-developer", "de-developper"} or "developper" in str(p.get("name") or "").lower() or "developer" in str(p.get("name") or "").lower()
-
-        def is_tester(item: dict[str, Any]) -> bool:
-            p = participant_of(item)
-            return str(p.get("id") or "").strip().lower() == "de-tester" or "tester" in str(p.get("name") or "").lower()
-
-        def is_critic(item: dict[str, Any]) -> bool:
-            p = participant_of(item)
-            return str(p.get("id") or "").strip().lower() in {"de-criticus", "de-critic"} or "criticus" in str(p.get("name") or "").lower()
-
-        chair_closing = ""
-        for item in reversed(rounds):
-            if str(item.get("phase") or "") == "closing" and is_chair(item):
-                chair_closing = str(item.get("content") or "").strip()
-                break
-
-        lower = chair_closing.lower()
-        has_doel = "doel" in lower or "na deze build" in lower or "deze build" in lower or chair_closing.lower().startswith("na ")
-        has_files = any(token in lower for token in (".py", ".ts", ".tsx", ".rs", ".go", ".php", ".java", ".rb", ".kt", "/", "config/", "src/", "::", "function ", "def "))
-        has_test = any(token in lower for token in ("pytest", "npm test", "cargo test", "curl", "go test", "phpunit", "jest", "mocha", "rspec", "vitest", "deno test", "shellcheck", "smoke"))
-        has_rollback = "rollback" in lower or "git revert" in lower or "feature-flag" in lower or "feature flag" in lower or "terugdraai" in lower
-        has_agent = any(token in lower for token in ("/codex", "/claude", "/roo", "/agents", "uitvoerende agent", "agent: /"))
-
-        # If the chair already produced a clean five-section closing, use it verbatim.
-        if has_doel and has_files and has_test and has_rollback and has_agent:
-            return _clip_text(chair_closing, 4000)
-
-        # Otherwise synthesise. Pull the most recent substantive contributions from each role.
-        def last_substantive(predicate: Callable[[dict[str, Any]], bool], exclude_phases: tuple[str, ...] = ()) -> str:
-            for item in reversed(rounds):
-                if not predicate(item):
-                    continue
-                phase = str(item.get("phase") or "")
-                if phase in {"floor-control", "intervention"}:
-                    continue
-                if phase in exclude_phases:
-                    continue
-                content = str(item.get("content") or "").strip()
-                if content:
-                    return content
-            return ""
-
-        topic = _clip_text(str(getattr(request, "topic", "") or runner_payload.get("topic") or ""), 200)
-
-        # Goal preference order:
-        # 1. The chair's opening turn (where the build goal is stated explicitly), first sentence
-        #    that starts with "Na deze build" or otherwise the first non-empty sentence.
-        # 2. The first goal-shaped sentence anywhere in the chair's closing.
-        # 3. A generated default from the topic.
-        def first_sentence_starting_with_na_deze_build(text: str) -> str:
-            sentences = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
-            for sentence in sentences:
-                stripped = sentence.strip()
-                if not stripped:
-                    continue
-                if stripped.lower().startswith("na deze build"):
-                    return stripped
-            sentences = [s.strip() for s in sentences if s.strip()]
-            return sentences[0] if sentences else ""
-
-        chair_opening = ""
-        for item in rounds:
-            if is_chair(item) and str(item.get("phase") or "") == "opening":
-                chair_opening = str(item.get("content") or "").strip()
-                break
-        goal_sentence = (
-            first_sentence_starting_with_na_deze_build(chair_opening)
-            or first_sentence_starting_with_na_deze_build(chair_closing)
-            or f"Na deze build levert het team een werkbare wijziging voor '{topic}'."
+        transcript_lines = []
+        for r in rounds:
+            p = r.get("participant", {})
+            name = str(p.get("name") or p.get("id") or "Deelnemer")
+            text = str(r.get("text") or "")
+            if text:
+                transcript_lines.append(f"{name}: {text}")
+        transcript = "\n".join(transcript_lines)
+        
+        system_prompt = (
+            "Je bent een senior AI-architect en lead-engineer. Lees het transcript en genereer "
+            "UITSLUITEND een BUILD_PLAN (JSON) object. Geen markdown, geen extra tekst.\n"
+            "Structuur:\n"
+            "{\n"
+            '  "title": "...",\n'
+            '  "goals": [...],\n'
+            '  "components": [...],\n'
+            '  "tests": [...],\n'
+            '  "constraints": [...]\n'
+            "}"
         )
-
-        dev_content = last_substantive(is_developer)
-        tester_content = (
-            last_substantive(is_tester, exclude_phases=("test-confirm",))
-            or last_substantive(is_tester)
+        
+        response = self._call_model_provider(
+            prompt="Meeting transcript:\n" + transcript,
+            provider=request.provider or "ollama",
+            model=request.model or "ouroboros:latest",
+            system_prompt=system_prompt,
+            history=[],
         )
-        tester_confirm = last_substantive(is_tester) if tester_content != last_substantive(is_tester) else ""
-        critic_final = ""
-        for item in reversed(rounds):
-            if is_critic(item) and str(item.get("phase") or "") == "critic-final":
-                critic_final = str(item.get("content") or "").strip()
-                break
-        critic_first = last_substantive(is_critic)
-
-        def _strip_inline_rollback(text: str) -> str:
-            # The Developer/Tester often append a "Rollback: ..." line in their own turn.
-            # Strip it from the Wijzigingen/Acceptatie sections so the dedicated Rollback line
-            # downstream doesn't get duplicated.
-            return re.sub(r"(?is)(?:\n|\s+)?\b(rollback|open\s+blocker|uitvoerende agent)\s*[:\-—].+$", "", text or "").rstrip(" .;,")
-
-        changes_line = (
-            f"Wijzigingen: {_clip_text(_strip_inline_rollback(dev_content), 700)}"
-            if dev_content
-            else "Wijzigingen: De Developper heeft nog geen concrete file of symbool benoemd; eerst opnemen voor de bouwprompt definitief is."
-        )
-        accept_source = tester_confirm or tester_content
-        accept_line = (
-            f"Acceptatie: {_clip_text(_strip_inline_rollback(accept_source), 600)}"
-            if accept_source
-            else "Acceptatie: De Tester moet nog een reproduceerbaar testcommando en verwacht signaal leveren."
-        )
-        # Try to extract an explicit rollback statement from the tester contributions.
-        # The pattern stops at a sentence boundary OUTSIDE of backtick code spans so we don't
-        # truncate halfway through `src/foo.py`. We also tolerate "Rollback —" / "Rollback -"
-        # variants and accept "git revert ..." statements anywhere in the tester text.
-        rollback_text = ""
-
-        def _balanced_rollback_match(source_text: str) -> str:
-            # Find "Rollback:" / "Rollback -" / "Rollback —"
-            label_match = re.search(r"(?i)\brollback\s*[:\-—]\s*", source_text)
-            if not label_match:
-                return ""
-            tail = source_text[label_match.end() :]
-            # Read characters until we hit a sentence terminator that's NOT inside backticks.
-            in_backtick = False
-            collected: list[str] = []
-            for ch in tail:
-                if ch == "`":
-                    in_backtick = not in_backtick
-                    collected.append(ch)
-                    continue
-                if ch in {"\n"} and not in_backtick:
-                    break
-                if ch in {".", "!", "?"} and not in_backtick:
-                    collected.append(ch)
-                    break
-                collected.append(ch)
-            # If we ended inside backticks, close them for cosmetic balance.
-            text = "".join(collected).strip()
-            if text.count("`") % 2 == 1:
-                text += "`"
-            return text
-
-        for source in (tester_confirm, tester_content):
-            if not source:
-                continue
-            extracted = _balanced_rollback_match(source)
-            if extracted:
-                rollback_text = extracted
-                break
-            git_match = re.search(r"(?i)(git\s+revert[^\n]+)", source)
-            if git_match:
-                rollback_text = git_match.group(1).strip().rstrip(".")
-                break
-        rollback_line = (
-            f"Rollback: {_clip_text(rollback_text, 500)}"
-            if rollback_text
-            else "Rollback: revert van de laatste commit op het geraakte path of de feature-flag terug op uit."
-        )
-        agent_line = (
-            f"Uitvoerende agent: /codex (of /claude / /roo / /agents) start pas met bouwen na expliciet {APPROVAL_PHRASE}."
-        )
-        outstanding = ""
-        for source in (critic_final, critic_first):
-            if not source:
-                continue
-            if "blocker" in source.lower() and "akkoord" not in source.lower():
-                outstanding = source
-                break
-        blocker_line = (
-            f"Open blocker: {_clip_text(outstanding, 500)}"
-            if outstanding
-            else ""
-        )
-
-        parts = [goal_sentence, changes_line, accept_line, rollback_line, agent_line]
-        if blocker_line:
-            parts.append(blocker_line)
-        return _clip_text(" ".join(part for part in parts if part).strip(), 4000)
+        content = str(response.get("content") or "").strip()
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if lines[0].startswith("```"): lines = lines[1:]
+            if lines and lines[-1].startswith("```"): lines = lines[:-1]
+            content = "\\n".join(lines).strip()
+        return content
+        # Cleaned up old unused fallback logic.
 
     def _dedupe_knowledge(self, knowledge: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -4944,15 +4796,12 @@ class OuroborosChatService:
             model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
 
         intake_system_prompt = (
-            "Je bent De Voorzitter van het Ouroboros-ontwikkelteam (developer, tester, criticus). "
-            "Beoordeel of de gebruikersopdracht specifiek genoeg is om met het team aan de slag te gaan. "
-            "Stel ALLEEN verduidelijkingsvragen die de Developper of Tester niet zelf met read-only code-inspectie kan beantwoorden — "
-            "bijvoorbeeld over scope, gewenste UI/CLI, doelgroep, of expliciete acceptatiecriteria. Twijfel = geen vraag, dan kan het team beginnen.\n\n"
-            "Antwoord uitsluitend in JSON, zonder markdown, zonder toelichting. Twee mogelijke vormen:\n"
-            "{\"needs_clarification\": false, \"questions\": []}\n"
-            "OF\n"
-            "{\"needs_clarification\": true, \"questions\": [\"vraag 1\", \"vraag 2\"]}\n"
-            "Maximaal 3 vragen. Elke vraag is kort, concreet, eindigt met een vraagteken."
+            "Je bent De Voorzitter van het Ouroboros-ontwikkelteam. Je MOET ALTIJD beginnen met verduidelijkingsvragen voordat het team begint met bouwen.\n"
+            "Stel EXACT 3 verduidelijkingsvragen over scope, gewenste UI/CLI, doelgroep of expliciete acceptatiecriteria. "
+            "Daarnaast MOET je als 4e vraag altijd vragen in welke specifieke map/directory de applicatie moet worden opgeslagen (bijv. in /home/pwintri2/...) als het een nieuwe applicatie betreft.\n\n"
+            "Antwoord uitsluitend in JSON, zonder markdown, zonder toelichting. Je antwoord MOET in de volgende vorm zijn:\n"
+            "{\"needs_clarification\": true, \"questions\": [\"vraag 1?\", \"vraag 2?\", \"vraag 3?\", \"In welke directory moet dit worden opgeslagen?\"]}\n"
+            "Precies 4 vragen. Elke vraag is kort, concreet en eindigt met een vraagteken."
         )
         intake_user_prompt = (
             "Ontwikkelopdracht van de gebruiker:\n"
@@ -4970,7 +4819,7 @@ class OuroborosChatService:
         return {
             "status": "intake_complete",
             "needs_clarification": parsed["needs_clarification"],
-            "questions": parsed["questions"][:3],
+            "questions": parsed["questions"][:4],
             "prompt": _clip_text(request.prompt, 3000),
             "provider": response.get("provider", provider),
             "model": response.get("model", model),
@@ -5092,10 +4941,10 @@ class OuroborosChatService:
         De loop stopt op de eerste groene test of na `max_iterations`.
         """
         from controller.dev_team_build import (
-            DevTeamBuildSession,
             new_build_session_id,
             workspace_for,
         )
+        from controller.dual_layer.development import DevelopmentTeamBuildSession
 
         if _contains_secret_like({"build_prompt": request.build_prompt, "persona_ids": request.persona_ids}):
             raise ValueError(
@@ -5141,25 +4990,23 @@ class OuroborosChatService:
         workspace = workspace_for(session_id, builds_root)
         workspace.mkdir(parents=True, exist_ok=True)
 
-        session = DevTeamBuildSession(
+        import json
+        try:
+            build_plan = json.loads(request.build_prompt)
+        except json.JSONDecodeError:
+            # Fallback if the meeting didn't produce valid JSON
+            build_plan = {"title": "Legacy Plan", "goals": [request.build_prompt], "components": [], "tests": [], "constraints": []}
+
+        session = DevelopmentTeamBuildSession(
             session_id=session_id,
             workspace=workspace,
+            data_dir=self.data_dir,
             llm_call=self._call_model_provider,
-            max_iterations=int(getattr(request, "max_iterations", 4) or 4),
-            min_iterations=int(getattr(request, "min_iterations", 2) or 2),
-            test_timeout=float(getattr(request, "test_timeout_seconds", 120.0) or 120.0),
-            llm_timeout_seconds=float(getattr(request, "llm_timeout_seconds", 90.0) or 90.0),
         )
-
-        clarifications = [
-            item for item in (request.clarifications or [])
-            if isinstance(item, dict) and str(item.get("answer") or "").strip()
-        ]
 
         try:
             for event in session.iterate(
-                build_prompt=request.build_prompt,
-                clarifications=clarifications,
+                build_plan=build_plan,
                 provider=provider,
                 model=model,
                 personas=personas_by_role,
@@ -6093,7 +5940,7 @@ ouroboros_chat_router = APIRouter(prefix="/api/ouroboros-chat", tags=["ouroboros
 def _service_from_request(request: Request) -> OuroborosChatService:
     service = getattr(request.app.state, "ouroboros_chat_service", None)
     if service is None:
-        service = OuroborosChatService()
+        service = OuroborosChatService(ollama_timeout_seconds=600.0)
         request.app.state.ouroboros_chat_service = service
     return service
 
@@ -6375,7 +6222,14 @@ async def stream_development_team_build(
                 return None
 
         while True:
-            event = await loop.run_in_executor(None, _next, iterator)
+            future = loop.run_in_executor(None, _next, iterator)
+            while True:
+                try:
+                    event = await asyncio.wait_for(asyncio.shield(future), timeout=15.0)
+                    break
+                except asyncio.TimeoutError:
+                    yield b"".join(b": ping\n" for _ in range(500)) + b"\n"
+
             if event is None:
                 break
             event_name = str(event.get("type") or "build_event").replace("\n", " ")
@@ -6440,7 +6294,14 @@ async def stream_meeting(request_body: MeetingRequest, request: Request) -> Any:
                 return None
 
         while True:
-            event = await loop.run_in_executor(None, _next, iterator)
+            future = loop.run_in_executor(None, _next, iterator)
+            while True:
+                try:
+                    event = await asyncio.wait_for(asyncio.shield(future), timeout=15.0)
+                    break
+                except asyncio.TimeoutError:
+                    yield b"".join(b": ping\n" for _ in range(500)) + b"\n"
+
             if event is None:
                 break
             event_name = str(event.get("type") or "meeting_event").replace("\n", " ")
