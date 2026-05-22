@@ -50,6 +50,51 @@ class TestDevTeamBuildExtractors(unittest.TestCase):
         content = "<file>just body, no path</file>"
         self.assertEqual(self.mod.extract_file_blocks(content), [])
 
+    def test_diff_blocks_create_new_file_with_aider_search_replace(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="dev-team-diff-tests-") as tmp:
+            workspace = Path(tmp)
+            writes = self.mod.apply_diff_blocks(
+                workspace,
+                [
+                    (
+                        "src/hello.py",
+                        "<<<<<<< SEARCH\n"
+                        "=======\n"
+                        "def hello():\n"
+                        "    return 'hi'\n"
+                        ">>>>>>> REPLACE",
+                    )
+                ],
+            )
+
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(writes[0].edit_format, "diff")
+            self.assertEqual((workspace / "src" / "hello.py").read_text(), "def hello():\n    return 'hi'")
+
+    def test_diff_blocks_replace_existing_text(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="dev-team-diff-tests-") as tmp:
+            workspace = Path(tmp)
+            target = workspace / "src" / "calc.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("def value():\n    return 0\n")
+
+            writes = self.mod.apply_diff_blocks(
+                workspace,
+                [
+                    (
+                        "src/calc.py",
+                        "<<<<<<< SEARCH\n"
+                        "    return 0\n"
+                        "=======\n"
+                        "    return 4\n"
+                        ">>>>>>> REPLACE",
+                    )
+                ],
+            )
+
+            self.assertEqual(len(writes), 1)
+            self.assertIn("return 4", target.read_text())
+
     def test_extract_cmd_block_picks_first_one_liner(self) -> None:
         content = (
             "Testcommando:\n"
@@ -267,6 +312,8 @@ class TestDevTeamBuildSession(unittest.TestCase):
         )
         types = [event.type for event in events]
         self.assertIn("build_started", types)
+        self.assertIn("foreman_turn", types)
+        self.assertIn("designer_turn", types)
         self.assertIn("developer_turn", types)
         self.assertIn("files_written", types)
         self.assertIn("tester_turn", types)
@@ -280,6 +327,73 @@ class TestDevTeamBuildSession(unittest.TestCase):
         test_run = next(event for event in events if event.type == "test_run")
         self.assertEqual(test_run.data["exit_code"], 0)
         self.assertTrue(test_run.data["green"])
+
+    def test_session_accepts_formal_build_plan_and_emits_development_agents(self) -> None:
+        def fake_llm(**kwargs: Any) -> dict[str, Any]:
+            system_prompt = str(kwargs.get("system_prompt") or "")
+            if "Voorman van OUROBOROS DEVELOPMENT TEAM" in system_prompt:
+                return {"ok": True, "content": "SUBTASK: maak value groen\nDONE_CRITERION: pytest groen", "error": ""}
+            if "Ontwerper van OUROBOROS DEVELOPMENT TEAM" in system_prompt:
+                return {"ok": True, "content": "CONTRACT: value() geeft 4\nFILES: src/dummy.py\nTEST_HOOK: pytest", "error": ""}
+            if system_prompt.startswith("Je bent de Developper."):
+                return {
+                    "ok": True,
+                    "content": (
+                        "Voorman, ik maak dit klein.\n"
+                        "<diff path=\"src/dummy.py\">\n"
+                        "<<<<<<< SEARCH\n"
+                        "=======\n"
+                        "def value():\n"
+                        "    return 4\n"
+                        ">>>>>>> REPLACE\n"
+                        "</diff>\n"
+                        "Tester, draai de value-test."
+                    ),
+                    "error": "",
+                }
+            if system_prompt.startswith("Je bent de Tester."):
+                return {
+                    "ok": True,
+                    "content": "<cmd>python3 -c \"import sys; sys.path.insert(0,'src'); from dummy import value; assert value() == 4\"</cmd>",
+                    "error": "",
+                }
+            if system_prompt.startswith("Je bent de Voorzitter."):
+                return {"ok": True, "content": '{"verdict": "DONE", "reason": "value() werkt."}', "error": ""}
+            return {"ok": True, "content": "ok", "error": ""}
+
+        session = self.mod.DevTeamBuildSession(
+            session_id="formal-plan",
+            workspace=self.workspace,
+            llm_call=fake_llm,
+            max_iterations=1,
+            min_iterations=1,
+            test_timeout=20,
+        )
+        events = list(
+            session.iterate(
+                build_prompt="legacy fallback",
+                build_plan={
+                    "title": "Maak value groen",
+                    "goals": ["value() geeft 4"],
+                    "components": [{"name": "src/dummy.py", "description": "dummy value"}],
+                    "tests": ["value() test groen"],
+                    "constraints": ["Geen netwerk"],
+                },
+                clarifications=[],
+                provider="ollama",
+                model="ouroboros:latest",
+                personas=self._personas(),
+            )
+        )
+
+        started = events[0]
+        self.assertEqual(started.data["build_plan"]["title"], "Maak value groen")
+        self.assertEqual(
+            [item["role"] for item in started.data["development_agents"]],
+            ["foreman", "designer", "developer", "tester", "criticus"],
+        )
+        self.assertTrue((self.workspace / "src" / "dummy.py").is_file())
+        self.assertIn("build_complete", [event.type for event in events])
 
     def test_session_iterates_on_red_then_passes(self) -> None:
         """First iteration writes a failing test; after critic feedback, second pass goes green."""

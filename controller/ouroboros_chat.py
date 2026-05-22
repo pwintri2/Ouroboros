@@ -603,9 +603,10 @@ class DevelopmentTeamIntakeRequest(BaseModel):
 
 
 class DevelopmentTeamBuildRequest(BaseModel):
-    """Aider-modus: developer schrijft files, tester draait pytest, criticus reviewt, iteratie tot groen."""
+    """Build-modus: isolated development agents consume a formal build_plan and iterate to green."""
 
-    build_prompt: str = Field(..., min_length=1, max_length=MAX_TEXT_CHARS)
+    build_plan: Optional[dict[str, Any]] = Field(default=None)
+    build_prompt: Optional[str] = Field(default=None, max_length=MAX_TEXT_CHARS)
     persona_ids: list[str] = Field(default_factory=list)
     clarifications: list[dict[str, str]] = Field(default_factory=list)
     provider: Optional[str] = Field(default=DEFAULT_PROVIDER, max_length=80)
@@ -1028,6 +1029,25 @@ def _normalize_build_plan(value: dict[str, Any], *, fallback_title: Any = "") ->
         "tests": tests[:8],
         "constraints": constraints[:8],
     }
+
+
+def _build_plan_from_request(request: "DevelopmentTeamBuildRequest") -> dict[str, Any]:
+    raw_plan = request.build_plan if isinstance(request.build_plan, dict) else None
+    if raw_plan is not None:
+        return _normalize_build_plan(raw_plan, fallback_title=(request.build_prompt or ""))
+    raw_prompt = str(request.build_prompt or "").strip()
+    if not raw_prompt:
+        raise ValueError("Development build requires a formal build_plan or a non-empty build_prompt.")
+    start = raw_prompt.find("{")
+    end = raw_prompt.rfind("}")
+    if start != -1 and end > start:
+        try:
+            parsed = json.loads(raw_prompt[start : end + 1])
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            return _normalize_build_plan(parsed, fallback_title=raw_prompt[:160])
+    return _normalize_build_plan({"title": raw_prompt[:160], "goals": [raw_prompt]}, fallback_title=raw_prompt[:160])
 
 
 def _safe_attachment_path(value: Any) -> Path | None:
@@ -4583,6 +4603,14 @@ class MeetingStore:
         path = self._write_events(meeting_id, events)
         transcript = self._transcript_from_runner(runner_payload)
         build_prompt = self._extract_build_prompt(meeting_type, request, runner_payload)
+        build_plan: dict[str, Any] | None = None
+        if build_prompt:
+            try:
+                parsed_plan = json.loads(build_prompt)
+            except Exception:
+                parsed_plan = None
+            if isinstance(parsed_plan, dict):
+                build_plan = _normalize_build_plan(parsed_plan, fallback_title=request.topic)
         self._write_record(
             meeting_id,
             {
@@ -4597,6 +4625,7 @@ class MeetingStore:
                 "summary": runner_payload["summary"],
                 "transcript": transcript,
                 "build_prompt": build_prompt,
+                "build_plan": build_plan,
                 "status": "completed",
                 "provider": provider,
                 "model": model,
@@ -4621,6 +4650,7 @@ class MeetingStore:
             "summary": runner_payload["summary"],
             "transcript": transcript,
             "build_prompt": build_prompt,
+            "build_plan": build_plan,
             "tool_policy": self.tool_policy(),
             "fake_success": False,
         }
@@ -5046,6 +5076,7 @@ class OuroborosChatService:
             return {**meeting_result, "next_route": "/api/cockpit/chat"}
 
         build_prompt = (meeting_result.get("build_prompt") or "").strip()
+        build_plan = meeting_result.get("build_plan") if isinstance(meeting_result.get("build_plan"), dict) else None
         slash_command = self._development_slash_command(agent_ids)
         # Always produce a non-empty slash_prompt — fall back to the (augmented) topic so the
         # agent-runtime still has something concrete even when the meeting did not converge.
@@ -5080,6 +5111,7 @@ class OuroborosChatService:
             "agent_command": slash_command,
             "slash_prompt": slash_prompt,
             "build_prompt": build_prompt,
+            "build_plan": build_plan,
             "rounds": meeting_result.get("rounds", []),
             "summary": meeting_result.get("summary", ""),
             "meeting_id": meeting_result.get("meeting_id"),
@@ -5095,52 +5127,25 @@ class OuroborosChatService:
     def stream_development_team_build(
         self, request: "DevelopmentTeamBuildRequest"
     ) -> "Iterator[dict[str, Any]]":
-        """Aider-modus: orchestreer een echte build-loop in een sandbox workspace.
-
-        De developer schrijft files door zijn output op te splitsen in `<file>` blokken;
-        de tester levert een `<cmd>` blok dat in de workspace draait; bij rode test
-        analyseert de criticus de output en stuurt de developer de volgende iteratie aan.
-        De loop stopt op de eerste groene test of na `max_iterations`.
-        """
+        """Orchestrate the isolated Development Team build-loop in a sandbox workspace."""
         from controller.dev_team_build import (
             DevTeamBuildSession,
+            default_development_team_agents,
+            format_build_plan,
             new_build_session_id,
             workspace_for,
         )
 
-        if _contains_secret_like({"build_prompt": request.build_prompt, "persona_ids": request.persona_ids}):
+        build_plan = _build_plan_from_request(request)
+        build_prompt = format_build_plan(build_plan)
+        if _contains_secret_like({"build_plan": build_plan, "build_prompt": request.build_prompt}):
             raise ValueError(
                 "Build-loop prompt appears to contain a secret, token, password, or bearer credential."
             )
 
-        persona_ids = list(request.persona_ids) if request.persona_ids else list(DEV_TEAM_DEFAULT_PERSONA_IDS)
-        personas_by_role: dict[str, dict[str, Any]] = {}
-        runner_helper = MeetingRunner()
-        for persona_id in persona_ids:
-            persona = self.personas.get(persona_id)
-            if not persona:
-                continue
-            persona = dict(persona)
-            if runner_helper._is_chair_persona(persona):
-                personas_by_role.setdefault("chair", persona)
-            elif runner_helper._is_developer_persona(persona):
-                personas_by_role.setdefault("developer", persona)
-            elif runner_helper._is_tester_persona(persona):
-                personas_by_role.setdefault("tester", persona)
-            elif runner_helper._is_critic_persona(persona):
-                personas_by_role.setdefault("criticus", persona)
-
-        if "developer" not in personas_by_role or "tester" not in personas_by_role:
-            yield {
-                "type": "build_error",
-                "error": "De ontwikkelteam-bouwloop heeft minstens een Developper en Tester persona nodig.",
-                "missing": [
-                    role for role in ("developer", "tester", "criticus", "chair")
-                    if role not in personas_by_role
-                ],
-                "fake_success": False,
-            }
-            return
+        # Hard separation: the build runtime never reuses Meeting personas. The UI may
+        # still send persona_ids for older clients, but they are intentionally ignored here.
+        personas_by_role = default_development_team_agents()
 
         provider = str(request.provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
         requested_model = str(request.model or "").strip()
@@ -5164,7 +5169,8 @@ class OuroborosChatService:
 
         try:
             for event in session.iterate(
-                build_prompt=request.build_prompt,
+                build_prompt=build_prompt,
+                build_plan=build_plan,
                 clarifications=request.clarifications,
                 provider=provider,
                 model=model,

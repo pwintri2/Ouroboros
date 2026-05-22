@@ -139,6 +139,55 @@ export_nvidia_tauri_env() {
   export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
   export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"
   export NO_AT_BRIDGE="${NO_AT_BRIDGE:-1}"
+
+  local snap_gnome_lib="/snap/gnome-46-2404/current/usr/lib/x86_64-linux-gnu"
+  local snap_mesa_lib="/snap/mesa-2404/current/usr/lib/x86_64-linux-gnu"
+  local snap_core_lib="/snap/core24/current/usr/lib/x86_64-linux-gnu"
+  local runtime_lib_dir="$HOME/.cache/tauri-runtime-libs"
+  local pkgconfig_dir="$HOME/.cache/tauri-pkgconfig"
+
+  if [ -d "$snap_gnome_lib" ] && [ -d "$snap_mesa_lib" ]; then
+    mkdir -p "$runtime_lib_dir"
+    for lib_name in libbsd.so.0 libkeyutils.so.1 libmd.so.0; do
+      if [ -e "$snap_core_lib/$lib_name" ]; then
+        ln -sf "$snap_core_lib/$lib_name" "$runtime_lib_dir/$lib_name"
+      fi
+    done
+    export LD_LIBRARY_PATH="$runtime_lib_dir:$snap_gnome_lib:$snap_mesa_lib:${LD_LIBRARY_PATH:-}"
+    export LIBRARY_PATH="$snap_gnome_lib:$snap_mesa_lib:${LIBRARY_PATH:-}"
+    mkdir -p "$pkgconfig_dir"
+    if [ ! -s "$pkgconfig_dir/javascriptcoregtk-4.1.pc" ]; then
+      {
+        printf 'prefix=/snap/gnome-46-2404/current/usr\n'
+        printf 'exec_prefix=${prefix}\n'
+        printf 'libdir=${exec_prefix}/lib/x86_64-linux-gnu\n'
+        printf 'includedir=${prefix}/include\n\n'
+        printf 'Name: JavaScriptCoreGTK\n'
+        printf 'Description: JavaScriptCoreGTK runtime shim for local Tauri builds\n'
+        printf 'Version: 2.44.0\n'
+        printf 'Libs: -L${libdir} -ljavascriptcoregtk-4.1\n'
+        printf 'Cflags:\n'
+      } >"$pkgconfig_dir/javascriptcoregtk-4.1.pc"
+    fi
+    if [ ! -s "$pkgconfig_dir/webkit2gtk-4.1.pc" ]; then
+      {
+        printf 'prefix=/snap/gnome-46-2404/current/usr\n'
+        printf 'exec_prefix=${prefix}\n'
+        printf 'libdir=${exec_prefix}/lib/x86_64-linux-gnu\n'
+        printf 'includedir=${prefix}/include\n\n'
+        printf 'Name: WebKit2GTK\n'
+        printf 'Description: WebKit2GTK runtime shim for local Tauri builds\n'
+        printf 'Version: 2.44.0\n'
+        printf 'Requires: javascriptcoregtk-4.1\n'
+        printf 'Libs: -L${libdir} -lwebkit2gtk-4.1\n'
+        printf 'Cflags:\n'
+      } >"$pkgconfig_dir/webkit2gtk-4.1.pc"
+    fi
+  fi
+
+  if [ -d "$pkgconfig_dir" ]; then
+    export PKG_CONFIG_PATH="$pkgconfig_dir:${PKG_CONFIG_PATH:-}"
+  fi
 }
 
 ensure_host_bridge() {
@@ -260,10 +309,10 @@ launch_chat() {
   if [ "$FORCE_DEV" != "1" ] && [ -x "$release_binary" ]; then
     if release_binary_is_fresh "$release_binary"; then
       echo "Launching fresh release Tauri binary through NVIDIA-safe wrapper."
+      exec "$CHAT_DIR/scripts/start-tauri-nvidia.sh"
     else
-      echo "Release Tauri binary is older than Ouroboros Chat sources; launching it anyway for reliable taskbar startup."
+      echo "Release Tauri binary is older than Ouroboros Chat sources; using live Tauri dev path so the UI is current."
     fi
-    exec "$CHAT_DIR/scripts/start-tauri-nvidia.sh"
   elif [ "$FORCE_DEV" = "1" ] && [ -x "$release_binary" ]; then
     echo "OUROBOROS_CHAT_FORCE_DEV=1; skipping release binary and using live Tauri dev path."
   fi

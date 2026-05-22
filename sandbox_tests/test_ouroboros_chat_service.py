@@ -1257,6 +1257,47 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertIn("build_prompt", payload)
         self.assertFalse(payload["fake_success"])
 
+    def test_development_team_build_uses_isolated_agents_not_meeting_personas(self):
+        self.service.personas.upsert(
+            self.module.PersonaRequest(
+                id="de-developer",
+                name="Poisoned meeting developer",
+                role="Meeting persona",
+                system_prompt="POISONED_MEETING_PROMPT_SHOULD_NOT_REACH_BUILD_LOOP",
+            )
+        )
+
+        events = list(
+            self.service.stream_development_team_build(
+                self.module.DevelopmentTeamBuildRequest(
+                    build_plan={
+                        "title": "Maak een kleine CLI",
+                        "goals": ["CLI draait"],
+                        "components": [{"name": "src/cli.py", "description": "CLI entrypoint"}],
+                        "tests": ["python -m pytest -q"],
+                        "constraints": ["Geen netwerk"],
+                    },
+                    persona_ids=["de-developer"],
+                    provider="ollama",
+                    model="ouroboros:latest",
+                    max_iterations=1,
+                    min_iterations=1,
+                    test_timeout_seconds=1,
+                    llm_timeout_seconds=5,
+                )
+            )
+        )
+
+        self.assertEqual(events[0]["type"], "build_started")
+        self.assertEqual(events[0]["build_plan"]["title"], "Maak een kleine CLI")
+        self.assertEqual(
+            [item["role"] for item in events[0]["development_agents"]],
+            ["foreman", "designer", "developer", "tester", "criticus"],
+        )
+        system_prompts = "\n".join(str(call.get("system_prompt") or "") for call in self.fake_ollama.calls)
+        self.assertIn("OUROBOROS DEVELOPMENT TEAM", system_prompts)
+        self.assertNotIn("POISONED_MEETING_PROMPT_SHOULD_NOT_REACH_BUILD_LOOP", system_prompts)
+
     def test_development_team_intake_returns_clarification_questions_when_prompt_is_vague(self):
         # Stub the LLM call to return a structured intake JSON so we don't depend on the live model.
         class _IntakeOllama:
