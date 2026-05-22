@@ -317,6 +317,7 @@ class TestDevTeamBuildSession(unittest.TestCase):
         self.assertEqual(started_event.data["communication_protocol"]["name"], "gas-town-nudge-mail-handoff")
         self.assertEqual(started_event.data["communication_protocol"]["fields"], ["MODE", "FROM", "TO", "SUBJECT", "BODY", "NEXT"])
         self.assertEqual(started_event.data["support_role_strategy"], "deterministic")
+        self.assertIn(".gastown/dev-team-bus.jsonl", started_event.data["gastown"]["bus_path"])
         self.assertIn("foreman_turn", types)
         self.assertIn("designer_turn", types)
         self.assertIn("developer_turn", types)
@@ -332,6 +333,11 @@ class TestDevTeamBuildSession(unittest.TestCase):
         test_run = next(event for event in events if event.type == "test_run")
         self.assertEqual(test_run.data["exit_code"], 0)
         self.assertTrue(test_run.data["green"])
+        bus_path = Path(started_event.data["gastown"]["bus_path"])
+        self.assertTrue(bus_path.is_file())
+        bus_text = bus_path.read_text(encoding="utf-8")
+        self.assertIn('"mode": "nudge"', bus_text)
+        self.assertIn("gt nudge", bus_text)
 
     def test_session_accepts_formal_build_plan_and_emits_development_agents(self) -> None:
         def fake_llm(**kwargs: Any) -> dict[str, Any]:

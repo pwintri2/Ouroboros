@@ -35,7 +35,21 @@ DEFAULT_TEST_TIMEOUT_SECONDS = 120
 MAX_TEST_OUTPUT_CHARS = 6_000
 MAX_HISTORY_IN_PROMPT = 3
 MAX_TEAM_BUS_MESSAGES = 10
-GASTOWN_ROOT = Path(os.getenv("GASTOWN_ROOT", "/home/pwintri2/gastown"))
+
+
+def _default_gastown_root() -> Path:
+    env_value = os.getenv("GASTOWN_ROOT", "").strip()
+    candidates = [env_value, "/gastown", "/home/pwintri2/gastown"]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.exists():
+            return path
+    return Path(env_value or "/home/pwintri2/gastown")
+
+
+GASTOWN_ROOT = _default_gastown_root()
 GASTOWN_MAIL_PROTOCOL_PATH = GASTOWN_ROOT / "docs" / "design" / "mail-protocol.md"
 GASTOWN_AGENT_GUIDE_PATH = GASTOWN_ROOT / "AGENTS.md"
 DEFAULT_SUPPORT_ROLE_STRATEGY = "deterministic"
@@ -171,6 +185,66 @@ class TestResult:
 class DevTeamBuildEvent:
     type: str
     data: dict[str, Any]
+
+
+class GasTownBuildBus:
+    """Durable, local Gas Town-style bus for one build sandbox.
+
+    This deliberately writes inspectable JSONL inside the build workspace instead of
+    requiring a live `gt` binary. If the real Gas Town CLI is mounted later, these
+    records already have the shape needed to map to `gt nudge`, `gt mail send`, or
+    `gt handoff`.
+    """
+
+    def __init__(self, *, workspace: Path, session_id: str):
+        self.workspace = workspace
+        self.session_id = session_id
+        self.directory = workspace / ".gastown"
+        self.path = self.directory / "dev-team-bus.jsonl"
+
+    def publish(
+        self,
+        *,
+        mode: str,
+        sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        next_action: str,
+        event_type: str = "gastown_message",
+    ) -> dict[str, Any]:
+        clean_mode = mode if mode in {"nudge", "mail", "handoff"} else "nudge"
+        record = {
+            "type": event_type,
+            "session_id": self.session_id,
+            "timestamp": time.time(),
+            "mode": clean_mode,
+            "from": str(sender or ""),
+            "to": str(recipient or ""),
+            "subject": str(subject or "")[:180],
+            "body": str(body or "")[:4000],
+            "next": str(next_action or "")[:800],
+            "gastown_root": str(GASTOWN_ROOT),
+            "command_hint": self._command_hint(clean_mode, recipient, subject),
+            "fake_success": False,
+        }
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError as exc:
+            record["write_error"] = str(exc)
+        return record
+
+    @staticmethod
+    def _command_hint(mode: str, recipient: str, subject: str) -> str:
+        target = str(recipient or "agent").split("/")[0].split()[0] or "agent"
+        clean_subject = " ".join(str(subject or "handoff").split())[:80] or "handoff"
+        if mode == "mail":
+            return f"gt mail send {target} -s {shlex.quote(clean_subject)} --stdin"
+        if mode == "handoff":
+            return "gt handoff"
+        return f"gt nudge {target} {shlex.quote(clean_subject)}"
 
 
 def gastown_mail_protocol_brief() -> str:
@@ -708,6 +782,7 @@ class DevTeamBuildSession:
             minimum=1.0,
             maximum=max(DEFAULT_FAST_ROLE_TIMEOUT_SECONDS, self.llm_timeout_seconds),
         )
+        self.gastown_bus = GasTownBuildBus(workspace=self.workspace, session_id=self.session_id)
         self.iteration_log: list[dict[str, Any]] = []
 
     def iterate(
@@ -746,9 +821,24 @@ class DevTeamBuildSession:
                         "MODE: handoff voor continuiteit over sessies heen.",
                     ],
                 },
+                "gastown": {
+                    "root": str(GASTOWN_ROOT),
+                    "bus_path": str(self.gastown_bus.path),
+                    "protocol": "nudge/mail/handoff",
+                    "real_gt_required": False,
+                },
                 "support_role_strategy": self.support_role_strategy,
                 "build_prompt_preview": build_prompt[:480],
             },
+        )
+        self.gastown_bus.publish(
+            mode="handoff",
+            sender="Backend",
+            recipient="OUROBOROS DEVELOPMENT TEAM",
+            subject="build session started",
+            body=f"Session {self.session_id} gebruikt Gas Town-style bus op {self.gastown_bus.path}",
+            next_action="Voorman start de eerste nudge naar Ontwerper/Developper/Tester/Critikus.",
+            event_type="gastown_bus_started",
         )
 
         last_test_result: TestResult | None = None
@@ -786,7 +876,7 @@ class DevTeamBuildSession:
             if not foreman_content:
                 foreman_content = foreman_fallback
             iteration_data["foreman_handoff"] = foreman_content
-            chat_history.append(self._team_message("Voorman", "Ontwerper/Developper/Tester/Critikus", foreman_content))
+            chat_history.append(self._record_team_message("Voorman", "Ontwerper/Developper/Tester/Critikus", foreman_content))
             yield DevTeamBuildEvent(
                 "foreman_turn",
                 {
@@ -819,7 +909,7 @@ class DevTeamBuildSession:
             if not designer_content:
                 designer_content = designer_fallback
             iteration_data["designer_contract"] = designer_content
-            chat_history.append(self._team_message("Ontwerper", "Developper/Tester/Critikus", designer_content))
+            chat_history.append(self._record_team_message("Ontwerper", "Developper/Tester/Critikus", designer_content))
             yield DevTeamBuildEvent(
                 "designer_turn",
                 {
@@ -833,6 +923,15 @@ class DevTeamBuildSession:
 
             # ---- Developer turn ----
             dev_persona = agents.get("developer") or {}
+            self.gastown_bus.publish(
+                mode="nudge",
+                sender="Voorman",
+                recipient="De Developper",
+                subject=f"developer turn iteratie {iteration}",
+                body="De zware code-modelcall start nu. De SSE-route blijft ondertussen build_heartbeat nudges sturen.",
+                next_action="De Developper levert diff/file blokken of valt gecontroleerd terug bij timeout.",
+                event_type="gastown_model_call_started",
+            )
             dev_response = self._call_llm(
                 user_prompt=self._developer_user_prompt(
                     build_prompt=build_prompt,
@@ -850,7 +949,7 @@ class DevTeamBuildSession:
             )
             dev_content = (dev_response.get("content") or "").strip()
             if dev_content:
-                chat_history.append(self._team_message("Developper", "Tester/Critikus", dev_content))
+                chat_history.append(self._record_team_message("Developper", "Tester/Critikus", dev_content))
             yield DevTeamBuildEvent(
                 "developer_turn",
                 {
@@ -898,7 +997,7 @@ class DevTeamBuildSession:
             if not tester_content:
                 tester_content = tester_fallback
             if tester_content:
-                chat_history.append(self._team_message("Tester", "Voorman/Critikus", tester_content))
+                chat_history.append(self._record_team_message("Tester", "Voorman/Critikus", tester_content))
             yield DevTeamBuildEvent(
                 "tester_turn",
                 {
@@ -962,7 +1061,7 @@ class DevTeamBuildSession:
                 if not review_content:
                     review_content = review_fallback
                 if review_content:
-                    chat_history.append(self._team_message("Voorman", "Team", review_content))
+                    chat_history.append(self._record_team_message("Voorman", "Team", review_content, mode="handoff"))
                 verdict = _parse_chair_review(review_content)
                 iteration_data["chair_review"] = {
                     "verdict": verdict["verdict"],
@@ -1068,7 +1167,7 @@ class DevTeamBuildSession:
             if not critic_content:
                 critic_content = critic_fallback
             if critic_content:
-                chat_history.append(self._team_message("Critikus", "Developper/Tester", critic_content))
+                chat_history.append(self._record_team_message("Critikus", "Developper/Tester", critic_content, mode="mail"))
             iteration_data["critic_feedback"] = critic_content
             yield DevTeamBuildEvent(
                 "critic_turn",
@@ -1247,6 +1346,18 @@ class DevTeamBuildSession:
                 f"SOURCE: {GASTOWN_ROOT}"
             ),
         }
+
+    def _record_team_message(self, sender: str, recipient: str, content: str, *, mode: str = "nudge") -> dict[str, str]:
+        subject = " ".join(str(content or "").split()).strip()[:160] or "handoff"
+        self.gastown_bus.publish(
+            mode=mode,
+            sender=sender,
+            recipient=recipient,
+            subject=subject,
+            body=str(content or ""),
+            next_action=f"{recipient} verwerkt deze concrete overdracht.",
+        )
+        return self._team_message(sender, recipient, content, mode=mode)
 
     def _recent_team_history(self, history: list[dict[str, str]]) -> list[dict[str, str]]:
         return list(history[-MAX_TEAM_BUS_MESSAGES:])

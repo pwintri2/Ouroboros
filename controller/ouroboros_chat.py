@@ -499,7 +499,21 @@ DEV_TEAM_DEFAULT_PERSONA_IDS: tuple[str, ...] = (
     "dev-tester",
     "dev-critikus",
 )
-GASTOWN_ROOT = Path(os.getenv("GASTOWN_ROOT", "/home/pwintri2/gastown"))
+
+
+def _default_gastown_root() -> Path:
+    env_value = os.getenv("GASTOWN_ROOT", "").strip()
+    candidates = [env_value, "/gastown", "/home/pwintri2/gastown"]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.exists():
+            return path
+    return Path(env_value or "/home/pwintri2/gastown")
+
+
+GASTOWN_ROOT = _default_gastown_root()
 DEVTEAM_PLANNING_STRATEGIES = {"deterministic", "legacy-meeting"}
 HIDDEN_DEVELOPMENT_PERSONA_IDS: frozenset[str] = frozenset(
     {
@@ -6977,6 +6991,12 @@ async def stream_development_team_build(
 
     async def event_stream() -> "AsyncIterator[bytes]":
         loop = asyncio.get_event_loop()
+        heartbeat_count = 0
+
+        def _encode_event(event: dict[str, Any]) -> bytes:
+            event_name = str(event.get("type") or "build_event").replace("\n", " ")
+            payload = json.dumps(event, ensure_ascii=False, sort_keys=True)
+            return f"event: {event_name}\ndata: {payload}\n\n".encode("utf-8")
 
         def _next(it: "Iterator[dict[str, Any]]") -> dict[str, Any] | None:
             try:
@@ -6999,14 +7019,31 @@ async def stream_development_team_build(
                     event = await asyncio.wait_for(asyncio.shield(future), timeout=5.0)
                     break
                 except asyncio.TimeoutError:
-                    yield b"".join(b": ping\n" for _ in range(500)) + b"\n"
+                    heartbeat_count += 1
+                    heartbeat = {
+                        "type": "build_heartbeat",
+                        "timestamp": _now_iso(),
+                        "status": "waiting_for_development_agent",
+                        "heartbeat": heartbeat_count,
+                        "communication_protocol": "gas-town-nudge-mail-handoff",
+                        "content": _gastown_agent_message(
+                            mode="nudge",
+                            sender="Backend stream",
+                            recipient="UI",
+                            subject="build loopt nog",
+                            body=(
+                                "De build-worker is nog bezig, meestal in een modelcall of test-run. "
+                                "Deze nudge houdt de SSE-verbinding actief zodat Tauri/fetch niet denkt dat 8010 wegvalt."
+                            ),
+                            next_action="UI blijft wachten op het volgende build-event.",
+                        ),
+                        "fake_success": False,
+                    }
+                    yield _encode_event(heartbeat)
 
             if event is None:
                 break
-            event_name = str(event.get("type") or "build_event").replace("\n", " ")
-            payload = json.dumps(event, ensure_ascii=False, sort_keys=True)
-            chunk = f"event: {event_name}\ndata: {payload}\n\n"
-            yield chunk.encode("utf-8")
+            yield _encode_event(event)
 
     return StreamingResponse(
         event_stream(),

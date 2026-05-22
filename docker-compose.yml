@@ -25,6 +25,7 @@ services:
       - /home/pwintri2/deepseek:/deepseek:ro
       - /home/pwintri2/atlas:/atlas:ro
       - /home/pwintri2/Codex:/codex:ro
+      - /home/pwintri2/gastown:/gastown:ro
       - /home/pwintri2/.codex:/codex_home:ro
       - /home/pwintri2/.antigravity/extensions/openai.chatgpt-26.422.71525-linux-x64:/codex_native:ro
       - /home/pwintri2/.var/app/com.visualstudio.code/data/uv/python/cpython-3.10-linux-x86_64-gnu:/home/pwintri2/.var/app/com.visualstudio.code/data/uv/python/cpython-3.10-linux-x86_64-gnu:ro
@@ -60,6 +61,7 @@ services:
       WINTRIP_CODEX_HOME: /codex_home
       WINTRIP_CODEX_BINARY: /codex_native/bin/linux-x86_64/codex
       CODEX_BINARY: /codex_native/bin/linux-x86_64/codex
+      GASTOWN_ROOT: /gastown
       OLLAMA_HOST: http://host.docker.internal:11434
       BRAVE_API_KEY: ${BRAVE_API_KEY}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
