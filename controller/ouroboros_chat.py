@@ -5146,7 +5146,9 @@ class OuroborosChatService:
             workspace=workspace,
             llm_call=self._call_model_provider,
             max_iterations=int(getattr(request, "max_iterations", 4) or 4),
+            min_iterations=int(getattr(request, "min_iterations", 2) or 2),
             test_timeout=float(getattr(request, "test_timeout_seconds", 120.0) or 120.0),
+            llm_timeout_seconds=float(getattr(request, "llm_timeout_seconds", 90.0) or 90.0),
         )
 
         clarifications = [

@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -279,13 +280,17 @@ class DevTeamBuildSession:
         workspace: Path,
         llm_call: Callable[..., Any],
         max_iterations: int = 4,
+        min_iterations: int = 2,
         test_timeout: float = DEFAULT_TEST_TIMEOUT_SECONDS,
+        llm_timeout_seconds: float = 90.0,
     ):
         self.session_id = session_id
         self.workspace = workspace
         self.llm_call = llm_call
         self.max_iterations = max(1, min(int(max_iterations), 12))
+        self.min_iterations = max(1, min(int(min_iterations), self.max_iterations))
         self.test_timeout = test_timeout
+        self.llm_timeout_seconds = max(5.0, float(llm_timeout_seconds))
         self.iteration_log: list[dict[str, Any]] = []
 
     def iterate(
@@ -439,16 +444,52 @@ class DevTeamBuildSession:
                 )
 
                 if verdict["verdict"] == "DONE":
-                    yield DevTeamBuildEvent(
-                        "build_complete",
-                        {
-                            "iterations": iteration,
-                            "workspace_path": str(self.workspace),
-                            "last_command": command,
-                            "reason": verdict["reason"] or "Voorzitter verklaart de build af.",
-                        },
-                    )
-                    return
+                    # Even if chair says DONE, enforce minimum iterations for substantial builds
+                    # This prevents early completion on simple prompts where the first green test
+                    # doesn't mean the full application is built
+                    if iteration >= self.min_iterations:
+                        # Generate a summary of what was built
+                        workspace_files = self._snapshot_workspace()
+                        summary = self._generate_build_summary(
+                            build_prompt=build_prompt,
+                            iterations=iteration,
+                            workspace_files=workspace_files,
+                            last_command=command,
+                            chair_reason=verdict["reason"] or "",
+                        )
+                        yield DevTeamBuildEvent(
+                            "build_complete",
+                            {
+                                "iterations": iteration,
+                                "workspace_path": str(self.workspace),
+                                "last_command": command,
+                                "reason": verdict["reason"] or "Voorzitter verklaart de build af.",
+                                "summary": summary,
+                            },
+                        )
+                        return
+                    else:
+                        # Force CONTINUE: we need more iterations for a substantial build
+                        yield DevTeamBuildEvent(
+                            "chair_review",
+                            {
+                                "iteration": iteration,
+                                "content": review_content,
+                                "verdict": "CONTINUE",
+                                "reason": f"Minimaal {self.min_iterations} iteraties vereist. {verdict['reason'] or ''}".strip(),
+                                "next_subtask": verdict["next_subtask"] or "Werk de bouwprompt verder uit met de eerstvolgende concrete capaciteit.",
+                                "ok": bool(review_response.get("ok")),
+                            },
+                        )
+                        next_focus = verdict["next_subtask"] or "Werk de bouwprompt verder uit met de eerstvolgende concrete capaciteit."
+                        build_prompt = self._append_subtask(build_prompt, next_focus, iteration)
+                        iteration_data["chair_review"] = {
+                            "verdict": "CONTINUE",
+                            "reason": f"Minimaal {self.min_iterations} iteraties vereist.",
+                            "next_subtask": next_focus,
+                            "raw": review_content,
+                        }
+                        continue  # to next iteration
 
                 # CONTINUE — the chair's `next_subtask` becomes the focus for the next iteration.
                 # We keep the original build_prompt on file but append the new subtask so the
@@ -508,36 +549,55 @@ class DevTeamBuildSession:
         model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
         chosen_provider = str(model_settings.get("provider") or provider or "ollama").strip().lower() or "ollama"
         chosen_model = str(model_settings.get("name") or model or "ouroboros:latest").strip() or "ouroboros:latest"
-        try:
-            result = self.llm_call(
-                prompt=user_prompt,
-                provider=chosen_provider,
-                model=chosen_model,
-                system_prompt=system_prompt,
-                history=[],
-                images=[],
-            )
-        except TypeError:
+        
+        # Wrap the LLM call with a timeout
+        def _do_call() -> dict[str, Any]:
             try:
-                result = self.llm_call(
-                    prompt=user_prompt,
-                    model=chosen_model,
-                    system_prompt=system_prompt,
-                    history=[],
-                )
-            except Exception as exc:  # noqa: BLE001
+                try:
+                    result = self.llm_call(
+                        prompt=user_prompt,
+                        provider=chosen_provider,
+                        model=chosen_model,
+                        system_prompt=system_prompt,
+                        history=[],
+                        images=[],
+                    )
+                except TypeError:
+                    try:
+                        result = self.llm_call(
+                            prompt=user_prompt,
+                            model=chosen_model,
+                            system_prompt=system_prompt,
+                            history=[],
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        return {"ok": False, "content": "", "error": str(exc)}
+                except Exception as exc:  # noqa: BLE001
+                    return {"ok": False, "content": "", "error": str(exc)}
+                
+                if isinstance(result, dict):
+                    content = str(result.get("content") or result.get("response") or "").strip()
+                    return {
+                        "ok": bool(result.get("ok", True)) and bool(content),
+                        "content": content,
+                        "error": str(result.get("error") or ""),
+                    }
+                content = str(result or "").strip()
+                return {"ok": bool(content), "content": content, "error": ""}
+            except Exception as exc:
                 return {"ok": False, "content": "", "error": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "content": "", "error": str(exc)}
-        if isinstance(result, dict):
-            content = str(result.get("content") or result.get("response") or "").strip()
+        
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_do_call)
+                result = future.result(timeout=self.llm_timeout_seconds)
+                return result
+        except FuturesTimeoutError:
             return {
-                "ok": bool(result.get("ok", True)) and bool(content),
-                "content": content,
-                "error": str(result.get("error") or ""),
+                "ok": False,
+                "content": "",
+                "error": f"LLM call timed out after {self.llm_timeout_seconds:.0f}s",
             }
-        content = str(result or "").strip()
-        return {"ok": bool(content), "content": content, "error": ""}
 
     # ------------------------------------------------------------------
     # Prompt builders
@@ -775,6 +835,39 @@ class DevTeamBuildSession:
         return (
             f"{cleaned}{marker} (na iteratie {iteration}, volgens De Voorzitter): {subtask}"
         )
+
+    def _generate_build_summary(
+        self,
+        *,
+        build_prompt: str,
+        iterations: int,
+        workspace_files: str,
+        last_command: str,
+        chair_reason: str,
+    ) -> str:
+        """Generate a human-readable summary of what was built."""
+        lines = []
+        lines.append(f"Build afgerond na {iterations} iteratie(s).")
+        lines.append(f"Bouwdoel: {build_prompt[:200]}...")
+        
+        # List files created
+        if workspace_files and workspace_files != "(workspace is leeg)":
+            file_lines = workspace_files.strip().split("\n")
+            if len(file_lines) <= 5:
+                lines.append(f"Files aangemaakt: {', '.join(f.strip() for f in file_lines)}")
+            else:
+                lines.append(f"Files aangemaakt: {len(file_lines)} bestanden")
+        
+        # Last test command
+        if last_command:
+            lines.append(f"Laatste test: `{last_command}`")
+        
+        # Chair's reason
+        if chair_reason:
+            lines.append(f"Voorzitter: {chair_reason}")
+        
+        lines.append(f"Workspace: {self.workspace}")
+        return " ".join(lines)
 
 
 def _parse_chair_review(content: str) -> dict[str, str]:
