@@ -94,13 +94,42 @@ class TestOuroborosChatRoutes(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         providers = {item["id"]: item for item in payload["providers"]}
+        self.assertIn("chatgpt_codex", providers)
         self.assertIn("anthropic", providers)
         self.assertIn("deepseek", providers)
         self.assertIn("google", providers)
         self.assertIn("route-local:latest", providers["ollama"]["models"])
+        self.assertIn("gpt-5.2-codex", providers["chatgpt_codex"]["models"])
         self.assertIn("claude-sonnet-4-6", providers["anthropic"]["models"])
         self.assertIn("brave", payload)
         self.assertFalse(payload["fake_success"])
+
+    def test_persona_route_hides_development_team_roles_by_default(self):
+        response = self.client.get("/api/ouroboros-chat/personas")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        persona_ids = {item["id"] for item in payload["personas"]}
+        self.assertIn("ouroboros", persona_ids)
+        self.assertNotIn("de-voorzitter", persona_ids)
+        self.assertNotIn("de-developer", persona_ids)
+        self.assertNotIn("de-tester", persona_ids)
+        self.assertNotIn("de-criticus", persona_ids)
+
+        full_response = self.client.get("/api/ouroboros-chat/personas?include_development_team=true")
+        self.assertEqual(full_response.status_code, 200)
+        full_ids = {item["id"] for item in full_response.json()["personas"]}
+        self.assertIn("de-voorzitter", full_ids)
+
+    def test_development_team_agents_route_is_fixed_five(self):
+        response = self.client.get("/api/ouroboros-chat/development-team/agents")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            [item["id"] for item in payload["agents"]],
+            ["dev-voorman", "dev-ontwerper", "dev-developper", "dev-tester", "dev-critikus"],
+        )
 
     def test_development_team_route_is_approval_gated_plan_only(self):
         response = self.client.post(

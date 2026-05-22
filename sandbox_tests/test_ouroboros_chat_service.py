@@ -1254,8 +1254,46 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertIn(payload["provider"], {"google", "ollama"})  # may fall back to local Ollama
         # The transcript exists, and the build_prompt deliverable is present.
         self.assertTrue(payload["rounds"], "expected meeting rounds to be populated")
+        participant_ids = {round_item["participant"]["id"] for round_item in payload["rounds"]}
+        self.assertIn("dev-voorman", participant_ids)
+        self.assertIn("dev-ontwerper", participant_ids)
+        self.assertIn("dev-developper", participant_ids)
+        self.assertIn("dev-tester", participant_ids)
+        self.assertIn("dev-critikus", participant_ids)
+        self.assertNotIn("de-developer", participant_ids)
         self.assertIn("build_prompt", payload)
         self.assertFalse(payload["fake_success"])
+
+    def test_stream_development_team_ignores_meeting_personas(self):
+        self.service.personas.upsert(
+            self.module.PersonaRequest(
+                id="de-developer",
+                name="Poisoned meeting developer",
+                role="Meeting persona",
+                system_prompt="POISONED_MEETING_PROMPT_SHOULD_NOT_REACH_DEV_STREAM",
+            )
+        )
+
+        events = list(
+            self.service.stream_development_team(
+                self.module.DevelopmentTeamRequest(
+                    prompt="Maak een build plan.",
+                    persona_ids=["de-developer"],
+                    agent_ids=["codex"],
+                    provider="ollama",
+                    model="ouroboros:latest",
+                )
+            )
+        )
+
+        started = events[0]
+        self.assertEqual(started["type"], "meeting_started")
+        self.assertEqual(
+            [item["id"] for item in started["participants"]],
+            ["dev-voorman", "dev-ontwerper", "dev-developper", "dev-tester", "dev-critikus"],
+        )
+        all_system_prompts = "\n".join(str(call.get("system_prompt") or "") for call in self.fake_ollama.calls)
+        self.assertNotIn("POISONED_MEETING_PROMPT_SHOULD_NOT_REACH_DEV_STREAM", all_system_prompts)
 
     def test_development_team_build_uses_isolated_agents_not_meeting_personas(self):
         self.service.personas.upsert(

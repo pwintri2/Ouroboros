@@ -34,6 +34,8 @@ DEFAULT_TEST_TIMEOUT_SECONDS = 120
 MAX_TEST_OUTPUT_CHARS = 6_000
 MAX_HISTORY_IN_PROMPT = 3
 MAX_TEAM_BUS_MESSAGES = 10
+GASTOWN_ROOT = Path(os.getenv("GASTOWN_ROOT", "/home/pwintri2/gastown"))
+GASTOWN_MAIL_PROTOCOL_PATH = GASTOWN_ROOT / "docs" / "design" / "mail-protocol.md"
 
 
 DEVELOPMENT_AGENT_ROLE_ORDER: tuple[str, ...] = (
@@ -62,7 +64,7 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "TO_TESTER: welk bewijs de Tester moet leveren.\n\n"
             "Regels: verwijs naar build_plan.goals/components/tests; geen overlegtaal, geen mystiek, "
             "geen Meeting-context, geen shellcommando's. Schrijf voor kleine modellen: kort, concreet, "
-            "herhaal de file/componentnaam als die bekend is."
+            "herhaal de file/componentnaam als die bekend is. Gebruik Gas Town-mailstijl: FROM, TO, SUBJECT, BODY, NEXT."
         ),
     },
     "designer": {
@@ -79,7 +81,7 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "TEST_HOOK: hoe De Tester dit mechanisch bewijst.\n"
             "TO_DEVELOPPER: directe bouwinstructie in één zin.\n\n"
             "Gebruik AgenK-stijl taaktoewijzing: één agent, één taak, één verwacht resultaat. "
-            "Geen brede architectuurpraat en geen Meeting-taal."
+            "Geen brede architectuurpraat en geen Meeting-taal. Gebruik Gas Town-mailstijl: FROM, TO, SUBJECT, BODY, NEXT."
         ),
     },
     "developer": {
@@ -93,7 +95,8 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "Schrijf bij voorkeur `<diff path=\"...\">` blokken met Aider SEARCH/REPLACE inhoud. "
             "Voor nieuwe kleine files mag `<file path=\"...\">...</file>` ook, zodat kleine modellen betrouwbaar blijven.\n\n"
             "Communicatie is verplicht: begin met één korte zin aan Voorman/Ontwerper, daarna alleen editblokken, "
-            "en sluit af met één korte overdracht aan De Tester. Geen markdown fences rond editblokken."
+            "en sluit af met één korte overdracht aan De Tester. Geen markdown fences rond editblokken. "
+            "Gebruik Gas Town-mailstijl voor je overdracht: FROM, TO, SUBJECT, BODY, NEXT."
         ),
     },
     "tester": {
@@ -105,7 +108,8 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "Je bewijst de laatste edit mechanisch.\n\n"
             "Output is streng: één korte regel aan De Developper, precies één `<cmd>...</cmd>` blok, "
             "en één korte regel met verwacht groen signaal. Geen extra commando's. Geen netwerk, geen sudo, "
-            "geen destructieve acties. Kies het kleinste acceptance-commando uit build_plan.tests of uit de geschreven files."
+            "geen destructieve acties. Kies het kleinste acceptance-commando uit build_plan.tests of uit de geschreven files. "
+            "Gebruik Gas Town-mailstijl voor de korte overdracht."
         ),
     },
     "criticus": {
@@ -116,7 +120,8 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "Je bent Critikus van OUROBOROS DEVELOPMENT TEAM. Je bent geen Meeting-persona. "
             "Je leest alleen de laatste testoutput en geeft één concrete fixopdracht.\n\n"
             "Antwoord in maximaal vier zinnen: oorzaak, geraakt bestand/symbol, kleinste fix, en welk testcommando "
-            "daarna opnieuw moet draaien. Lees stderr/stdout letterlijk. Geen brede review, geen nieuwe features."
+            "daarna opnieuw moet draaien. Lees stderr/stdout letterlijk. Geen brede review, geen nieuwe features. "
+            "Gebruik Gas Town-mailstijl voor de fixopdracht."
         ),
     },
 }
@@ -145,6 +150,25 @@ class TestResult:
 class DevTeamBuildEvent:
     type: str
     data: dict[str, Any]
+
+
+def gastown_mail_protocol_brief() -> str:
+    """Compact Gas Town mail rules for model-to-model handoffs."""
+    fallback = (
+        "Gas Town communicatieprotocol uit /home/pwintri2/gastown: gebruik directe handoff als korte mail. "
+        "Elke overdracht heeft FROM, TO, SUBJECT, BODY en NEXT; BODY bevat bewijs/constraints, NEXT bevat exact de volgende rolactie."
+    )
+    try:
+        text = GASTOWN_MAIL_PROTOCOL_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return fallback
+    if "Subject format" not in text or "Body format" not in text:
+        return fallback
+    return (
+        f"Gas Town communicatieprotocol ({GASTOWN_MAIL_PROTOCOL_PATH}): "
+        "mail is persistente agent-naar-agent overdracht; subject is kort en typegericht; body is gestructureerd; "
+        "gebruik voor deze build altijd FROM, TO, SUBJECT, BODY, NEXT en draag één concrete volgende actie over."
+    )
 
 
 # `<file path="src/foo.py">...</file>` blocks — permissive of missing quotes.
@@ -608,6 +632,11 @@ class DevTeamBuildSession:
                     for role in DEVELOPMENT_AGENT_ROLE_ORDER
                     if role in agents
                 ],
+                "communication_protocol": {
+                    "name": "gas-town-mail-handoff",
+                    "source": str(GASTOWN_MAIL_PROTOCOL_PATH),
+                    "fields": ["FROM", "TO", "SUBJECT", "BODY", "NEXT"],
+                },
                 "build_prompt_preview": build_prompt[:480],
             },
         )
@@ -997,9 +1026,17 @@ class DevTeamBuildSession:
         return agents
 
     def _team_message(self, sender: str, recipient: str, content: str) -> dict[str, str]:
+        subject = " ".join(content.split()).strip() if content.strip() else "handoff"
         return {
             "role": "user",
-            "content": f"TEAM_HANDOFF FROM {sender} TO {recipient}:\n{content[:2400]}",
+            "content": (
+                "GASTOWN_MAIL_HANDOFF\n"
+                f"FROM: {sender}\n"
+                f"TO: {recipient}\n"
+                f"SUBJECT: {subject[:160]}\n"
+                f"BODY:\n{content[:2200]}\n"
+                f"NEXT: {recipient} verwerkt deze concrete overdracht en antwoordt in dezelfde mailstijl."
+            ),
         }
 
     def _recent_team_history(self, history: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1060,7 +1097,7 @@ class DevTeamBuildSession:
         iteration: int,
         last_test_result: TestResult | None,
     ) -> str:
-        parts = [f"FORMEEL BUILD_PLAN:\n{format_build_plan(build_plan)}"]
+        parts = [gastown_mail_protocol_brief(), f"FORMEEL BUILD_PLAN:\n{format_build_plan(build_plan)}"]
         if clarifications:
             qa = "\n".join(
                 f"- {item.get('question','')}\n  Antwoord: {item.get('answer','')}"
@@ -1094,6 +1131,7 @@ class DevTeamBuildSession:
         iteration: int,
     ) -> str:
         return (
+            f"{gastown_mail_protocol_brief()}\n\n"
             f"FORMEEL BUILD_PLAN:\n{format_build_plan(build_plan)}\n\n"
             f"Voorman-handoff voor iteratie {iteration}:\n{foreman_handoff[:1800]}\n\n"
             "Maak het ontwerpcontract. Houd het kort genoeg voor een klein model en eindig met TO_DEVELOPPER."
@@ -1110,6 +1148,7 @@ class DevTeamBuildSession:
         iteration: int,
     ) -> str:
         parts = [
+            gastown_mail_protocol_brief(),
             f"FORMEEL BUILD_PLAN:\n{format_build_plan(build_plan)}",
             f"Voorman-handoff:\n{foreman_handoff[:1800]}",
             f"Ontwerpcontract:\n{designer_contract[:1800]}",
@@ -1162,6 +1201,7 @@ class DevTeamBuildSession:
     ) -> str:
         files_block = ", ".join(item.path for item in files_written) or "(geen files geschreven)"
         return (
+            f"{gastown_mail_protocol_brief()}\n\n"
             f"Bouwdoel: {build_prompt}\n\n"
             f"Voorman-handoff:\n{foreman_handoff[:1000]}\n\n"
             f"Ontwerpcontract:\n{designer_contract[:1000]}\n\n"
@@ -1182,6 +1222,7 @@ class DevTeamBuildSession:
         iteration: int,
     ) -> str:
         return (
+            f"{gastown_mail_protocol_brief()}\n\n"
             f"Bouwdoel: {build_prompt}\n\n"
             f"Iteratie {iteration}: de test faalde.\n"
             f"Commando: {test_result.command}\n"

@@ -493,10 +493,22 @@ MEETING_TYPE_LABELS = {
 }
 
 DEV_TEAM_DEFAULT_PERSONA_IDS: tuple[str, ...] = (
-    "de-voorzitter",
-    "de-developer",
-    "de-tester",
-    "de-criticus",
+    "dev-voorman",
+    "dev-ontwerper",
+    "dev-developper",
+    "dev-tester",
+    "dev-critikus",
+)
+HIDDEN_DEVELOPMENT_PERSONA_IDS: frozenset[str] = frozenset(
+    {
+        "de-voorzitter",
+        "de-ontwerper",
+        "de-developer",
+        "de-developper",
+        "de-tester",
+        "de-criticus",
+        *DEV_TEAM_DEFAULT_PERSONA_IDS,
+    }
 )
 
 CODING_MODEL_HINTS = {
@@ -656,6 +668,58 @@ def _default_meeting_personas() -> list[dict[str, Any]]:
         persona["tags"] = list(item.get("tags", []))
         personas.append(persona)
     return personas
+
+
+def _default_development_team_personas() -> list[dict[str, Any]]:
+    """Return the fixed Development Team roles as non-Meeting agents."""
+    from controller.dev_team_build import DEVELOPMENT_AGENT_ROLE_ORDER, default_development_team_agents
+
+    agents = default_development_team_agents()
+    personas: list[dict[str, Any]] = []
+    for role in DEVELOPMENT_AGENT_ROLE_ORDER:
+        agent = dict(agents[role])
+        persona = normalize_persona_payload(
+            {
+                "id": agent.get("id") or f"dev-{role}",
+                "name": agent.get("name") or role,
+                "description": f"Vaste OUROBOROS DEVELOPMENT TEAM rol: {agent.get('role') or role}.",
+                "role": agent.get("role") or role,
+                "introduction": f"Ik werk alleen in OUROBOROS DEVELOPMENT TEAM als {agent.get('name') or role}.",
+                "instructions": agent.get("system_prompt") or "",
+                "system_prompt": agent.get("system_prompt") or "",
+                "tone": "Kort, expliciet, overdraagbaar",
+                "language": "nl",
+                "rules": [
+                    "Geen Meeting-persona context gebruiken.",
+                    "Communiceer via expliciete handoff/mailerregels.",
+                    "Werk alleen vanuit het formele build_plan.",
+                ],
+                "tools": {"web_search": False, "file_search": False, "code_execution": False, "local_shell": False},
+                "tags": ["development-team-agent", role],
+                "builtin": True,
+            },
+            previous={"builtin": True},
+        )
+        persona["builtin"] = True
+        persona["development_team_only"] = True
+        persona["development_role"] = role
+        personas.append(persona)
+    return personas
+
+
+def _public_development_team_agents() -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for persona in _default_development_team_personas():
+        result.append(
+            {
+                "id": persona.get("id"),
+                "name": persona.get("name"),
+                "role": persona.get("development_role") or persona.get("role"),
+                "label": persona.get("role"),
+                "development_team_only": True,
+            }
+        )
+    return result
 
 
 def _safe_slug(value: str, fallback: str = "item") -> str:
@@ -1779,7 +1843,7 @@ class MeetingRunner:
                     "participant": event["participant"],
                     "content": event["content"],
                 }
-                # In the development_team flow the four fixed roles are *supposed* to
+                # In the development_team flow the five fixed roles are *supposed* to
                 # converge on the same files, symbols and tests — that overlap is not
                 # parroting, it is collaboration. The anti-parrot circuit was tuned for
                 # brainstorms where every speaker should add a new angle, and it produces
@@ -2001,7 +2065,7 @@ class MeetingRunner:
         persona_id = str(persona.get("id") or "").strip().lower()
         name = str(persona.get("name") or "").strip().lower()
         role = str(persona.get("role") or "").strip().lower()
-        return persona_id == "de-voorzitter" or "voorzitter" in name or "facilitator" in role
+        return persona_id in {"de-voorzitter", "dev-voorman"} or "voorzitter" in name or "voorman" in name or "facilitator" in role
 
     def _is_critic_persona(self, persona: dict[str, Any]) -> bool:
         persona_id = str(persona.get("id") or "").strip().lower()
@@ -2010,6 +2074,20 @@ class MeetingRunner:
         tags = persona.get("tags") if isinstance(persona.get("tags"), list) else []
         tag_text = " ".join(str(tag).lower() for tag in tags)
         return "criticus" in persona_id or "critic" in persona_id or "criticus" in name or "critic" in name or "risk" in role or "critic" in tag_text
+
+    def _is_designer_persona(self, persona: dict[str, Any]) -> bool:
+        persona_id = str(persona.get("id") or "").strip().lower()
+        name = str(persona.get("name") or "").strip().lower()
+        role = str(persona.get("role") or "").strip().lower()
+        tags = persona.get("tags") if isinstance(persona.get("tags"), list) else []
+        tag_text = " ".join(str(tag).lower() for tag in tags)
+        return (
+            persona_id in {"de-ontwerper", "dev-ontwerper"}
+            or "ontwerper" in name
+            or "designer" in name
+            or "design contract" in role
+            or "designer" in tag_text
+        )
 
     def _meeting_type_contract(self, meeting_type: str) -> str:
         meeting_type = _normalize_meeting_type(meeting_type)
@@ -2026,12 +2104,13 @@ class MeetingRunner:
             )
         if meeting_type == "development_team":
             return (
-                "ONTWIKKELTEAM-CONTRACT: doel is één werkbare bouwprompt aan het eind. Vier rollen werken samen: "
+                "ONTWIKKELTEAM-CONTRACT: doel is één werkbare build_plan aan het eind. Vijf vaste rollen werken samen: "
+                "Voorman bewaakt het bouwdoel en handoffs; Ontwerper legt interface/files/testhook vast; "
                 "De Developper schetst de code-wijziging met letterlijke file paths en symbolen; "
                 "De Tester levert een reproduceerbaar testcommando, verwacht signaal en rollback; "
-                "De Criticus markeert risico's als Blocker of Warning met een concrete actie; "
-                "De Voorzitter bewaakt het bouwdoel en sluit af met een gestructureerde bouwprompt. "
-                "Blockers van De Criticus moeten geadresseerd zijn voor de Voorzitter afsluit."
+                "Critikus markeert risico's als Blocker of Warning met een concrete actie. "
+                "Elke beurt gebruikt een Gas Town-stijl overdracht: FROM, TO, SUBJECT, BODY, NEXT. "
+                "Blockers van Critikus moeten geadresseerd zijn voor Voorman afsluit."
             )
         return (
             "TEAMCONTRACT: doel is besluitvorming. Elke bijdrage helpt kiezen: standpunt, bewijs, spanning, risico, eigenaar "
@@ -2241,13 +2320,15 @@ class MeetingRunner:
         topic: str,
     ) -> list[tuple[int, str, dict[str, Any], str]]:
         contributors = [persona for persona in personas if persona is not chair]
+        designer = next((p for p in contributors if self._is_designer_persona(p)), None)
         developer = next((p for p in contributors if self._is_developer_persona(p)), None)
         tester = next((p for p in contributors if self._is_tester_persona(p)), None)
         critic = next((p for p in contributors if self._is_critic_persona(p)), None)
-        exclude_ids = {str(p.get("id") or "") for p in (developer, tester, critic) if p}
+        exclude_ids = {str(p.get("id") or "") for p in (designer, developer, tester, critic) if p}
         others = [p for p in contributors if str(p.get("id") or "") not in exclude_ids]
         agenda: list[tuple[int, str, dict[str, Any], str]] = []
         topic_hint = _clip_text(topic, 220)
+        mail_rule = "Gebruik zichtbaar Gas Town mailformaat: FROM, TO, SUBJECT, BODY, NEXT."
 
         agenda.append(
             (
@@ -2255,13 +2336,28 @@ class MeetingRunner:
                 "opening",
                 chair,
                 (
-                    f"Open als voorzitter de ontwikkelteam-vergadering over '{topic_hint}'. "
+                    f"Open als Voorman van het gescheiden OUROBOROS DEVELOPMENT TEAM over '{topic_hint}'. "
                     "Beschrijf in één zin het concrete bouwdoel (wat is na deze build anders). "
-                    f"Geef daarna gericht het woord aan {(developer or {}).get('name') or 'De Developper'} "
-                    "voor de implementatieroute (welke files, welke symbol). Maximaal 60 woorden."
+                    f"Geef daarna gericht het woord aan {(designer or {}).get('name') or 'Ontwerper'} "
+                    "voor het ontwerpcontract (interface, files, testhook). "
+                    f"{mail_rule} Maximaal 70 woorden."
                 ),
             )
         )
+
+        if designer is not None:
+            agenda.append(
+                (
+                    1,
+                    "design-contract",
+                    designer,
+                    (
+                        "Maak het ontwerpcontract voor deze build. Verplicht: benoem de waarneembare uitkomst, verwachte files/componenten, "
+                        "interface of input/output, en de testhook die De Tester kan bewijzen. Eindig met een directe TO aan De Developper. "
+                        f"{mail_rule} Maximaal 90 woorden."
+                    ),
+                )
+            )
 
         if developer is not None:
             agenda.append(
@@ -2270,11 +2366,12 @@ class MeetingRunner:
                     "implementation-route",
                     developer,
                     (
-                        "Vertaal het bouwdoel naar een concrete code-wijziging. Verplicht: noem MINSTENS één letterlijk file path "
+                        "Vertaal bouwdoel plus ontwerpcontract naar een concrete code-wijziging. Verplicht: noem MINSTENS één letterlijk file path "
                         "(bv. `src/cli.py`) en MINSTENS één symbol/function naam (bv. `play_round()`). Schets de implementatie in 1-2 "
                         "zinnen — geen volledige diff. Benoem afhankelijkheden en side-effects. Eindig met de ene vraag die je "
                         "beantwoord wil zien voordat de wijziging veilig is. Als je de bestaande codebase niet kent: noem dán toch "
-                        "een PROPOSED file path en zeg dat je `read_file` of `file_search` eerst wil draaien. Maximaal 100 woorden."
+                        "een PROPOSED file path en zeg dat je `read_file` of `file_search` eerst wil draaien. "
+                        f"{mail_rule} Maximaal 105 woorden."
                     ),
                 )
             )
@@ -2288,7 +2385,8 @@ class MeetingRunner:
                     (
                         "Maak het voorstel van De Developper bewijsbaar. Noem het exacte testcommando, het verwachte signaal "
                         "(welke assertion / output / statuscode), het faalsignaal (welke foutmelding) en de rollback (welke commit/file/flag). "
-                        "Als de wijziging moeilijk te testen is, vraag De Developper om de kleinste hook. Maximaal 80 woorden."
+                        "Als de wijziging moeilijk te testen is, vraag De Developper om de kleinste hook. "
+                        f"{mail_rule} Maximaal 85 woorden."
                     ),
                 )
             )
@@ -2302,7 +2400,8 @@ class MeetingRunner:
                     (
                         "Wijs het grootste risico in het huidige voorstel aan, één concrete edge case die het team niet heeft "
                         "geadresseerd, en geef De Developper of De Tester een specifieke actie. Markeer expliciet als Blocker of Warning. "
-                        "Bij security-vermoeden: escaleer direct. Maximaal 75 woorden."
+                        "Bij security-vermoeden: escaleer direct. "
+                        f"{mail_rule} Maximaal 80 woorden."
                     ),
                 )
             )
@@ -2316,7 +2415,7 @@ class MeetingRunner:
                     extra,
                     (
                         "Lever vanuit jouw rol één concreet inhoudelijk punt over het voorstel tot nu toe — een aanvulling, "
-                        "een ontwerpkeuze, of een waarschuwing. Maximaal 60 woorden."
+                        "een ontwerpkeuze, of een waarschuwing. Gebruik FROM, TO, SUBJECT, BODY, NEXT. Maximaal 60 woorden."
                     ),
                 )
             )
@@ -2329,7 +2428,8 @@ class MeetingRunner:
                     developer,
                     (
                         "Reageer op de Blockers en Warnings van De Criticus en op de testeisen van De Tester. Pas de implementatie aan: "
-                        "welke files/symbols veranderen nu, welke afhankelijkheid is toegevoegd, welk risico is afgedekt. Maximaal 80 woorden."
+                        "welke files/symbols veranderen nu, welke afhankelijkheid is toegevoegd, welk risico is afgedekt. "
+                        f"{mail_rule} Maximaal 85 woorden."
                     ),
                 )
             )
@@ -2342,7 +2442,8 @@ class MeetingRunner:
                     tester,
                     (
                         "Bevestig of het herziene voorstel met je testcommando bewijsbaar is. Pas het testcommando aan als de wijzigingen "
-                        "dat eisen. Markeer expliciet: groen voor merge, of welke vraag eerst nog open is. Maximaal 60 woorden."
+                        "dat eisen. Markeer expliciet: groen voor merge, of welke vraag eerst nog open is. "
+                        f"{mail_rule} Maximaal 65 woorden."
                     ),
                 )
             )
@@ -2356,7 +2457,7 @@ class MeetingRunner:
                     (
                         "Geef je eindoordeel: zijn alle Blockers geadresseerd? Welke Warnings horen expliciet in de bouwprompt "
                         "(en welke kunnen dicht)? Stilte is geen goedkeuring — zeg expliciet 'akkoord' of 'nog niet, want ...'. "
-                        "Maximaal 55 woorden."
+                        f"{mail_rule} Maximaal 60 woorden."
                     ),
                 )
             )
@@ -2367,13 +2468,13 @@ class MeetingRunner:
                 "closing",
                 chair,
                 (
-                    "Sluit nu af als voorzitter met EXACT vijf zinnen, in deze volgorde — geen labels, "
+                    "Sluit nu af als Voorman met EXACT vijf zinnen, in deze volgorde — geen labels, "
                     "geen opsommingstekens, geen tussenkopjes, geen losse vraag aan andere deelnemers:\n"
                     "Zin 1 — Begin met 'Na deze build' en beschrijf in één zin het doel: wat is anders.\n"
                     "Zin 2 — Noem de 1-3 concrete files of symbolen die moeten veranderen, met letterlijke paden of namen.\n"
                     "Zin 3 — Geef het exacte testcommando dat het werk bewijst en het verwachte signaal (statuscode, log-regel of assertion).\n"
                     "Zin 4 — Beschrijf hoe terug te rollen als de test faalt (welke commit, file of feature-flag).\n"
-                    "Zin 5 — Noem de uitvoerende agent met slash-prefix (/codex, /claude, /roo of /agents) en zeg dat hij pas mag bouwen na 'Akkoord'.\n"
+                    "Zin 5 — Lever een formeel build_plan of bouwprompt aan OUROBOROS DEVELOPMENT TEAM build-loop en zeg dat bouwen pas mag na 'Akkoord'.\n"
                     "Onbeantwoorde Criticus-Blockers gaan NIET door — benoem die als zesde zin die start met 'Open blocker:'. "
                     "Geen interne regiewoorden ('spoor', 'deep think', 'acceptatie blijft', 'approvalpoort', 'bouwticket'). "
                     "Maximaal 140 woorden. Geen vragen, geen vragen aan deelnemers — dit is de afsluiting."
@@ -2745,7 +2846,7 @@ class MeetingRunner:
             )
             max_words = min(max_words, 70)
         else:
-            system_prompt = self._social_system_prompt(persona, personas, topic)
+            system_prompt = self._social_system_prompt(persona, personas, topic, meeting_type=meeting_type)
             user_prompt = self._turn_prompt(
                 topic=topic,
                 meeting_type=meeting_type,
@@ -2855,9 +2956,17 @@ class MeetingRunner:
         if meeting_type == "development_team":
             role_brief = {
                 "de-voorzitter": (
-                    "Je leidt het ontwikkelteam. Open in één zin met het bouwdoel (start met 'Na deze build'). "
-                    "Geef expliciet het woord aan De Developper, De Tester of De Criticus. "
-                    "Sluit af met vijf korte zinnen: doel, files/symbolen, exact testcommando, rollback, uitvoerende agent (/codex, /claude, /roo of /agents) na Akkoord."
+                    "Je leidt het ontwikkelteam als Voorman. Open in één zin met het bouwdoel (start met 'Na deze build'). "
+                    "Geef expliciet het woord aan Ontwerper, De Developper, De Tester of Critikus. "
+                    "Sluit af met vijf korte zinnen: doel, files/symbolen, exact testcommando, rollback, formeel build_plan na Akkoord."
+                ),
+                "dev-voorman": (
+                    "Je bent Voorman. Maak het werk klein, wijs de volgende rol aan, en bewaak dat er een formeel build_plan uitkomt. "
+                    "Gebruik Gas Town mailstijl: FROM, TO, SUBJECT, BODY, NEXT."
+                ),
+                "dev-ontwerper": (
+                    "Je bent Ontwerper. Leg CONTRACT, FILES, INTERFACE en TEST_HOOK vast voor De Developper en De Tester. "
+                    "Gebruik Gas Town mailstijl: FROM, TO, SUBJECT, BODY, NEXT."
                 ),
                 "de-developer": (
                     "Je bent De Developper. Noem letterlijke file paths (met /) en symbol-namen die veranderen. "
@@ -2867,14 +2976,26 @@ class MeetingRunner:
                     "Je bent De Developper. Noem letterlijke file paths (met /) en symbol-namen die veranderen. "
                     "Schets de wijziging in 1-2 zinnen, dan één gerichte vraag aan De Tester of De Criticus."
                 ),
+                "dev-developper": (
+                    "Je bent De Developper. Noem letterlijke file paths (met /) en symbol-namen die veranderen. "
+                    "Schets de wijziging in 1-2 zinnen en draag expliciet over aan De Tester. Gebruik FROM, TO, SUBJECT, BODY, NEXT."
+                ),
                 "de-tester": (
                     "Je bent De Tester. Geef het exacte testcommando (pytest/npm test/curl/cargo), het verwachte signaal "
                     "(statuscode of assertion), het faalsignaal en de rollback (welke commit/file/flag te reverten). "
                     "Geen 'handmatig in de UI klikken'."
                 ),
+                "dev-tester": (
+                    "Je bent De Tester. Geef het exacte testcommando, verwacht signaal, faalsignaal en rollback. "
+                    "Gebruik FROM, TO, SUBJECT, BODY, NEXT en draag terug aan Voorman/Critikus."
+                ),
                 "de-criticus": (
-                    "Je bent De Criticus. Wijs één Blocker of Warning aan met concrete actie voor De Developper of De Tester. "
+                    "Je bent Critikus. Wijs één Blocker of Warning aan met concrete actie voor De Developper of De Tester. "
                     "Bij security-vermoeden: escaleer en gebruik het woord Blocker. Stilte is geen goedkeuring."
+                ),
+                "dev-critikus": (
+                    "Je bent Critikus. Wijs één Blocker of Warning aan met concrete actie voor De Developper of De Tester. "
+                    "Gebruik FROM, TO, SUBJECT, BODY, NEXT. Stilte is geen goedkeuring."
                 ),
             }.get(persona_id, f"Je bent {name} ({role}). Geef één concrete inhoudelijke bijdrage met een file, symbol, test of risico.")
         elif meeting_type == "brainstorm":
@@ -2919,8 +3040,9 @@ class MeetingRunner:
             "Antwoord in 2-4 zinnen, concreet en op het onderwerp. Noem een file, symbol, testcommando of risico waar relevant."
         )
 
-    def _social_system_prompt(self, persona: dict[str, Any], personas: list[dict[str, Any]], topic: str) -> str:
+    def _social_system_prompt(self, persona: dict[str, Any], personas: list[dict[str, Any]], topic: str, *, meeting_type: str = "team") -> str:
         topic_intent = _classify_topic_intent(topic)
+        meeting_type = _normalize_meeting_type(meeting_type)
         others = [
             f"- {item.get('name') or item.get('id')}: {item.get('role') or 'geen rol opgegeven'}"
             for item in personas
@@ -2932,7 +3054,11 @@ class MeetingRunner:
             part
             for part in [
                 base_prompt,
-                "Je bent in een Ouroboros Vergadering.",
+                (
+                    "Je bent in het gescheiden OUROBOROS DEVELOPMENT TEAM, niet in OUROBOROS MEETING."
+                    if meeting_type == "development_team"
+                    else "Je bent in een Ouroboros Vergadering."
+                ),
                 f"Onderwerp: {_clip_text(topic, 1200)}",
                 f"Onderwerpsoort: {_topic_intent_label(topic_intent)}",
                 _topic_intent_contract(topic_intent),
@@ -4532,29 +4658,32 @@ class MeetingStore:
 
         meeting_type = _normalize_meeting_type(request.meeting_type)
         topic_intent = _classify_topic_intent(request.topic)
-        participants = request.participants or ["ouroboros"]
-        personas: list[dict[str, Any]] = []
-        for persona_id in participants[:12]:
-            persona = persona_store.get(persona_id)
-            persona = persona or {"id": _safe_slug(persona_id), "name": str(persona_id), "description": "", "tags": []}
-            persona = dict(persona)
-            policy = enforce_tool_policy(persona)
-            knowledge: list[dict[str, Any]] = []
-            if knowledge_store is not None and policy.get("can_search_files"):
-                knowledge.extend(knowledge_store.snippets_for_persona(persona, request.topic, limit=3))
-            if web_context_fetcher is not None and policy.get("can_search_web"):
-                web_queries = self._meeting_web_queries(meeting_type, request.topic, persona)
-                for query in web_queries:
-                    knowledge.extend(web_context_fetcher(persona, query)[:2])
-            if knowledge:
-                if meeting_type == "brainstorm":
-                    knowledge_limit = 14
-                elif meeting_type == "sprint_planning":
-                    knowledge_limit = 8
-                else:
-                    knowledge_limit = 5
-                persona["_meeting_knowledge"] = self._dedupe_knowledge(knowledge)[:knowledge_limit]
-            personas.append(persona)
+        if meeting_type == "development_team":
+            personas = _default_development_team_personas()
+        else:
+            participants = request.participants or ["ouroboros"]
+            personas = []
+            for persona_id in participants[:12]:
+                persona = persona_store.get(persona_id)
+                persona = persona or {"id": _safe_slug(persona_id), "name": str(persona_id), "description": "", "tags": []}
+                persona = dict(persona)
+                policy = enforce_tool_policy(persona)
+                knowledge: list[dict[str, Any]] = []
+                if knowledge_store is not None and policy.get("can_search_files"):
+                    knowledge.extend(knowledge_store.snippets_for_persona(persona, request.topic, limit=3))
+                if web_context_fetcher is not None and policy.get("can_search_web"):
+                    web_queries = self._meeting_web_queries(meeting_type, request.topic, persona)
+                    for query in web_queries:
+                        knowledge.extend(web_context_fetcher(persona, query)[:2])
+                if knowledge:
+                    if meeting_type == "brainstorm":
+                        knowledge_limit = 14
+                    elif meeting_type == "sprint_planning":
+                        knowledge_limit = 8
+                    else:
+                        knowledge_limit = 5
+                    persona["_meeting_knowledge"] = self._dedupe_knowledge(knowledge)[:knowledge_limit]
+                personas.append(persona)
 
         meeting_id = f"{int(time.time())}-{uuid.uuid4().hex[:10]}"
         provider = (request.provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
@@ -4576,6 +4705,7 @@ class MeetingStore:
             "safety_note": (
                 "No Cline execution, shell commands, browser control, agent execution, or write tools were run."
             ),
+            "participants": [self._public_persona_for_participant(persona) for persona in personas],
         }
         return {
             "meeting_id": meeting_id,
@@ -4663,6 +4793,7 @@ class MeetingStore:
         summary = str(runner_payload.get("summary") or "").strip()
 
         transcript_lines: list[str] = []
+        designer_notes: list[str] = []
         developer_notes: list[str] = []
         tester_notes: list[str] = []
         critic_notes: list[str] = []
@@ -4677,7 +4808,9 @@ class MeetingStore:
             line = f"{participant_name}: {content}"
             transcript_lines.append(line)
             role_key = f"{participant_id} {participant_name.lower()} {phase}"
-            if "developer" in role_key or "developper" in role_key or "implementation" in role_key:
+            if "ontwerper" in role_key or "designer" in role_key or "design" in role_key:
+                designer_notes.append(content)
+            elif "developer" in role_key or "developper" in role_key or "implementation" in role_key:
                 developer_notes.append(content)
             elif "tester" in role_key or "test" in role_key:
                 tester_notes.append(content)
@@ -4714,7 +4847,7 @@ class MeetingStore:
         file_pattern = re.compile(r"`([^`]+\.[A-Za-z0-9]{1,8})`|((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})")
         components: list[dict[str, str]] = []
         seen_components: set[str] = set()
-        for note in developer_notes or transcript_lines:
+        for note in developer_notes or designer_notes or transcript_lines:
             for match in file_pattern.finditer(note):
                 path = (match.group(1) or match.group(2) or "").strip()
                 if not path or path in seen_components:
@@ -4936,6 +5069,27 @@ class OuroborosChatService:
             web_context_fetcher=self._brave_knowledge_for_persona,
         )
 
+    def stream_development_team(self, request: DevelopmentTeamRequest) -> Iterator[dict[str, Any]]:
+        """Stream an isolated Development Team planning session with the five fixed roles."""
+        if _contains_secret_like({"prompt": request.prompt, "persona_ids": request.persona_ids, "agent_ids": request.agent_ids}):
+            raise ValueError("Development-team prompt appears to contain a secret, token, password, or bearer credential.")
+
+        provider = str(request.provider or DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
+        requested_model = str(request.model or "").strip()
+        model_hints = CODING_MODEL_HINTS.get(provider, ())
+        model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
+        topic, _clarifications = self._development_team_topic(request)
+        meeting_request = MeetingRequest(
+            topic=topic,
+            meeting_type="development_team",
+            participants=list(DEV_TEAM_DEFAULT_PERSONA_IDS),
+            provider=provider,
+            model=model,
+            tools=[],
+            allow_tools=False,
+        )
+        yield from self.stream_meeting(meeting_request)
+
     def development_team_intake(self, request: DevelopmentTeamIntakeRequest) -> dict[str, Any]:
         """Single chair-LLM call that decides whether the user's prompt needs clarification.
 
@@ -4964,7 +5118,7 @@ class OuroborosChatService:
             model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
 
         intake_system_prompt = (
-            "Je bent De Voorzitter van het Ouroboros-ontwikkelteam. Je MOET ALTIJD beginnen met verduidelijkingsvragen voordat het team begint met bouwen.\n"
+            "Je bent Voorman van het gescheiden Ouroboros-ontwikkelteam. Je MOET ALTIJD beginnen met verduidelijkingsvragen voordat het team begint met bouwen.\n"
             "Stel EXACT 3 verduidelijkingsvragen over scope, gewenste UI/CLI, doelgroep of expliciete acceptatiecriteria. "
             "Daarnaast MOET je als 4e vraag altijd vragen in welke specifieke map/directory de applicatie moet worden opgeslagen (bijv. in /home/pwintri2/...) als het een nieuwe applicatie betreft.\n\n"
             "Antwoord uitsluitend in JSON, zonder markdown, zonder toelichting. Je antwoord MOET in de volgende vorm zijn:\n"
@@ -5022,9 +5176,9 @@ class OuroborosChatService:
     def development_team(self, request: DevelopmentTeamRequest) -> dict[str, Any]:
         """Run a real `development_team` meeting and surface a workable build prompt.
 
-        Replaces the old templated rounds with the four-persona collaboration: the chair
-        keeps the goal in view, De Developper proposes concrete files/symbols, De Tester
-        delivers an acceptance command + rollback, De Criticus catches risks. The
+        Replaces the old templated rounds with fixed five-role collaboration: Voorman
+        keeps the goal in view, Ontwerper fixes the contract, De Developper proposes concrete
+        files/symbols, De Tester delivers an acceptance command + rollback, Critikus catches risks. The
         deterministic build-prompt compositor turns the transcript into a slash-command
         that the agent-runtime can execute inside its Docker-isolated job.
         """
@@ -5040,20 +5194,7 @@ class OuroborosChatService:
         agent_ids = request.agent_ids or ["codex"]
 
         # Augment topic with any clarification Q&A from a preceding intake step.
-        topic = _clip_text(request.prompt, 3000)
-        clarifications = [
-            item for item in (request.clarifications or [])
-            if isinstance(item, dict) and str(item.get("answer") or "").strip()
-        ]
-        if clarifications:
-            qa_lines = []
-            for item in clarifications:
-                question = _clip_text(str(item.get("question") or ""), 400)
-                answer = _clip_text(str(item.get("answer") or ""), 1200)
-                if question and answer:
-                    qa_lines.append(f"- {question}\n  Antwoord: {answer}")
-            if qa_lines:
-                topic = f"{topic}\n\nVerduidelijking van de gebruiker:\n" + "\n".join(qa_lines)
+        topic, clarifications = self._development_team_topic(request)
 
         # Run the real four-persona meeting via the existing dev-team agenda.
         meeting_request = MeetingRequest(
@@ -5123,6 +5264,23 @@ class OuroborosChatService:
             ),
             "fake_success": False,
         }
+
+    def _development_team_topic(self, request: DevelopmentTeamRequest) -> tuple[str, list[dict[str, str]]]:
+        topic = _clip_text(request.prompt, 3000)
+        clarifications = [
+            item for item in (request.clarifications or [])
+            if isinstance(item, dict) and str(item.get("answer") or "").strip()
+        ]
+        if clarifications:
+            qa_lines = []
+            for item in clarifications:
+                question = _clip_text(str(item.get("question") or ""), 400)
+                answer = _clip_text(str(item.get("answer") or ""), 1200)
+                if question and answer:
+                    qa_lines.append(f"- {question}\n  Antwoord: {answer}")
+            if qa_lines:
+                topic = f"{topic}\n\nVerduidelijking van de gebruiker:\n" + "\n".join(qa_lines)
+        return topic, clarifications
 
     def stream_development_team_build(
         self, request: "DevelopmentTeamBuildRequest"
@@ -6161,9 +6319,14 @@ async def get_upload(filename: str, request: Request) -> Any:
 
 
 @ouroboros_chat_router.get("/personas")
-async def list_personas(request: Request) -> dict[str, Any]:
+async def list_personas(request: Request, include_development_team: bool = False) -> dict[str, Any]:
     service = _service_from_request(request)
     personas = service.personas.list_personas()
+    if not include_development_team:
+        personas = [
+            persona for persona in personas
+            if str(persona.get("id") or "") not in HIDDEN_DEVELOPMENT_PERSONA_IDS
+        ]
     return {
         "status": "online",
         "path": str(service.personas.path),
@@ -6360,6 +6523,69 @@ async def plan_development_team(request_body: DevelopmentTeamRequest, request: R
         return await asyncio.to_thread(service.development_team, request_body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@ouroboros_chat_router.get("/development-team/agents")
+async def list_development_team_agents() -> dict[str, Any]:
+    agents = _public_development_team_agents()
+    return {"status": "online", "agents": agents, "count": len(agents), "fake_success": False}
+
+
+@ouroboros_chat_router.post("/development-team/stream")
+async def stream_development_team(request_body: DevelopmentTeamRequest, request: Request) -> Any:
+    """SSE stream: isolated five-role Development Team planning, separate from Meeting personas."""
+    try:
+        from fastapi.responses import StreamingResponse
+    except Exception as exc:  # pragma: no cover - fastapi shim path
+        raise HTTPException(status_code=500, detail=f"StreamingResponse not available: {exc}") from exc
+    service = _service_from_request(request)
+    try:
+        iterator = service.stream_development_team(request_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def event_stream() -> "AsyncIterator[bytes]":
+        loop = asyncio.get_event_loop()
+
+        def _next(it: "Iterator[dict[str, Any]]") -> dict[str, Any] | None:
+            try:
+                return next(it)
+            except StopIteration:
+                return None
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "type": "meeting_error",
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                    "timestamp": _now_iso(),
+                    "fake_success": False,
+                }
+
+        while True:
+            future = loop.run_in_executor(None, _next, iterator)
+            while True:
+                try:
+                    event = await asyncio.wait_for(asyncio.shield(future), timeout=5.0)
+                    break
+                except asyncio.TimeoutError:
+                    yield b": ping\n\n"
+
+            if event is None:
+                break
+            event_name = str(event.get("type") or "meeting_event").replace("\n", " ")
+            payload = json.dumps(event, ensure_ascii=False, sort_keys=True)
+            chunk = f"event: {event_name}\ndata: {payload}\n\n"
+            yield chunk.encode("utf-8")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @ouroboros_chat_router.post("/development-team/build")

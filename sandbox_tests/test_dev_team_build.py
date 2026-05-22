@@ -312,6 +312,9 @@ class TestDevTeamBuildSession(unittest.TestCase):
         )
         types = [event.type for event in events]
         self.assertIn("build_started", types)
+        started_event = next(event for event in events if event.type == "build_started")
+        self.assertEqual(started_event.data["communication_protocol"]["name"], "gas-town-mail-handoff")
+        self.assertEqual(started_event.data["communication_protocol"]["fields"], ["FROM", "TO", "SUBJECT", "BODY", "NEXT"])
         self.assertIn("foreman_turn", types)
         self.assertIn("designer_turn", types)
         self.assertIn("developer_turn", types)
