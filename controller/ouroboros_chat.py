@@ -611,7 +611,9 @@ class DevelopmentTeamBuildRequest(BaseModel):
     provider: Optional[str] = Field(default=DEFAULT_PROVIDER, max_length=80)
     model: Optional[str] = Field(default=DEFAULT_MODEL, max_length=160)
     max_iterations: int = Field(default=4)
+    min_iterations: int = Field(default=2)
     test_timeout_seconds: float = Field(default=120.0)
+    llm_timeout_seconds: float = Field(default=90.0)
     approval: Optional[str] = Field(default=None, max_length=128)
 
 
@@ -761,6 +763,45 @@ def _parse_intake_response(content: Any) -> dict[str, Any]:
         "needs_clarification": bool(fallback_questions),
         "questions": fallback_questions[:4],
     }
+
+
+def _development_team_intake_timeout_seconds() -> float:
+    raw = os.getenv("WINTRIP_DEVTEAM_INTAKE_TIMEOUT", "8")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 8.0
+    return max(0.25, min(value, 30.0))
+
+
+def _fallback_development_team_intake_questions(prompt: Any) -> list[str]:
+    clean_prompt = " ".join(str(prompt or "").split())
+    lower = clean_prompt.lower()
+    looks_like_new_app = any(
+        marker in lower
+        for marker in (
+            "maak ",
+            "bouw ",
+            "ontwikkel ",
+            "app",
+            "applicatie",
+            "programma",
+            "tool",
+            "site",
+            "website",
+        )
+    )
+    directory_question = (
+        "In welke specifieke directory moet dit worden opgeslagen?"
+        if looks_like_new_app
+        else "Welke bestaande directory of repo moet hiervoor gebruikt worden?"
+    )
+    return [
+        "Wat is de kleinste scope die in de eerste werkende versie af moet zijn?",
+        "Welke interface verwacht je: web, desktop, CLI of alleen backend?",
+        "Welk acceptatiesignaal bewijst dat de build klaar is?",
+        directory_question,
+    ]
 
 
 _MEETING_META_PATTERNS: tuple[tuple[Any, str], ...] = ()
@@ -951,6 +992,42 @@ def _dedupe_strings(values: list[Any] | tuple[Any, ...], *, fallback: tuple[str,
         result.append(text)
         seen.add(text)
     return result
+
+
+def _normalize_build_plan(value: dict[str, Any], *, fallback_title: Any = "") -> dict[str, Any]:
+    def _string_list(raw: Any) -> list[str]:
+        if isinstance(raw, list):
+            return _dedupe_strings([_clip_text(item, 500) for item in raw if str(item or "").strip()])
+        if str(raw or "").strip():
+            return [_clip_text(raw, 500)]
+        return []
+
+    def _component_list(raw: Any) -> list[dict[str, str]]:
+        components: list[dict[str, str]] = []
+        if isinstance(raw, list):
+            for index, item in enumerate(raw[:12], start=1):
+                if isinstance(item, dict):
+                    name = _clip_text(item.get("name") or item.get("path") or f"component_{index}", 120)
+                    description = _clip_text(item.get("description") or item.get("summary") or name, 400)
+                else:
+                    name = _clip_text(item, 120)
+                    description = name
+                if name:
+                    components.append({"name": name, "description": description})
+        return components
+
+    title = _clip_text(value.get("title") or fallback_title or "Ouroboros build", 160)
+    goals = _string_list(value.get("goals")) or [title]
+    components = _component_list(value.get("components")) or [{"name": "implementation", "description": title}]
+    tests = _string_list(value.get("tests")) or ["Draai het kleinste relevante testcommando en verwacht exitcode 0."]
+    constraints = _string_list(value.get("constraints")) or ["Geen automatische externe acties zonder expliciet Akkoord."]
+    return {
+        "title": title,
+        "goals": goals[:8],
+        "components": components[:12],
+        "tests": tests[:8],
+        "constraints": constraints[:8],
+    }
 
 
 def _safe_attachment_path(value: Any) -> Path | None:
@@ -4549,49 +4626,110 @@ class MeetingStore:
         }
 
     def _extract_build_prompt(self, meeting_type: str, request: MeetingRequest, runner_payload: dict[str, Any]) -> str:
-        """Compose a BUILD_PLAN from the dev-team meeting transcript."""
+        """Compose a deterministic BUILD_PLAN JSON object from the dev-team transcript."""
         if _normalize_meeting_type(meeting_type) != "development_team":
             return ""
         rounds = [item for item in (runner_payload.get("rounds") or []) if isinstance(item, dict)]
-        if not rounds:
-            return _clip_text(str(runner_payload.get("summary") or ""), 4000)
+        summary = str(runner_payload.get("summary") or "").strip()
 
-        transcript_lines = []
-        for r in rounds:
-            p = r.get("participant", {})
-            name = str(p.get("name") or p.get("id") or "Deelnemer")
-            text = str(r.get("text") or "")
-            if text:
-                transcript_lines.append(f"{name}: {text}")
-        transcript = "\n".join(transcript_lines)
-        
-        system_prompt = (
-            "Je bent een senior AI-architect en lead-engineer. Lees het transcript en genereer "
-            "UITSLUITEND een BUILD_PLAN (JSON) object. Geen markdown, geen extra tekst.\n"
-            "Structuur:\n"
-            "{\n"
-            '  "title": "...",\n'
-            '  "goals": [...],\n'
-            '  "components": [...],\n'
-            '  "tests": [...],\n'
-            '  "constraints": [...]\n'
-            "}"
-        )
-        
-        response = self._call_model_provider(
-            prompt="Meeting transcript:\n" + transcript,
-            provider=request.provider or "ollama",
-            model=request.model or "ouroboros:latest",
-            system_prompt=system_prompt,
-            history=[],
-        )
-        content = str(response.get("content") or "").strip()
-        if content.startswith("```"):
-            lines = content.splitlines()
-            if lines[0].startswith("```"): lines = lines[1:]
-            if lines and lines[-1].startswith("```"): lines = lines[:-1]
-            content = "\\n".join(lines).strip()
-        return content
+        transcript_lines: list[str] = []
+        developer_notes: list[str] = []
+        tester_notes: list[str] = []
+        critic_notes: list[str] = []
+        for item in rounds:
+            participant = item.get("participant") if isinstance(item.get("participant"), dict) else {}
+            participant_name = str(participant.get("name") or participant.get("id") or "Deelnemer")
+            participant_id = str(participant.get("id") or "").lower()
+            phase = str(item.get("phase") or "").lower()
+            content = str(item.get("content") or item.get("text") or "").strip()
+            if not content:
+                continue
+            line = f"{participant_name}: {content}"
+            transcript_lines.append(line)
+            role_key = f"{participant_id} {participant_name.lower()} {phase}"
+            if "developer" in role_key or "developper" in role_key or "implementation" in role_key:
+                developer_notes.append(content)
+            elif "tester" in role_key or "test" in role_key:
+                tester_notes.append(content)
+            elif "criticus" in role_key or "critic" in role_key:
+                critic_notes.append(content)
+
+        combined = "\n".join([summary, *transcript_lines]).strip()
+        for candidate in (summary, combined):
+            start = candidate.find("{")
+            end = candidate.rfind("}")
+            if start == -1 or end <= start:
+                continue
+            try:
+                parsed = json.loads(candidate[start : end + 1])
+            except Exception:
+                continue
+            if isinstance(parsed, dict) and any(key in parsed for key in ("title", "goals", "components", "tests", "constraints")):
+                return json.dumps(_normalize_build_plan(parsed, fallback_title=request.topic), ensure_ascii=False, indent=2)
+
+        title = _clip_text(str(request.topic or "Ouroboros build").strip(), 160)
+        goals = _dedupe_strings(
+            [
+                title,
+                *[
+                    _clip_text(sentence.strip(), 240)
+                    for sentence in re.split(r"(?<=[.!?])\s+", combined)
+                    if sentence.strip().lower().startswith(("na deze build", "doel", "bouw", "voeg", "maak", "implementeer"))
+                ],
+            ]
+        )[:5]
+        if not goals:
+            goals = [title]
+
+        file_pattern = re.compile(r"`([^`]+\.[A-Za-z0-9]{1,8})`|((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})")
+        components: list[dict[str, str]] = []
+        seen_components: set[str] = set()
+        for note in developer_notes or transcript_lines:
+            for match in file_pattern.finditer(note):
+                path = (match.group(1) or match.group(2) or "").strip()
+                if not path or path in seen_components:
+                    continue
+                seen_components.add(path)
+                components.append({"name": path, "description": _clip_text(note, 220)})
+        if not components:
+            components.append(
+                {
+                    "name": "implementation",
+                    "description": _clip_text(developer_notes[0] if developer_notes else title, 220),
+                }
+            )
+
+        tests = _dedupe_strings(
+            [
+                _clip_text(line.strip(" -"), 240)
+                for note in tester_notes
+                for line in note.splitlines()
+                if any(marker in line.lower() for marker in ("pytest", "python -m", "npm test", "testcommando", "<cmd", "verwacht"))
+            ]
+        )[:6]
+        if not tests:
+            tests = ["Draai het kleinste relevante testcommando en verwacht exitcode 0."]
+
+        constraints = _dedupe_strings(
+            [
+                "Geen automatische externe acties zonder expliciet Akkoord.",
+                "Wijzig alleen de afgesproken sandbox/workspace files.",
+                *[
+                    _clip_text(line.strip(" -"), 240)
+                    for note in critic_notes
+                    for line in note.splitlines()
+                    if any(marker in line.lower() for marker in ("blocker", "warning", "risico", "rollback", "constraint"))
+                ],
+            ]
+        )[:8]
+        plan = {
+            "title": title,
+            "goals": goals,
+            "components": components[:8],
+            "tests": tests,
+            "constraints": constraints,
+        }
+        return json.dumps(plan, ensure_ascii=False, indent=2)
         # Cleaned up old unused fallback logic.
 
     def _dedupe_knowledge(self, knowledge: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4808,22 +4946,46 @@ class OuroborosChatService:
             f"{_clip_text(request.prompt, 2400)}\n\n"
             "Beoordeel de opdracht en lever de JSON."
         )
-        response = self._call_model_provider(
+        timeout_seconds = _development_team_intake_timeout_seconds()
+        response: dict[str, Any] | None = None
+        fallback_reason = ""
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="devteam-intake")
+        future = executor.submit(
+            self._call_model_provider,
             prompt=intake_user_prompt,
             provider=provider,
             model=model,
             system_prompt=intake_system_prompt,
             history=[],
         )
-        parsed = _parse_intake_response(response.get("content"))
+        try:
+            maybe_response = future.result(timeout=timeout_seconds)
+            response = maybe_response if isinstance(maybe_response, dict) else {"content": str(maybe_response or "")}
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            fallback_reason = f"intake_model_timeout_after_{timeout_seconds:.1f}s"
+        except Exception as exc:  # noqa: BLE001 - intake should never block the UI flow
+            fallback_reason = f"intake_model_error: {exc}"
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        parsed = _parse_intake_response(response.get("content") if response else "")
+        if not parsed["questions"]:
+            parsed = {
+                "needs_clarification": True,
+                "questions": _fallback_development_team_intake_questions(request.prompt),
+            }
+            fallback_reason = fallback_reason or "intake_model_returned_no_questions"
         return {
             "status": "intake_complete",
             "needs_clarification": parsed["needs_clarification"],
             "questions": parsed["questions"][:4],
             "prompt": _clip_text(request.prompt, 3000),
-            "provider": response.get("provider", provider),
-            "model": response.get("model", model),
-            "raw": _clip_text(str(response.get("content") or ""), 1600),
+            "provider": (response or {}).get("provider", provider),
+            "model": (response or {}).get("model", model),
+            "raw": _clip_text(str((response or {}).get("content") or fallback_reason), 1600),
+            "fallback_used": bool(fallback_reason),
+            "fallback_reason": fallback_reason,
             "fake_success": False,
         }
 
@@ -4941,10 +5103,10 @@ class OuroborosChatService:
         De loop stopt op de eerste groene test of na `max_iterations`.
         """
         from controller.dev_team_build import (
+            DevTeamBuildSession,
             new_build_session_id,
             workspace_for,
         )
-        from controller.dual_layer.development import DevelopmentTeamBuildSession
 
         if _contains_secret_like({"build_prompt": request.build_prompt, "persona_ids": request.persona_ids}):
             raise ValueError(
@@ -4990,23 +5152,20 @@ class OuroborosChatService:
         workspace = workspace_for(session_id, builds_root)
         workspace.mkdir(parents=True, exist_ok=True)
 
-        import json
-        try:
-            build_plan = json.loads(request.build_prompt)
-        except json.JSONDecodeError:
-            # Fallback if the meeting didn't produce valid JSON
-            build_plan = {"title": "Legacy Plan", "goals": [request.build_prompt], "components": [], "tests": [], "constraints": []}
-
-        session = DevelopmentTeamBuildSession(
+        session = DevTeamBuildSession(
             session_id=session_id,
             workspace=workspace,
-            data_dir=self.data_dir,
             llm_call=self._call_model_provider,
+            max_iterations=max(1, min(int(request.max_iterations or 4), 12)),
+            min_iterations=max(1, min(int(request.min_iterations or 2), 12)),
+            test_timeout=max(1.0, min(float(request.test_timeout_seconds or 120.0), 600.0)),
+            llm_timeout_seconds=max(5.0, min(float(request.llm_timeout_seconds or 90.0), 600.0)),
         )
 
         try:
             for event in session.iterate(
-                build_plan=build_plan,
+                build_prompt=request.build_prompt,
+                clarifications=request.clarifications,
                 provider=provider,
                 model=model,
                 personas=personas_by_role,
@@ -6220,12 +6379,20 @@ async def stream_development_team_build(
                 return next(it)
             except StopIteration:
                 return None
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "type": "build_error",
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                    "timestamp": _now_iso(),
+                    "fake_success": False,
+                }
 
         while True:
             future = loop.run_in_executor(None, _next, iterator)
             while True:
                 try:
-                    event = await asyncio.wait_for(asyncio.shield(future), timeout=15.0)
+                    event = await asyncio.wait_for(asyncio.shield(future), timeout=5.0)
                     break
                 except asyncio.TimeoutError:
                     yield b"".join(b": ping\n" for _ in range(500)) + b"\n"
@@ -6292,12 +6459,20 @@ async def stream_meeting(request_body: MeetingRequest, request: Request) -> Any:
                 return next(it)
             except StopIteration:
                 return None
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "type": "meeting_error",
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                    "timestamp": _now_iso(),
+                    "fake_success": False,
+                }
 
         while True:
             future = loop.run_in_executor(None, _next, iterator)
             while True:
                 try:
-                    event = await asyncio.wait_for(asyncio.shield(future), timeout=15.0)
+                    event = await asyncio.wait_for(asyncio.shield(future), timeout=5.0)
                     break
                 except asyncio.TimeoutError:
                     yield b"".join(b": ping\n" for _ in range(500)) + b"\n"

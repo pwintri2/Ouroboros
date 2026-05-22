@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -181,6 +182,34 @@ class TestDevTeamBuildSession(unittest.TestCase):
                 "system_prompt": "Je bent de Voorzitter.",
             },
         }
+
+    def test_llm_timeout_returns_without_waiting_for_worker_completion(self) -> None:
+        def slow_llm(**kwargs: Any) -> dict[str, Any]:
+            time.sleep(1.0)
+            return {"ok": True, "content": "late", "error": ""}
+
+        session = self.mod.DevTeamBuildSession(
+            session_id="llm-timeout",
+            workspace=self.workspace,
+            llm_call=slow_llm,
+            max_iterations=1,
+            test_timeout=20,
+        )
+        session.llm_timeout_seconds = 0.1
+
+        started = time.monotonic()
+        result = session._call_llm(
+            user_prompt="bouw iets",
+            system_prompt="Je bent de Developper.",
+            provider="ollama",
+            model="slow:latest",
+            persona=self._personas()["developer"],
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertFalse(result["ok"])
+        self.assertIn("timed out", result["error"])
+        self.assertLess(elapsed, 0.75)
 
     def test_session_completes_in_one_iteration_when_first_test_is_green(self) -> None:
         """Developer writes a passing test, Tester runs it, build goes green immediately."""

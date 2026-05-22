@@ -57,9 +57,9 @@ class DevTeamBuildEvent:
     data: dict[str, Any]
 
 
-# `<file path="src/foo.py">...</file>` blocks — single or double quotes around path.
+# `<file path="src/foo.py">...</file>` blocks — permissive of missing quotes.
 _FILE_BLOCK_PATTERN = re.compile(
-    r"<file\s+path=(?P<q>['\"])(?P<path>[^'\"]+?)(?P=q)\s*>(?P<body>.*?)</file>",
+    r"<file\s+path=(?:['\"](?P<path_q>[^'\"]+?)['\"]|(?P<path_uq>[^\s>]+))[^>]*>(?P<body>.*?)</file>",
     re.DOTALL,
 )
 # `<cmd>pytest ...</cmd>` — first match wins; one command per turn.
@@ -104,7 +104,7 @@ def extract_file_blocks(content: str) -> list[tuple[str, str]]:
     """
     blocks: list[tuple[str, str]] = []
     for match in _FILE_BLOCK_PATTERN.finditer(content or ""):
-        path = match.group("path").strip()
+        path = (match.group("path_q") or match.group("path_uq") or "").strip()
         body = match.group("body")
         if body.startswith("\r\n"):
             body = body[2:]
@@ -314,6 +314,7 @@ class DevTeamBuildSession:
         )
 
         last_test_result: TestResult | None = None
+        chat_history: list[dict[str, str]] = []
 
         for iteration in range(1, self.max_iterations + 1):
             iteration_data: dict[str, Any] = {
@@ -335,8 +336,11 @@ class DevTeamBuildSession:
                 provider=provider,
                 model=model,
                 persona=dev_persona,
+                history=chat_history,
             )
             dev_content = (dev_response.get("content") or "").strip()
+            if dev_content:
+                chat_history.append({"role": "user", "content": f"[De Developer]: {dev_content}"})
             yield DevTeamBuildEvent(
                 "developer_turn",
                 {
@@ -372,8 +376,11 @@ class DevTeamBuildSession:
                 provider=provider,
                 model=model,
                 persona=tester_persona,
+                history=chat_history,
             )
             tester_content = (tester_response.get("content") or "").strip()
+            if tester_content:
+                chat_history.append({"role": "user", "content": f"[De Tester]: {tester_content}"})
             yield DevTeamBuildEvent(
                 "tester_turn",
                 {
@@ -422,8 +429,11 @@ class DevTeamBuildSession:
                     provider=provider,
                     model=model,
                     persona=chair_persona,
+                    history=chat_history,
                 )
                 review_content = (review_response.get("content") or "").strip()
+                if review_content:
+                    chat_history.append({"role": "user", "content": f"[De Voorzitter]: {review_content}"})
                 verdict = _parse_chair_review(review_content)
                 iteration_data["chair_review"] = {
                     "verdict": verdict["verdict"],
@@ -512,8 +522,11 @@ class DevTeamBuildSession:
                 provider=provider,
                 model=model,
                 persona=critic_persona,
+                history=chat_history,
             )
             critic_content = (critic_response.get("content") or "").strip()
+            if critic_content:
+                chat_history.append({"role": "user", "content": f"[De Criticus]: {critic_content}"})
             iteration_data["critic_feedback"] = critic_content
             yield DevTeamBuildEvent(
                 "critic_turn",
@@ -545,10 +558,12 @@ class DevTeamBuildSession:
         provider: str,
         model: str,
         persona: dict[str, Any],
+        history: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
         chosen_provider = str(model_settings.get("provider") or provider or "ollama").strip().lower() or "ollama"
         chosen_model = str(model_settings.get("name") or model or "ouroboros:latest").strip() or "ouroboros:latest"
+        safe_history = list(history or [])
         
         # Wrap the LLM call with a timeout
         def _do_call() -> dict[str, Any]:
@@ -559,7 +574,7 @@ class DevTeamBuildSession:
                         provider=chosen_provider,
                         model=chosen_model,
                         system_prompt=system_prompt,
-                        history=[],
+                        history=safe_history,
                         images=[],
                     )
                 except TypeError:
@@ -568,7 +583,7 @@ class DevTeamBuildSession:
                             prompt=user_prompt,
                             model=chosen_model,
                             system_prompt=system_prompt,
-                            history=[],
+                            history=safe_history,
                         )
                     except Exception as exc:  # noqa: BLE001
                         return {"ok": False, "content": "", "error": str(exc)}
@@ -587,17 +602,19 @@ class DevTeamBuildSession:
             except Exception as exc:
                 return {"ok": False, "content": "", "error": str(exc)}
         
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_do_call)
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_do_call)
-                result = future.result(timeout=self.llm_timeout_seconds)
-                return result
+            return future.result(timeout=self.llm_timeout_seconds)
         except FuturesTimeoutError:
+            future.cancel()
             return {
                 "ok": False,
                 "content": "",
                 "error": f"LLM call timed out after {self.llm_timeout_seconds:.0f}s",
             }
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     # ------------------------------------------------------------------
     # Prompt builders
@@ -612,11 +629,11 @@ class DevTeamBuildSession:
               "geschreven; de inhoud van het blok VERVANGT de file volledig. Schrijf alleen "
               "nieuwe of gewijzigde files. Houd files compleet en self-contained.\n\n"
               "Vorm van je antwoord (vrij format buiten de blokken):\n"
-              "1. 1-3 zinnen over wat je in deze iteratie bouwt.\n"
+              "1. Een korte, collegiale begroeting en communicatie naar De Voorzitter en het team (net als in CrewAI).\n"
               "2. Een of meerdere `<file path=\"...\">...</file>` blokken met de werkelijke code.\n"
-              "3. Een korte vraag aan De Tester over hoe te testen.\n\n"
+              "3. Een duidelijke overdracht en instructie aan De Tester over wat je hebt gebouwd en hoe hij het moet testen.\n\n"
               "Voorbeeld:\n"
-              "Ik begin met de skeleton.\n"
+              "Bedankt Voorzitter, ik pak dit op. Ik begin met de skeleton.\n"
               "<file path=\"src/cli.py\">\n"
               "#!/usr/bin/env python3\n"
               "def main():\n"
@@ -628,11 +645,9 @@ class DevTeamBuildSession:
               "    main()\n"
               "    assert \"hello\" in capsys.readouterr().out\n"
               "</file>\n"
-              "Vraag aan De Tester: wil je ook stderr afdekken?\n\n"
+              "Hé Tester, ik heb de cli stub en de eerste test toegevoegd. Kun jij dit draaien met pytest en kijken of de stderr goed is?\n\n"
               "Harde regels: geen markdown om de file-blokken (geen ```), geen tekst tussen "
-              "`<file>` en `</file>` behalve de file-inhoud. Bij ontbrekende afhankelijkheden: "
-              "voeg een `requirements.txt` blok toe en noem het in je context-zin. Begin niet "
-              "met je eigen naam."
+              "`<file>` en `</file>` behalve de file-inhoud."
         )
 
     def _tester_system_prompt(self, persona: dict[str, Any]) -> str:
@@ -643,11 +658,14 @@ class DevTeamBuildSession:
               "dat het bouwdoel bewijst en draai het mentaal door. Je MOET het commando in een "
               "`<cmd>...</cmd>` blok zetten — één regel, idempotent, draait vanaf de "
               "workspace-root.\n\n"
+              "Vorm van je antwoord:\n"
+              "1. Een korte reactie op De Developer en bevestiging van je actie (team communicatie).\n"
+              "2. Eén `<cmd>...</cmd>` blok met het testcommando.\n"
+              "3. Een korte mededeling aan het team over je verwachtingen.\n\n"
               "Voorbeeld antwoord:\n"
-              "Test de hello-path met pytest.\n"
+              "Goed bezig Developer, ik zie je test. Ik zal hem nu even aftrappen met pytest om te zien of stderr echt afgedekt wordt.\n"
               "<cmd>python -m pytest tests/test_cli.py -v</cmd>\n"
-              "Verwacht: exit 0 met `1 passed`.\n"
-              "Faal: assertion of import error.\n\n"
+              "Ik verwacht dat we een exit 0 terugkrijgen. Mocht hij falen, dan roep ik de Criticus erbij.\n\n"
               "Harde regels: één `<cmd>` blok per beurt, geen `sudo`, geen netwerk-tools "
               "(`curl`, `wget`, `ssh`), geen destructieve commando's (`rm -rf /`). Voor Python "
               "test-runs gebruik `python -m pytest ...` zodat de workspace op sys.path komt."
@@ -658,10 +676,11 @@ class DevTeamBuildSession:
         return (
             (base + "\n\n" if base else "")
             + "BOUWMODE: je leest de stdout/stderr van het laatst gedraaide testcommando. "
-              "Geef De Developper een gerichte fix-opdracht in MAXIMAAL 4 zinnen: (1) oorzaak "
-              "van de fout, (2) welke file/symbol raakt het, (3) kleinste wijziging die het "
-              "groen maakt, (4) optioneel: een edge case die nog mist. Lees de stderr "
-              "LETTERLIJK; verzin geen fouten die er niet staan."
+              "Geef De Developper een gerichte fix-opdracht in MAXIMAAL 4 zinnen.\n"
+              "Vorm van je antwoord:\n"
+              "1. Een collegiale, duidelijke teamgerichte reactie naar de Developer (bijv. 'Hé Developer, de test van de Tester is gefaald...').\n"
+              "2. (1) oorzaak van de fout, (2) welke file/symbol raakt het, (3) kleinste wijziging die het groen maakt.\n"
+              "Lees de stderr LETTERLIJK; verzin geen fouten die er niet staan."
         )
 
     def _developer_user_prompt(
