@@ -1294,6 +1294,14 @@ class TestOuroborosChatService(unittest.TestCase):
         )
         all_system_prompts = "\n".join(str(call.get("system_prompt") or "") for call in self.fake_ollama.calls)
         self.assertNotIn("POISONED_MEETING_PROMPT_SHOULD_NOT_REACH_DEV_STREAM", all_system_prompts)
+        self.assertEqual(self.fake_ollama.calls, [])
+        recorded = events[-1]
+        self.assertEqual(recorded["type"], "meeting_recorded")
+        self.assertEqual(recorded["planning_strategy"], "deterministic")
+        self.assertIn("gas-town", events[0]["communication_protocol"]["name"])
+        transcript = "\n".join(str(event.get("content") or "") for event in events)
+        self.assertIn("MODE: nudge", transcript)
+        self.assertIn("MODE: handoff", transcript)
 
     def test_development_team_build_uses_isolated_agents_not_meeting_personas(self):
         self.service.personas.upsert(

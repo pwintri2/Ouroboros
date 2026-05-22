@@ -499,6 +499,8 @@ DEV_TEAM_DEFAULT_PERSONA_IDS: tuple[str, ...] = (
     "dev-tester",
     "dev-critikus",
 )
+GASTOWN_ROOT = Path(os.getenv("GASTOWN_ROOT", "/home/pwintri2/gastown"))
+DEVTEAM_PLANNING_STRATEGIES = {"deterministic", "legacy-meeting"}
 HIDDEN_DEVELOPMENT_PERSONA_IDS: frozenset[str] = frozenset(
     {
         "de-voorzitter",
@@ -720,6 +722,72 @@ def _public_development_team_agents() -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def _development_team_planning_strategy() -> str:
+    raw = os.getenv("WINTRIP_DEVTEAM_PLANNING_STRATEGY", "deterministic")
+    value = str(raw or "").strip().lower().replace("_", "-")
+    aliases = {
+        "fast": "deterministic",
+        "scripted": "deterministic",
+        "no-llm": "deterministic",
+        "meeting": "legacy-meeting",
+        "full": "legacy-meeting",
+        "llm": "legacy-meeting",
+        "legacy": "legacy-meeting",
+    }
+    value = aliases.get(value, value)
+    return value if value in DEVTEAM_PLANNING_STRATEGIES else "deterministic"
+
+
+def _gastown_agent_message(
+    *,
+    mode: str,
+    sender: str,
+    recipient: str,
+    subject: str,
+    body: str,
+    next_action: str,
+) -> str:
+    clean_mode = mode if mode in {"nudge", "mail", "handoff"} else "nudge"
+    return (
+        f"MODE: {clean_mode}\n"
+        f"FROM: {sender}\n"
+        f"TO: {recipient}\n"
+        f"SUBJECT: {_clip_text(subject, 160)}\n"
+        f"BODY:\n{_clip_text(body, 1800)}\n"
+        f"NEXT: {_clip_text(next_action, 500)}\n"
+        f"SOURCE: {GASTOWN_ROOT}"
+    )
+
+
+def _development_team_seed_plan(topic: str) -> dict[str, Any]:
+    title = _clip_text(topic, 160) or "Ouroboros build"
+    lower = topic.lower()
+    components: list[dict[str, str]] = [{"name": "implementation", "description": title}]
+    if any(marker in lower for marker in ("ui", "frontend", "scherm", "knop", "venster", "tauri")):
+        components.append({"name": "ui", "description": "Maak de zichtbare workflow concreet en testbaar."})
+    if any(marker in lower for marker in ("api", "backend", "endpoint", "route")):
+        components.append({"name": "backend", "description": "Werk de backend-route of service met duidelijke input/output uit."})
+    tests = ["Draai het kleinste relevante testcommando en verwacht exitcode 0."]
+    if "python" in lower or "pytest" in lower:
+        tests = ["python -m pytest -q"]
+    elif "npm" in lower or "react" in lower or "tauri" in lower or "frontend" in lower:
+        tests = ["npm test -- --runInBand of het lokale project-equivalent; verwacht exitcode 0."]
+    return _normalize_build_plan(
+        {
+            "title": title,
+            "goals": [topic],
+            "components": components,
+            "tests": tests,
+            "constraints": [
+                "Geen automatische externe acties zonder expliciet Akkoord.",
+                "Meeting-persona's blijven gescheiden van OUROBOROS DEVELOPMENT TEAM.",
+                "Ondersteunende rollen communiceren via Gas Town MODE: nudge/mail/handoff.",
+            ],
+        },
+        fallback_title=title,
+    )
 
 
 def _safe_slug(value: str, fallback: str = "item") -> str:
@@ -2109,7 +2177,8 @@ class MeetingRunner:
                 "De Developper schetst de code-wijziging met letterlijke file paths en symbolen; "
                 "De Tester levert een reproduceerbaar testcommando, verwacht signaal en rollback; "
                 "Critikus markeert risico's als Blocker of Warning met een concrete actie. "
-                "Elke beurt gebruikt een Gas Town-stijl overdracht: FROM, TO, SUBJECT, BODY, NEXT. "
+                "Elke beurt gebruikt een Gas Town-stijl overdracht: MODE, FROM, TO, SUBJECT, BODY, NEXT. "
+                "MODE: nudge is normale directe overdracht, MODE: mail is persistente blocker, MODE: handoff is sessiecontinuiteit. "
                 "Blockers van Critikus moeten geadresseerd zijn voor Voorman afsluit."
             )
         return (
@@ -5079,6 +5148,14 @@ class OuroborosChatService:
         model_hints = CODING_MODEL_HINTS.get(provider, ())
         model = requested_model or (model_hints[0] if model_hints else DEFAULT_MODEL)
         topic, _clarifications = self._development_team_topic(request)
+        if _development_team_planning_strategy() == "deterministic":
+            yield from self._stream_fast_development_team_plan(
+                request=request,
+                topic=topic,
+                provider=provider,
+                model=model,
+            )
+            return
         meeting_request = MeetingRequest(
             topic=topic,
             meeting_type="development_team",
@@ -5089,6 +5166,245 @@ class OuroborosChatService:
             allow_tools=False,
         )
         yield from self.stream_meeting(meeting_request)
+
+    def _stream_fast_development_team_plan(
+        self,
+        *,
+        request: DevelopmentTeamRequest,
+        topic: str,
+        provider: str,
+        model: str,
+    ) -> Iterator[dict[str, Any]]:
+        """Fast no-LLM planning pass for the separated five-role Development Team."""
+        meeting_id = f"{int(time.time())}-{uuid.uuid4().hex[:10]}"
+        participants = _public_development_team_agents()
+        participants_by_id = {str(item.get("id") or ""): item for item in participants}
+        build_plan = _development_team_seed_plan(topic)
+        build_prompt = json.dumps(build_plan, ensure_ascii=False, indent=2)
+        started_event = {
+            "type": "meeting_started",
+            "meeting_id": meeting_id,
+            "timestamp": _now_iso(),
+            "topic": _clip_text(topic, 2000),
+            "meeting_type": "development_team",
+            "meeting_type_label": MEETING_TYPE_LABELS.get("development_team", "Ontwikkelteam-vergadering"),
+            "topic_intent": _classify_topic_intent(topic),
+            "topic_intent_label": _topic_intent_label(_classify_topic_intent(topic)),
+            "provider": provider,
+            "model": model,
+            "approval_phrase": APPROVAL_PHRASE,
+            "approval_supplied": str(request.approval or "").strip() == APPROVAL_PHRASE,
+            "tool_policy": self.meetings.tool_policy(),
+            "planning_strategy": "deterministic",
+            "communication_protocol": {
+                "name": "gas-town-nudge-mail-handoff",
+                "source": str(GASTOWN_ROOT),
+                "fields": ["MODE", "FROM", "TO", "SUBJECT", "BODY", "NEXT"],
+            },
+            "safety_note": "No Cline execution, shell commands, browser control, agent execution, or write tools were run.",
+            "participants": participants,
+        }
+        events: list[dict[str, Any]] = [started_event]
+        yield started_event
+
+        def turn(persona_id: str, round_number: int, phase: str, content: str) -> dict[str, Any]:
+            participant = participants_by_id.get(persona_id) or {"id": persona_id, "name": persona_id, "role": ""}
+            return {
+                "type": "participant_turn",
+                "meeting_id": meeting_id,
+                "timestamp": _now_iso(),
+                "meeting_type": "development_team",
+                "round": round_number,
+                "phase": phase,
+                "participant": participant,
+                "content": content,
+                "provider": provider,
+                "model": model,
+                "ok": True,
+                "error": "",
+                "prompt_context": {
+                    "deterministic_planning": True,
+                    "gas_town_protocol": "nudge/mail/handoff",
+                    "llm_call_made": False,
+                },
+            }
+
+        turns = [
+            turn(
+                "dev-voorman",
+                1,
+                "triage",
+                _gastown_agent_message(
+                    mode="nudge",
+                    sender="Voorman",
+                    recipient="Ontwerper",
+                    subject="bouwdoel en werkgrens",
+                    body=(
+                        f"Bouwdoel: {build_plan['title']}\n"
+                        f"Goals: {'; '.join(build_plan.get('goals', [])[:3])}\n"
+                        "Werk klein: maak één formeel build_plan dat de build-loop direct kan uitvoeren."
+                    ),
+                    next_action="Ontwerper legt files, interface en testhook vast.",
+                ),
+            ),
+            turn(
+                "dev-ontwerper",
+                1,
+                "design-contract",
+                _gastown_agent_message(
+                    mode="nudge",
+                    sender="Ontwerper",
+                    recipient="De Developper",
+                    subject="ontwerpcontract",
+                    body=(
+                        f"CONTRACT: {build_plan['title']}\n"
+                        f"FILES: {', '.join(component['name'] for component in build_plan.get('components', [])[:5])}\n"
+                        "INTERFACE: houd input/output direct observeerbaar.\n"
+                        f"TEST_HOOK: {build_plan.get('tests', [''])[0]}"
+                    ),
+                    next_action="De Developper gebruikt dit build_plan als startcontract in de gescheiden build-loop.",
+                ),
+            ),
+            turn(
+                "dev-developper",
+                1,
+                "implementation-route",
+                _gastown_agent_message(
+                    mode="nudge",
+                    sender="De Developper",
+                    recipient="De Tester",
+                    subject="kleinste editroute",
+                    body=(
+                        "Ik raak alleen sandbox/workspace-bestanden die uit het build_plan volgen. "
+                        "Ik schrijf kleine Aider-style diff/file blokken en geef daarna één testoverdracht."
+                    ),
+                    next_action="De Tester kiest het kleinste acceptance-commando.",
+                ),
+            ),
+            turn(
+                "dev-tester",
+                1,
+                "test-plan",
+                _gastown_agent_message(
+                    mode="nudge",
+                    sender="De Tester",
+                    recipient="Critikus",
+                    subject="acceptatiebewijs",
+                    body=(
+                        f"Primair testbewijs: {build_plan.get('tests', [''])[0]}\n"
+                        "Groen betekent exitcode 0 plus zichtbaar bewijs voor het beschreven doel."
+                    ),
+                    next_action="Critikus benoemt alleen concrete blockers of accepteert met waarschuwing.",
+                ),
+            ),
+            turn(
+                "dev-critikus",
+                1,
+                "risk-review",
+                _gastown_agent_message(
+                    mode="mail",
+                    sender="Critikus",
+                    recipient="Voorman/De Developper/De Tester",
+                    subject="blockers en grenzen",
+                    body=(
+                        "Blocker: geen fake success. Warning: als het gekozen model traag is, laat alleen de Developper-call zwaar zijn. "
+                        "Alle ondersteunende rollen moeten via vaste Gas Town-overdracht blijven communiceren."
+                    ),
+                    next_action="Voorman zet het definitieve build_plan klaar voor OUROBOROS DEVELOPMENT TEAM.",
+                ),
+            ),
+            turn(
+                "dev-voorman",
+                2,
+                "handoff",
+                _gastown_agent_message(
+                    mode="handoff",
+                    sender="Voorman",
+                    recipient="OUROBOROS DEVELOPMENT TEAM build-loop",
+                    subject="formeel build_plan",
+                    body=f"BUILD_PLAN_JSON:\n{build_prompt}",
+                    next_action="Start de gescheiden build-loop: Voorman -> Ontwerper -> Developper -> Tester -> Critikus.",
+                ),
+            ),
+        ]
+
+        for event in turns:
+            events.append(event)
+            yield event
+
+        summary = (
+            "Ontwikkelteam-plan staat klaar met vijf gescheiden rollen. "
+            "Onderlinge communicatie gebruikt Gas Town MODE: nudge/mail/handoff; de build-loop kan nu met één zware Developper-call per iteratie werken."
+        )
+        summary_event = {
+            "type": "meeting_summary",
+            "meeting_id": meeting_id,
+            "timestamp": _now_iso(),
+            "meeting_type": "development_team",
+            "topic_intent": _classify_topic_intent(topic),
+            "content": summary,
+            "summary": summary,
+            "provider": provider,
+            "model": model,
+            "ok": True,
+            "error": "",
+            "safety_note": "No Cline execution, shell commands, browser control, agent execution, or write tools were run.",
+            "next_action": "Gebruik het build_plan in /api/ouroboros-chat/development-team/build/stream.",
+        }
+        events.append(summary_event)
+        yield summary_event
+
+        transcript = "\n\n".join(
+            f"{event.get('participant', {}).get('name')}: {event.get('content')}"
+            for event in turns
+        )
+        event_path = self.meetings._write_events(meeting_id, events)
+        record_path = self.meetings._write_record(
+            meeting_id,
+            {
+                "meeting_id": meeting_id,
+                "topic": _clip_text(topic, 4000),
+                "meeting_type": "development_team",
+                "topic_intent": _classify_topic_intent(topic),
+                "participants": participants,
+                "participant_ids": [str(item.get("id")) for item in participants if item.get("id")],
+                "agent_ids": request.agent_ids or [],
+                "rounds": turns,
+                "summary": summary,
+                "transcript": transcript,
+                "build_prompt": build_prompt,
+                "build_plan": build_plan,
+                "status": "completed",
+                "provider": provider,
+                "model": model,
+                "artifact_path": str(event_path),
+                "created_at": started_event["timestamp"],
+                "updated_at": _now_iso(),
+                "tool_policy": self.meetings.tool_policy(),
+                "planning_strategy": "deterministic",
+                "fake_success": False,
+            },
+        )
+        yield {
+            "type": "meeting_recorded",
+            "meeting_id": meeting_id,
+            "timestamp": _now_iso(),
+            "status": "recorded",
+            "artifact_path": str(event_path),
+            "record_path": str(record_path),
+            "event_count": len(events),
+            "meeting_type": "development_team",
+            "topic_intent": _classify_topic_intent(topic),
+            "participants": participants,
+            "rounds": turns,
+            "summary": summary,
+            "transcript": transcript,
+            "build_prompt": build_prompt,
+            "build_plan": build_plan,
+            "tool_policy": self.meetings.tool_policy(),
+            "planning_strategy": "deterministic",
+            "fake_success": False,
+        }
 
     def development_team_intake(self, request: DevelopmentTeamIntakeRequest) -> dict[str, Any]:
         """Single chair-LLM call that decides whether the user's prompt needs clarification.
@@ -5195,6 +5511,62 @@ class OuroborosChatService:
 
         # Augment topic with any clarification Q&A from a preceding intake step.
         topic, clarifications = self._development_team_topic(request)
+
+        if _development_team_planning_strategy() == "deterministic":
+            events = list(self.stream_development_team(request))
+            recorded = next((event for event in reversed(events) if event.get("type") == "meeting_recorded"), None)
+            if not recorded:
+                return {
+                    "status": "blocked",
+                    "reason": "Development-team planning produced no recorded build_plan.",
+                    "events": events,
+                    "fake_success": False,
+                }
+            build_prompt = (recorded.get("build_prompt") or "").strip()
+            build_plan = recorded.get("build_plan") if isinstance(recorded.get("build_plan"), dict) else None
+            slash_command = self._development_slash_command(agent_ids)
+            effective_brief = build_prompt or topic
+            slash_prompt = (
+                f"{slash_command} {effective_brief}\n\n"
+                "---\n"
+                "Ontwikkelteam-protocol:\n"
+                "- Werk binnen de Docker-isolated agent-sandbox; geen wijzigingen op de host buiten approval.\n"
+                "- Codeer iteratief: kleinste werkbare diff, test, review.\n"
+                "- Ondersteunende rollen communiceren via Gas Town MODE: nudge/mail/handoff; De Developper gebruikt het gekozen code-model.\n"
+                f"- Stop na maximaal {max_iterations} pogingen zonder nieuwe testinformatie en vraag om verduidelijking.\n"
+                "- Rapporteer welke files je raakt en welke tests je draait.\n"
+                f"- Approval phrase blijft {APPROVAL_PHRASE}."
+            )
+            return {
+                "status": "planned",
+                "execution": "not_executed_by_ouroboros_chat_router",
+                "approval_required": True,
+                "approval_phrase": APPROVAL_PHRASE,
+                "approval_supplied": str(request.approval or "").strip() == APPROVAL_PHRASE,
+                "prompt": _clip_text(request.prompt, 3000),
+                "augmented_prompt": _clip_text(topic, 6000),
+                "clarifications_supplied": clarifications,
+                "provider": recorded.get("provider") or provider,
+                "model": recorded.get("model") or model,
+                "recommended_models": {key: list(value) for key, value in CODING_MODEL_HINTS.items()},
+                "personas": recorded.get("participants", []),
+                "agent_ids": agent_ids[:12],
+                "agent_command": slash_command,
+                "slash_prompt": slash_prompt,
+                "build_prompt": build_prompt,
+                "build_plan": build_plan,
+                "rounds": recorded.get("rounds", []),
+                "summary": recorded.get("summary", ""),
+                "meeting_id": recorded.get("meeting_id"),
+                "meeting_type": recorded.get("meeting_type"),
+                "planning_strategy": recorded.get("planning_strategy") or "deterministic",
+                "next_route": "/api/cockpit/chat",
+                "safety_note": (
+                    "Het ontwikkelteam levert een werkbare bouwprompt. De uitvoering gebeurt in de "
+                    "Cockpit agent-runtime achter de approval-gate, idealiter in een Docker-isolated job."
+                ),
+                "fake_success": False,
+            }
 
         # Run the real four-persona meeting via the existing dev-team agenda.
         meeting_request = MeetingRequest(

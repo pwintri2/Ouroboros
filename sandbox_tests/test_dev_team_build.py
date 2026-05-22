@@ -9,6 +9,7 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -313,8 +314,9 @@ class TestDevTeamBuildSession(unittest.TestCase):
         types = [event.type for event in events]
         self.assertIn("build_started", types)
         started_event = next(event for event in events if event.type == "build_started")
-        self.assertEqual(started_event.data["communication_protocol"]["name"], "gas-town-mail-handoff")
-        self.assertEqual(started_event.data["communication_protocol"]["fields"], ["FROM", "TO", "SUBJECT", "BODY", "NEXT"])
+        self.assertEqual(started_event.data["communication_protocol"]["name"], "gas-town-nudge-mail-handoff")
+        self.assertEqual(started_event.data["communication_protocol"]["fields"], ["MODE", "FROM", "TO", "SUBJECT", "BODY", "NEXT"])
+        self.assertEqual(started_event.data["support_role_strategy"], "deterministic")
         self.assertIn("foreman_turn", types)
         self.assertIn("designer_turn", types)
         self.assertIn("developer_turn", types)
@@ -459,6 +461,13 @@ class TestDevTeamBuildSession(unittest.TestCase):
         events = list(
             session.iterate(
                 build_prompt="Schrijf een test die 2+2 verifieert",
+                build_plan={
+                    "title": "Calc add",
+                    "goals": ["add(2,2) geeft 4"],
+                    "components": [{"name": "src/calc.py", "description": "add functie"}],
+                    "tests": ["python3 -c \"import sys; sys.path.insert(0,'src'); from calc import add; assert add(2,2) == 4; print('GREEN')\""],
+                    "constraints": ["Geen netwerk"],
+                },
                 clarifications=[],
                 provider="ollama",
                 model="ouroboros:latest",
@@ -528,22 +537,23 @@ class TestDevTeamBuildSession(unittest.TestCase):
                 return {"ok": True, "content": next(chair_responses), "error": ""}
             return {"ok": True, "content": "leeg", "error": ""}
 
-        session = self.mod.DevTeamBuildSession(
-            session_id="multi-step-add-subtract",
-            workspace=self.workspace,
-            llm_call=fake_llm,
-            max_iterations=4,
-            test_timeout=20,
-        )
-        events = list(
-            session.iterate(
-                build_prompt="Bouw een calc-module met add EN subtract functies.",
-                clarifications=[],
-                provider="ollama",
-                model="ouroboros:latest",
-                personas=self._personas(),
+        with patch.dict(os.environ, {"WINTRIP_DEVTEAM_SUPPORT_ROLE_STRATEGY": "selected-model"}):
+            session = self.mod.DevTeamBuildSession(
+                session_id="multi-step-add-subtract",
+                workspace=self.workspace,
+                llm_call=fake_llm,
+                max_iterations=4,
+                test_timeout=20,
             )
-        )
+            events = list(
+                session.iterate(
+                    build_prompt="Bouw een calc-module met add EN subtract functies.",
+                    clarifications=[],
+                    provider="ollama",
+                    model="ouroboros:latest",
+                    personas=self._personas(),
+                )
+            )
         types = [event.type for event in events]
         # Two iterations because chair said CONTINUE after the first.
         self.assertEqual(types.count("developer_turn"), 2)
@@ -603,6 +613,13 @@ class TestDevTeamBuildSession(unittest.TestCase):
         events = list(
             session.iterate(
                 build_prompt="probeer iets",
+                build_plan={
+                    "title": "Wrong value",
+                    "goals": ["value() geeft 4"],
+                    "components": [{"name": "src/wrong.py", "description": "value functie"}],
+                    "tests": ["python3 -c \"import sys; sys.path.insert(0,'src'); from wrong import value; assert value() == 4\""],
+                    "constraints": ["Geen netwerk"],
+                },
                 clarifications=[],
                 provider="ollama",
                 model="ouroboros:latest",
@@ -615,6 +632,59 @@ class TestDevTeamBuildSession(unittest.TestCase):
         self.assertEqual(types.count("critic_turn"), 2)
         self.assertNotIn("build_complete", types)
         self.assertIn("build_exhausted", types)
+
+    def test_support_roles_are_deterministic_by_default(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_llm(**kwargs: Any) -> dict[str, Any]:
+            calls.append(dict(kwargs))
+            return {
+                "ok": True,
+                "content": (
+                    "Ik schrijf één bestand.\n"
+                    "<file path=\"src/fast_path.py\">\n"
+                    "def value():\n"
+                    "    return 7\n"
+                    "</file>\n"
+                    "Tester, py_compile of plan-test is genoeg."
+                ),
+                "error": "",
+            }
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WINTRIP_DEVTEAM_SUPPORT_ROLE_STRATEGY", None)
+            session = self.mod.DevTeamBuildSession(
+                session_id="fast-support-roles",
+                workspace=self.workspace,
+                llm_call=fake_llm,
+                max_iterations=1,
+                min_iterations=1,
+                test_timeout=20,
+            )
+            events = list(
+                session.iterate(
+                    build_prompt="Maak een module die syntactisch klopt.",
+                    build_plan={
+                        "title": "Snelle supportrollen",
+                        "goals": ["Maak src/fast_path.py aan."],
+                        "components": [{"name": "src/fast_path.py", "description": "kleine module"}],
+                        "tests": ["python -m py_compile src/fast_path.py"],
+                        "constraints": ["Geen netwerk"],
+                    },
+                    clarifications=[],
+                    provider="ollama",
+                    model="codellama:13b",
+                    personas=self._personas(),
+                )
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Developper", calls[0]["system_prompt"])
+        self.assertIn("build_complete", [event.type for event in events])
+        sources = {event.type: event.data.get("source") for event in events if "source" in event.data}
+        self.assertEqual(sources.get("foreman_turn"), "deterministic")
+        self.assertEqual(sources.get("designer_turn"), "deterministic")
+        self.assertEqual(sources.get("tester_turn"), "deterministic")
 
 
 if __name__ == "__main__":

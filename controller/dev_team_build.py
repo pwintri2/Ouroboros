@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import shlex
 import shutil
 import subprocess
 import time
@@ -36,6 +37,26 @@ MAX_HISTORY_IN_PROMPT = 3
 MAX_TEAM_BUS_MESSAGES = 10
 GASTOWN_ROOT = Path(os.getenv("GASTOWN_ROOT", "/home/pwintri2/gastown"))
 GASTOWN_MAIL_PROTOCOL_PATH = GASTOWN_ROOT / "docs" / "design" / "mail-protocol.md"
+GASTOWN_AGENT_GUIDE_PATH = GASTOWN_ROOT / "AGENTS.md"
+DEFAULT_SUPPORT_ROLE_STRATEGY = "deterministic"
+SUPPORT_ROLE_STRATEGIES = {"deterministic", "fast-model", "selected-model"}
+DEFAULT_FAST_ROLE_PROVIDER = "ollama"
+DEFAULT_FAST_ROLE_MODEL = "ouroboros:latest"
+DEFAULT_FAST_ROLE_TIMEOUT_SECONDS = 8.0
+
+_RUNNABLE_COMMAND_PREFIXES = (
+    "python ",
+    "python3 ",
+    "python -m ",
+    "python3 -m ",
+    "pytest",
+    "npm ",
+    "pnpm ",
+    "yarn ",
+    "bun ",
+    "go test",
+    "cargo test",
+)
 
 
 DEVELOPMENT_AGENT_ROLE_ORDER: tuple[str, ...] = (
@@ -64,7 +85,7 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "TO_TESTER: welk bewijs de Tester moet leveren.\n\n"
             "Regels: verwijs naar build_plan.goals/components/tests; geen overlegtaal, geen mystiek, "
             "geen Meeting-context, geen shellcommando's. Schrijf voor kleine modellen: kort, concreet, "
-            "herhaal de file/componentnaam als die bekend is. Gebruik Gas Town-mailstijl: FROM, TO, SUBJECT, BODY, NEXT."
+            "herhaal de file/componentnaam als die bekend is. Gebruik Gas Town-stijl: MODE, FROM, TO, SUBJECT, BODY, NEXT."
         ),
     },
     "designer": {
@@ -81,7 +102,7 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "TEST_HOOK: hoe De Tester dit mechanisch bewijst.\n"
             "TO_DEVELOPPER: directe bouwinstructie in één zin.\n\n"
             "Gebruik AgenK-stijl taaktoewijzing: één agent, één taak, één verwacht resultaat. "
-            "Geen brede architectuurpraat en geen Meeting-taal. Gebruik Gas Town-mailstijl: FROM, TO, SUBJECT, BODY, NEXT."
+            "Geen brede architectuurpraat en geen Meeting-taal. Gebruik Gas Town-stijl: MODE, FROM, TO, SUBJECT, BODY, NEXT."
         ),
     },
     "developer": {
@@ -96,7 +117,7 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "Voor nieuwe kleine files mag `<file path=\"...\">...</file>` ook, zodat kleine modellen betrouwbaar blijven.\n\n"
             "Communicatie is verplicht: begin met één korte zin aan Voorman/Ontwerper, daarna alleen editblokken, "
             "en sluit af met één korte overdracht aan De Tester. Geen markdown fences rond editblokken. "
-            "Gebruik Gas Town-mailstijl voor je overdracht: FROM, TO, SUBJECT, BODY, NEXT."
+            "Gebruik Gas Town-stijl voor je overdracht: MODE, FROM, TO, SUBJECT, BODY, NEXT."
         ),
     },
     "tester": {
@@ -109,7 +130,7 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "Output is streng: één korte regel aan De Developper, precies één `<cmd>...</cmd>` blok, "
             "en één korte regel met verwacht groen signaal. Geen extra commando's. Geen netwerk, geen sudo, "
             "geen destructieve acties. Kies het kleinste acceptance-commando uit build_plan.tests of uit de geschreven files. "
-            "Gebruik Gas Town-mailstijl voor de korte overdracht."
+            "Gebruik Gas Town-stijl voor de korte overdracht."
         ),
     },
     "criticus": {
@@ -121,7 +142,7 @@ DEFAULT_DEVELOPMENT_TEAM_AGENTS: dict[str, dict[str, Any]] = {
             "Je leest alleen de laatste testoutput en geeft één concrete fixopdracht.\n\n"
             "Antwoord in maximaal vier zinnen: oorzaak, geraakt bestand/symbol, kleinste fix, en welk testcommando "
             "daarna opnieuw moet draaien. Lees stderr/stdout letterlijk. Geen brede review, geen nieuwe features. "
-            "Gebruik Gas Town-mailstijl voor de fixopdracht."
+            "Gebruik Gas Town-stijl voor de fixopdracht."
         ),
     },
 }
@@ -153,21 +174,24 @@ class DevTeamBuildEvent:
 
 
 def gastown_mail_protocol_brief() -> str:
-    """Compact Gas Town mail rules for model-to-model handoffs."""
+    """Compact Gas Town nudge/mail/handoff rules for model-to-model handoffs."""
     fallback = (
-        "Gas Town communicatieprotocol uit /home/pwintri2/gastown: gebruik directe handoff als korte mail. "
-        "Elke overdracht heeft FROM, TO, SUBJECT, BODY en NEXT; BODY bevat bewijs/constraints, NEXT bevat exact de volgende rolactie."
+        "Gas Town communicatieprotocol uit /home/pwintri2/gastown: gebruik MODE: nudge voor snelle rol-naar-rol "
+        "overdracht, MODE: mail voor persistente blockers en MODE: handoff voor continuiteit. Elke overdracht heeft "
+        "MODE, FROM, TO, SUBJECT, BODY en NEXT; BODY bevat bewijs/constraints, NEXT bevat exact de volgende rolactie."
     )
     try:
-        text = GASTOWN_MAIL_PROTOCOL_PATH.read_text(encoding="utf-8")
+        guide = GASTOWN_AGENT_GUIDE_PATH.read_text(encoding="utf-8")
+        mail = GASTOWN_MAIL_PROTOCOL_PATH.read_text(encoding="utf-8")
     except Exception:
         return fallback
-    if "Subject format" not in text or "Body format" not in text:
+    if "gt nudge" not in guide or "gt mail" not in guide or "Subject format" not in mail:
         return fallback
     return (
-        f"Gas Town communicatieprotocol ({GASTOWN_MAIL_PROTOCOL_PATH}): "
-        "mail is persistente agent-naar-agent overdracht; subject is kort en typegericht; body is gestructureerd; "
-        "gebruik voor deze build altijd FROM, TO, SUBJECT, BODY, NEXT en draag één concrete volgende actie over."
+        f"Gas Town communicatieprotocol ({GASTOWN_ROOT}): routine-overleg gebruikt `gt nudge`; "
+        "persistente blockers of uitgebreide payloads gebruiken `gt mail send ... --stdin`; contextoverdracht gebruikt handoff. "
+        "In deze build simuleer je geen shellcalls maar formatteer je elke agentboodschap als MODE, FROM, TO, SUBJECT, BODY, NEXT. "
+        "Gebruik MODE: nudge voor normale rolhandoffs; MODE: mail alleen bij blokkade/duurzaam bewijs; MODE: handoff voor continuiteit."
     )
 
 
@@ -223,6 +247,71 @@ _FORBIDDEN_COMMAND_FRAGMENTS = (
 def default_development_team_agents() -> dict[str, dict[str, Any]]:
     """Return fresh, Meeting-independent default agents for the build runtime."""
     return {role: dict(DEFAULT_DEVELOPMENT_TEAM_AGENTS[role]) for role in DEVELOPMENT_AGENT_ROLE_ORDER}
+
+
+def _support_role_strategy_from_env() -> str:
+    raw = os.getenv("WINTRIP_DEVTEAM_SUPPORT_ROLE_STRATEGY", DEFAULT_SUPPORT_ROLE_STRATEGY)
+    value = str(raw or "").strip().lower().replace("_", "-")
+    aliases = {
+        "deterministic-support": "deterministic",
+        "scripted": "deterministic",
+        "fallback": "deterministic",
+        "fast": "fast-model",
+        "small-model": "fast-model",
+        "selected": "selected-model",
+        "selected-models": "selected-model",
+        "full": "selected-model",
+        "llm": "selected-model",
+        "heavy": "selected-model",
+    }
+    value = aliases.get(value, value)
+    return value if value in SUPPORT_ROLE_STRATEGIES else DEFAULT_SUPPORT_ROLE_STRATEGY
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _extract_runnable_command(value: Any) -> str:
+    """Best-effort extraction of a single safe-looking test command from plan text."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    explicit = extract_cmd_block(text)
+    if explicit:
+        return explicit
+    backtick = re.search(r"`([^`\n]+)`", text)
+    if backtick:
+        text = backtick.group(1).strip()
+    for raw_line in text.splitlines() or [text]:
+        line = raw_line.strip().strip("-").strip()
+        if not line:
+            continue
+        if ":" in line and not line.lower().startswith(("python", "pytest", "npm", "pnpm", "yarn", "bun", "go ", "cargo ")):
+            _, _, after = line.partition(":")
+            line = after.strip()
+        lowered = line.lower()
+        if any(lowered.startswith(prefix) for prefix in _RUNNABLE_COMMAND_PREFIXES):
+            return line
+    lowered = text.lower()
+    if any(lowered.startswith(prefix) for prefix in _RUNNABLE_COMMAND_PREFIXES):
+        return text
+    return ""
+
+
+def _command_from_build_plan(build_plan: dict[str, Any] | None) -> str:
+    if not isinstance(build_plan, dict):
+        return ""
+    tests = build_plan.get("tests") if isinstance(build_plan.get("tests"), list) else []
+    for item in tests:
+        command = _extract_runnable_command(item)
+        if command:
+            return command
+    return ""
 
 
 def extract_file_blocks(content: str) -> list[tuple[str, str]]:
@@ -604,6 +693,21 @@ class DevTeamBuildSession:
         self.min_iterations = max(1, min(int(min_iterations), self.max_iterations))
         self.test_timeout = test_timeout
         self.llm_timeout_seconds = max(5.0, float(llm_timeout_seconds))
+        self.support_role_strategy = _support_role_strategy_from_env()
+        self.support_role_provider = (
+            os.getenv("WINTRIP_DEVTEAM_FAST_ROLE_PROVIDER", DEFAULT_FAST_ROLE_PROVIDER).strip().lower()
+            or DEFAULT_FAST_ROLE_PROVIDER
+        )
+        self.support_role_model = (
+            os.getenv("WINTRIP_DEVTEAM_FAST_ROLE_MODEL", DEFAULT_FAST_ROLE_MODEL).strip()
+            or DEFAULT_FAST_ROLE_MODEL
+        )
+        self.support_role_timeout_seconds = _env_float(
+            "WINTRIP_DEVTEAM_FAST_ROLE_TIMEOUT",
+            DEFAULT_FAST_ROLE_TIMEOUT_SECONDS,
+            minimum=1.0,
+            maximum=max(DEFAULT_FAST_ROLE_TIMEOUT_SECONDS, self.llm_timeout_seconds),
+        )
         self.iteration_log: list[dict[str, Any]] = []
 
     def iterate(
@@ -633,10 +737,16 @@ class DevTeamBuildSession:
                     if role in agents
                 ],
                 "communication_protocol": {
-                    "name": "gas-town-mail-handoff",
-                    "source": str(GASTOWN_MAIL_PROTOCOL_PATH),
-                    "fields": ["FROM", "TO", "SUBJECT", "BODY", "NEXT"],
+                    "name": "gas-town-nudge-mail-handoff",
+                    "source": str(GASTOWN_ROOT),
+                    "fields": ["MODE", "FROM", "TO", "SUBJECT", "BODY", "NEXT"],
+                    "rules": [
+                        "MODE: nudge voor normale rolhandoffs.",
+                        "MODE: mail voor persistente blockers of duurzaam bewijs.",
+                        "MODE: handoff voor continuiteit over sessies heen.",
+                    ],
                 },
+                "support_role_strategy": self.support_role_strategy,
                 "build_prompt_preview": build_prompt[:480],
             },
         )
@@ -656,7 +766,9 @@ class DevTeamBuildSession:
 
             # ---- Voorman turn ----
             foreman_persona = agents.get("foreman") or {}
-            foreman_response = self._call_llm(
+            foreman_fallback = self._fallback_foreman_turn(plan, iteration)
+            foreman_response = self._call_support_llm(
+                role="foreman",
                 user_prompt=self._foreman_user_prompt(
                     build_plan=plan,
                     clarifications=clarifications,
@@ -667,11 +779,12 @@ class DevTeamBuildSession:
                 provider=provider,
                 model=model,
                 persona=foreman_persona,
+                fallback_content=foreman_fallback,
                 history=self._recent_team_history(chat_history),
             )
             foreman_content = (foreman_response.get("content") or "").strip()
             if not foreman_content:
-                foreman_content = self._fallback_foreman_turn(plan, iteration)
+                foreman_content = foreman_fallback
             iteration_data["foreman_handoff"] = foreman_content
             chat_history.append(self._team_message("Voorman", "Ontwerper/Developper/Tester/Critikus", foreman_content))
             yield DevTeamBuildEvent(
@@ -681,12 +794,15 @@ class DevTeamBuildSession:
                     "content": foreman_content,
                     "ok": bool(foreman_response.get("ok")) or bool(foreman_content),
                     "error": str(foreman_response.get("error") or ""),
+                    "source": str(foreman_response.get("source") or ""),
                 },
             )
 
             # ---- Ontwerper turn ----
             designer_persona = agents.get("designer") or {}
-            designer_response = self._call_llm(
+            designer_fallback = self._fallback_designer_turn(plan, foreman_content, iteration)
+            designer_response = self._call_support_llm(
+                role="designer",
                 user_prompt=self._designer_user_prompt(
                     build_plan=plan,
                     foreman_handoff=foreman_content,
@@ -696,11 +812,12 @@ class DevTeamBuildSession:
                 provider=provider,
                 model=model,
                 persona=designer_persona,
+                fallback_content=designer_fallback,
                 history=self._recent_team_history(chat_history),
             )
             designer_content = (designer_response.get("content") or "").strip()
             if not designer_content:
-                designer_content = self._fallback_designer_turn(plan, foreman_content, iteration)
+                designer_content = designer_fallback
             iteration_data["designer_contract"] = designer_content
             chat_history.append(self._team_message("Ontwerper", "Developper/Tester/Critikus", designer_content))
             yield DevTeamBuildEvent(
@@ -710,6 +827,7 @@ class DevTeamBuildSession:
                     "content": designer_content,
                     "ok": bool(designer_response.get("ok")) or bool(designer_content),
                     "error": str(designer_response.get("error") or ""),
+                    "source": str(designer_response.get("source") or ""),
                 },
             )
 
@@ -758,7 +876,9 @@ class DevTeamBuildSession:
 
             # ---- Tester turn ----
             tester_persona = agents.get("tester") or {}
-            tester_response = self._call_llm(
+            tester_fallback = self._fallback_tester_turn(plan, file_writes, iteration)
+            tester_response = self._call_support_llm(
+                role="tester",
                 user_prompt=self._tester_user_prompt(
                     build_prompt=build_prompt,
                     foreman_handoff=foreman_content,
@@ -771,9 +891,12 @@ class DevTeamBuildSession:
                 provider=provider,
                 model=model,
                 persona=tester_persona,
+                fallback_content=tester_fallback,
                 history=self._recent_team_history(chat_history),
             )
             tester_content = (tester_response.get("content") or "").strip()
+            if not tester_content:
+                tester_content = tester_fallback
             if tester_content:
                 chat_history.append(self._team_message("Tester", "Voorman/Critikus", tester_content))
             yield DevTeamBuildEvent(
@@ -781,12 +904,13 @@ class DevTeamBuildSession:
                 {
                     "iteration": iteration,
                     "content": tester_content,
-                    "ok": bool(tester_response.get("ok")),
+                    "ok": bool(tester_response.get("ok")) or bool(tester_content),
                     "error": str(tester_response.get("error") or ""),
+                    "source": str(tester_response.get("source") or ""),
                 },
             )
 
-            command = extract_cmd_block(tester_content) or self._guess_default_test_command(file_writes)
+            command = extract_cmd_block(tester_content) or self._guess_default_test_command(file_writes, plan)
             test_result = run_test_command(self.workspace, command, timeout=self.test_timeout)
             last_test_result = test_result
             iteration_data["test_result"] = asdict(test_result)
@@ -812,7 +936,14 @@ class DevTeamBuildSession:
                 # she returns a CONTINUE-directive that becomes the focus of the next iteration.
                 chair_persona = personas.get("chair") or agents.get("foreman") or {}
                 workspace_listing = self._snapshot_workspace()
-                review_response = self._call_llm(
+                review_fallback = self._fallback_chair_review_turn(
+                    build_plan=plan,
+                    iteration=iteration,
+                    last_test_command=command,
+                    workspace_listing=workspace_listing,
+                )
+                review_response = self._call_support_llm(
+                    role="chair_review",
                     user_prompt=self._chair_review_user_prompt(
                         build_prompt=build_prompt,
                         iteration=iteration,
@@ -824,9 +955,12 @@ class DevTeamBuildSession:
                     provider=provider,
                     model=model,
                     persona=chair_persona,
+                    fallback_content=review_fallback,
                     history=self._recent_team_history(chat_history),
                 )
                 review_content = (review_response.get("content") or "").strip()
+                if not review_content:
+                    review_content = review_fallback
                 if review_content:
                     chat_history.append(self._team_message("Voorman", "Team", review_content))
                 verdict = _parse_chair_review(review_content)
@@ -844,7 +978,8 @@ class DevTeamBuildSession:
                         "verdict": verdict["verdict"],
                         "reason": verdict["reason"],
                         "next_subtask": verdict["next_subtask"],
-                        "ok": bool(review_response.get("ok")),
+                        "ok": bool(review_response.get("ok")) or bool(review_content),
+                        "source": str(review_response.get("source") or ""),
                     },
                 )
 
@@ -883,7 +1018,8 @@ class DevTeamBuildSession:
                                 "verdict": "CONTINUE",
                                 "reason": f"Minimaal {self.min_iterations} iteraties vereist. {verdict['reason'] or ''}".strip(),
                                 "next_subtask": verdict["next_subtask"] or "Werk de bouwprompt verder uit met de eerstvolgende concrete capaciteit.",
-                                "ok": bool(review_response.get("ok")),
+                                "ok": bool(review_response.get("ok")) or bool(review_content),
+                                "source": str(review_response.get("source") or ""),
                             },
                         )
                         next_focus = verdict["next_subtask"] or "Werk de bouwprompt verder uit met de eerstvolgende concrete capaciteit."
@@ -905,7 +1041,13 @@ class DevTeamBuildSession:
 
             # ---- Criticus turn (only on failure) ----
             critic_persona = agents.get("criticus") or {}
-            critic_response = self._call_llm(
+            critic_fallback = self._fallback_criticus_turn(
+                build_plan=plan,
+                test_result=test_result,
+                iteration=iteration,
+            )
+            critic_response = self._call_support_llm(
+                role="criticus",
                 user_prompt=self._criticus_user_prompt(
                     build_prompt=build_prompt,
                     foreman_handoff=foreman_content,
@@ -919,9 +1061,12 @@ class DevTeamBuildSession:
                 provider=provider,
                 model=model,
                 persona=critic_persona,
+                fallback_content=critic_fallback,
                 history=self._recent_team_history(chat_history),
             )
             critic_content = (critic_response.get("content") or "").strip()
+            if not critic_content:
+                critic_content = critic_fallback
             if critic_content:
                 chat_history.append(self._team_message("Critikus", "Developper/Tester", critic_content))
             iteration_data["critic_feedback"] = critic_content
@@ -930,8 +1075,9 @@ class DevTeamBuildSession:
                 {
                     "iteration": iteration,
                     "content": critic_content,
-                    "ok": bool(critic_response.get("ok")),
+                    "ok": bool(critic_response.get("ok")) or bool(critic_content),
                     "error": str(critic_response.get("error") or ""),
+                    "source": str(critic_response.get("source") or ""),
                 },
             )
 
@@ -947,6 +1093,64 @@ class DevTeamBuildSession:
     # ------------------------------------------------------------------
     # LLM glue
     # ------------------------------------------------------------------
+    def _call_support_llm(
+        self,
+        *,
+        role: str,
+        user_prompt: str,
+        system_prompt: str,
+        provider: str,
+        model: str,
+        persona: dict[str, Any],
+        fallback_content: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Call or bypass LLMs for non-coding support roles.
+
+        Default is deterministic so a large local coding model is only used for the
+        developer turn. Operators can opt back into model-based support roles with
+        WINTRIP_DEVTEAM_SUPPORT_ROLE_STRATEGY=fast-model or selected-model.
+        """
+        fallback = (fallback_content or "").strip()
+        if self.support_role_strategy == "deterministic":
+            return {"ok": bool(fallback), "content": fallback, "error": "", "source": "deterministic"}
+
+        if self.support_role_strategy == "fast-model":
+            response = self._call_llm(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                provider=self.support_role_provider,
+                model=self.support_role_model,
+                persona={},
+                history=history,
+                timeout_seconds=self.support_role_timeout_seconds,
+            )
+            if (response.get("content") or "").strip():
+                return {**response, "source": f"fast-model:{self.support_role_model}"}
+            return {
+                "ok": bool(fallback),
+                "content": fallback,
+                "error": str(response.get("error") or f"{role} fast-model fallback"),
+                "source": "fallback-after-fast-model",
+            }
+
+        response = self._call_llm(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            provider=provider,
+            model=model,
+            persona=persona,
+            history=history,
+        )
+        if (response.get("content") or "").strip():
+            return {**response, "source": "selected-model"}
+        return {
+            "ok": bool(fallback),
+            "content": fallback,
+            "error": str(response.get("error") or f"{role} selected-model fallback"),
+            "source": "fallback-after-selected-model",
+        }
+
     def _call_llm(
         self,
         *,
@@ -956,6 +1160,7 @@ class DevTeamBuildSession:
         model: str,
         persona: dict[str, Any],
         history: list[dict[str, str]] | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         model_settings = persona.get("model_settings") if isinstance(persona.get("model_settings"), dict) else {}
         chosen_provider = str(model_settings.get("provider") or provider or "ollama").strip().lower() or "ollama"
@@ -1001,14 +1206,15 @@ class DevTeamBuildSession:
         
         executor = ThreadPoolExecutor(max_workers=1)
         future = executor.submit(_do_call)
+        timeout = self.llm_timeout_seconds if timeout_seconds is None else max(0.01, float(timeout_seconds))
         try:
-            return future.result(timeout=self.llm_timeout_seconds)
+            return future.result(timeout=timeout)
         except FuturesTimeoutError:
             future.cancel()
             return {
                 "ok": False,
                 "content": "",
-                "error": f"LLM call timed out after {self.llm_timeout_seconds:.0f}s",
+                "error": f"LLM call timed out after {timeout:.0f}s",
             }
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
@@ -1025,17 +1231,20 @@ class DevTeamBuildSession:
                 agents[role] = dict(persona)
         return agents
 
-    def _team_message(self, sender: str, recipient: str, content: str) -> dict[str, str]:
+    def _team_message(self, sender: str, recipient: str, content: str, *, mode: str = "nudge") -> dict[str, str]:
         subject = " ".join(content.split()).strip() if content.strip() else "handoff"
+        clean_mode = mode if mode in {"nudge", "mail", "handoff"} else "nudge"
         return {
             "role": "user",
             "content": (
-                "GASTOWN_MAIL_HANDOFF\n"
+                "GASTOWN_AGENT_MESSAGE\n"
+                f"MODE: {clean_mode}\n"
                 f"FROM: {sender}\n"
                 f"TO: {recipient}\n"
                 f"SUBJECT: {subject[:160]}\n"
                 f"BODY:\n{content[:2200]}\n"
-                f"NEXT: {recipient} verwerkt deze concrete overdracht en antwoordt in dezelfde mailstijl."
+                f"NEXT: {recipient} verwerkt deze concrete overdracht en antwoordt met MODE, FROM, TO, SUBJECT, BODY, NEXT.\n"
+                f"SOURCE: {GASTOWN_ROOT}"
             ),
         }
 
@@ -1246,11 +1455,17 @@ class DevTeamBuildSession:
         test = str(tests[0] if tests else "het kleinste relevante testcommando draait groen")
         subtask = f"Maak {component_name or 'de eerste implementatie'} werkend voor: {goal}"
         return (
+            "MODE: nudge\n"
+            "FROM: Voorman\n"
+            "TO: Ontwerper/Developper/Tester/Critikus\n"
+            f"SUBJECT: iteratie {iteration} kleinste bouwstap\n"
+            "BODY:\n"
             f"SUBTASK: {subtask[:260]}\n"
             f"DONE_CRITERION: {test[:220]}\n"
             f"TO_ONTWERPER: Leg interface, files en testhook voor {component_name or 'de implementatie'} vast.\n"
             f"TO_DEVELOPPER: Bouw alleen deze subtask met kleine Aider-style edits.\n"
-            f"TO_TESTER: Bewijs deze subtask mechanisch met één command."
+            f"TO_TESTER: Bewijs deze subtask mechanisch met één command.\n"
+            "NEXT: Ontwerper maakt nu het ontwerpcontract."
         )
 
     def _fallback_designer_turn(self, build_plan: dict[str, Any], foreman_handoff: str, iteration: int) -> str:
@@ -1259,19 +1474,101 @@ class DevTeamBuildSession:
         component_name = component.get("name") if isinstance(component, dict) else str(component or "implementation")
         description = component.get("description") if isinstance(component, dict) else str(component or "")
         return (
+            "MODE: nudge\n"
+            "FROM: Ontwerper\n"
+            "TO: De Developper/De Tester\n"
+            f"SUBJECT: ontwerpcontract iteratie {iteration}\n"
+            "BODY:\n"
             f"CONTRACT: {description or build_plan.get('title') or 'Maak de gevraagde functie zichtbaar werkend.'}\n"
             f"FILES: {component_name}\n"
             "INTERFACE: Houd input/output eenvoudig en direct testbaar.\n"
             "TEST_HOOK: De Tester moet het gedrag via pytest of een directe CLI/API-call kunnen bewijzen.\n"
-            f"TO_DEVELOPPER: Volg de Voorman-subtask en wijzig alleen {component_name}."
+            f"TO_DEVELOPPER: Volg de Voorman-subtask en wijzig alleen {component_name}.\n"
+            "NEXT: De Developper schrijft de kleinste edit."
         )
 
-    def _guess_default_test_command(self, files: list[FileWrite]) -> str:
+    def _fallback_tester_turn(self, build_plan: dict[str, Any], files: list[FileWrite], iteration: int) -> str:
+        command = self._guess_default_test_command(files, build_plan)
+        return (
+            "MODE: nudge\n"
+            "FROM: De Tester\n"
+            "TO: Voorman/Critikus\n"
+            f"SUBJECT: acceptatie iteratie {iteration}\n"
+            "BODY:\n"
+            "Ik draai het kleinste beschikbare mechanische bewijs voor deze sandbox-edit.\n"
+            f"<cmd>{command}</cmd>\n"
+            "Verwacht groen: exit 0.\n"
+            "NEXT: Voorman beoordeelt groen; bij rood geeft Critikus één fixopdracht."
+        )
+
+    def _fallback_criticus_turn(self, build_plan: dict[str, Any], test_result: TestResult, iteration: int) -> str:
+        stderr = (test_result.stderr or "").strip()
+        stdout = (test_result.stdout or "").strip()
+        evidence = stderr or stdout or "(geen stdout/stderr)"
+        retry_command = test_result.command or _command_from_build_plan(build_plan) or "python -m pytest -q"
+        return (
+            "MODE: mail\n"
+            "FROM: Critikus\n"
+            "TO: De Developper/De Tester\n"
+            f"SUBJECT: rood in iteratie {iteration}\n"
+            "BODY:\n"
+            f"Oorzaak: laatste test eindigde met exit_code {test_result.exit_code}.\n"
+            f"Bewijs: {evidence[:900]}\n"
+            "Kleinste fix: wijzig alleen de file/symbol die direct bij deze fout hoort en houd de vorige interface intact.\n"
+            f"Test daarna opnieuw met: {retry_command}\n"
+            "NEXT: De Developper verwerkt deze fout letterlijk en De Tester draait hetzelfde commando opnieuw."
+        )
+
+    def _fallback_chair_review_turn(
+        self,
+        *,
+        build_plan: dict[str, Any],
+        iteration: int,
+        last_test_command: str,
+        workspace_listing: str,
+    ) -> str:
+        if iteration < self.min_iterations:
+            components = build_plan.get("components") if isinstance(build_plan.get("components"), list) else []
+            next_component = components[min(iteration, len(components) - 1)] if components else {}
+            if isinstance(next_component, dict):
+                next_name = next_component.get("name") or "de volgende concrete capaciteit"
+                next_desc = next_component.get("description") or next_name
+            else:
+                next_name = str(next_component or "de volgende concrete capaciteit")
+                next_desc = next_name
+            return json.dumps(
+                {
+                    "verdict": "CONTINUE",
+                    "reason": f"Test groen, maar minimaal {self.min_iterations} iteraties gevraagd voordat de build wordt afgerond.",
+                    "next_subtask": f"Werk {next_name} verder uit: {next_desc}",
+                },
+                ensure_ascii=False,
+            )
+        files_present = workspace_listing if workspace_listing and workspace_listing != "(workspace is leeg)" else "workspace bevat geen files"
+        return json.dumps(
+            {
+                "verdict": "DONE",
+                "reason": f"Laatste test draaide groen met `{last_test_command}` en de workspace bevat build-output: {files_present[:220]}",
+            },
+            ensure_ascii=False,
+        )
+
+    def _guess_default_test_command(self, files: list[FileWrite], build_plan: dict[str, Any] | None = None) -> str:
         """Pick a sensible default if the Tester didn't emit a <cmd> block."""
+        plan_command = _command_from_build_plan(build_plan)
+        if plan_command:
+            return plan_command
         for item in files:
             lower = item.path.lower()
             if lower.endswith(".py") and "test" in lower:
                 return f"python -m pytest {item.path} -v"
+        py_files = [
+            item.path
+            for item in files
+            if item.path.endswith(".py") and "test" not in item.path.lower() and not item.error
+        ]
+        if py_files:
+            return "python -m py_compile " + " ".join(shlex.quote(path) for path in py_files[:12])
         if any(item.path.endswith(".py") for item in files):
             return "python -m pytest -v"
         return "python -m pytest -q"
