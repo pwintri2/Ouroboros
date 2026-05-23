@@ -104,14 +104,14 @@ class TestOuroborosChatRoutes(unittest.TestCase):
         self.assertIn("brave", payload)
         self.assertFalse(payload["fake_success"])
 
-    def test_persona_route_hides_development_team_roles_by_default(self):
+    def test_persona_route_shows_meeting_chair_and_hides_development_team_roles_by_default(self):
         response = self.client.get("/api/ouroboros-chat/personas")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         persona_ids = {item["id"] for item in payload["personas"]}
         self.assertIn("ouroboros", persona_ids)
-        self.assertNotIn("de-voorzitter", persona_ids)
+        self.assertIn("de-voorzitter", persona_ids)
         self.assertNotIn("de-developer", persona_ids)
         self.assertNotIn("de-tester", persona_ids)
         self.assertNotIn("de-criticus", persona_ids)

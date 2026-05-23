@@ -517,7 +517,6 @@ GASTOWN_ROOT = _default_gastown_root()
 DEVTEAM_PLANNING_STRATEGIES = {"deterministic", "legacy-meeting"}
 HIDDEN_DEVELOPMENT_PERSONA_IDS: frozenset[str] = frozenset(
     {
-        "de-voorzitter",
         "de-ontwerper",
         "de-developer",
         "de-developper",
@@ -2152,6 +2151,62 @@ class MeetingRunner:
         role = str(persona.get("role") or "").strip().lower()
         return persona_id in {"de-voorzitter", "dev-voorman"} or "voorzitter" in name or "voorman" in name or "facilitator" in role
 
+    def _meeting_chair_questions(self, topic: str, meeting_type: str) -> list[str]:
+        meeting_type = _normalize_meeting_type(meeting_type)
+        topic_hint = _clip_text(topic, 160)
+        if meeting_type == "brainstorm":
+            if _classify_topic_intent(topic) == "opdracht":
+                return [
+                    f"Welke concrete opdracht rond '{topic_hint}' moeten we als eerste bouwbaar maken?",
+                    "Welke aanname mag niemand zomaar herhalen zonder nieuw bewijs?",
+                    "Welke oplossingsrichting ontbreekt nog aan tafel?",
+                    "Welk klein experiment of acceptatiecriterium maakt deze opdracht straks bruikbaar?",
+                ]
+            return [
+                f"Welke concrete vraag over '{topic_hint}' moeten we vandaag scherper krijgen?",
+                "Welke aanname mag niemand zomaar herhalen zonder nieuw bewijs?",
+                "Welke invalshoek ontbreekt nog aan tafel?",
+                "Welk klein experiment of criterium maakt het gesprek straks bruikbaar?",
+            ]
+        if meeting_type == "sprint_planning":
+            return [
+                f"Wat is de kleinste sprintuitkomst voor '{topic_hint}'?",
+                "Welke taak komt eerst en wat blijft bewust buiten scope?",
+                "Welk test- of smoke-signaal maakt de taak groen?",
+                "Welke afhankelijkheid of rollback moet ik bewaken?",
+            ]
+        return [
+            f"Welk besluit of welke opbrengst moet deze meeting over '{topic_hint}' opleveren?",
+            "Wat is de kleinste scope waar we vandaag niet buiten gaan?",
+            "Welk bewijs of criterium maakt een bijdrage echt nieuw?",
+            "Welk risico, bezwaar of stopmoment moet ik als voorzitter bewaken?",
+        ]
+
+    def _ensure_chair_opening_questions(
+        self,
+        content: str,
+        *,
+        topic: str,
+        meeting_type: str,
+        personas: list[dict[str, Any]],
+    ) -> str:
+        if _normalize_meeting_type(meeting_type) == "development_team":
+            return content
+        if str(content or "").count("?") >= 4:
+            return content
+        first = next((persona for persona in personas if not self._is_chair_persona(persona)), None)
+        first_name = str((first or {}).get("name") or "de eerste deelnemer")
+        questions = self._meeting_chair_questions(topic, meeting_type)
+        question_text = " ".join(f"{index}. {question}" for index, question in enumerate(questions, start=1))
+        return _clip_text(
+            (
+                f"Ik open OUROBOROS MEETING over '{_clip_text(topic, 180)}'. "
+                f"Mijn eerste vier vragen zijn: {question_text} "
+                f"Daarna geef ik het woord aan {first_name}; voeg één nieuw punt toe en herhaal de vraag niet."
+            ),
+            1800,
+        )
+
     def _is_critic_persona(self, persona: dict[str, Any]) -> bool:
         persona_id = str(persona.get("id") or "").strip().lower()
         name = str(persona.get("name") or "").strip().lower()
@@ -2287,6 +2342,17 @@ class MeetingRunner:
             content = f"Dank {previous_name}. {next_name}, {opdracht_floor_template}?"
         else:
             content = f"Dank {previous_name}. Ik geef nu het woord aan {next_name} voor {focus}."
+        if self._turn_repeats_existing(transcript or [], content):
+            if self._is_chair_persona(next_persona):
+                content = (
+                    f"Dank {previous_name}. Ik neem de regie terug zonder de vorige brug te herhalen: "
+                    "nu scheid ik nieuw bewijs, besluit en open risico."
+                )
+            else:
+                content = (
+                    f"Dank {previous_name}. {next_name}, voeg nu alleen iets toe dat nog niet is gezegd: "
+                    "een nieuw bewijsstuk, criterium of risico."
+                )
         return {
             "type": "participant_turn",
             "meeting_id": meeting_id,
@@ -2583,7 +2649,8 @@ class MeetingRunner:
                 chair,
                 (
                     "Open als voorzitter een besluitvormende teamvergadering. Noem het besluit dat nodig is, "
-                    "de volgorde standpunt-risico-keuze en geef daarna expliciet het woord aan "
+                    "stel zichtbaar eerst exact vier korte startvragen over doel, scope, nieuw bewijs en bewaakt risico, "
+                    "en geef daarna expliciet het woord aan "
                     f"{first_name}. Maximaal 65 woorden."
                 ),
             )
@@ -2651,7 +2718,8 @@ class MeetingRunner:
                 chair,
                 (
                     "Open als voorzitter een sprint planning. Zet direct timebox, sprintdoel, bouwvolgorde en testpoort neer. "
-                    f"Geef daarna het woord aan {first_name}. Maximaal 55 woorden."
+                    "Stel zichtbaar eerst exact vier korte startvragen over sprintuitkomst, scope, testsignaal en rollback. "
+                    f"Geef daarna het woord aan {first_name}. Maximaal 75 woorden."
                 ),
             )
         ]
@@ -2719,24 +2787,26 @@ class MeetingRunner:
         if topic_intent == "opdracht":
             opening_instruction = (
                 "Open als voorzitter een opdracht-brainstorm. Vraag om concrete oplossingssporen: component, ontwerpkeuze, "
-                "acceptatiebewijs en risico. Geen algemene lagenlijst. "
-                f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+                "acceptatiebewijs en risico. Stel zichtbaar eerst exact vier korte startvragen. Geen algemene lagenlijst. "
+                f"Geef daarna het woord aan {first_name}. Maximaal 80 woorden."
             )
         elif topic_intent == "storing":
             opening_instruction = (
-                "Open als voorzitter een diagnose-brainstorm. Vraag om foutsignaal, vermoedelijke laag, herstelpad en preventie. "
-                f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+                "Open als voorzitter een diagnose-brainstorm. Stel zichtbaar eerst exact vier korte startvragen over foutsignaal, "
+                "vermoedelijke laag, herstelpad en preventie. "
+                f"Geef daarna het woord aan {first_name}. Maximaal 80 woorden."
             )
         elif topic_intent == "idee":
             opening_instruction = (
-                "Open als voorzitter een idee-brainstorm. Vraag om waarde, variant, prototype en leerexperiment. "
-                f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+                "Open als voorzitter een idee-brainstorm. Stel zichtbaar eerst exact vier korte startvragen over waarde, variant, "
+                "prototype en leerexperiment. "
+                f"Geef daarna het woord aan {first_name}. Maximaal 80 woorden."
             )
         else:
             opening_instruction = (
                 "Open als voorzitter een brainstormsessie. Zet het contract neer: eerst deep search per persona, daarna deep think "
-                "op aannames, alternatieven, risico's en experimenten. "
-                f"Geef daarna het woord aan {first_name}. Maximaal 65 woorden."
+                "op aannames, alternatieven, risico's en experimenten. Stel zichtbaar eerst exact vier korte startvragen. "
+                f"Geef daarna het woord aan {first_name}. Maximaal 80 woorden."
             )
         agenda: list[tuple[int, str, dict[str, Any], str]] = [
             (
@@ -2985,6 +3055,37 @@ class MeetingRunner:
                 strict=parroting or phase == "anti-parrot-redo",
             )
         content = _strip_meeting_meta_language(content, persona_name=participant.get("name") or "")
+        if self._is_chair_persona(persona) and phase == "opening":
+            content = self._ensure_chair_opening_questions(
+                content,
+                topic=topic,
+                meeting_type=meeting_type,
+                personas=personas,
+            )
+        exact_repeat = self._turn_repeats_existing(transcript, content)
+        if exact_repeat:
+            forced_distinct = True
+            distinctness_reason = distinctness_reason or "exact_repeat"
+            if self._is_chair_persona(persona):
+                content = self._fallback_turn(persona, topic, phase, transcript, meeting_type=meeting_type)
+                if phase == "opening":
+                    content = self._ensure_chair_opening_questions(
+                        content,
+                        topic=topic,
+                        meeting_type=meeting_type,
+                        personas=personas,
+                    )
+                if self._turn_repeats_existing(transcript, content):
+                    content = self._chair_repeat_guard_turn(phase=phase, topic=topic, meeting_type=meeting_type)
+            else:
+                content = self._distinctive_fallback_turn(
+                    persona,
+                    topic,
+                    phase,
+                    transcript,
+                    meeting_type=meeting_type,
+                    strict=True,
+                )
         return {
             "type": "participant_turn",
             "meeting_id": meeting_id,
@@ -3021,6 +3122,8 @@ class MeetingRunner:
                 "max_words_requested": max_words,
                 "forced_distinct_fallback": forced_distinct,
                 "distinctness_reason": distinctness_reason,
+                "exact_repeat_blocked": exact_repeat,
+                "chair_opening_questions_required": bool(self._is_chair_persona(persona) and phase == "opening" and meeting_type != "development_team"),
                 "used_fallback": used_fallback,
                 "assignment_track_key": assignment_track_key,
                 "light_model_path": is_light,
@@ -3344,6 +3447,35 @@ class MeetingRunner:
             if self._shared_bigram_count(previous_terms, current_terms) >= 2:
                 return True
         return False
+
+    def _turn_signature(self, text: Any) -> str:
+        return re.sub(r"[^a-z0-9à-ÿ]+", " ", str(text or "").lower()).strip()
+
+    def _turn_repeats_existing(self, transcript: list[dict[str, Any]], current_content: str) -> bool:
+        current = self._turn_signature(current_content)
+        if len(current) < 10:
+            return False
+        for previous in transcript:
+            previous_signature = self._turn_signature(previous.get("content") or "")
+            if previous_signature and previous_signature == current:
+                return True
+        return False
+
+    def _chair_repeat_guard_turn(self, *, phase: str, topic: str, meeting_type: str) -> str:
+        if phase == "closing":
+            return _clip_text(
+                f"Ik sluit af zonder de tafel te herhalen: voor '{_clip_text(topic, 120)}' ligt er nu één keuze, één open risico en één vervolgstap binnen de approval-flow.",
+                1800,
+            )
+        if phase in {"chair-bridge", "research-bridge", "research-synthesis", "plan-bridge"}:
+            return _clip_text(
+                "Ik bewaak de lijn: de volgende bijdrage moet één nieuw bewijsstuk, risico of criterium toevoegen en geen eerdere zin opnieuw formuleren.",
+                1800,
+            )
+        return _clip_text(
+            "Ik grijp kort in op herhaling: we gaan alleen door met nieuwe informatie, een duidelijker criterium of een ander risico.",
+            1800,
+        )
 
     def _generic_meeting_content(self, text: str) -> bool:
         cleaned = str(text or "").strip().lower()
@@ -4382,6 +4514,32 @@ class MeetingStore:
     def __init__(self, directory: Path | None = None):
         self.directory = directory or (_default_data_dir() / "meetings")
 
+    def _participant_ids_with_chair(self, participants: list[Any]) -> list[str]:
+        clean: list[str] = []
+        seen: set[str] = set()
+
+        def add(raw: Any) -> None:
+            value = str(raw or "").strip()
+            if not value:
+                return
+            key = value.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            clean.append(value)
+
+        has_chair = any(
+            identifier in {"de-voorzitter", "voorzitter", "chair"}
+            or "voorzitter" in identifier
+            or "meeting facilitator" in identifier
+            for identifier in (str(item or "").strip().lower() for item in participants)
+        )
+        if not has_chair:
+            add("de-voorzitter")
+        for participant in participants:
+            add(participant)
+        return clean
+
     def list_meetings(self, limit: int = 50) -> list[dict[str, Any]]:
         if not self.directory.exists():
             return []
@@ -4747,7 +4905,7 @@ class MeetingStore:
         if meeting_type == "development_team":
             personas = _default_development_team_personas()
         else:
-            participants = request.participants or ["ouroboros"]
+            participants = self._participant_ids_with_chair(request.participants or ["ouroboros"])
             personas = []
             for persona_id in participants[:12]:
                 persona = persona_store.get(persona_id)

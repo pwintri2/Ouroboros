@@ -656,13 +656,18 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertFalse(recorded["tool_policy"]["shell"])
         self.assertFalse(recorded["tool_policy"]["browser"])
         self.assertFalse(recorded["tool_policy"]["write_tools"])
-        self.assertEqual(len(recorded["participants"]), 2)
-        self.assertEqual(len(recorded["rounds"]), 4)
+        self.assertEqual(recorded["participants"][0]["id"], "de-voorzitter")
+        self.assertEqual(len(recorded["participants"]), 3)
+        self.assertEqual(len(recorded["rounds"]), 11)
         self.assertEqual(recorded["summary"], "service antwoord")
-        self.assertEqual(len(self.fake_ollama.calls), 5)
+        self.assertEqual(len(self.fake_ollama.calls), 8)
         self.assertIn("Andere aanwezigen", self.fake_ollama.calls[0]["system_prompt"])
         self.assertIn("Jouw Rol", self.fake_ollama.calls[0]["system_prompt"])
         self.assertIn("Volledige transcriptie tot nu toe", self.fake_ollama.calls[2]["user_input"])
+        opening = recorded["rounds"][0]
+        self.assertEqual(opening["participant"]["id"], "de-voorzitter")
+        self.assertEqual(opening["phase"], "opening")
+        self.assertEqual(opening["content"].count("?"), 4)
 
         artifact = Path(recorded["artifact_path"])
         self.assertEqual(artifact.parent, self.data_dir / "meetings")
@@ -672,7 +677,7 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertTrue(Path(recorded["record_path"]).exists())
         readback = self.service.meetings.read_meeting(recorded["meeting_id"])
         self.assertEqual(readback["summary"], "service antwoord")
-        self.assertEqual(len(readback["rounds"]), 4)
+        self.assertEqual(len(readback["rounds"]), 11)
 
         blocked = self.service.meetings.create_meeting(
             self.module.MeetingRequest(topic="Execute tools", tools=["cline_execute", "safe_shell"], allow_tools=True),
@@ -728,9 +733,53 @@ class TestOuroborosChatService(unittest.TestCase):
         self.assertIn("Schrijf alsof je hardop aan tafel spreekt", self.fake_ollama.calls[0]["system_prompt"])
         self.assertIn("Letterlijke herhaling is bij voorbaat niet toegestaan", self.fake_ollama.calls[0]["system_prompt"])
         self.assertTrue(recorded["rounds"][0]["prompt_context"]["chair_led"])
+        self.assertTrue(recorded["rounds"][0]["prompt_context"]["chair_opening_questions_required"])
+        self.assertEqual(recorded["rounds"][0]["content"].count("?"), 4)
         self.assertEqual(recorded["rounds"][2]["participant"]["id"], "de-voorzitter")
         self.assertTrue(recorded["rounds"][2]["prompt_context"]["floor_control"])
         self.assertEqual(recorded["rounds"][0]["prompt_context"]["meeting_type"], "team")
+
+    def test_meeting_auto_inserts_chair_and_blocks_exact_repeated_turns(self):
+        for persona_id, name, role in (
+            ("ontwerper", "Ontwerper", "Designer"),
+            ("nina", "Nina", "AI specialist"),
+            ("critic", "Critic", "Risk reviewer"),
+        ):
+            self.service.personas.upsert(
+                self.module.PersonaRequest(
+                    id=persona_id,
+                    name=name,
+                    role=role,
+                    model_settings={"provider": "ollama", "name": "ouroboros:latest"},
+                )
+            )
+
+        repeated = "Ik herhaal alleen dezelfde zin over scope, test en risico zonder nieuw bewijs."
+
+        def fake_llm(**kwargs):
+            prompt = str(kwargs.get("prompt") or "")
+            if "Volledige vergaderingstranscriptie:" in prompt:
+                return {"ok": True, "content": "Samenvatting zonder herhaling.", "error": ""}
+            return {"ok": True, "content": repeated, "error": ""}
+
+        recorded = self.service.meetings.create_meeting(
+            self.module.MeetingRequest(
+                topic="Maak de gewone meeting strakker",
+                participants=["ontwerper", "nina", "critic"],
+                meeting_type="team",
+            ),
+            self.service.personas,
+            llm_call=fake_llm,
+        )
+
+        rounds = recorded["rounds"]
+        self.assertEqual(recorded["participants"][0]["id"], "de-voorzitter")
+        self.assertEqual(rounds[0]["participant"]["id"], "de-voorzitter")
+        self.assertEqual(rounds[0]["phase"], "opening")
+        self.assertEqual(rounds[0]["content"].count("?"), 4)
+        visible_contents = [round_item["content"] for round_item in rounds]
+        self.assertEqual(len(visible_contents), len(set(visible_contents)))
+        self.assertLessEqual("\n".join(visible_contents).count(repeated), 1)
 
     def test_meeting_chair_intervenes_when_personas_parrot_each_other(self):
         personas = [

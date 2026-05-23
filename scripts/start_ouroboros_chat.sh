@@ -30,6 +30,17 @@ notify() {
   fi
 }
 
+load_node_env() {
+  if command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -s "$HOME/.nvm/nvm.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$HOME/.nvm/nvm.sh"
+    nvm use 22 >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || true
+  fi
+}
+
 port_is_up() {
   python3 - "$1" "$2" <<'PY'
 import socket
@@ -281,6 +292,8 @@ ensure_vite_for_debug_binary() {
 }
 
 launch_chat() {
+  load_node_env
+
   if [ ! -d "$CHAT_DIR" ]; then
     echo "Ouroboros Chat directory missing: $CHAT_DIR"
     notify "Ouroboros Chat ontbreekt" "$CHAT_DIR bestaat nog niet."
