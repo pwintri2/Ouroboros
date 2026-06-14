@@ -72,11 +72,18 @@ def _default_roo_adapter(job: JobRecord, log: EventLog, on_progress: Callable[[d
     return run_roo_job(job, log, on_progress=on_progress)
 
 
+def _default_grok_adapter(job: JobRecord, log: EventLog, on_progress: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    from controller.agent_runtime.adapters.grok_cli import run_grok_job
+
+    return run_grok_job(job, log, on_progress=on_progress)
+
+
 AGENT_DISPATCH: dict[str, AdapterFn] = {
     "codex": _default_codex_adapter,
     "deepseek": _default_deepseek_adapter,
     "atlas": _default_atlas_adapter,
     "roo": _default_roo_adapter,
+    "grok": _default_grok_adapter,
 }
 
 

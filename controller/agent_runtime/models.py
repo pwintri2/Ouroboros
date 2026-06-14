@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-AGENT_TYPES: tuple[str, ...] = ("codex", "deepseek", "atlas", "claude", "roo", "ruflo", "swarm")
+AGENT_TYPES: tuple[str, ...] = ("codex", "deepseek", "atlas", "claude", "roo", "ruflo", "grok", "swarm")
 
 JOB_STATUSES: tuple[str, ...] = (
     "queued",

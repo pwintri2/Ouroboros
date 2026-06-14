@@ -39,8 +39,8 @@ except Exception:
 
 
 APPROVAL_PHRASE = "Akkoord"
-SUPPORTED_COMMANDS = ("agents", "help", "codex", "deepseek", "atlas", "ruflo", "claude", "roo")
-HOST_AGENT_COMMANDS = {"codex", "deepseek", "atlas", "ruflo", "claude"}
+SUPPORTED_COMMANDS = ("agents", "help", "codex", "deepseek", "atlas", "ruflo", "claude", "roo", "grok")
+HOST_AGENT_COMMANDS = {"codex", "deepseek", "atlas", "ruflo", "claude", "grok"}
 ECOSYSTEM_AGENT_COMMANDS = {"deepseek", "atlas"}
 MAX_TASK_CHARS = 8000
 SECRET_PATTERNS = (
@@ -82,6 +82,8 @@ def slash_command_catalog() -> dict[str, Any]:
             "/atlas ask <opdracht>": "Laat Atlas een vraag/taak beantwoorden via de CLI.",
             "/ruflo <opdracht>": "Start Ruflo swarm-coordinatie rond de opdracht.",
             "/claude <opdracht>": "Laat Claude Code in WintripAI werken als auth beschikbaar is.",
+            "/grok <opdracht>": "Laat Grok CLI als code-agent in WintripAI werken.",
+            "/grok status": "Grok CLI binary, auth/model en jobs status.",
             "/roo status": "Roo Code CLI/root/runtime status.",
             "/roo jobs": "Recente Roo jobs uit de agent runtime.",
             "/roo <opdracht>": "Laat Roo Code agentisch werken via ChatGPT/OpenAI, met lokale DeepSeek-fallback.",
@@ -133,6 +135,10 @@ def handle_slash_command(
         roo_sub = _roo_subcommand(task, approval=approval, provider=provider, model=model, timeout_seconds=timeout_seconds)
         if roo_sub is not None:
             return roo_sub
+    if command == "grok":
+        grok_sub = _grok_subcommand(task, approval=approval, timeout_seconds=timeout_seconds)
+        if grok_sub is not None:
+            return grok_sub
     if command in HOST_AGENT_COMMANDS and task.lower() in {"status", "jobs", "latest", "laatste"}:
         return _agent_jobs_result(command)
     if not task:
@@ -151,6 +157,8 @@ def handle_slash_command(
         task=task,
         approval=approval,
         timeout_seconds=timeout_seconds,
+        provider=provider,
+        model=model,
         prefer_bridge=True,
     )
 
@@ -160,6 +168,8 @@ def execute_host_agent_command(
     task: str,
     approval: str = "",
     timeout_seconds: int = 240,
+    provider: str = "",
+    model: str = "",
     prefer_bridge: bool = True,
 ) -> dict[str, Any]:
     started = time.time()
@@ -180,6 +190,8 @@ def execute_host_agent_command(
             "response": f"/{agent} wacht op {APPROVAL_PHRASE}.",
             "fake_success": False,
         }
+    if agent == "grok":
+        return _run_grok_cli_task(task=task, timeout_seconds=timeout_seconds, model=model)
     bridged = None
     if prefer_bridge:
         bridged = _bridge_agent_command(agent=agent, task=task, approval=effective_approval, timeout_seconds=timeout_seconds)
@@ -349,6 +361,114 @@ def _run_codex_exec(task: str, timeout_seconds: int) -> dict[str, Any]:
             "Volg live in Agent Jobs of vraag `/Codex status` voor de laatste samenvatting."
         ),
     )
+
+
+def _run_grok_cli_task(task: str, timeout_seconds: int, model: str = "") -> dict[str, Any]:
+    started = time.time()
+    timeout_seconds = max(int(timeout_seconds or 0), int(os.getenv("WINTRIP_GROK_TIMEOUT_SECONDS", "1800") or 1800))
+    try:
+        from controller.agent_runtime.adapters.grok_cli import DEFAULT_GROK_MODEL, grok_binary_status
+
+        binary = grok_binary_status()
+    except Exception as exc:
+        return _agent_result("grok", "grok_cli", "error", started, reason=str(exc))
+    if binary.get("status") != "found":
+        return _agent_result(
+            "grok",
+            "grok_cli",
+            "missing",
+            started,
+            binary=binary,
+            response="Grok CLI is niet gevonden op de host. Zet GROK_BIN/WINTRIP_GROK_BINARY of installeer `grok`.",
+        )
+    selected_model = str(model or os.getenv("WINTRIP_GROK_MODEL") or DEFAULT_GROK_MODEL).strip()
+    try:
+        from controller.agent_runtime.orchestrator import get_orchestrator
+
+        orchestrator = get_orchestrator()
+        record = orchestrator.submit(
+            agent="grok",
+            task=task,
+            timeout_seconds=int(timeout_seconds or 240),
+            metadata={
+                "prompt": _agent_prompt("Grok CLI", task),
+                "model": selected_model,
+                "slash_agent": "grok",
+            },
+        )
+    except Exception as exc:
+        return _agent_result("grok", "grok_cli", "error", started, reason=str(exc))
+    job_payload = record.to_dict()
+    return _agent_result(
+        "grok",
+        "grok_cli",
+        "running",
+        started,
+        job=job_payload,
+        model=selected_model,
+        binary=binary,
+        response=(
+            f"Grok job {record.job_id} gestart in de agent runtime met model `{selected_model}`. "
+            "Volg live in Agent Jobs of vraag `/grok jobs` voor de laatste samenvatting."
+        ),
+    )
+
+
+def _grok_subcommand(task: str, approval: str = "", timeout_seconds: int = 1800) -> dict[str, Any] | None:
+    started = time.time()
+    lowered = str(task or "").strip().lower()
+    if lowered in {"", "status", "models", "inspect", "jobs", "latest", "laatste"}:
+        if lowered in {"jobs", "latest", "laatste"}:
+            return _agent_jobs_result("grok")
+        try:
+            from controller.agent_runtime.adapters.grok_cli import grok_binary_status
+
+            binary = grok_binary_status()
+        except Exception as exc:
+            return _agent_result("grok", "grok_status", "error", started, reason=str(exc))
+        details: dict[str, Any] = {"binary": binary}
+        if binary.get("status") == "found" and lowered in {"models", "status", ""}:
+            details["models_probe"] = _run_command(["grok", "models"], cwd=_host_wintrip_root(), timeout_seconds=12)
+        if binary.get("status") == "found" and lowered == "inspect":
+            details["inspect_probe"] = _run_command(["grok", "inspect"], cwd=_host_wintrip_root(), timeout_seconds=12)
+        status = "online" if binary.get("status") == "found" else "missing"
+        response_lines = [
+            f"/grok status: {status}",
+            f"- binary: {binary.get('path') or '(missing)'}",
+            f"- version: {binary.get('version') or 'unknown'}",
+        ]
+        models_probe = details.get("models_probe") if isinstance(details.get("models_probe"), dict) else None
+        if models_probe:
+            response_lines.append(_clip(_redact(str(models_probe.get("stdout") or models_probe.get("stderr") or "")), 1800))
+        inspect_probe = details.get("inspect_probe") if isinstance(details.get("inspect_probe"), dict) else None
+        if inspect_probe:
+            response_lines.append(_clip(_redact(str(inspect_probe.get("stdout") or inspect_probe.get("stderr") or "")), 1800))
+        return _agent_result(
+            "grok",
+            "grok_status",
+            status,
+            started,
+            **details,
+            response="\n".join(part for part in response_lines if part).strip(),
+        )
+    if lowered.startswith("run "):
+        rest = task.split(maxsplit=1)[1].strip() if " " in task else ""
+        if not rest:
+            return _agent_result(
+                "grok",
+                "grok_cli",
+                "blocked",
+                started,
+                response="Geef een opdracht mee, bijvoorbeeld /grok run voeg test toe voor self-context.",
+            )
+        return execute_host_agent_command(
+            agent="grok",
+            task=rest,
+            approval=approval,
+            timeout_seconds=timeout_seconds,
+            prefer_bridge=False,
+        )
+    return None
 
 
 def _codex_subcommand(task: str, approval: str = "", timeout_seconds: int = 1800) -> dict[str, Any] | None:
@@ -1596,6 +1716,7 @@ def _agent_prompt(agent_label: str, task: str) -> str:
         f"- Ruflo root: {roots['ruflo']}\n"
         f"- Roo root: {roots['roo']}\n"
         f"- Codex root: {roots['codex']}\n"
+        f"- Grok CLI: {roots.get('grok', '')}\n"
         f"- DeepSeek root: {roots['deepseek']}\n"
         f"- Atlas root: {roots['atlas']}\n"
         "- Lees AGENTS.md en OUROBOROS_IDE_CONTEXT.md wanneer aanwezig.\n"
@@ -1754,6 +1875,7 @@ def _catalog_text() -> str:
             "/ruflo <opdracht>",
             "/claude <opdracht>",
             "/roo <opdracht>",
+            "/grok <opdracht>",
             "/agents",
         ]
     )
@@ -1767,6 +1889,7 @@ def _agent_roots() -> dict[str, str]:
         "ruflo": str(ruflo_path()),
         "roo": str(roo_path()),
         "codex": str(codex_path()),
+        "grok": str(Path(os.getenv("WINTRIP_GROK_BINARY") or os.getenv("GROK_BIN") or "/home/pwintri2/.local/bin/grok").expanduser()),
         "deepseek": str(deepseek_path()),
         "atlas": str(atlas_path()),
     }

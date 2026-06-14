@@ -11,6 +11,7 @@ from controller.agent_runtime.adapters.ecosystem_cli import (
     run_atlas_job,
     run_deepseek_job,
 )
+from controller.agent_runtime.adapters.grok_cli import GrokCliAdapter, grok_binary_status, run_grok_job
 from controller.agent_runtime.adapters.ruflo_swarm import (
     analyze_ruflo_swarm_signal,
     ruflo_creative_retry_prompt,
@@ -19,12 +20,15 @@ from controller.agent_runtime.adapters.ruflo_swarm import (
 
 __all__ = [
     "CodexCliAdapter",
+    "GrokCliAdapter",
     "analyze_ruflo_swarm_signal",
     "atlas_status",
     "deepseek_status",
+    "grok_binary_status",
     "ruflo_creative_retry_prompt",
     "run_atlas_job",
     "run_codex_job",
     "run_deepseek_job",
+    "run_grok_job",
     "should_apply_sacred_corruption",
 ]

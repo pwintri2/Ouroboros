@@ -129,7 +129,7 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
             self._json(result)
             return
         if path == "/agents/status":
-            self._json({"status": "online", "agents": ["codex", "deepseek", "atlas", "ruflo", "claude", "roo"], "fake_success": False})
+            self._json({"status": "online", "agents": ["codex", "deepseek", "atlas", "ruflo", "claude", "roo", "grok"], "fake_success": False})
             return
         if path == "/roo/status":
             result = roo_cli_status()
@@ -371,6 +371,8 @@ class RcloneBridgeHandler(BaseHTTPRequestHandler):
                 task=str(body.get("task") or ""),
                 approval=str(body.get("approval") or ""),
                 timeout_seconds=int(body.get("timeout_seconds") or 240),
+                provider=str(body.get("provider") or ""),
+                model=str(body.get("model") or ""),
                 prefer_bridge=False,
             )
             self._json(result, status=403 if result.get("status") == "blocked" else 200)

@@ -6123,7 +6123,7 @@ class OuroborosChatService:
                 "description": str(value),
                 "source": "cockpit",
                 "backend_route": "/api/cockpit/chat",
-                "approval_required": any(agent in key for agent in ("/codex", "/deepseek", "/atlas", "/ruflo", "/claude", "/roo")),
+                "approval_required": any(agent in key for agent in ("/codex", "/deepseek", "/atlas", "/ruflo", "/claude", "/roo", "/grok")),
                 "enabled": True,
             }
             for key, value in commands.items()
@@ -6165,7 +6165,7 @@ class OuroborosChatService:
         return catalog
 
     def _development_slash_command(self, agent_ids: list[str]) -> str:
-        preferred_order = ["codex", "roo", "claude", "deepseek", "atlas", "ruflo", "agents"]
+        preferred_order = ["codex", "grok", "roo", "claude", "deepseek", "atlas", "ruflo", "agents"]
         selected = [str(item or "").strip().lower().lstrip("/") for item in agent_ids if str(item or "").strip()]
         for agent in [*selected, *preferred_order]:
             if agent in preferred_order:
